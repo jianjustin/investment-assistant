@@ -12,7 +12,9 @@ __pycache__/
 *.pyo
 
 # 运行时数据（可再生）
-data/
+data/earnings_reports/
+data/earnings_today.json
+data/daily_scan.json
 logs/
 
 # macOS

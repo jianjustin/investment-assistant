@@ -26,10 +26,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 
 # ── 初始化 ────────────────────────────────────────────────────────────────
-SCRIPT_DIR = Path(__file__).parent
-load_dotenv(SCRIPT_DIR.parent / ".env")
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent  # ops/../ = repo root
+load_dotenv(REPO_ROOT / ".env")
 
-LOG_DIR = SCRIPT_DIR / "logs"
+LOG_DIR = REPO_ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
@@ -49,10 +50,10 @@ from data.sec import SECDownloader
 def load_config() -> dict:
     return {
         "sec_user_agent": os.environ.get("SEC_USER_AGENT", "EarningsMonitor user@example.com"),
-        "vault_path": os.environ.get("VAULT_PATH", str(SCRIPT_DIR.parent.parent)),
+        "vault_path": os.environ.get("VAULT_PATH", str(REPO_ROOT.parent)),
         "watchlist_path": os.environ.get(
             "WATCHLIST_PATH",
-            str(SCRIPT_DIR.parent.parent / "02-项目" / "美股投资项目" / "watchlist.md"),
+            str(REPO_ROOT.parent / "02-项目" / "美股投资项目" / "watchlist.md"),
         ),
     }
 
@@ -88,8 +89,8 @@ def get_previous_trading_date() -> str:
 def run(check_date: str, dry_run: bool = False) -> None:
     cfg = load_config()
     sec = SECDownloader(cfg["sec_user_agent"])
-    data_dir = SCRIPT_DIR / "data" / "earnings_reports"
-    output_json = SCRIPT_DIR / "data" / "earnings_today.json"
+    data_dir = REPO_ROOT / "data" / "earnings_reports"
+    output_json = REPO_ROOT / "data" / "earnings_today.json"
 
     tickers = load_watchlist(cfg["watchlist_path"])
     if not tickers:
