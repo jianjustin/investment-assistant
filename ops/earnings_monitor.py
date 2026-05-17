@@ -145,6 +145,27 @@ def run(check_date: str, dry_run: bool = False) -> None:
         )
         logger.info(f"Written: {output_json}")
 
+    # Push to Discord #earnings-alerts (non-fatal if Discord unavailable)
+    try:
+        from notify.discord import DiscordClient, DiscordChannel
+        from notify.templates import earnings_alert_embed
+        client = DiscordClient.from_env()
+        for item in results:
+            payload = earnings_alert_embed(
+                ticker=item["ticker"],
+                earnings_date=item["earnings_date"],
+                direction="Watch",
+                eps_beat="(pending Claude analysis)",
+                revenue_beat="(pending Claude analysis)",
+                guidance="(pending Claude analysis)",
+                confidence=0,
+                highlights=["8-K 已下载，等待 Phase 3 Claude 分析引擎"],
+            )
+            client.send(DiscordChannel.EARNINGS, payload)
+            logger.info(f"Discord #earnings-alerts sent for {item['ticker']}")
+    except Exception as exc:
+        logger.warning(f"Discord notification skipped: {exc}")
+
     logger.info(f"=== Done: {len(hits)} hit(s) ===")
 
 
