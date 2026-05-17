@@ -80,12 +80,6 @@ def run() -> None:
             except Exception as exc:
                 log.error(f"{ticker}: error — {exc}")
 
-    client.send(
-        DiscordChannel.DAILY,
-        daily_summary_embed(market.status, market.vix, candidates),
-    )
-    log.info(f"Scan complete. {len(candidates)} candidates sent to #trade-signals.")
-
     Path("data").mkdir(exist_ok=True)
     Path("data/daily_scan.json").write_text(
         json.dumps(
@@ -93,6 +87,12 @@ def run() -> None:
             indent=2,
         )
     )
+
+    client.send(
+        DiscordChannel.DAILY,
+        daily_summary_embed(market.status, market.vix, candidates),
+    )
+    log.info(f"Scan complete. {len(candidates)} candidates sent to #trade-signals.")
 
 
 if __name__ == "__main__":
