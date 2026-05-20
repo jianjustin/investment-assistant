@@ -1,6 +1,6 @@
 """
 SEC EDGAR 下载器
-负责：Ticker → CIK 映射、查找最新 8-K、下载 Exhibit 99.1（财报新闻稿）
+负责：Ticker → CIK 映射、查找 8-K / 10-Q filings、下载原文（Exhibit 99.1 / 10-Q 正文）
 """
 
 import requests
@@ -55,36 +55,87 @@ class SECDownloader:
             logger.warning(f"CIK not found for: {ticker}")
         return cik
 
-    # ── 8-K 查找 ─────────────────────────────────────────────────────────
+    # ── Filings 查找 ─────────────────────────────────────────────────────
+
+    def _fetch_submissions(self, cik: str) -> dict:
+        """拉取 EDGAR submissions 主 JSON（含 recent + files 分页信息）。"""
+        url = f"{EDGAR_SUBMISSIONS}/CIK{cik}.json"
+        headers = {"User-Agent": self.session.headers["User-Agent"]}
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+
+    @staticmethod
+    def _parse_recent_block(recent: dict) -> list[dict]:
+        """把 EDGAR recent/历史页的并联数组转成 list[dict]。"""
+        forms = recent.get("form", [])
+        dates = recent.get("filingDate", [])
+        accessions = recent.get("accessionNumber", [])
+        primary_docs = recent.get("primaryDocument", [])
+        return [
+            {
+                "form": forms[i],
+                "date": dates[i] if i < len(dates) else "",
+                "accession": accessions[i] if i < len(accessions) else "",
+                "primaryDocument": primary_docs[i] if i < len(primary_docs) else "",
+            }
+            for i in range(len(forms))
+        ]
 
     def get_recent_filings(self, cik: str, form_type: str = "8-K", limit: int = 10) -> list[dict]:
         """
         从 EDGAR submissions API 取最近 limit 份指定表单的 filings。
         返回：[{form, date, accession, primaryDocument}, ...]
         """
-        url = f"{EDGAR_SUBMISSIONS}/CIK{cik}.json"
-        # submissions 端点在 data.sec.gov，需重置 Host 头
-        headers = {"User-Agent": self.session.headers["User-Agent"]}
-        resp = requests.get(url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-
-        recent = data.get("filings", {}).get("recent", {})
-        forms = recent.get("form", [])
-        dates = recent.get("filingDate", [])
-        accessions = recent.get("accessionNumber", [])
-        primary_docs = recent.get("primaryDocument", [])
-
+        data = self._fetch_submissions(cik)
+        entries = self._parse_recent_block(data.get("filings", {}).get("recent", {}))
         results = []
-        for i, form in enumerate(forms):
-            if form == form_type and len(results) < limit:
-                results.append({
-                    "form": form,
-                    "date": dates[i] if i < len(dates) else "",
-                    "accession": accessions[i] if i < len(accessions) else "",
-                    "primaryDocument": primary_docs[i] if i < len(primary_docs) else "",
-                })
+        for e in entries:
+            if e["form"] == form_type:
+                results.append(e)
+                if len(results) >= limit:
+                    break
         return results
+
+    def get_filings_since(
+        self,
+        cik: str,
+        form_types: list[str],
+        since_date: str,
+    ) -> list[dict]:
+        """
+        获取 since_date 以来所有指定表单类型的 filings，必要时翻历史分页。
+        form_types: 如 ["8-K", "10-Q"]
+        since_date: "YYYY-MM-DD"
+        返回：[{form, date, accession, primaryDocument}, ...] 按日期倒序
+        """
+        data = self._fetch_submissions(cik)
+        filings_meta = data.get("filings", {})
+        all_entries = self._parse_recent_block(filings_meta.get("recent", {}))
+
+        # 若 recent 最老记录仍比 since_date 新，需翻历史分页
+        oldest = all_entries[-1]["date"] if all_entries else ""
+        if oldest and oldest > since_date:
+            for page in filings_meta.get("files", []):
+                page_url = f"{EDGAR_SUBMISSIONS}/{page['name']}"
+                headers = {"User-Agent": self.session.headers["User-Agent"]}
+                try:
+                    time.sleep(0.1)
+                    resp = requests.get(page_url, headers=headers, timeout=30)
+                    resp.raise_for_status()
+                    page_entries = self._parse_recent_block(resp.json())
+                    all_entries.extend(page_entries)
+                    if page_entries and page_entries[-1]["date"] <= since_date:
+                        break
+                except Exception as exc:
+                    logger.warning(f"Historical page {page['name']} fetch failed: {exc}")
+                    break
+
+        form_set = {f.upper() for f in form_types}
+        return [
+            e for e in all_entries
+            if e["form"].upper() in form_set and e["date"] >= since_date
+        ]
 
     # ── 文件下载 ──────────────────────────────────────────────────────────
 
@@ -259,6 +310,42 @@ class SECDownloader:
 
     # ── 高级接口 ──────────────────────────────────────────────────────────
 
+    def download_filings_batch(
+        self,
+        ticker: str,
+        form_types: list[str],
+        since_date: str,
+        output_base: Path,
+    ) -> list[Path]:
+        """
+        下载指定标的 since_date 以来所有指定表单类型的 filings。
+        落盘路径：output_base/TICKER/{FORM_TYPE}/{accession}.htm
+        返回成功下载的路径列表。
+        """
+        cik = self.get_cik(ticker)
+        if not cik:
+            return []
+
+        filings = self.get_filings_since(cik, form_types, since_date)
+        logger.info(
+            f"{ticker}: {len(filings)} filing(s) since {since_date} "
+            f"({', '.join(form_types)})"
+        )
+
+        paths = []
+        for f in filings:
+            form_dir = output_base / ticker / f["form"]
+            form_dir.mkdir(parents=True, exist_ok=True)
+            path = self.download_exhibit(
+                cik,
+                f["accession"],
+                form_dir,
+                primary_document=f["primaryDocument"],
+            )
+            if path:
+                paths.append(path)
+        return paths
+
     def get_latest_8k_for_earnings(
         self,
         ticker: str,
@@ -298,27 +385,82 @@ class SECDownloader:
         )
 
 
-if __name__ == "__main__":
+def main() -> None:
     import argparse
     import os
     import sys
-    from datetime import date
+    from datetime import date, timedelta
     from dotenv import load_dotenv
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     load_dotenv()
 
-    parser = argparse.ArgumentParser(description="拉取指定美股标的的 SEC 8-K 财报")
+    parser = argparse.ArgumentParser(
+        description="拉取美股标的 SEC 财报文件",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例：
+  # 单次：下载最近一份 8-K（默认模式）
+  python data/sec.py AAPL --date 2026-05-01
+
+  # 批量：过去 3 年的 8-K 和 10-Q
+  python data/sec.py AAPL --years 3 --form 8-K,10-Q
+
+  # 批量：指定起始日期
+  python data/sec.py NVDA --since 2023-01-01 --form 10-Q
+        """,
+    )
     parser.add_argument("ticker", help="股票代码，如 AAPL")
-    parser.add_argument("--date", default=None, help="财报日期 YYYY-MM-DD（默认：今天）")
     parser.add_argument("--out", default="data/earnings_reports", help="输出根目录（默认：data/earnings_reports）")
+
+    # 单次模式
+    parser.add_argument("--date", default=None, help="【单次】财报日期 YYYY-MM-DD，下载该日期附近最近的 8-K")
+
+    # 批量模式
+    batch = parser.add_argument_group("批量模式（--years 或 --since 触发）")
+    batch.add_argument("--years", type=int, default=None, help="拉取过去 N 年的 filings，如 --years 3")
+    batch.add_argument("--since", default=None, help="拉取该日期以来的 filings，如 --since 2023-01-01")
+    batch.add_argument(
+        "--form",
+        default="8-K,10-Q",
+        help="批量模式表单类型，逗号分隔（默认：8-K,10-Q）",
+    )
+
     args = parser.parse_args()
 
-    target_date = args.date or date.today().isoformat()
+    if args.years and args.since:
+        parser.error("--years 和 --since 不能同时使用")
+    if (args.years or args.since) and args.date:
+        parser.error("--date 不能与 --years / --since 同时使用")
+
     sec = SECDownloader(user_agent=os.environ["SEC_USER_AGENT"])
-    path = sec.get_latest_8k_for_earnings(args.ticker.upper(), target_date, Path(args.out))
+    ticker = args.ticker.upper()
+    out = Path(args.out)
+
+    # ── 批量模式 ──────────────────────────────────────────────────────────
+    if args.years or args.since:
+        if args.years:
+            since_date = (date.today() - timedelta(days=365 * args.years)).isoformat()
+        else:
+            since_date = args.since
+        form_types = [f.strip().upper() for f in args.form.split(",") if f.strip()]
+        paths = sec.download_filings_batch(ticker, form_types, since_date, out)
+        print(f"Downloaded {len(paths)} filing(s) to {out}/{ticker}/")
+        for p in paths:
+            print(f"  {p}")
+        if not paths:
+            sys.exit(1)
+        return
+
+    # ── 单次模式（默认） ──────────────────────────────────────────────────
+    target_date = args.date or date.today().isoformat()
+    path = sec.get_latest_8k_for_earnings(ticker, target_date, out)
     if path:
         print(f"Downloaded: {path}")
     else:
-        print(f"No 8-K found for {args.ticker} around {target_date}")
+        print(f"No 8-K found for {ticker} around {target_date}")
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -100,8 +100,10 @@ python scripts/test_discord.py
 
 ### 子流程 1：拉取财报（SEC EDGAR 下载）
 
+#### 单次模式：下载指定日期附近最近的 8-K
+
 ```bash
-# 拉取 AAPL 今天附近最近的 8-K
+# 拉取 AAPL 今天附近最近的 8-K（默认）
 python data/sec.py AAPL
 
 # 指定财报日期
@@ -113,11 +115,47 @@ python data/sec.py AAPL --date 2026-05-01 --out /tmp/my-reports
 
 输出示例：
 ```
-2026-05-20 10:30:01 INFO Loading CIK map from SEC...
-2026-05-20 10:30:02 INFO CIK map loaded: 12085 tickers
-2026-05-20 10:30:02 INFO AAPL: using 8-K dated 2026-05-01 (accession 0000320193-26-000056)
-2026-05-20 10:30:03 INFO Downloaded: data/earnings_reports/AAPL/0000320193-26-000056.htm
+INFO AAPL: using 8-K dated 2026-05-01 (accession 0000320193-26-000056)
+INFO Downloaded: data/earnings_reports/AAPL/0000320193-26-000056.htm
 Downloaded: data/earnings_reports/AAPL/0000320193-26-000056.htm
+```
+
+#### 批量模式：拉取过去 N 年的 8-K 和 10-Q
+
+```bash
+# 过去 3 年的 8-K 和 10-Q（默认表单）
+python data/sec.py AAPL --years 3
+
+# 只拉 10-Q
+python data/sec.py NVDA --years 3 --form 10-Q
+
+# 指定起始日期
+python data/sec.py TSLA --since 2023-01-01 --form 8-K,10-Q
+
+# 指定输出目录
+python data/sec.py AAPL --years 3 --out /tmp/aapl-filings
+```
+
+文件落盘结构：
+```
+data/earnings_reports/
+└── AAPL/
+    ├── 8-K/
+    │   ├── 0000320193-26-000056.htm   # Q1 2026
+    │   ├── 0000320193-25-000089.htm   # Q4 2025
+    │   └── ...
+    └── 10-Q/
+        ├── 0000320193-25-000123.htm   # Q3 2025
+        └── ...
+```
+
+输出示例：
+```
+INFO AAPL: 35 filing(s) since 2023-05-20 (8-K, 10-Q)
+INFO Downloaded: data/earnings_reports/AAPL/8-K/0000320193-26-000056.htm
+INFO Downloaded: data/earnings_reports/AAPL/10-Q/0000320193-25-000123.htm
+...
+Downloaded 35 filing(s) to data/earnings_reports/AAPL/
 ```
 
 ---
