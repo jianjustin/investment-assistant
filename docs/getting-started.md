@@ -92,9 +92,55 @@ python scripts/test_discord.py
 
 ---
 
-## 手动运行
+## 子流程独立运行
 
-### 财报监听
+每个子流程都可以单独调用，无需启动完整的调度链。适用于调试、回测或按需触发。
+
+---
+
+### 子流程 1：拉取财报（SEC EDGAR 下载）
+
+```bash
+# 拉取 AAPL 今天附近最近的 8-K
+python data/sec.py AAPL
+
+# 指定财报日期
+python data/sec.py AAPL --date 2026-05-01
+
+# 指定输出目录（默认：data/earnings_reports）
+python data/sec.py AAPL --date 2026-05-01 --out /tmp/my-reports
+```
+
+输出示例：
+```
+2026-05-20 10:30:01 INFO Loading CIK map from SEC...
+2026-05-20 10:30:02 INFO CIK map loaded: 12085 tickers
+2026-05-20 10:30:02 INFO AAPL: using 8-K dated 2026-05-01 (accession 0000320193-26-000056)
+2026-05-20 10:30:03 INFO Downloaded: data/earnings_reports/AAPL/0000320193-26-000056.htm
+Downloaded: data/earnings_reports/AAPL/0000320193-26-000056.htm
+```
+
+---
+
+### 子流程 2：发送 Discord 消息
+
+```bash
+# 发送测试消息到 #earnings-alerts（默认）
+python notify/discord.py
+
+# 指定频道
+python notify/discord.py --channel signals
+python notify/discord.py --channel daily
+```
+
+需要 `.env` 中已填入真实 Webhook URL。输出：
+```
+✅ 测试消息已发送至 #earnings
+```
+
+---
+
+### 子流程 3：财报监听（检测 + 下载 + 推送）
 
 ```bash
 # 检查上一个交易日的财报（自动模式）
@@ -103,7 +149,7 @@ python ops/earnings_monitor.py
 # 检查指定日期
 python ops/earnings_monitor.py --date 2026-05-07
 
-# 仅检测，不下载 8-K
+# 仅检测，不下载 8-K（不发 Discord）
 python ops/earnings_monitor.py --dry-run
 ```
 
@@ -113,31 +159,35 @@ python ops/earnings_monitor.py --dry-run
 - `logs/earnings_monitor.log` — 运行日志
 - Discord `#earnings-alerts` — 推送通知（如已配置）
 
-### 每日技术面扫描
+---
+
+### 子流程 4：每日技术面扫描
 
 ```bash
+# 正常运行（扫描 + 发 Discord）
 python ops/daily_scan.py
+
+# 仅扫描，不发送 Discord 消息
+python ops/daily_scan.py --dry-run
 ```
 
 运行后生成：
 - `data/daily_scan.json` — 当日候选列表
 - `logs/daily_scan.log` — 运行日志
-- Discord `#trade-signals` — 有信号的个股通知
-- Discord `#daily-scan` — 每日摘要（必发）
+- Discord `#trade-signals` — 有信号的个股通知（非 dry-run）
+- Discord `#daily-scan` — 每日摘要（非 dry-run）
 
 ---
 
-## 验证脚本
+### 子流程验证脚本（仅检测，无副作用）
 
-`scripts/` 目录下的脚本用于独立验证各模块，不需要完整配置即可运行部分功能。
+| 脚本 | 用途 | 所需配置 |
+|---|---|---|
+| `python scripts/test_market.py` | 检测大盘环境（SPY/VIX） | 无（yfinance） |
+| `python scripts/test_vcp.py [TICKER]` | 检测个股技术信号 | 无（yfinance） |
+| `python scripts/test_discord.py` | 验证 Discord webhook 连通性 | `.env` Webhook URL |
 
-### 验证大盘环境检测
-
-```bash
-python scripts/test_market.py
-```
-
-示例输出：
+`test_market.py` 示例输出：
 ```
 大盘环境:
   Status      : GREEN
@@ -145,32 +195,14 @@ python scripts/test_market.py
   SPY > 200MA : True
 ```
 
-### 验证技术面信号
-
-```bash
-# 默认检测 NVDA
-python scripts/test_vcp.py
-
-# 指定 ticker
-python scripts/test_vcp.py AAPL
+`test_vcp.py AAPL` 示例输出：
 ```
-
-示例输出：
-```
-NVDA 技术信号:
+AAPL 技术信号:
   RS Score    : 1.85  ✅ 强势 (≥1.2)
   VCP         : —
   MA Reclaim  : —
   Has Signal  : ✅ 是
 ```
-
-### 验证 Discord 连接
-
-```bash
-python scripts/test_discord.py
-```
-
-需要 `.env` 中已填入真实 Webhook URL。
 
 ---
 

@@ -40,7 +40,7 @@ def _load_watchlist(path: str) -> list[str]:
     return tickers
 
 
-def run() -> None:
+def run(dry_run: bool = False) -> None:
     from signals.market import get_market_condition
     from signals.technicals import compute_technicals
     from notify.discord import DiscordClient, DiscordChannel
@@ -52,7 +52,7 @@ def run() -> None:
     market = get_market_condition()
     log.info(f"Market: {market.status.upper()} | VIX {market.vix:.1f} | SPY>200MA {market.spy_above_200ma}")
 
-    client = DiscordClient.from_env()
+    client = DiscordClient.from_env() if not dry_run else None
     candidates = []
 
     if market.status == "red":
@@ -70,10 +70,11 @@ def run() -> None:
                     if sig.rs_score >= 1.2:
                         fired.append(f"RS {sig.rs_score:.2f}")
                     candidates.append({"ticker": ticker, "signals": fired})
-                    client.send(
-                        DiscordChannel.SIGNALS,
-                        signal_alert_embed(ticker, sig.rs_score, sig.vcp, sig.ma_reclaim, market.status),
-                    )
+                    if not dry_run:
+                        client.send(
+                            DiscordChannel.SIGNALS,
+                            signal_alert_embed(ticker, sig.rs_score, sig.vcp, sig.ma_reclaim, market.status),
+                        )
                     log.info(f"{ticker}: fired {fired}")
                 else:
                     log.info(f"{ticker}: no signal (RS {sig.rs_score:.2f})")
@@ -88,12 +89,19 @@ def run() -> None:
         )
     )
 
-    client.send(
-        DiscordChannel.DAILY,
-        daily_summary_embed(market.status, market.vix, candidates),
-    )
-    log.info(f"Scan complete. {len(candidates)} candidates sent to #trade-signals.")
+    if not dry_run:
+        client.send(
+            DiscordChannel.DAILY,
+            daily_summary_embed(market.status, market.vix, candidates),
+        )
+        log.info(f"Scan complete. {len(candidates)} candidates sent to #trade-signals.")
+    else:
+        log.info(f"Scan complete (dry-run). {len(candidates)} candidates found, Discord skipped.")
 
 
 if __name__ == "__main__":
-    run()
+    import argparse
+    parser = argparse.ArgumentParser(description="每日技术面扫描：大盘门控 → watchlist 信号 → Discord 推送")
+    parser.add_argument("--dry-run", action="store_true", help="仅扫描和打印，不发送 Discord 消息")
+    args = parser.parse_args()
+    run(dry_run=args.dry_run)

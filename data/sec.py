@@ -296,3 +296,29 @@ class SECDownloader:
             ticker_dir,
             primary_document=target.get("primaryDocument", ""),
         )
+
+
+if __name__ == "__main__":
+    import argparse
+    import os
+    import sys
+    from datetime import date
+    from dotenv import load_dotenv
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    load_dotenv()
+
+    parser = argparse.ArgumentParser(description="拉取指定美股标的的 SEC 8-K 财报")
+    parser.add_argument("ticker", help="股票代码，如 AAPL")
+    parser.add_argument("--date", default=None, help="财报日期 YYYY-MM-DD（默认：今天）")
+    parser.add_argument("--out", default="data/earnings_reports", help="输出根目录（默认：data/earnings_reports）")
+    args = parser.parse_args()
+
+    target_date = args.date or date.today().isoformat()
+    sec = SECDownloader(user_agent=os.environ["SEC_USER_AGENT"])
+    path = sec.get_latest_8k_for_earnings(args.ticker.upper(), target_date, Path(args.out))
+    if path:
+        print(f"Downloaded: {path}")
+    else:
+        print(f"No 8-K found for {args.ticker} around {target_date}")
+        sys.exit(1)
