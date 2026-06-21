@@ -1,4 +1,4 @@
-import type { AppState, HermesMarketInterpretationPayload, MarketSignal, RouteId } from '../app/types'
+import type { AppState, HermesMacroAnalysisPayload, MarketSignal, RouteId } from '../app/types'
 import type { Translator } from '../i18n/messages'
 import { renderMetric, renderPanel, renderPageHeader, renderStatusPill, renderTable } from '../shared/components'
 import { formatBool, formatNumber, marketDot, marketLabel } from '../shared/format'
@@ -20,7 +20,7 @@ export function renderMarket(state: AppState, t: Translator, route: RouteId = 'm
     </div>
   `
   if (route === 'market-trend') {
-    return `${renderPageHeader(t('marketTrend'), t('marketTrendDesc'))}${metrics}<div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.15fr_0.85fr]">${renderPanel(t('signalDashboard'), t('signalDashboardDesc'), renderSignalChart(rows))}${renderPanel(t('trendJudgement'), t('trendJudgementDesc'), renderTrend(trend, t))}</div><div class="mt-4">${renderPanel(t('hermesInterpretation'), t('hermesInterpretationDesc'), renderHermesInterpretation(state.hermesMarketInterpretation, t))}</div>`
+    return `${renderPageHeader(t('marketTrend'), t('marketTrendDesc'))}${metrics}<div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.15fr_0.85fr]">${renderPanel(t('signalDashboard'), t('signalDashboardDesc'), renderSignalChart(rows))}${renderPanel(t('trendJudgement'), t('trendJudgementDesc'), renderTrend(trend, t))}</div><div class="mt-4">${renderPanel(t('macroAnalyst'), t('macroAnalystDesc'), renderMacroAnalyst(state.hermesMacroAnalysis, t))}</div>`
   }
   if (route === 'market-list') {
     return `${renderPageHeader(t('marketList'), t('marketListDesc'))}${metrics}<div class="mt-4">${renderPanel(t('signalList'), t('signalListDesc'), renderSignalTable(rows, t))}</div>`
@@ -35,7 +35,7 @@ export function renderMarket(state: AppState, t: Translator, route: RouteId = 'm
       ${renderPanel(t('signalDashboard'), t('signalDashboardDesc'), renderSignalChart(rows) + renderLatest(signal, tone, t))}
       ${renderPanel(t('trendJudgement'), t('trendJudgementDesc'), renderTrend(trend, t))}
     </div>
-    <div class="mt-4">${renderPanel(t('hermesInterpretation'), t('hermesInterpretationDesc'), renderHermesInterpretation(state.hermesMarketInterpretation, t))}</div>
+    <div class="mt-4">${renderPanel(t('macroAnalyst'), t('macroAnalystDesc'), renderMacroAnalyst(state.hermesMacroAnalysis, t))}</div>
   `
 }
 
@@ -77,17 +77,17 @@ function renderTrend(trend: AppState['marketTrend'], t: Translator): string {
   `
 }
 
-function renderHermesInterpretation(interpretation: HermesMarketInterpretationPayload | null | undefined, t: Translator): string {
-  if (!interpretation) return `<div class="rounded-md border border-line bg-panel px-3 py-4 text-sm text-muted">${escapeHtml(t('hermesNoInterpretation'))}</div>`
-  const tone = interpretation.judgement === 'risk_on' ? 'good' : interpretation.judgement === 'risk_off' ? 'bad' : 'warn'
+function renderMacroAnalyst(interpretation: HermesMacroAnalysisPayload | null | undefined, t: Translator): string {
+  if (!interpretation) return `<div class="rounded-md border border-line bg-panel px-3 py-4 text-sm text-muted">${escapeHtml(t('macroAnalystNoData'))}</div>`
+  const tone = interpretation.macro_state === 'offense' ? 'good' : interpretation.macro_state === 'defense' || interpretation.judgement === 'risk_off' ? 'bad' : 'warn'
   const metrics = interpretation.metrics ?? {}
   return `
     <div class="space-y-4">
       <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div class="flex flex-wrap items-center gap-2">
-            ${renderStatusPill(trendLabel(interpretation.judgement, t), tone)}
-            <span class="text-xs text-muted">${escapeHtml(t('hermesWindow'))}: ${interpretation.window} · ${escapeHtml(t('sampleSize'))}: ${interpretation.sample_size}</span>
+            ${renderStatusPill(escapeHtml(interpretation.stance_label ?? trendLabel(interpretation.judgement, t)), tone)}
+            <span class="text-xs text-muted">Research / MacroSnapshot · ${escapeHtml(t('hermesWindow'))}: ${interpretation.window} · ${escapeHtml(t('sampleSize'))}: ${interpretation.sample_size}</span>
           </div>
           <h3 class="mt-2 text-base font-semibold text-ink">${escapeHtml(interpretation.title)}</h3>
           <p class="mt-1 text-sm text-muted">${escapeHtml(interpretation.summary)}</p>
@@ -97,7 +97,7 @@ function renderHermesInterpretation(interpretation: HermesMarketInterpretationPa
           <div class="rounded-md border border-line bg-panel px-3 py-2"><div class="label">${escapeHtml(t('vixClose'))}</div><div class="font-semibold text-ink">${formatNumber(metrics.avg_vix, 1)}</div></div>
         </div>
       </div>
-      ${interpretation.sections.map((section) => `
+      ${(interpretation.sections ?? []).map((section) => `
         <div>
           <div class="text-sm font-semibold text-ink">${escapeHtml(section.title)}</div>
           <ul class="mt-2 space-y-1 text-sm text-muted">
@@ -105,12 +105,28 @@ function renderHermesInterpretation(interpretation: HermesMarketInterpretationPa
           </ul>
         </div>
       `).join('')}
+      ${renderMacroList(t('keyChanges'), interpretation.key_changes)}
+      ${renderMacroList(t('growthImplications'), interpretation.growth_implications)}
+      ${renderMacroList(t('watchlistImplications'), interpretation.watchlist_implications)}
+      ${renderMacroList(t('nextChecks'), interpretation.next_checks)}
       <div>
         <div class="text-sm font-semibold text-ink">${escapeHtml(t('hermesActions'))}</div>
         <div class="mt-2 grid grid-cols-1 gap-2 md:grid-cols-3">
           ${interpretation.actions.map((action) => `<div class="rounded-md border border-line bg-white px-3 py-2 text-sm text-slate-700">${escapeHtml(action)}</div>`).join('')}
         </div>
       </div>
+    </div>
+  `
+}
+
+function renderMacroList(title: string, items: string[] | undefined): string {
+  if (!items || items.length === 0) return ''
+  return `
+    <div>
+      <div class="text-sm font-semibold text-ink">${escapeHtml(title)}</div>
+      <ul class="mt-2 space-y-1 text-sm text-muted">
+        ${items.map((item) => `<li class="flex gap-2"><span class="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span><span>${escapeHtml(item)}</span></li>`).join('')}
+      </ul>
     </div>
   `
 }

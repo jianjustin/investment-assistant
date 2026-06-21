@@ -1,6 +1,6 @@
 import { defaultLanguage, messages, type CopyKey } from '../i18n/messages'
 import { defaultRoute, parentForRoute, routeFromHash } from './navigation'
-import type { AppState, FilingsPayload, Language, HermesAgentSaveResult, HermesMarketInterpretationPayload, HermesPayload, MarketFetchResult, MarketSignal, MarketSignalsPayload, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
+import type { AppState, FilingsPayload, Language, HermesAgentSaveResult, HermesMacroAnalysisPayload, HermesMarketInterpretationPayload, HermesPayload, MarketFetchResult, MarketSignal, MarketSignalsPayload, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
 
 export const state: AppState = {
   loading: true,
@@ -20,6 +20,7 @@ export const state: AppState = {
   marketFetchResult: null,
   marketFetchInFlight: false,
   marketFetchRequest: null,
+  hermesMacroAnalysis: null,
   hermesMarketInterpretation: null,
   hermes: null,
   hermesAgentSaving: false,
@@ -69,7 +70,7 @@ export async function reloadData(): Promise<void> {
   state.error = null
 
   try {
-    const [status, services, latestSignal, filings, operations, marketSignals, marketTrend, hermesMarketInterpretation, hermes, raw] = await Promise.all([
+    const [status, services, latestSignal, filings, operations, marketSignals, marketTrend, hermesMacroAnalysis, hermes, raw] = await Promise.all([
       fetchJson<StatusPayload>('/api/status'),
       fetchJson<ServicesPayload>('/api/services'),
       fetchJson<MarketSignal | null>('/api/market/signals/latest'),
@@ -77,7 +78,7 @@ export async function reloadData(): Promise<void> {
       fetchJson<OperationsPayload>('/api/operations'),
       fetchJson<MarketSignalsPayload>('/api/market/signals?limit=90'),
       fetchJson<MarketTrendPayload>('/api/market/signals/trend?window=20'),
-      fetchJson<HermesMarketInterpretationPayload>('/api/hermes/market-signals/interpretation?window=30'),
+      fetchJson<HermesMacroAnalysisPayload>('/api/hermes/macro-analysis?window=30'),
       fetchJson<HermesPayload>('/api/hermes'),
       fetchJson<StatusPayload>('/api/raw/status'),
     ])
@@ -88,7 +89,8 @@ export async function reloadData(): Promise<void> {
     state.operations = operations
     state.marketSignals = marketSignals
     state.marketTrend = marketTrend
-    state.hermesMarketInterpretation = hermesMarketInterpretation
+    state.hermesMacroAnalysis = hermesMacroAnalysis
+    state.hermesMarketInterpretation = hermesMacroAnalysis
     state.hermes = hermes
     state.raw = raw
     state.refreshedAt = new Date()

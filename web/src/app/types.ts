@@ -138,8 +138,25 @@ export type HermesInterpretationSection = {
   items: string[]
 }
 
-export type HermesMarketInterpretationPayload = {
+export type HermesMacroAnalysisPayload = {
   source: string
+  agent_role?: string
+  stage?: string
+  artifact_type?: string
+  macro_state?: "offense" | "cautious" | "defense" | string
+  stance_label?: string
+  macro_snapshot?: {
+    stage?: string
+    artifact_type?: string
+    state?: string
+    stance?: string
+    watchlist?: string[]
+    metrics?: Array<Record<string, unknown>>
+  }
+  key_changes?: string[]
+  growth_implications?: string[]
+  watchlist_implications?: string[]
+  next_checks?: string[]
   window: number
   sample_size: number
   generated_at: string
@@ -157,6 +174,8 @@ export type HermesMarketInterpretationPayload = {
   sections: HermesInterpretationSection[]
   actions: string[]
 }
+
+export type HermesMarketInterpretationPayload = HermesMacroAnalysisPayload
 
 export type MarketFetchResult = {
   requested?: { from: string; to: string }
@@ -207,6 +226,7 @@ export type AppState = {
   marketFetchResult: MarketFetchResult | null
   marketFetchInFlight: boolean
   marketFetchRequest: string | null
+  hermesMacroAnalysis: HermesMacroAnalysisPayload | null
   hermesMarketInterpretation: HermesMarketInterpretationPayload | null
   hermes: HermesPayload | null
   hermesAgentSaving: boolean

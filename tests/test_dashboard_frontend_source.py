@@ -84,9 +84,9 @@ def test_market_fetch_shows_in_progress_status_and_hermes_interpretation_compone
     assert "fetchingMarketSignal" in market
     assert "renderFetchStatus" in market
     assert "HermesMarketInterpretationPayload" in types
-    assert "/api/hermes/market-signals/interpretation?window=30" in state
-    assert "renderHermesInterpretation" in market
-    assert "hermesInterpretation" in messages
+    assert "/api/hermes/macro-analysis?window=30" in state
+    assert "renderMacroAnalyst" in market
+    assert "macroAnalyst" in messages
 
 
 def test_hermes_module_has_first_level_menu_agents_and_ideas():
@@ -105,3 +105,19 @@ def test_hermes_module_has_first_level_menu_agents_and_ideas():
     assert "hermesAgentForm" in hermes
     assert "saveHermesAgent" in app
     assert "hermesCustomAgent" in messages
+
+
+def test_frontend_reframes_market_signal_interpretation_as_macro_analyst():
+    market = Path("web/src/features/market.ts").read_text(encoding="utf-8")
+    state = Path("web/src/app/state.ts").read_text(encoding="utf-8")
+    types = Path("web/src/app/types.ts").read_text(encoding="utf-8")
+    hermes = Path("web/src/features/hermes.ts").read_text(encoding="utf-8")
+    messages = Path("web/src/i18n/messages.ts").read_text(encoding="utf-8")
+
+    assert "HermesMacroAnalysisPayload" in types
+    assert "hermesMacroAnalysis" in state
+    assert "/api/hermes/macro-analysis?window=30" in state
+    assert "renderMacroAnalyst" in market
+    assert "macroAnalyst" in messages
+    assert "macro_analyst" in hermes
+    assert "market_signal_interpretation" not in hermes

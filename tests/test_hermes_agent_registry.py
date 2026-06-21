@@ -10,7 +10,7 @@ def test_hermes_overview_exposes_capabilities_agents_and_ideas(monkeypatch, tmp_
     assert response.payload["capabilities"]
     assert response.payload["agents"]
     assert response.payload["ideas"]
-    assert response.payload["capabilities"][0]["id"] == "market_signal_interpretation"
+    assert response.payload["capabilities"][0]["id"] == "macro_analyst"
 
 
 def test_hermes_agent_post_creates_custom_agent(monkeypatch, tmp_path):

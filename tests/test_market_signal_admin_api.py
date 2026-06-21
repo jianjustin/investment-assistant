@@ -70,6 +70,6 @@ def test_hermes_market_signal_interpretation_endpoint_uses_recent_window(monkeyp
     assert calls == [{"limit": ["30"]}]
     assert response.payload["window"] == 30
     assert response.payload["sample_size"] == 3
-    assert response.payload["source"] == "hermes.market_signals"
+    assert response.payload["source"] == "hermes.macro_analyst"
     assert response.payload["sections"][0]["title"]
     assert response.payload["actions"]

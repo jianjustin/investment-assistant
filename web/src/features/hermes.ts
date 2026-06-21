@@ -73,14 +73,14 @@ function renderAgentForm(state: AppState, t: Translator): string {
   const result = state.hermesAgentResult
   return `
     <form id="hermesAgentForm" class="space-y-3">
-      <label class="block text-sm font-medium text-ink">${escapeHtml(t('agentId'))}<input name="id" value="risk-reviewer" class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm" /></label>
-      <label class="block text-sm font-medium text-ink">${escapeHtml(t('name'))}<input name="name" value="风险复核 Agent" class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm" /></label>
-      <label class="block text-sm font-medium text-ink">${escapeHtml(t('role'))}<input name="role" value="risk_reviewer" class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm" /></label>
-      <label class="block text-sm font-medium text-ink">${escapeHtml(t('description'))}<textarea name="description" rows="2" class="mt-1 w-full rounded-md border border-line px-3 py-2 text-sm">复核市场信号、watchlist 和持仓风险。</textarea></label>
-      <label class="block text-sm font-medium text-ink">${escapeHtml(t('systemPrompt'))}<textarea name="system_prompt" rows="4" class="mt-1 w-full rounded-md border border-line px-3 py-2 text-sm">只输出风险检查清单；不得给出价格预测；所有判断必须说明来源。</textarea></label>
+      <label class="block text-sm font-medium text-ink">${escapeHtml(t('agentId'))}<input name="id" value="macro-risk-reviewer" class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm" /></label>
+      <label class="block text-sm font-medium text-ink">${escapeHtml(t('name'))}<input name="name" value="宏观风险复核 Agent" class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm" /></label>
+      <label class="block text-sm font-medium text-ink">${escapeHtml(t('role'))}<input name="role" value="macro_risk_reviewer" class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm" /></label>
+      <label class="block text-sm font-medium text-ink">${escapeHtml(t('description'))}<textarea name="description" rows="2" class="mt-1 w-full rounded-md border border-line px-3 py-2 text-sm">复核宏观状态、watchlist 和持仓风险。</textarea></label>
+      <label class="block text-sm font-medium text-ink">${escapeHtml(t('systemPrompt'))}<textarea name="system_prompt" rows="4" class="mt-1 w-full rounded-md border border-line px-3 py-2 text-sm">基于 macro_analyst 输出宏观风险检查清单；不得给出价格预测；所有判断必须说明来源。</textarea></label>
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <label class="block text-sm font-medium text-ink">${escapeHtml(t('dataSources'))}<input name="data_sources" value="market_signals,watchlist" class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm" /></label>
-        <label class="block text-sm font-medium text-ink">${escapeHtml(t('tools'))}<input name="tools" value="market_signal_interpretation" class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm" /></label>
+        <label class="block text-sm font-medium text-ink">${escapeHtml(t('dataSources'))}<input name="data_sources" value="market_signals,MacroSnapshot,watchlist" class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm" /></label>
+        <label class="block text-sm font-medium text-ink">${escapeHtml(t('tools'))}<input name="tools" value="macro_analysis" class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm" /></label>
       </div>
       <label class="inline-flex items-center gap-2 text-sm text-ink"><input name="enabled" type="checkbox" checked />${escapeHtml(t('enabled'))}</label>
       <button type="submit" class="inline-flex h-10 w-full items-center justify-center rounded-md bg-accent px-4 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60" ${state.hermesAgentSaving ? 'disabled' : ''}>${escapeHtml(state.hermesAgentSaving ? t('saving') : t('saveAgent'))}</button>

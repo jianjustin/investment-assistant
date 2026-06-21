@@ -14,13 +14,13 @@ _AGENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
 def hermes_capabilities() -> list[dict[str, Any]]:
     return [
         {
-            "id": "market_signal_interpretation",
-            "label": "市场信号解读",
-            "description": "读取最近窗口的 market_signals，生成风险状态、摘要和建议动作。",
+            "id": "macro_analyst",
+            "label": "宏观分析师",
+            "description": "承接 Research/MacroSnapshot 阶段，判断进攻/谨慎/防守并输出 watchlist 影响。",
             "status": "ready",
-            "endpoint": "/api/hermes/market-signals/interpretation?window=30",
-            "inputs": ["market_signals"],
-            "outputs": ["judgement", "summary", "metrics", "actions"],
+            "endpoint": "/api/hermes/macro-analysis?window=30",
+            "inputs": ["market_signals", "MacroSnapshot"],
+            "outputs": ["macro_state", "key_changes", "growth_implications", "watchlist_implications", "next_checks", "actions"],
         },
         {
             "id": "filing_digest",
@@ -72,13 +72,13 @@ def default_agents() -> list[dict[str, Any]]:
     now = "builtin"
     return [
         {
-            "id": "market-signal-interpreter",
-            "name": "市场信号解读 Agent",
-            "role": "market_interpreter",
-            "description": "把最近市场信号翻译成风险状态、摘要和建议动作。",
-            "system_prompt": "基于 market_signals 输出谨慎、可追溯的市场环境判断，不给价格预测。",
-            "data_sources": ["market_signals"],
-            "tools": ["market_signal_interpretation"],
+            "id": "macro-analyst",
+            "name": "宏观分析师 Agent",
+            "role": "macro_analyst",
+            "description": "把市场信号和 MacroSnapshot 语义翻译成进攻、谨慎、防守状态。",
+            "system_prompt": "承接 Research 阶段，只输出可追溯的宏观环境判断，不给价格预测或自动交易指令。",
+            "data_sources": ["market_signals", "MacroSnapshot"],
+            "tools": ["macro_analysis"],
             "enabled": True,
             "custom": False,
             "created_at": now,

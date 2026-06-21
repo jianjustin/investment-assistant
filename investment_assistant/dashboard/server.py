@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from investment_assistant.config import load_config
 from investment_assistant.db import connect, get_latest_market_signal, list_market_signals, upsert_market_signal
 from investment_assistant.hermes import agents as hermes_agents
-from investment_assistant.hermes.market_signals import interpret_market_signals
+from investment_assistant.hermes.macro_analyst import analyze_macro_environment
 from investment_assistant.market.service import compute_market_signal_for_date
 from investment_assistant.runtime_paths import DEFAULT_FILINGS_DIR
 
@@ -139,8 +139,10 @@ def api_response_for_path(path: str) -> ApiResponse | None:
         return ApiResponse(hermes_agents.hermes_overview())
     if parsed_path == "/api/hermes/agents":
         return ApiResponse({"agents": hermes_agents.list_agents()})
+    if parsed_path == "/api/hermes/macro-analysis":
+        return ApiResponse(hermes_macro_analysis(query))
     if parsed_path == "/api/hermes/market-signals/interpretation":
-        return ApiResponse(hermes_market_signal_interpretation(query))
+        return ApiResponse(hermes_macro_analysis(query))
     if parsed_path == "/api/filings":
         return ApiResponse({"summary": filing_status(), "files": filing_rows()})
     if parsed_path == "/api/operations":
@@ -212,10 +214,13 @@ def market_signal_trend(query: dict[str, list[str]]) -> dict[str, Any]:
     }
 
 
-def hermes_market_signal_interpretation(query: dict[str, list[str]]) -> dict[str, Any]:
+def hermes_macro_analysis(query: dict[str, list[str]]) -> dict[str, Any]:
     window = _parse_int(_first(query, "window"), default=30, minimum=5, maximum=90)
     rows = market_signal_rows({"limit": [str(window)]})
-    return interpret_market_signals(rows, window=window)
+    watchlist = _parse_csv(_first(query, "watchlist"))
+    if not watchlist:
+        watchlist = list(load_config().watchlist)
+    return analyze_macro_environment(rows, window=window, watchlist=watchlist)
 
 
 def fetch_market_signals(payload: dict[str, Any]) -> dict[str, Any]:
@@ -292,6 +297,12 @@ def _parse_int(value: str | None, *, default: int, minimum: int, maximum: int) -
     except ValueError:
         parsed = default
     return max(minimum, min(maximum, parsed))
+
+
+def _parse_csv(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip().upper() for item in value.split(",") if item.strip()]
 
 
 def system_status() -> dict[str, Any]:
