@@ -318,7 +318,15 @@ export type MarketFetchResult = {
   error?: string
 }
 
-export type RouteId = 'workbench' | 'watchlist-list' | 'ticker-trends' | 'strategy-scores' | 'strategy-runs' | 'hermes-overview' | 'hermes-agents' | 'hermes-ideas' | 'decision-evidence' | 'market-overview' | 'market-trend' | 'market-list' | 'market-fetch' | 'filings' | 'services' | 'operations' | 'raw'
+export type HumanGatePlan = {
+  ticker: string
+  direction: string
+  premise: string
+  approval_status: 'pending_review' | 'approved' | 'rejected' | 'revision_requested' | string
+  broker_action: null
+}
+
+export type RouteId = 'workbench' | 'watchlist-list' | 'ticker-trends' | 'strategy-scores' | 'strategy-runs' | 'hermes-overview' | 'hermes-agents' | 'hermes-ideas' | 'decision-evidence' | 'human-gate' | 'market-overview' | 'market-trend' | 'market-list' | 'market-fetch' | 'filings' | 'services' | 'operations' | 'raw'
 
 export type RouteItem = {
   id: RouteId

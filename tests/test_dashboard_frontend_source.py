@@ -242,3 +242,20 @@ def test_frontend_has_decision_evidence_page_and_manual_deepseek_run():
     assert "decisionEvidenceButton" in app
     assert "决策依据" in messages
     assert Path("web/src/features/decision-evidence.ts").exists()
+
+
+def test_frontend_has_human_gate_route_page_and_placeholders():
+    navigation = Path("web/src/app/navigation.ts").read_text(encoding="utf-8")
+    app = Path("web/src/app/app.ts").read_text(encoding="utf-8")
+    types = Path("web/src/app/types.ts").read_text(encoding="utf-8")
+    messages = Path("web/src/i18n/messages.ts").read_text(encoding="utf-8")
+
+    assert "human-gate" in navigation
+    assert "HumanGatePlan" in types
+    assert "renderHumanGate" in app
+    assert "人工闸门" in messages
+    assert Path("web/src/features/human-gate.ts").exists()
+
+    human_gate = Path("web/src/features/human-gate.ts").read_text(encoding="utf-8")
+    for action in ["approve", "reject", "revise"]:
+        assert action in human_gate

@@ -20,6 +20,7 @@ import {
 } from 'lucide'
 import { renderDecisionEvidence } from '../features/decision-evidence'
 import { renderFilings } from '../features/filings'
+import { renderHumanGate } from '../features/human-gate'
 import { renderHermes } from '../features/hermes'
 import { renderMarket } from '../features/market'
 import { renderOperations } from '../features/operations'
@@ -213,6 +214,8 @@ function renderActiveRoute(): string {
       return renderHermes(state, t, state.activeRoute)
     case 'decision-evidence':
       return renderDecisionEvidence(state, t)
+    case 'human-gate':
+      return renderHumanGate(state, t)
     case 'watchlist-list':
       return renderWatchlist(state, t)
     case 'ticker-trends':
