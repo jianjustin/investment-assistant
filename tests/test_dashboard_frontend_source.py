@@ -207,3 +207,19 @@ def test_strategy_scores_have_manual_run_entrypoint_and_status():
     assert "renderStrategyRunPanel" in strategy_scores
     assert "#strategyScoreRunButton" in app
     assert "runningStrategyScores" in messages
+
+
+def test_strategy_scores_has_clickable_column_help_panel():
+    app = Path("web/src/app/app.ts").read_text(encoding="utf-8")
+    strategy_scores = Path("web/src/features/strategy-scores.ts").read_text(encoding="utf-8")
+    types = Path("web/src/app/types.ts").read_text(encoding="utf-8")
+
+    assert "StrategyScoreHelpTopic" in types
+    assert "strategyScoreHelpTopic" in types
+    assert "[data-strategy-help]" in app
+    assert "data-strategy-help" in strategy_scores
+    assert "renderStrategyScoreHelpPanel" in strategy_scores
+    assert "字段说明" in strategy_scores
+    assert "生成逻辑" in strategy_scores
+    assert "字段值/枚举意义" in strategy_scores
+    assert "下一步动作" in strategy_scores

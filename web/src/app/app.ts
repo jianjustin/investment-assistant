@@ -301,6 +301,14 @@ function bindEvents(): void {
       render()
     })
   })
+  document.querySelectorAll<HTMLButtonElement>('[data-strategy-help]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const topic = button.dataset.strategyHelp as NonNullable<AppState['strategyScoreHelpTopic']> | undefined
+      if (!topic) return
+      state.strategyScoreHelpTopic = state.strategyScoreHelpTopic === topic ? null : topic
+      render()
+    })
+  })
 
   document.querySelector<HTMLFormElement>('#hermesAgentForm')?.addEventListener('submit', (event) => {
     event.preventDefault()

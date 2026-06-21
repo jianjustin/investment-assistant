@@ -138,6 +138,8 @@ export type StrategyScoresPayload = {
   count: number
 }
 
+export type StrategyScoreHelpTopic = 'ticker' | 'strategy' | 'score' | 'evidence' | 'limits' | 'run_id'
+
 export type StrategyScoreRunResult = {
   run_id?: string
   mode?: string
@@ -339,6 +341,7 @@ export type AppState = {
   tickerTrendScanResult: TickerTrendScanResult | null
   tickerTrendHelpTopic: TickerTrendHelpTopic | null
   strategyScores: StrategyScoresPayload | null
+  strategyScoreHelpTopic: StrategyScoreHelpTopic | null
   strategyScoreRunInFlight: boolean
   strategyScoreRunResult: StrategyScoreRunResult | null
   marketSignals: MarketSignalsPayload | null
