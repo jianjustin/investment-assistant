@@ -138,6 +138,15 @@ export type StrategyScoresPayload = {
   count: number
 }
 
+export type StrategyScoreRunResult = {
+  run_id?: string
+  mode?: string
+  rows?: StrategyScore[]
+  count?: number
+  failures?: Array<{ ticker?: string; error?: string }>
+  error?: string
+}
+
 export type Operation = {
   id: string
   label: string
@@ -330,6 +339,8 @@ export type AppState = {
   tickerTrendScanResult: TickerTrendScanResult | null
   tickerTrendHelpTopic: TickerTrendHelpTopic | null
   strategyScores: StrategyScoresPayload | null
+  strategyScoreRunInFlight: boolean
+  strategyScoreRunResult: StrategyScoreRunResult | null
   marketSignals: MarketSignalsPayload | null
   marketTrend: MarketTrendPayload | null
   marketFetchResult: MarketFetchResult | null

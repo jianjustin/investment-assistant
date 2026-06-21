@@ -1,6 +1,6 @@
 import { defaultLanguage, messages, type CopyKey } from '../i18n/messages'
 import { defaultRoute, parentForRoute, routeFromHash } from './navigation'
-import type { AppState, FilingsPayload, Language, HermesAgentSaveResult, HermesMacroAnalysisPayload, HermesMacroLlmResult, HermesMarketInterpretationPayload, HermesPayload, MarketFetchResult, MarketSignal, MarketSignalsPayload, StrategyScoresPayload, WatchlistMutationResult, WatchlistPayload, TickerTrendsPayload, TickerTrendScanResult, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
+import type { AppState, FilingsPayload, Language, HermesAgentSaveResult, HermesMacroAnalysisPayload, HermesMacroLlmResult, HermesMarketInterpretationPayload, HermesPayload, MarketFetchResult, MarketSignal, MarketSignalsPayload, StrategyScoreRunResult, StrategyScoresPayload, WatchlistMutationResult, WatchlistPayload, TickerTrendsPayload, TickerTrendScanResult, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
 
 export const state: AppState = {
   loading: true,
@@ -23,6 +23,8 @@ export const state: AppState = {
   tickerTrendScanResult: null,
   tickerTrendHelpTopic: null,
   strategyScores: null,
+  strategyScoreRunInFlight: false,
+  strategyScoreRunResult: null,
   marketSignals: null,
   marketTrend: null,
   marketFetchResult: null,
@@ -113,6 +115,31 @@ export async function reloadData(): Promise<void> {
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error)
   } finally {
+    state.loading = false
+  }
+}
+
+export async function runStrategyScores(payload: { mode?: string } = { mode: 'manual' }): Promise<void> {
+  state.strategyScoreRunInFlight = true
+  state.strategyScoreRunResult = null
+  state.error = null
+  try {
+    const response = await fetch('/api/strategies/scores/run', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const result = (await response.json()) as StrategyScoreRunResult
+    state.strategyScoreRunResult = result
+    if (!response.ok) {
+      throw new Error(result.error ?? `HTTP ${response.status}: ${response.statusText}`)
+    }
+    await reloadData()
+    state.strategyScoreRunResult = result
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error)
+  } finally {
+    state.strategyScoreRunInFlight = false
     state.loading = false
   }
 }

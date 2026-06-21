@@ -29,7 +29,7 @@ import { renderWatchlist } from '../features/watchlist'
 import { renderTickerTrends } from '../features/ticker-trends'
 import { renderWorkbench } from '../features/workbench'
 import { isRouteParent, parentForRoute, routeGroups, routes } from './navigation'
-import { addWatchlistItem, deleteWatchlistItem, fetchMarketSignals, reloadData, runMacroAnalystLlm, scanTickerTrends, saveHermesAgent, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
+import { addWatchlistItem, deleteWatchlistItem, fetchMarketSignals, reloadData, runMacroAnalystLlm, runStrategyScores, scanTickerTrends, saveHermesAgent, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
 import type { AppState, RouteEntry, RouteId, RouteItem, RouteParent } from './types'
 import { escapeHtml } from '../shared/html'
 
@@ -324,6 +324,12 @@ function bindEvents(): void {
     state.macroLlmInFlight = true
     render()
     void runMacroAnalystLlm({ window: 30 }).then(render)
+  })
+  document.querySelector<HTMLButtonElement>('#strategyScoreRunButton')?.addEventListener('click', () => {
+    state.strategyScoreRunInFlight = true
+    state.strategyScoreRunResult = null
+    render()
+    void runStrategyScores({ mode: 'manual' }).then(render)
   })
 
   document.querySelector<HTMLFormElement>('#marketFetchForm')?.addEventListener('submit', (event) => {

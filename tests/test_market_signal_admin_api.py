@@ -149,3 +149,31 @@ def test_strategy_scores_endpoint_returns_rows(monkeypatch):
 
     assert response.status == 200
     assert response.payload == {"rows": rows, "count": 1}
+
+
+def test_strategy_score_run_post_scores_latest_snapshots_and_persists(monkeypatch):
+    persisted = []
+    snapshots = [{
+        "id": 12,
+        "ticker": "TSLA",
+        "signal_date": date(2026, 6, 21),
+        "trend_state": "uptrend",
+        "attention_level": "high",
+        "trigger_reason": ["above_ma_stack", "outperform_spy", "volume_expansion"],
+    }]
+
+    monkeypatch.setattr(server, "strategy_input_snapshots", lambda: snapshots)
+    monkeypatch.setattr(server, "latest_strategy_market_context", lambda: {"macro_state": "offense"})
+    monkeypatch.setattr(server, "_persist_strategy_scores", lambda rows: persisted.extend(rows))
+    monkeypatch.setattr(server.uuid, "uuid4", lambda: type("FakeUuid", (), {"hex": "abcdef123456"})())
+
+    response = server.api_post_response_for_path("/api/strategies/scores/run", {})
+
+    assert response.status == 200
+    assert response.payload["run_id"].startswith("manual-strategy-scores-")
+    assert response.payload["count"] == 1
+    assert response.payload["rows"][0]["ticker"] == "TSLA"
+    assert response.payload["rows"][0]["score"] >= 70
+    assert response.payload["rows"][0]["score_date"] == "2026-06-21"
+    assert response.payload["rows"][0]["source_snapshot_id"] == 12
+    assert persisted == response.payload["rows"]

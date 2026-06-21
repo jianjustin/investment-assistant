@@ -8,6 +8,7 @@ export function renderStrategyScores(state: AppState, t: Translator, route: Rout
   const averageScore = rows.length > 0 ? Math.round(rows.reduce((sum, row) => sum + Number(row.score ?? 0), 0) / rows.length) : 0
   return `
     ${renderPageHeader(t('strategyModule'), t('strategyModuleDesc'))}
+    ${renderStrategyRunPanel(state, t)}
     <div class="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
       <div class="metric-panel"><div class="label">${escapeHtml(t('sampleSize'))}</div><div class="value mt-2">${rows.length}</div><div class="mt-2 text-sm text-muted">strategy_scores</div></div>
       <div class="metric-panel"><div class="label">${escapeHtml(t('score'))}</div><div class="value mt-2">${averageScore}</div><div class="mt-2 text-sm text-muted">0 - 100</div></div>
@@ -15,6 +16,33 @@ export function renderStrategyScores(state: AppState, t: Translator, route: Rout
     </div>
     ${route === 'strategy-runs' ? renderPanel(t('strategyRuns'), t('strategyRunsDesc'), `<div class="text-sm text-muted">${escapeHtml(t('strategyRunHistoryPlanned'))}</div>`, 'mb-4') : ''}
     ${renderPanel(t('strategyScoresCurrent'), t('strategyScoresCurrentDesc'), renderStrategyScoreTable(rows, t))}
+  `
+}
+
+
+function renderStrategyRunPanel(state: AppState, t: Translator): string {
+  const result = state.strategyScoreRunResult
+  const failures = result?.failures?.length ?? 0
+  const status = state.strategyScoreRunInFlight
+    ? `<div class="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-800"><span class="inline-flex items-center gap-2"><i data-lucide="refresh-cw" class="h-4 w-4 animate-spin" aria-hidden="true"></i>${escapeHtml(t('runningStrategyScores'))}</span></div>`
+    : result?.error
+      ? `<div class="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">${escapeHtml(result.error)}</div>`
+      : result?.run_id
+        ? `<div class="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">${escapeHtml(t('strategyScoreRunComplete'))}: ${result.count ?? 0} · ${escapeHtml(t('fetchFailure'))}: ${failures}</div>`
+        : ''
+  return `
+    <div class="mb-4 section-panel">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div class="label">${escapeHtml(t('strategyManualRun'))}</div>
+          <p class="mt-1 text-sm text-muted">${escapeHtml(t('strategyManualRunDesc'))}</p>
+        </div>
+        <button id="strategyScoreRunButton" type="button" class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-accent px-4 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60" ${state.strategyScoreRunInFlight ? 'disabled' : ''}>
+          <i data-lucide="refresh-cw" class="h-4 w-4 ${state.strategyScoreRunInFlight ? 'animate-spin' : ''}" aria-hidden="true"></i>${escapeHtml(state.strategyScoreRunInFlight ? t('runningStrategyScores') : t('runStrategyScores'))}
+        </button>
+      </div>
+      ${status ? `<div class="mt-3">${status}</div>` : ''}
+    </div>
   `
 }
 

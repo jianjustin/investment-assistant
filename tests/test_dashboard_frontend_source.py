@@ -189,3 +189,21 @@ def test_frontend_has_strategy_center_scores_menu_and_table():
     assert "renderStrategyScores" in app
     assert "策略中心" in messages
     assert "renderStrategyScoreTable" in strategy_scores
+
+
+def test_strategy_scores_have_manual_run_entrypoint_and_status():
+    app = Path("web/src/app/app.ts").read_text(encoding="utf-8")
+    state = Path("web/src/app/state.ts").read_text(encoding="utf-8")
+    types = Path("web/src/app/types.ts").read_text(encoding="utf-8")
+    messages = Path("web/src/i18n/messages.ts").read_text(encoding="utf-8")
+    strategy_scores = Path("web/src/features/strategy-scores.ts").read_text(encoding="utf-8")
+
+    assert "StrategyScoreRunResult" in types
+    assert "strategyScoreRunInFlight" in state
+    assert "strategyScoreRunResult" in state
+    assert "/api/strategies/scores/run" in state
+    assert "runStrategyScores" in state
+    assert "strategyScoreRunButton" in strategy_scores
+    assert "renderStrategyRunPanel" in strategy_scores
+    assert "#strategyScoreRunButton" in app
+    assert "runningStrategyScores" in messages
