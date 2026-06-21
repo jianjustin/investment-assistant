@@ -37,6 +37,7 @@ export const routeGroups: RouteGroup[] = [
         icon: 'database',
         children: [
           { id: 'watchlist-list', labelKey: 'watchlistList', descriptionKey: 'watchlistListDesc' },
+          { id: 'ticker-trends', labelKey: 'tickerTrends', descriptionKey: 'tickerTrendsDesc' },
         ],
       },
     ],

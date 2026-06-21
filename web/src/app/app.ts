@@ -25,6 +25,7 @@ import { renderOperations } from '../features/operations'
 import { renderRaw } from '../features/raw'
 import { renderServices } from '../features/services'
 import { renderWatchlist } from '../features/watchlist'
+import { renderTickerTrends } from '../features/ticker-trends'
 import { renderWorkbench } from '../features/workbench'
 import { isRouteParent, parentForRoute, routeGroups, routes } from './navigation'
 import { addWatchlistItem, deleteWatchlistItem, fetchMarketSignals, reloadData, runMacroAnalystLlm, saveHermesAgent, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
@@ -210,6 +211,8 @@ function renderActiveRoute(): string {
       return renderHermes(state, t, state.activeRoute)
     case 'watchlist-list':
       return renderWatchlist(state, t)
+    case 'ticker-trends':
+      return renderTickerTrends(state, t)
     case 'market-overview':
     case 'market-trend':
     case 'market-list':
