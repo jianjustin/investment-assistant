@@ -33,3 +33,14 @@ def test_ticker_signal_snapshots_migration_defines_required_table():
     assert "attention_level TEXT NOT NULL" in sql
     assert "trigger_reason JSONB NOT NULL" in sql
     assert "UNIQUE (ticker, signal_date)" in sql
+
+
+def test_strategy_scores_migration_defines_required_table():
+    sql = Path("migrations/004_strategy_scores.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS strategy_scores" in sql
+    assert "ticker TEXT NOT NULL" in sql
+    assert "strategy TEXT NOT NULL" in sql
+    assert "score INTEGER NOT NULL" in sql
+    assert "evidence JSONB NOT NULL" in sql
+    assert "limits JSONB NOT NULL" in sql

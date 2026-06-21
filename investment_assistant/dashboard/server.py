@@ -136,6 +136,9 @@ def api_response_for_path(path: str) -> ApiResponse | None:
     if parsed_path == "/api/tickers/trends":
         rows = ticker_trend_rows()
         return ApiResponse({"rows": rows, "count": len(rows)})
+    if parsed_path == "/api/strategies/scores":
+        rows = strategy_score_rows()
+        return ApiResponse({"rows": rows, "count": len(rows)})
     if parsed_path == "/api/market/signals/latest":
         return ApiResponse(database_status().get("latest_market_signal"))
     if parsed_path == "/api/market/signals":
@@ -272,6 +275,32 @@ def ticker_trend_rows() -> list[dict[str, Any]]:
         "volume", "volume_ratio", "relative_strength_spy", "relative_strength_qqq",
         "trend_state", "attention_level", "trigger_reason", "source", "error",
         "run_id", "created_at", "updated_at",
+    ]
+    return [dict(zip(keys, row)) for row in rows]
+
+
+def strategy_score_rows() -> list[dict[str, Any]]:
+    database_url = os.environ.get("INVESTMENT_ASSISTANT_DATABASE_URL")
+    if not database_url:
+        return []
+    try:
+        with connect(database_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT ticker, score_date, strategy, score, evidence, limits,
+                           source_snapshot_id, run_id, created_at, updated_at
+                    FROM strategy_scores
+                    ORDER BY score_date DESC, score DESC, ticker ASC
+                    LIMIT 100
+                    """
+                )
+                rows = cur.fetchall()
+    except Exception:
+        return []
+    keys = [
+        "ticker", "score_date", "strategy", "score", "evidence", "limits",
+        "source_snapshot_id", "run_id", "created_at", "updated_at",
     ]
     return [dict(zip(keys, row)) for row in rows]
 

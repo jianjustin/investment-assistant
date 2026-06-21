@@ -120,6 +120,24 @@ export type TickerTrendScanResult = {
 
 export type TickerTrendHelpTopic = 'trend_state' | 'attention_level' | 'trigger_reason' | 'volume_ratio' | 'relative_strength'
 
+export type StrategyScore = {
+  ticker: string
+  score_date?: string
+  strategy: string
+  score: number
+  evidence?: string[]
+  limits?: string[]
+  source_snapshot_id?: number | null
+  run_id?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export type StrategyScoresPayload = {
+  rows: StrategyScore[]
+  count: number
+}
+
 export type Operation = {
   id: string
   label: string
@@ -267,7 +285,7 @@ export type MarketFetchResult = {
   error?: string
 }
 
-export type RouteId = 'workbench' | 'watchlist-list' | 'ticker-trends' | 'hermes-overview' | 'hermes-agents' | 'hermes-ideas' | 'market-overview' | 'market-trend' | 'market-list' | 'market-fetch' | 'filings' | 'services' | 'operations' | 'raw'
+export type RouteId = 'workbench' | 'watchlist-list' | 'ticker-trends' | 'strategy-scores' | 'strategy-runs' | 'hermes-overview' | 'hermes-agents' | 'hermes-ideas' | 'market-overview' | 'market-trend' | 'market-list' | 'market-fetch' | 'filings' | 'services' | 'operations' | 'raw'
 
 export type RouteItem = {
   id: RouteId
@@ -311,6 +329,7 @@ export type AppState = {
   tickerTrendScanInFlight: boolean
   tickerTrendScanResult: TickerTrendScanResult | null
   tickerTrendHelpTopic: TickerTrendHelpTopic | null
+  strategyScores: StrategyScoresPayload | null
   marketSignals: MarketSignalsPayload | null
   marketTrend: MarketTrendPayload | null
   marketFetchResult: MarketFetchResult | null

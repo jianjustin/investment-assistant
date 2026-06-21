@@ -139,3 +139,13 @@ def test_macro_analysis_uses_managed_watchlist_when_query_omits_watchlist(monkey
     assert response.status == 200
     assert response.payload == {"watchlist": ["TSLA", "NVDA"]}
     assert captured == [["TSLA", "NVDA"]]
+
+
+def test_strategy_scores_endpoint_returns_rows(monkeypatch):
+    rows = [{"ticker": "TSLA", "strategy": "trend_relative_strength", "score": 85, "evidence": ["uptrend"], "limits": ["not trading instruction"]}]
+    monkeypatch.setattr(server, "strategy_score_rows", lambda: rows)
+
+    response = server.api_response_for_path("/api/strategies/scores")
+
+    assert response.status == 200
+    assert response.payload == {"rows": rows, "count": 1}

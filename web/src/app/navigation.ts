@@ -43,6 +43,21 @@ export const routeGroups: RouteGroup[] = [
     ],
   },
   {
+    labelKey: 'strategyModule',
+    children: [
+      {
+        id: 'strategies',
+        labelKey: 'strategyModule',
+        descriptionKey: 'strategyModuleDesc',
+        icon: 'gauge',
+        children: [
+          { id: 'strategy-scores', labelKey: 'strategyScores', descriptionKey: 'strategyScoresDesc' },
+          { id: 'strategy-runs', labelKey: 'strategyRuns', descriptionKey: 'strategyRunsDesc' },
+        ],
+      },
+    ],
+  },
+  {
     labelKey: 'marketModule',
     children: [
       {

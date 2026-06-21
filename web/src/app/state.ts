@@ -1,13 +1,13 @@
 import { defaultLanguage, messages, type CopyKey } from '../i18n/messages'
 import { defaultRoute, parentForRoute, routeFromHash } from './navigation'
-import type { AppState, FilingsPayload, Language, HermesAgentSaveResult, HermesMacroAnalysisPayload, HermesMacroLlmResult, HermesMarketInterpretationPayload, HermesPayload, MarketFetchResult, MarketSignal, MarketSignalsPayload, WatchlistMutationResult, WatchlistPayload, TickerTrendsPayload, TickerTrendScanResult, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
+import type { AppState, FilingsPayload, Language, HermesAgentSaveResult, HermesMacroAnalysisPayload, HermesMacroLlmResult, HermesMarketInterpretationPayload, HermesPayload, MarketFetchResult, MarketSignal, MarketSignalsPayload, StrategyScoresPayload, WatchlistMutationResult, WatchlistPayload, TickerTrendsPayload, TickerTrendScanResult, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
 
 export const state: AppState = {
   loading: true,
   error: null,
   language: defaultLanguage,
   navOpen: false,
-  expandedMenus: ['market-signals', 'hermes'],
+  expandedMenus: ['market-signals', 'hermes', 'strategies'],
   activeRoute: routeFromHash(window.location.hash || `#/${defaultRoute}`),
   refreshedAt: null,
   status: null,
@@ -22,6 +22,7 @@ export const state: AppState = {
   tickerTrendScanInFlight: false,
   tickerTrendScanResult: null,
   tickerTrendHelpTopic: null,
+  strategyScores: null,
   marketSignals: null,
   marketTrend: null,
   marketFetchResult: null,
@@ -79,7 +80,7 @@ export async function reloadData(): Promise<void> {
   state.error = null
 
   try {
-    const [status, services, latestSignal, filings, operations, watchlist, tickerTrends, marketSignals, marketTrend, hermesMacroAnalysis, hermes, raw] = await Promise.all([
+    const [status, services, latestSignal, filings, operations, watchlist, tickerTrends, strategyScores, marketSignals, marketTrend, hermesMacroAnalysis, hermes, raw] = await Promise.all([
       fetchJson<StatusPayload>('/api/status'),
       fetchJson<ServicesPayload>('/api/services'),
       fetchJson<MarketSignal | null>('/api/market/signals/latest'),
@@ -87,6 +88,7 @@ export async function reloadData(): Promise<void> {
       fetchJson<OperationsPayload>('/api/operations'),
       fetchJson<WatchlistPayload>('/api/watchlist'),
       fetchJson<TickerTrendsPayload>('/api/tickers/trends'),
+      fetchJson<StrategyScoresPayload>('/api/strategies/scores'),
       fetchJson<MarketSignalsPayload>('/api/market/signals?limit=90'),
       fetchJson<MarketTrendPayload>('/api/market/signals/trend?window=20'),
       fetchJson<HermesMacroAnalysisPayload>('/api/hermes/macro-analysis?window=30'),
@@ -100,6 +102,7 @@ export async function reloadData(): Promise<void> {
     state.operations = operations
     state.watchlist = watchlist
     state.tickerTrends = tickerTrends
+    state.strategyScores = strategyScores
     state.marketSignals = marketSignals
     state.marketTrend = marketTrend
     state.hermesMacroAnalysis = hermesMacroAnalysis

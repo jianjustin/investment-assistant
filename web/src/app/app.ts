@@ -24,6 +24,7 @@ import { renderMarket } from '../features/market'
 import { renderOperations } from '../features/operations'
 import { renderRaw } from '../features/raw'
 import { renderServices } from '../features/services'
+import { renderStrategyScores } from '../features/strategy-scores'
 import { renderWatchlist } from '../features/watchlist'
 import { renderTickerTrends } from '../features/ticker-trends'
 import { renderWorkbench } from '../features/workbench'
@@ -213,6 +214,9 @@ function renderActiveRoute(): string {
       return renderWatchlist(state, t)
     case 'ticker-trends':
       return renderTickerTrends(state, t)
+    case 'strategy-scores':
+    case 'strategy-runs':
+      return renderStrategyScores(state, t, state.activeRoute)
     case 'market-overview':
     case 'market-trend':
     case 'market-list':

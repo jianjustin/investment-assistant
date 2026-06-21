@@ -171,3 +171,21 @@ def test_ticker_trends_has_clickable_metric_help_panel():
     assert "指标说明" in ticker_trends
     assert "指标逻辑" in ticker_trends
     assert "指标下枚举带来的意义" in ticker_trends
+
+
+def test_frontend_has_strategy_center_scores_menu_and_table():
+    navigation = Path("web/src/app/navigation.ts").read_text(encoding="utf-8")
+    app = Path("web/src/app/app.ts").read_text(encoding="utf-8")
+    state = Path("web/src/app/state.ts").read_text(encoding="utf-8")
+    types = Path("web/src/app/types.ts").read_text(encoding="utf-8")
+    messages = Path("web/src/i18n/messages.ts").read_text(encoding="utf-8")
+    strategy_scores = Path("web/src/features/strategy-scores.ts").read_text(encoding="utf-8")
+
+    assert "strategyModule" in navigation
+    assert "strategy-scores" in navigation
+    assert "strategy-runs" in navigation
+    assert "/api/strategies/scores" in state
+    assert "StrategyScoresPayload" in types
+    assert "renderStrategyScores" in app
+    assert "策略中心" in messages
+    assert "renderStrategyScoreTable" in strategy_scores
