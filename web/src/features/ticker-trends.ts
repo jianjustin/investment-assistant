@@ -14,12 +14,40 @@ export function renderTickerTrends(state: AppState, t: Translator): string {
   const summary = `High ${counts.high ?? 0} · Medium ${counts.medium ?? 0} · Low ${counts.low ?? 0}`
   return `
     ${renderPageHeader(t('tickerTrends'), t('tickerTrendsDesc'))}
+    ${renderScanPanel(state, t)}
     <div class="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
       <div class="metric-panel"><div class="label">${escapeHtml(t('sampleSize'))}</div><div class="value mt-2">${rows.length}</div><div class="mt-2 text-sm text-muted">${escapeHtml(t('tickerTrendsCurrent'))}</div></div>
       <div class="metric-panel"><div class="label">${escapeHtml(t('attentionLevel'))}</div><div class="value mt-2">${escapeHtml(summary)}</div><div class="mt-2 text-sm text-muted">${escapeHtml(t('tickerTrendsDesc'))}</div></div>
       <div class="metric-panel"><div class="label">${escapeHtml(t('source'))}</div><div class="value mt-2">${escapeHtml(rows[0]?.source ?? 'N/A')}</div><div class="mt-2 text-sm text-muted">ticker_signal_snapshots</div></div>
     </div>
     ${renderPanel(t('tickerTrendsCurrent'), t('tickerTrendsCurrentDesc'), renderTrendTable(rows, t))}
+  `
+}
+
+
+function renderScanPanel(state: AppState, t: Translator): string {
+  const result = state.tickerTrendScanResult
+  const failures = result?.failures?.length ?? 0
+  const status = state.tickerTrendScanInFlight
+    ? `<div class="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-800"><span class="inline-flex items-center gap-2"><i data-lucide="refresh-cw" class="h-4 w-4 animate-spin" aria-hidden="true"></i>${escapeHtml(t('tickerTrendScanning'))}</span></div>`
+    : result?.error
+      ? `<div class="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">${escapeHtml(result.error)}</div>`
+      : result?.run_id
+        ? `<div class="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">${escapeHtml(t('tickerTrendScanComplete'))}: ${result.count ?? 0} · ${escapeHtml(t('fetchFailure'))}: ${failures}</div>`
+        : ''
+  return `
+    <div class="mb-4 section-panel">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div class="label">${escapeHtml(t('tickerTrendManualScan'))}</div>
+          <p class="mt-1 text-sm text-muted">${escapeHtml(t('tickerTrendManualScanDesc'))}</p>
+        </div>
+        <button id="tickerTrendScanButton" type="button" class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-accent px-4 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60" ${state.tickerTrendScanInFlight ? 'disabled' : ''}>
+          <i data-lucide="refresh-cw" class="h-4 w-4 ${state.tickerTrendScanInFlight ? 'animate-spin' : ''}" aria-hidden="true"></i>${escapeHtml(state.tickerTrendScanInFlight ? t('tickerTrendScanning') : t('tickerTrendScan'))}
+        </button>
+      </div>
+      ${status ? `<div class="mt-3">${status}</div>` : ''}
+    </div>
   `
 }
 

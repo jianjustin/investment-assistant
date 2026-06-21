@@ -1,6 +1,6 @@
 import { defaultLanguage, messages, type CopyKey } from '../i18n/messages'
 import { defaultRoute, parentForRoute, routeFromHash } from './navigation'
-import type { AppState, FilingsPayload, Language, HermesAgentSaveResult, HermesMacroAnalysisPayload, HermesMacroLlmResult, HermesMarketInterpretationPayload, HermesPayload, MarketFetchResult, MarketSignal, MarketSignalsPayload, WatchlistMutationResult, WatchlistPayload, TickerTrendsPayload, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
+import type { AppState, FilingsPayload, Language, HermesAgentSaveResult, HermesMacroAnalysisPayload, HermesMacroLlmResult, HermesMarketInterpretationPayload, HermesPayload, MarketFetchResult, MarketSignal, MarketSignalsPayload, WatchlistMutationResult, WatchlistPayload, TickerTrendsPayload, TickerTrendScanResult, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
 
 export const state: AppState = {
   loading: true,
@@ -19,6 +19,8 @@ export const state: AppState = {
   watchlistSaving: false,
   watchlistResult: null,
   tickerTrends: null,
+  tickerTrendScanInFlight: false,
+  tickerTrendScanResult: null,
   marketSignals: null,
   marketTrend: null,
   marketFetchResult: null,
@@ -180,6 +182,32 @@ export async function deleteWatchlistItem(ticker: string): Promise<void> {
     state.error = error instanceof Error ? error.message : String(error)
   } finally {
     state.watchlistSaving = false
+    state.loading = false
+  }
+}
+
+
+export async function scanTickerTrends(payload: { date?: string; tickers?: string[] } = {}): Promise<void> {
+  state.tickerTrendScanInFlight = true
+  state.tickerTrendScanResult = null
+  state.error = null
+  try {
+    const response = await fetch('/api/tickers/trends/scan', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const result = (await response.json()) as TickerTrendScanResult
+    state.tickerTrendScanResult = result
+    if (!response.ok) {
+      throw new Error(result.error ?? `HTTP ${response.status}: ${response.statusText}`)
+    }
+    await reloadData()
+    state.tickerTrendScanResult = result
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error)
+  } finally {
+    state.tickerTrendScanInFlight = false
     state.loading = false
   }
 }

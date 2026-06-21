@@ -21,6 +21,7 @@ from investment_assistant.hermes.run_log import append_run
 from investment_assistant.hermes.macro_analyst import analyze_macro_environment
 from investment_assistant.market.service import compute_market_signal_for_date
 from investment_assistant.runtime_paths import DEFAULT_FILINGS_DIR
+from investment_assistant.tickers.trend import scan_ticker_trends
 
 HOST = os.environ.get("HERMES_DASHBOARD_HOST", "0.0.0.0")
 PORT = int(os.environ.get("HERMES_DASHBOARD_PORT", "8787"))
@@ -174,6 +175,11 @@ def api_post_response_for_path(path: str, payload: dict[str, Any]) -> ApiRespons
     if parsed_path == "/api/market/signals/fetch":
         try:
             return ApiResponse(fetch_market_signals(payload))
+        except ValueError as exc:
+            return ApiResponse({"error": str(exc)}, status=400)
+    if parsed_path == "/api/tickers/trends/scan":
+        try:
+            return ApiResponse(run_ticker_trend_scan(payload))
         except ValueError as exc:
             return ApiResponse({"error": str(exc)}, status=400)
     if parsed_path == "/api/hermes/agents":
@@ -356,6 +362,66 @@ def run_hermes_macro_llm_analysis(payload: dict[str, Any]) -> dict[str, Any]:
     }
     append_run(record)
     return {"run_id": run_id, "analysis": analysis}
+
+
+def run_ticker_trend_scan(payload: dict[str, Any]) -> dict[str, Any]:
+    target_date = date.fromisoformat(str(payload.get("date"))) if payload.get("date") else date.today()
+    tickers = _parse_payload_watchlist(payload.get("tickers")) or current_watchlist()
+    if not tickers:
+        raise ValueError("tickers or active watchlist is required")
+    run_id = f"manual-ticker-trends-{target_date.isoformat()}-{uuid.uuid4().hex[:8]}"
+    rows = scan_ticker_trends(tickers, signal_date=target_date, run_id=run_id)
+    _persist_ticker_trend_snapshots(rows)
+    failures = [row for row in rows if row.get("error")]
+    return {
+        "run_id": run_id,
+        "requested": {"date": target_date.isoformat(), "tickers": tickers},
+        "rows": rows,
+        "count": len(rows),
+        "failures": failures,
+    }
+
+
+def _persist_ticker_trend_snapshots(snapshots: list[dict[str, Any]]) -> None:
+    if not snapshots:
+        return
+    database_url = os.environ["INVESTMENT_ASSISTANT_DATABASE_URL"]
+    with connect(database_url) as conn:
+        with conn.cursor() as cur:
+            for snapshot in snapshots:
+                payload = dict(snapshot)
+                payload["trigger_reason"] = json.dumps(payload.get("trigger_reason") or [], ensure_ascii=False)
+                cur.execute(
+                    """
+                    INSERT INTO ticker_signal_snapshots (
+                      ticker, signal_date, close, ma20, ma50, ma200, volume, volume_ratio,
+                      relative_strength_spy, relative_strength_qqq, trend_state, attention_level,
+                      trigger_reason, source, error, run_id
+                    ) VALUES (
+                      %(ticker)s, %(signal_date)s, %(close)s, %(ma20)s, %(ma50)s, %(ma200)s, %(volume)s, %(volume_ratio)s,
+                      %(relative_strength_spy)s, %(relative_strength_qqq)s, %(trend_state)s, %(attention_level)s,
+                      %(trigger_reason)s::jsonb, %(source)s, %(error)s, %(run_id)s
+                    )
+                    ON CONFLICT (ticker, signal_date) DO UPDATE SET
+                      close = EXCLUDED.close,
+                      ma20 = EXCLUDED.ma20,
+                      ma50 = EXCLUDED.ma50,
+                      ma200 = EXCLUDED.ma200,
+                      volume = EXCLUDED.volume,
+                      volume_ratio = EXCLUDED.volume_ratio,
+                      relative_strength_spy = EXCLUDED.relative_strength_spy,
+                      relative_strength_qqq = EXCLUDED.relative_strength_qqq,
+                      trend_state = EXCLUDED.trend_state,
+                      attention_level = EXCLUDED.attention_level,
+                      trigger_reason = EXCLUDED.trigger_reason,
+                      source = EXCLUDED.source,
+                      error = EXCLUDED.error,
+                      run_id = EXCLUDED.run_id,
+                      updated_at = now()
+                    """,
+                    payload,
+                )
+        conn.commit()
 
 
 def fetch_market_signals(payload: dict[str, Any]) -> dict[str, Any]:

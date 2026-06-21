@@ -108,6 +108,24 @@ def test_ticker_trend_endpoint_returns_rows(monkeypatch):
     assert response.payload == {"rows": rows, "count": 1}
 
 
+def test_ticker_trend_scan_post_scans_active_watchlist_and_persists(monkeypatch):
+    persisted = []
+    rows = [{"ticker": "TSLA", "signal_date": "2026-06-21", "trend_state": "uptrend", "attention_level": "high", "trigger_reason": ["above_ma_stack"], "error": None}]
+
+    monkeypatch.setattr(server, "current_watchlist", lambda: ["TSLA"])
+    monkeypatch.setattr(server, "scan_ticker_trends", lambda tickers, signal_date, run_id: rows)
+    monkeypatch.setattr(server, "_persist_ticker_trend_snapshots", lambda snapshots: persisted.extend(snapshots))
+    monkeypatch.setattr(server.uuid, "uuid4", lambda: type("FakeUuid", (), {"hex": "abcdef123456"})())
+
+    response = server.api_post_response_for_path("/api/tickers/trends/scan", {"date": "2026-06-21"})
+
+    assert response.status == 200
+    assert response.payload["requested"] == {"date": "2026-06-21", "tickers": ["TSLA"]}
+    assert response.payload["count"] == 1
+    assert response.payload["failures"] == []
+    assert persisted == rows
+
+
 def test_macro_analysis_uses_managed_watchlist_when_query_omits_watchlist(monkeypatch):
     captured = []
     rows = [{"signal_date": date(2026, 6, 21), "market_status": "green", "spy_close": 130, "spy_ma200": 120, "spy_above_200ma": True, "vix_close": 15}]

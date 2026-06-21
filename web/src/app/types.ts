@@ -109,6 +109,15 @@ export type TickerTrendsPayload = {
   count: number
 }
 
+export type TickerTrendScanResult = {
+  run_id?: string
+  requested?: { date: string; tickers: string[] }
+  rows?: TickerTrendSnapshot[]
+  count?: number
+  failures?: TickerTrendSnapshot[]
+  error?: string
+}
+
 export type Operation = {
   id: string
   label: string
@@ -297,6 +306,8 @@ export type AppState = {
   watchlistSaving: boolean
   watchlistResult: WatchlistMutationResult | null
   tickerTrends: TickerTrendsPayload | null
+  tickerTrendScanInFlight: boolean
+  tickerTrendScanResult: TickerTrendScanResult | null
   marketSignals: MarketSignalsPayload | null
   marketTrend: MarketTrendPayload | null
   marketFetchResult: MarketFetchResult | null

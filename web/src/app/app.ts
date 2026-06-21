@@ -28,7 +28,7 @@ import { renderWatchlist } from '../features/watchlist'
 import { renderTickerTrends } from '../features/ticker-trends'
 import { renderWorkbench } from '../features/workbench'
 import { isRouteParent, parentForRoute, routeGroups, routes } from './navigation'
-import { addWatchlistItem, deleteWatchlistItem, fetchMarketSignals, reloadData, runMacroAnalystLlm, saveHermesAgent, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
+import { addWatchlistItem, deleteWatchlistItem, fetchMarketSignals, reloadData, runMacroAnalystLlm, scanTickerTrends, saveHermesAgent, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
 import type { RouteEntry, RouteId, RouteItem, RouteParent } from './types'
 import { escapeHtml } from '../shared/html'
 
@@ -280,6 +280,14 @@ function bindEvents(): void {
       render()
       void deleteWatchlistItem(ticker).then(render)
     })
+  })
+
+
+  document.querySelector<HTMLButtonElement>('#tickerTrendScanButton')?.addEventListener('click', () => {
+    state.tickerTrendScanInFlight = true
+    state.tickerTrendScanResult = null
+    render()
+    void scanTickerTrends().then(render)
   })
 
   document.querySelector<HTMLFormElement>('#hermesAgentForm')?.addEventListener('submit', (event) => {
