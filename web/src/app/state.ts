@@ -1,13 +1,13 @@
 import { defaultLanguage, messages, type CopyKey } from '../i18n/messages'
 import { defaultRoute, parentForRoute, routeFromHash } from './navigation'
-import type { AppState, FilingsPayload, Language, HermesMarketInterpretationPayload, MarketFetchResult, MarketSignal, MarketSignalsPayload, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
+import type { AppState, FilingsPayload, Language, HermesAgentSaveResult, HermesMarketInterpretationPayload, HermesPayload, MarketFetchResult, MarketSignal, MarketSignalsPayload, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
 
 export const state: AppState = {
   loading: true,
   error: null,
   language: defaultLanguage,
   navOpen: false,
-  expandedMenus: ['market-signals'],
+  expandedMenus: ['market-signals', 'hermes'],
   activeRoute: routeFromHash(window.location.hash || `#/${defaultRoute}`),
   refreshedAt: null,
   status: null,
@@ -21,6 +21,9 @@ export const state: AppState = {
   marketFetchInFlight: false,
   marketFetchRequest: null,
   hermesMarketInterpretation: null,
+  hermes: null,
+  hermesAgentSaving: false,
+  hermesAgentResult: null,
   raw: null,
 }
 
@@ -66,7 +69,7 @@ export async function reloadData(): Promise<void> {
   state.error = null
 
   try {
-    const [status, services, latestSignal, filings, operations, marketSignals, marketTrend, hermesMarketInterpretation, raw] = await Promise.all([
+    const [status, services, latestSignal, filings, operations, marketSignals, marketTrend, hermesMarketInterpretation, hermes, raw] = await Promise.all([
       fetchJson<StatusPayload>('/api/status'),
       fetchJson<ServicesPayload>('/api/services'),
       fetchJson<MarketSignal | null>('/api/market/signals/latest'),
@@ -75,6 +78,7 @@ export async function reloadData(): Promise<void> {
       fetchJson<MarketSignalsPayload>('/api/market/signals?limit=90'),
       fetchJson<MarketTrendPayload>('/api/market/signals/trend?window=20'),
       fetchJson<HermesMarketInterpretationPayload>('/api/hermes/market-signals/interpretation?window=30'),
+      fetchJson<HermesPayload>('/api/hermes'),
       fetchJson<StatusPayload>('/api/raw/status'),
     ])
     state.status = status
@@ -85,6 +89,7 @@ export async function reloadData(): Promise<void> {
     state.marketSignals = marketSignals
     state.marketTrend = marketTrend
     state.hermesMarketInterpretation = hermesMarketInterpretation
+    state.hermes = hermes
     state.raw = raw
     state.refreshedAt = new Date()
   } catch (error) {
@@ -117,6 +122,32 @@ export async function fetchMarketSignals(payload: { date?: string; from?: string
   } finally {
     state.marketFetchInFlight = false
     state.marketFetchRequest = null
+    state.loading = false
+  }
+}
+
+
+export async function saveHermesAgent(payload: { id: string; name: string; role?: string; description?: string; system_prompt?: string; data_sources?: string[]; tools?: string[]; enabled?: boolean }): Promise<void> {
+  state.hermesAgentSaving = true
+  state.hermesAgentResult = null
+  state.error = null
+  try {
+    const response = await fetch('/api/hermes/agents', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const result = (await response.json()) as HermesAgentSaveResult
+    state.hermesAgentResult = result
+    if (!response.ok) {
+      throw new Error(result.error ?? `HTTP ${response.status}: ${response.statusText}`)
+    }
+    await reloadData()
+    state.hermesAgentResult = result
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error)
+  } finally {
+    state.hermesAgentSaving = false
     state.loading = false
   }
 }

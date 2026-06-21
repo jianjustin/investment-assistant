@@ -17,13 +17,14 @@ import {
   X,
 } from 'lucide'
 import { renderFilings } from '../features/filings'
+import { renderHermes } from '../features/hermes'
 import { renderMarket } from '../features/market'
 import { renderOperations } from '../features/operations'
 import { renderRaw } from '../features/raw'
 import { renderServices } from '../features/services'
 import { renderWorkbench } from '../features/workbench'
 import { isRouteParent, parentForRoute, routeGroups, routes } from './navigation'
-import { fetchMarketSignals, reloadData, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
+import { fetchMarketSignals, reloadData, saveHermesAgent, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
 import type { RouteEntry, RouteId, RouteItem, RouteParent } from './types'
 import { escapeHtml } from '../shared/html'
 
@@ -198,6 +199,10 @@ function renderActiveRoute(): string {
   const route = routes.find((item) => item.id === state.activeRoute) ?? routes[0]
   const header = route ? '' : ''
   switch (state.activeRoute) {
+    case 'hermes-overview':
+    case 'hermes-agents':
+    case 'hermes-ideas':
+      return renderHermes(state, t, state.activeRoute)
     case 'market-overview':
     case 'market-trend':
     case 'market-list':
@@ -243,6 +248,25 @@ function bindEvents(): void {
         render()
       }
     })
+  })
+
+  document.querySelector<HTMLFormElement>('#hermesAgentForm')?.addEventListener('submit', (event) => {
+    event.preventDefault()
+    const form = event.currentTarget as HTMLFormElement
+    const formData = new FormData(form)
+    state.hermesAgentSaving = true
+    state.hermesAgentResult = null
+    render()
+    void saveHermesAgent({
+      id: String(formData.get('id') ?? ''),
+      name: String(formData.get('name') ?? ''),
+      role: String(formData.get('role') ?? ''),
+      description: String(formData.get('description') ?? ''),
+      system_prompt: String(formData.get('system_prompt') ?? ''),
+      data_sources: String(formData.get('data_sources') ?? '').split(',').map((item) => item.trim()).filter(Boolean),
+      tools: String(formData.get('tools') ?? '').split(',').map((item) => item.trim()).filter(Boolean),
+      enabled: formData.get('enabled') === 'on',
+    }).then(render)
   })
 
   document.querySelector<HTMLFormElement>('#marketFetchForm')?.addEventListener('submit', (event) => {

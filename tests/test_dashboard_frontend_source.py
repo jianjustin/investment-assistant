@@ -87,3 +87,21 @@ def test_market_fetch_shows_in_progress_status_and_hermes_interpretation_compone
     assert "/api/hermes/market-signals/interpretation?window=30" in state
     assert "renderHermesInterpretation" in market
     assert "hermesInterpretation" in messages
+
+
+def test_hermes_module_has_first_level_menu_agents_and_ideas():
+    navigation = Path("web/src/app/navigation.ts").read_text(encoding="utf-8")
+    app = Path("web/src/app/app.ts").read_text(encoding="utf-8")
+    state = Path("web/src/app/state.ts").read_text(encoding="utf-8")
+    hermes = Path("web/src/features/hermes.ts").read_text(encoding="utf-8")
+    messages = Path("web/src/i18n/messages.ts").read_text(encoding="utf-8")
+
+    assert "hermesModule" in navigation
+    for route_id in ["hermes-overview", "hermes-agents", "hermes-ideas"]:
+        assert route_id in navigation
+    assert "renderHermes" in app
+    assert "/api/hermes" in state
+    assert "/api/hermes/agents" in state
+    assert "hermesAgentForm" in hermes
+    assert "saveHermesAgent" in app
+    assert "hermesCustomAgent" in messages

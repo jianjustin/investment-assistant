@@ -9,6 +9,23 @@ export const routeGroups: RouteGroup[] = [
       { id: 'workbench', labelKey: 'workbench', descriptionKey: 'workbenchDesc', icon: 'layout-dashboard' },
     ],
   },
+
+  {
+    labelKey: 'hermesModule',
+    children: [
+      {
+        id: 'hermes',
+        labelKey: 'hermesModule',
+        descriptionKey: 'hermesModuleDesc',
+        icon: 'activity',
+        children: [
+          { id: 'hermes-overview', labelKey: 'hermesOverview', descriptionKey: 'hermesOverviewDesc' },
+          { id: 'hermes-agents', labelKey: 'hermesAgents', descriptionKey: 'hermesAgentsDesc' },
+          { id: 'hermes-ideas', labelKey: 'hermesIdeas', descriptionKey: 'hermesIdeasDesc' },
+        ],
+      },
+    ],
+  },
   {
     labelKey: 'marketModule',
     children: [
@@ -59,6 +76,7 @@ export function isRouteParent(entry: RouteEntry): entry is RouteParent {
 export function routeFromHash(hash: string): RouteId {
   const route = hash.replace(/^#\/?/, '')
   if (route === 'market') return 'market-overview'
+  if (route === 'hermes') return 'hermes-overview'
   return routes.some((item) => item.id === route) ? route as RouteId : defaultRoute
 }
 

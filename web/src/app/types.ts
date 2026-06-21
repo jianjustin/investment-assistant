@@ -92,6 +92,47 @@ export type MarketTrendPayload = {
   rows: MarketSignal[]
 }
 
+export type HermesCapability = {
+  id: string
+  label: string
+  description: string
+  status: 'ready' | 'planned' | string
+  endpoint?: string | null
+  inputs: string[]
+  outputs: string[]
+}
+
+export type HermesAgent = {
+  id: string
+  name: string
+  role: string
+  description: string
+  system_prompt: string
+  data_sources: string[]
+  tools: string[]
+  enabled: boolean
+  custom: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type HermesIdea = {
+  title: string
+  description: string
+  next_step: string
+}
+
+export type HermesPayload = {
+  capabilities: HermesCapability[]
+  agents: HermesAgent[]
+  ideas: HermesIdea[]
+}
+
+export type HermesAgentSaveResult = {
+  agent?: HermesAgent
+  error?: string
+}
+
 export type HermesInterpretationSection = {
   title: string
   items: string[]
@@ -124,7 +165,7 @@ export type MarketFetchResult = {
   error?: string
 }
 
-export type RouteId = 'workbench' | 'market-overview' | 'market-trend' | 'market-list' | 'market-fetch' | 'filings' | 'services' | 'operations' | 'raw'
+export type RouteId = 'workbench' | 'hermes-overview' | 'hermes-agents' | 'hermes-ideas' | 'market-overview' | 'market-trend' | 'market-list' | 'market-fetch' | 'filings' | 'services' | 'operations' | 'raw'
 
 export type RouteItem = {
   id: RouteId
@@ -167,6 +208,9 @@ export type AppState = {
   marketFetchInFlight: boolean
   marketFetchRequest: string | null
   hermesMarketInterpretation: HermesMarketInterpretationPayload | null
+  hermes: HermesPayload | null
+  hermesAgentSaving: boolean
+  hermesAgentResult: HermesAgentSaveResult | null
   raw: StatusPayload | null
 }
 

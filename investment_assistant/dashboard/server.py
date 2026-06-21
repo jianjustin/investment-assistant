@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from investment_assistant.config import load_config
 from investment_assistant.db import connect, get_latest_market_signal, list_market_signals, upsert_market_signal
+from investment_assistant.hermes import agents as hermes_agents
 from investment_assistant.hermes.market_signals import interpret_market_signals
 from investment_assistant.market.service import compute_market_signal_for_date
 from investment_assistant.runtime_paths import DEFAULT_FILINGS_DIR
@@ -134,6 +135,10 @@ def api_response_for_path(path: str) -> ApiResponse | None:
         return ApiResponse({"rows": rows, "count": len(rows)})
     if parsed_path == "/api/market/signals/trend":
         return ApiResponse(market_signal_trend(query))
+    if parsed_path == "/api/hermes":
+        return ApiResponse(hermes_agents.hermes_overview())
+    if parsed_path == "/api/hermes/agents":
+        return ApiResponse({"agents": hermes_agents.list_agents()})
     if parsed_path == "/api/hermes/market-signals/interpretation":
         return ApiResponse(hermes_market_signal_interpretation(query))
     if parsed_path == "/api/filings":
@@ -150,6 +155,11 @@ def api_post_response_for_path(path: str, payload: dict[str, Any]) -> ApiRespons
     if parsed_path == "/api/market/signals/fetch":
         try:
             return ApiResponse(fetch_market_signals(payload))
+        except ValueError as exc:
+            return ApiResponse({"error": str(exc)}, status=400)
+    if parsed_path == "/api/hermes/agents":
+        try:
+            return ApiResponse({"agent": hermes_agents.save_agent(payload)})
         except ValueError as exc:
             return ApiResponse({"error": str(exc)}, status=400)
     if parsed_path.startswith("/api/"):
