@@ -72,3 +72,18 @@ def test_market_signal_is_parent_menu_with_second_level_routes():
     assert "data-menu-toggle" in app
     assert "renderNavParent" in app
     assert "chevron-down" in app
+
+
+def test_market_fetch_shows_in_progress_status_and_hermes_interpretation_component():
+    market = Path("web/src/features/market.ts").read_text(encoding="utf-8")
+    state = Path("web/src/app/state.ts").read_text(encoding="utf-8")
+    types = Path("web/src/app/types.ts").read_text(encoding="utf-8")
+    messages = Path("web/src/i18n/messages.ts").read_text(encoding="utf-8")
+
+    assert "marketFetchInFlight" in state
+    assert "fetchingMarketSignal" in market
+    assert "renderFetchStatus" in market
+    assert "HermesMarketInterpretationPayload" in types
+    assert "/api/hermes/market-signals/interpretation?window=30" in state
+    assert "renderHermesInterpretation" in market
+    assert "hermesInterpretation" in messages

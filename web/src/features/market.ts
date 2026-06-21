@@ -1,4 +1,4 @@
-import type { AppState, MarketSignal, RouteId } from '../app/types'
+import type { AppState, HermesMarketInterpretationPayload, MarketSignal, RouteId } from '../app/types'
 import type { Translator } from '../i18n/messages'
 import { renderMetric, renderPanel, renderPageHeader, renderStatusPill, renderTable } from '../shared/components'
 import { formatBool, formatNumber, marketDot, marketLabel } from '../shared/format'
@@ -20,7 +20,7 @@ export function renderMarket(state: AppState, t: Translator, route: RouteId = 'm
     </div>
   `
   if (route === 'market-trend') {
-    return `${renderPageHeader(t('marketTrend'), t('marketTrendDesc'))}${metrics}<div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.15fr_0.85fr]">${renderPanel(t('signalDashboard'), t('signalDashboardDesc'), renderSignalChart(rows))}${renderPanel(t('trendJudgement'), t('trendJudgementDesc'), renderTrend(trend, t))}</div>`
+    return `${renderPageHeader(t('marketTrend'), t('marketTrendDesc'))}${metrics}<div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.15fr_0.85fr]">${renderPanel(t('signalDashboard'), t('signalDashboardDesc'), renderSignalChart(rows))}${renderPanel(t('trendJudgement'), t('trendJudgementDesc'), renderTrend(trend, t))}</div><div class="mt-4">${renderPanel(t('hermesInterpretation'), t('hermesInterpretationDesc'), renderHermesInterpretation(state.hermesMarketInterpretation, t))}</div>`
   }
   if (route === 'market-list') {
     return `${renderPageHeader(t('marketList'), t('marketListDesc'))}${metrics}<div class="mt-4">${renderPanel(t('signalList'), t('signalListDesc'), renderSignalTable(rows, t))}</div>`
@@ -35,6 +35,7 @@ export function renderMarket(state: AppState, t: Translator, route: RouteId = 'm
       ${renderPanel(t('signalDashboard'), t('signalDashboardDesc'), renderSignalChart(rows) + renderLatest(signal, tone, t))}
       ${renderPanel(t('trendJudgement'), t('trendJudgementDesc'), renderTrend(trend, t))}
     </div>
+    <div class="mt-4">${renderPanel(t('hermesInterpretation'), t('hermesInterpretationDesc'), renderHermesInterpretation(state.hermesMarketInterpretation, t))}</div>
   `
 }
 
@@ -72,6 +73,44 @@ function renderTrend(trend: AppState['marketTrend'], t: Translator): string {
       <div class="rounded-lg border border-line bg-panel p-3"><div class="label">${escapeHtml(t('sampleSize'))}</div><div class="value">${trend.sample_size}</div></div>
       <div class="rounded-lg border border-line bg-panel p-3"><div class="label">${escapeHtml(t('green'))}</div><div class="value">${trend.status_counts.green ?? 0}</div></div>
       <div class="rounded-lg border border-line bg-panel p-3"><div class="label">${escapeHtml(t('red'))}</div><div class="value">${trend.status_counts.red ?? 0}</div></div>
+    </div>
+  `
+}
+
+function renderHermesInterpretation(interpretation: HermesMarketInterpretationPayload | null | undefined, t: Translator): string {
+  if (!interpretation) return `<div class="rounded-md border border-line bg-panel px-3 py-4 text-sm text-muted">${escapeHtml(t('hermesNoInterpretation'))}</div>`
+  const tone = interpretation.judgement === 'risk_on' ? 'good' : interpretation.judgement === 'risk_off' ? 'bad' : 'warn'
+  const metrics = interpretation.metrics ?? {}
+  return `
+    <div class="space-y-4">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div class="flex flex-wrap items-center gap-2">
+            ${renderStatusPill(trendLabel(interpretation.judgement, t), tone)}
+            <span class="text-xs text-muted">${escapeHtml(t('hermesWindow'))}: ${interpretation.window} · ${escapeHtml(t('sampleSize'))}: ${interpretation.sample_size}</span>
+          </div>
+          <h3 class="mt-2 text-base font-semibold text-ink">${escapeHtml(interpretation.title)}</h3>
+          <p class="mt-1 text-sm text-muted">${escapeHtml(interpretation.summary)}</p>
+        </div>
+        <div class="grid grid-cols-2 gap-2 text-sm sm:min-w-60">
+          <div class="rounded-md border border-line bg-panel px-3 py-2"><div class="label">${escapeHtml(t('greenRatio'))}</div><div class="font-semibold text-ink">${Math.round((metrics.green_ratio ?? 0) * 100)}%</div></div>
+          <div class="rounded-md border border-line bg-panel px-3 py-2"><div class="label">${escapeHtml(t('vixClose'))}</div><div class="font-semibold text-ink">${formatNumber(metrics.avg_vix, 1)}</div></div>
+        </div>
+      </div>
+      ${interpretation.sections.map((section) => `
+        <div>
+          <div class="text-sm font-semibold text-ink">${escapeHtml(section.title)}</div>
+          <ul class="mt-2 space-y-1 text-sm text-muted">
+            ${section.items.map((item) => `<li class="flex gap-2"><span class="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span><span>${escapeHtml(item)}</span></li>`).join('')}
+          </ul>
+        </div>
+      `).join('')}
+      <div>
+        <div class="text-sm font-semibold text-ink">${escapeHtml(t('hermesActions'))}</div>
+        <div class="mt-2 grid grid-cols-1 gap-2 md:grid-cols-3">
+          ${interpretation.actions.map((action) => `<div class="rounded-md border border-line bg-white px-3 py-2 text-sm text-slate-700">${escapeHtml(action)}</div>`).join('')}
+        </div>
+      </div>
     </div>
   `
 }
@@ -130,7 +169,6 @@ function renderSignalTable(rows: MarketSignal[], t: Translator): string {
 
 function renderFetchForm(state: AppState, t: Translator): string {
   const today = new Date().toISOString().slice(0, 10)
-  const result = state.marketFetchResult
   return `
     <form id="marketFetchForm" class="space-y-4">
       <div class="rounded-lg border border-line bg-panel p-3">
@@ -144,8 +182,19 @@ function renderFetchForm(state: AppState, t: Translator): string {
         <label class="block text-sm font-medium text-ink">${escapeHtml(t('startDate'))}<input name="from" type="date" value="${today}" class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm" /></label>
         <label class="block text-sm font-medium text-ink">${escapeHtml(t('endDate'))}<input name="to" type="date" value="${today}" class="mt-1 h-10 w-full rounded-md border border-line px-3 text-sm" /></label>
       </div>
-      <button type="submit" class="inline-flex h-10 w-full items-center justify-center rounded-md bg-accent px-4 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60" ${state.loading ? 'disabled' : ''}>${escapeHtml(t('fetchMarketSignal'))}</button>
-      ${result ? `<div class="rounded-md border ${result.error || (result.failures?.length ?? 0) > 0 ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'} px-3 py-2 text-sm">${escapeHtml(result.error ? t('fetchFailure') : t('fetchSuccess'))}: ${result.rows?.length ?? 0}</div>` : ''}
+      <button type="submit" class="inline-flex h-10 w-full items-center justify-center rounded-md bg-accent px-4 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60" ${state.marketFetchInFlight ? 'disabled' : ''}>${escapeHtml(t('fetchMarketSignal'))}</button>
+      ${renderFetchStatus(state, t)}
     </form>
   `
+}
+
+function renderFetchStatus(state: AppState, t: Translator): string {
+  const result = state.marketFetchResult
+  if (state.marketFetchInFlight) {
+    const request = state.marketFetchRequest ? `${escapeHtml(t('fetchRequest'))}: ${escapeHtml(state.marketFetchRequest)}` : escapeHtml(t('fetchingMarketSignal'))
+    return `<div class="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-800"><span class="inline-flex items-center gap-2"><i data-lucide="refresh-cw" class="h-4 w-4 animate-spin" aria-hidden="true"></i>${escapeHtml(t('fetchingMarketSignal'))}</span><div class="mt-1 text-xs text-sky-700">${request}</div></div>`
+  }
+  if (!result) return ''
+  const failed = result.error || (result.failures?.length ?? 0) > 0
+  return `<div class="rounded-md border ${failed ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'} px-3 py-2 text-sm">${escapeHtml(result.error ? t('fetchFailure') : t('fetchSuccess'))}: ${result.rows?.length ?? 0}</div>`
 }

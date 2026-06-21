@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from investment_assistant.config import load_config
 from investment_assistant.db import connect, get_latest_market_signal, list_market_signals, upsert_market_signal
+from investment_assistant.hermes.market_signals import interpret_market_signals
 from investment_assistant.market.service import compute_market_signal_for_date
 from investment_assistant.runtime_paths import DEFAULT_FILINGS_DIR
 
@@ -133,6 +134,8 @@ def api_response_for_path(path: str) -> ApiResponse | None:
         return ApiResponse({"rows": rows, "count": len(rows)})
     if parsed_path == "/api/market/signals/trend":
         return ApiResponse(market_signal_trend(query))
+    if parsed_path == "/api/hermes/market-signals/interpretation":
+        return ApiResponse(hermes_market_signal_interpretation(query))
     if parsed_path == "/api/filings":
         return ApiResponse({"summary": filing_status(), "files": filing_rows()})
     if parsed_path == "/api/operations":
@@ -197,6 +200,12 @@ def market_signal_trend(query: dict[str, list[str]]) -> dict[str, Any]:
         "summary": summary,
         "rows": rows,
     }
+
+
+def hermes_market_signal_interpretation(query: dict[str, list[str]]) -> dict[str, Any]:
+    window = _parse_int(_first(query, "window"), default=30, minimum=5, maximum=90)
+    rows = market_signal_rows({"limit": [str(window)]})
+    return interpret_market_signals(rows, window=window)
 
 
 def fetch_market_signals(payload: dict[str, Any]) -> dict[str, Any]:

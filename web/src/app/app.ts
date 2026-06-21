@@ -254,6 +254,10 @@ function bindEvents(): void {
     const from = String(formData.get('from') ?? '')
     const to = String(formData.get('to') ?? '')
     const payload = mode === 'range' ? { from, to } : { date }
+    state.marketFetchInFlight = true
+    state.marketFetchRequest = mode === 'range' ? `${from} - ${to}` : date
+    state.marketFetchResult = null
+    render()
     void fetchMarketSignals(payload).then(render)
   })
 

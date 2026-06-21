@@ -92,6 +92,31 @@ export type MarketTrendPayload = {
   rows: MarketSignal[]
 }
 
+export type HermesInterpretationSection = {
+  title: string
+  items: string[]
+}
+
+export type HermesMarketInterpretationPayload = {
+  source: string
+  window: number
+  sample_size: number
+  generated_at: string
+  judgement: 'risk_on' | 'neutral' | 'risk_off' | string
+  title: string
+  summary: string
+  metrics: {
+    green_ratio?: number
+    red_ratio?: number
+    above_ma_ratio?: number
+    avg_vix?: number
+    latest_status?: string
+    status_counts?: Record<string, number>
+  }
+  sections: HermesInterpretationSection[]
+  actions: string[]
+}
+
 export type MarketFetchResult = {
   requested?: { from: string; to: string }
   rows?: MarketSignal[]
@@ -139,6 +164,9 @@ export type AppState = {
   marketSignals: MarketSignalsPayload | null
   marketTrend: MarketTrendPayload | null
   marketFetchResult: MarketFetchResult | null
+  marketFetchInFlight: boolean
+  marketFetchRequest: string | null
+  hermesMarketInterpretation: HermesMarketInterpretationPayload | null
   raw: StatusPayload | null
 }
 
