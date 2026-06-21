@@ -9,7 +9,7 @@ import os
 import subprocess
 from dataclasses import asdict, dataclass, is_dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from investment_assistant.config import load_config
 from investment_assistant.db import connect, get_latest_market_signal, list_market_signals, upsert_market_signal
 from investment_assistant.hermes import agents as hermes_agents
+from investment_assistant.hermes.run_log import append_run
 from investment_assistant.hermes.macro_analyst import analyze_macro_environment
 from investment_assistant.market.service import compute_market_signal_for_date
 from investment_assistant.runtime_paths import DEFAULT_FILINGS_DIR
@@ -154,6 +155,11 @@ def api_response_for_path(path: str) -> ApiResponse | None:
 
 def api_post_response_for_path(path: str, payload: dict[str, Any]) -> ApiResponse | None:
     parsed_path = unquote(urlparse(path).path)
+    if parsed_path == "/api/hermes/macro-analysis/run":
+        try:
+            return ApiResponse(run_hermes_macro_llm_analysis(payload))
+        except ValueError as exc:
+            return ApiResponse({"error": str(exc)}, status=400)
     if parsed_path == "/api/market/signals/fetch":
         try:
             return ApiResponse(fetch_market_signals(payload))
@@ -221,6 +227,30 @@ def hermes_macro_analysis(query: dict[str, list[str]]) -> dict[str, Any]:
     if not watchlist:
         watchlist = list(load_config().watchlist)
     return analyze_macro_environment(rows, window=window, watchlist=watchlist)
+
+
+def run_hermes_macro_llm_analysis(payload: dict[str, Any]) -> dict[str, Any]:
+    config = load_config()
+    window = _parse_int(str(payload.get("window")) if payload.get("window") is not None else None, default=30, minimum=5, maximum=90)
+    model = str(payload.get("model") or config.model_default or "deepseek-v4-pro")
+    watchlist = _parse_payload_watchlist(payload.get("watchlist")) or list(config.watchlist)
+    rows = market_signal_rows({"limit": [str(window)]})
+    run_id = f"macro-llm-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    analysis = analyze_macro_environment(rows, window=window, watchlist=watchlist, use_llm=True, model=model)
+    record = {
+        "type": "hermes_macro_llm_analysis",
+        "run_id": run_id,
+        "created_at": datetime.now(UTC).isoformat(),
+        "window": window,
+        "model": model,
+        "watchlist": watchlist,
+        "macro_state": analysis.get("macro_state"),
+        "stance_label": analysis.get("stance_label"),
+        "llm": analysis.get("llm"),
+        "summary": analysis.get("summary"),
+    }
+    append_run(record)
+    return {"run_id": run_id, "analysis": analysis}
 
 
 def fetch_market_signals(payload: dict[str, Any]) -> dict[str, Any]:
@@ -303,6 +333,16 @@ def _parse_csv(value: str | None) -> list[str]:
     if not value:
         return []
     return [item.strip().upper() for item in value.split(",") if item.strip()]
+
+
+def _parse_payload_watchlist(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return _parse_csv(value)
+    if isinstance(value, list):
+        return [str(item).strip().upper() for item in value if str(item).strip()]
+    raise ValueError("watchlist must be a list or comma-separated string")
 
 
 def system_status() -> dict[str, Any]:

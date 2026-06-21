@@ -173,6 +173,29 @@ export type HermesMacroAnalysisPayload = {
   }
   sections: HermesInterpretationSection[]
   actions: string[]
+  risk_questions?: string[]
+  llm?: {
+    provider?: string
+    mode?: string
+    used?: boolean
+    model?: string
+    error?: string | null
+  }
+  llm_interpretation?: {
+    summary?: string
+    key_changes?: string[]
+    growth_implications?: string[]
+    watchlist_implications?: string[]
+    next_checks?: string[]
+    actions?: string[]
+    risk_questions?: string[]
+  } | null
+}
+
+export type HermesMacroLlmResult = {
+  run_id?: string
+  analysis?: HermesMacroAnalysisPayload
+  error?: string
 }
 
 export type HermesMarketInterpretationPayload = HermesMacroAnalysisPayload
@@ -227,6 +250,8 @@ export type AppState = {
   marketFetchInFlight: boolean
   marketFetchRequest: string | null
   hermesMacroAnalysis: HermesMacroAnalysisPayload | null
+  macroLlmInFlight: boolean
+  macroLlmResult: HermesMacroLlmResult | null
   hermesMarketInterpretation: HermesMarketInterpretationPayload | null
   hermes: HermesPayload | null
   hermesAgentSaving: boolean

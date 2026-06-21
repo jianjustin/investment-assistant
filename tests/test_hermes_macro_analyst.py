@@ -31,6 +31,56 @@ def test_macro_analyst_builds_macro_snapshot_style_output():
     assert result["actions"]
 
 
+def test_macro_analyst_can_attach_real_llm_interpretation():
+    calls = []
+
+    def fake_llm_client(*, system_prompt, user_payload, model):
+        calls.append({"system_prompt": system_prompt, "user_payload": user_payload, "model": model})
+        return {
+            "summary": "LLM 判断：进攻但需要观察 VIX。",
+            "key_changes": ["LLM key change"],
+            "growth_implications": ["LLM growth implication"],
+            "watchlist_implications": ["LLM watchlist implication"],
+            "next_checks": ["LLM next check"],
+            "actions": ["LLM action"],
+            "risk_questions": ["LLM risk question"],
+        }
+
+    result = analyze_macro_environment(
+        _rows(),
+        window=30,
+        watchlist=["TSLA", "NVDA"],
+        use_llm=True,
+        model="deepseek-v4-pro",
+        llm_client=fake_llm_client,
+    )
+
+    assert calls
+    assert calls[0]["model"] == "deepseek-v4-pro"
+    assert calls[0]["user_payload"]["macro_snapshot"]["stage"] == "Research"
+    assert result["llm"]["used"] is True
+    assert result["llm"]["provider"] == "deepseek"
+    assert result["llm"]["model"] == "deepseek-v4-pro"
+    assert result["llm_interpretation"]["summary"] == "LLM 判断：进攻但需要观察 VIX。"
+    assert result["summary"] == "LLM 判断：进攻但需要观察 VIX。"
+    assert result["key_changes"] == ["LLM key change"]
+
+
+def test_macro_analyst_reports_llm_fallback_when_model_is_unavailable():
+    result = analyze_macro_environment(
+        _rows(),
+        window=30,
+        use_llm=True,
+        model="deepseek-v4-pro",
+        llm_client=lambda **kwargs: None,
+    )
+
+    assert result["llm"]["used"] is False
+    assert result["llm"]["mode"] == "fallback"
+    assert result["llm"]["error"]
+    assert result["llm_interpretation"] is None
+
+
 def test_macro_analyst_api_replaces_market_signal_interpretation(monkeypatch):
     calls = []
     monkeypatch.setattr(server, "market_signal_rows", lambda query: calls.append(query) or _rows())
@@ -44,6 +94,50 @@ def test_macro_analyst_api_replaces_market_signal_interpretation(monkeypatch):
     assert response.payload["macro_snapshot"]["watchlist"] == ["TSLA", "NVDA"]
     assert legacy.status == 200
     assert legacy.payload["source"] == "hermes.macro_analyst"
+
+
+def test_macro_analyst_llm_run_endpoint_invokes_model_and_appends_audit(monkeypatch):
+    calls = []
+    audit_records = []
+
+    def fake_analyze(rows, *, window, watchlist, use_llm=False, model=None, llm_client=None):
+        calls.append({"rows": rows, "window": window, "watchlist": watchlist, "use_llm": use_llm, "model": model})
+        return {
+            "source": "hermes.macro_analyst",
+            "agent_role": "macro_analyst",
+            "stage": "Research",
+            "artifact_type": "MacroSnapshot",
+            "window": window,
+            "sample_size": len(rows),
+            "macro_state": "offense",
+            "stance_label": "进攻",
+            "summary": "LLM macro summary",
+            "llm": {"provider": "deepseek", "mode": "enabled", "used": True, "model": model},
+            "llm_interpretation": {"summary": "LLM macro summary"},
+            "macro_snapshot": {"stage": "Research", "artifact_type": "MacroSnapshot", "watchlist": watchlist},
+            "key_changes": [],
+            "growth_implications": [],
+            "watchlist_implications": [],
+            "next_checks": [],
+            "actions": [],
+        }
+
+    monkeypatch.setattr(server, "market_signal_rows", lambda query: _rows())
+    monkeypatch.setattr(server, "analyze_macro_environment", fake_analyze)
+    monkeypatch.setattr(server, "append_run", lambda record: audit_records.append(record))
+
+    response = server.api_post_response_for_path(
+        "/api/hermes/macro-analysis/run",
+        {"window": 30, "watchlist": ["TSLA", "NVDA"], "model": "deepseek-v4-pro"},
+    )
+
+    assert response.status == 200
+    assert response.payload["run_id"].startswith("macro-llm-")
+    assert response.payload["analysis"]["llm"]["used"] is True
+    assert calls == [{"rows": _rows(), "window": 30, "watchlist": ["TSLA", "NVDA"], "use_llm": True, "model": "deepseek-v4-pro"}]
+    assert audit_records[0]["type"] == "hermes_macro_llm_analysis"
+    assert audit_records[0]["run_id"] == response.payload["run_id"]
+    assert audit_records[0]["llm"]["used"] is True
 
 
 def test_hermes_capabilities_and_default_agent_are_macro_analyst(monkeypatch, tmp_path):

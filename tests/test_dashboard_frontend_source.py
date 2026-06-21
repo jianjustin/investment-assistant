@@ -121,3 +121,19 @@ def test_frontend_reframes_market_signal_interpretation_as_macro_analyst():
     assert "macroAnalyst" in messages
     assert "macro_analyst" in hermes
     assert "market_signal_interpretation" not in hermes
+
+
+def test_frontend_can_run_macro_analyst_llm_interpretation_manually():
+    app = Path("web/src/app/app.ts").read_text(encoding="utf-8")
+    market = Path("web/src/features/market.ts").read_text(encoding="utf-8")
+    state = Path("web/src/app/state.ts").read_text(encoding="utf-8")
+    types = Path("web/src/app/types.ts").read_text(encoding="utf-8")
+    messages = Path("web/src/i18n/messages.ts").read_text(encoding="utf-8")
+
+    assert "runMacroAnalystLlm" in state
+    assert "/api/hermes/macro-analysis/run" in state
+    assert "macroLlmInFlight" in types
+    assert "macroLlmResult" in types
+    assert "macroLlmButton" in market
+    assert "#macroLlmButton" in app
+    assert "runningMacroLlm" in messages

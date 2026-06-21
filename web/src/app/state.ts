@@ -1,6 +1,6 @@
 import { defaultLanguage, messages, type CopyKey } from '../i18n/messages'
 import { defaultRoute, parentForRoute, routeFromHash } from './navigation'
-import type { AppState, FilingsPayload, Language, HermesAgentSaveResult, HermesMacroAnalysisPayload, HermesMarketInterpretationPayload, HermesPayload, MarketFetchResult, MarketSignal, MarketSignalsPayload, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
+import type { AppState, FilingsPayload, Language, HermesAgentSaveResult, HermesMacroAnalysisPayload, HermesMacroLlmResult, HermesMarketInterpretationPayload, HermesPayload, MarketFetchResult, MarketSignal, MarketSignalsPayload, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
 
 export const state: AppState = {
   loading: true,
@@ -21,6 +21,8 @@ export const state: AppState = {
   marketFetchInFlight: false,
   marketFetchRequest: null,
   hermesMacroAnalysis: null,
+  macroLlmInFlight: false,
+  macroLlmResult: null,
   hermesMarketInterpretation: null,
   hermes: null,
   hermesAgentSaving: false,
@@ -101,6 +103,32 @@ export async function reloadData(): Promise<void> {
   }
 }
 
+export async function runMacroAnalystLlm(payload: { window?: number; watchlist?: string[]; model?: string } = { window: 30 }): Promise<void> {
+  state.macroLlmInFlight = true
+  state.macroLlmResult = null
+  state.error = null
+  try {
+    const response = await fetch('/api/hermes/macro-analysis/run', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ window: 30, ...payload }),
+    })
+    const result = (await response.json()) as HermesMacroLlmResult
+    state.macroLlmResult = result
+    if (!response.ok) {
+      throw new Error(result.error ?? `HTTP ${response.status}: ${response.statusText}`)
+    }
+    if (result.analysis) {
+      state.hermesMacroAnalysis = result.analysis
+      state.hermesMarketInterpretation = result.analysis
+    }
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error)
+  } finally {
+    state.macroLlmInFlight = false
+    state.loading = false
+  }
+}
 
 export async function fetchMarketSignals(payload: { date?: string; from?: string; to?: string }): Promise<void> {
   state.marketFetchInFlight = true

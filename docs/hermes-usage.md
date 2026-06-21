@@ -49,7 +49,7 @@ Research -> Discover -> Backtest -> Viewpoint -> Plan -> 人工闸门
 - `next_checks`：下一次重点观察
 - `actions`：下一步动作建议
 
-DeepSeek 作为可选解释增强边界：`investment_assistant/hermes/deepseek_client.py` 使用 OpenAI-compatible Chat Completions 格式，读取 `DEEPSEEK_API_KEY`，请求 JSON output。当前 dashboard 刷新默认使用规则版宏观分析，不强依赖模型可用性。
+DeepSeek 作为显式触发的解释增强边界：`investment_assistant/hermes/deepseek_client.py` 使用 OpenAI-compatible Chat Completions 格式，读取 `DEEPSEEK_API_KEY`，请求 JSON output。当前 dashboard 普通刷新默认使用规则版宏观分析；点击“调用 DeepSeek 解读”或调用 POST 接口时才会触发真实 LLM 调用，并把 run_id 与 LLM 状态写入运行日志。
 
 ## API 调用
 
@@ -73,6 +73,12 @@ curl -u "$HERMES_DASHBOARD_USER:$SERVER_PWD" \
 
 ```bash
 curl -u "$HERMES_DASHBOARD_USER:$SERVER_PWD"   'http://127.0.0.1:8787/api/hermes/market-signals/interpretation?window=30'
+
+# 显式触发真实 LLM 解读
+curl -u "$HERMES_DASHBOARD_USER:$SERVER_PWD" \
+  -H 'Content-Type: application/json' \
+  -d '{"window":30,"model":"deepseek-v4-pro"}' \
+  'http://127.0.0.1:8787/api/hermes/macro-analysis/run'
 ```
 
 返回结构包含：

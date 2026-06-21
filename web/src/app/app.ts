@@ -24,7 +24,7 @@ import { renderRaw } from '../features/raw'
 import { renderServices } from '../features/services'
 import { renderWorkbench } from '../features/workbench'
 import { isRouteParent, parentForRoute, routeGroups, routes } from './navigation'
-import { fetchMarketSignals, reloadData, saveHermesAgent, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
+import { fetchMarketSignals, reloadData, runMacroAnalystLlm, saveHermesAgent, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
 import type { RouteEntry, RouteId, RouteItem, RouteParent } from './types'
 import { escapeHtml } from '../shared/html'
 
@@ -267,6 +267,11 @@ function bindEvents(): void {
       tools: String(formData.get('tools') ?? '').split(',').map((item) => item.trim()).filter(Boolean),
       enabled: formData.get('enabled') === 'on',
     }).then(render)
+  })
+  document.querySelector<HTMLButtonElement>('#macroLlmButton')?.addEventListener('click', () => {
+    state.macroLlmInFlight = true
+    render()
+    void runMacroAnalystLlm({ window: 30 }).then(render)
   })
 
   document.querySelector<HTMLFormElement>('#marketFetchForm')?.addEventListener('submit', (event) => {

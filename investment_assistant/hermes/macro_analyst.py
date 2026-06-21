@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections import Counter
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
+
+from investment_assistant.hermes.deepseek_client import request_json_completion
 
 _STATE_LABELS = {"offense": "进攻", "cautious": "谨慎", "defense": "防守"}
 
@@ -13,6 +15,9 @@ def analyze_macro_environment(
     *,
     window: int = 30,
     watchlist: list[str] | None = None,
+    use_llm: bool = False,
+    model: str = "deepseek-v4-pro",
+    llm_client: Callable[..., dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """Build a MacroSnapshot-style analysis for the investment decision pipeline.
 
@@ -43,7 +48,7 @@ def analyze_macro_environment(
     title, summary = _narrative(macro_state, latest.get("market_status"), avg_vix, sample_size)
     metrics = _metrics(counts, green_ratio, red_ratio, above_200_ratio, avg_vix, latest)
 
-    return {
+    result = {
         "source": "hermes.macro_analyst",
         "agent_role": "macro_analyst",
         "stage": "Research",
@@ -78,8 +83,91 @@ def analyze_macro_environment(
         "next_checks": _next_checks(macro_state),
         "sections": _sections(macro_state, sample_size, green_ratio, red_ratio, above_200_ratio, avg_vix),
         "actions": _actions(macro_state, sample_size),
-        "llm": {"provider": "deepseek", "mode": "optional", "used": False},
+        "llm": {"provider": "deepseek", "mode": "optional", "used": False, "model": model},
+        "llm_interpretation": None,
     }
+    if use_llm:
+        return _attach_llm_interpretation(result, normalized, model=model, llm_client=llm_client)
+    return result
+
+
+def _attach_llm_interpretation(
+    result: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    model: str,
+    llm_client: Callable[..., dict[str, Any] | None] | None,
+) -> dict[str, Any]:
+    client = llm_client or request_json_completion
+    llm_payload = client(system_prompt=_MACRO_LLM_SYSTEM_PROMPT, user_payload=_llm_user_payload(result, rows), model=model)
+    if not llm_payload:
+        result["llm"] = {"provider": "deepseek", "mode": "fallback", "used": False, "model": model, "error": "DeepSeek 未配置或调用失败，已保留规则版宏观分析。"}
+        result["llm_interpretation"] = None
+        return result
+
+    interpretation = _normalize_llm_payload(llm_payload)
+    result["llm"] = {"provider": "deepseek", "mode": "enabled", "used": True, "model": model, "error": None}
+    result["llm_interpretation"] = interpretation
+    if interpretation.get("summary"):
+        result["summary"] = interpretation["summary"]
+    for key in ["key_changes", "growth_implications", "watchlist_implications", "next_checks", "actions"]:
+        if interpretation.get(key):
+            result[key] = interpretation[key]
+    if interpretation.get("risk_questions"):
+        result["risk_questions"] = interpretation["risk_questions"]
+    result["sections"] = [
+        {"title": "LLM 宏观解读", "items": result.get("key_changes", [])},
+        {"title": "对美股成长股的影响", "items": result.get("growth_implications", [])},
+    ]
+    return result
+
+
+_MACRO_LLM_SYSTEM_PROMPT = """你是 Hermes 投资助手中的宏观分析师，承接投资决策系统 Research / MacroSnapshot 阶段。
+你只基于输入的市场信号和 MacroSnapshot 做宏观环境解读，不做价格预测，不给自动交易指令。
+必须输出严格 JSON，字段为：summary:string, key_changes:string[], growth_implications:string[], watchlist_implications:string[], next_checks:string[], actions:string[], risk_questions:string[]。
+所有内容使用中文，保持可审计、可追溯、可作为后续 Discover/Backtest/Viewpoint/Plan 的上游约束。
+"""
+
+
+def _llm_user_payload(result: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "task": "enhance_macro_snapshot_interpretation",
+        "stage": result.get("stage"),
+        "artifact_type": result.get("artifact_type"),
+        "macro_state": result.get("macro_state"),
+        "stance_label": result.get("stance_label"),
+        "summary": result.get("summary"),
+        "macro_snapshot": result.get("macro_snapshot"),
+        "metrics": result.get("metrics"),
+        "rows": rows[:30],
+        "required_output_schema": {
+            "summary": "string",
+            "key_changes": ["string"],
+            "growth_implications": ["string"],
+            "watchlist_implications": ["string"],
+            "next_checks": ["string"],
+            "actions": ["string"],
+            "risk_questions": ["string"],
+        },
+    }
+
+
+def _normalize_llm_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "summary": str(payload.get("summary", "")).strip(),
+        "key_changes": _string_list(payload.get("key_changes")),
+        "growth_implications": _string_list(payload.get("growth_implications")),
+        "watchlist_implications": _string_list(payload.get("watchlist_implications")),
+        "next_checks": _string_list(payload.get("next_checks")),
+        "actions": _string_list(payload.get("actions")),
+        "risk_questions": _string_list(payload.get("risk_questions")),
+    }
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:

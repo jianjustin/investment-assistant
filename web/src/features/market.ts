@@ -20,7 +20,7 @@ export function renderMarket(state: AppState, t: Translator, route: RouteId = 'm
     </div>
   `
   if (route === 'market-trend') {
-    return `${renderPageHeader(t('marketTrend'), t('marketTrendDesc'))}${metrics}<div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.15fr_0.85fr]">${renderPanel(t('signalDashboard'), t('signalDashboardDesc'), renderSignalChart(rows))}${renderPanel(t('trendJudgement'), t('trendJudgementDesc'), renderTrend(trend, t))}</div><div class="mt-4">${renderPanel(t('macroAnalyst'), t('macroAnalystDesc'), renderMacroAnalyst(state.hermesMacroAnalysis, t))}</div>`
+    return `${renderPageHeader(t('marketTrend'), t('marketTrendDesc'))}${metrics}<div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.15fr_0.85fr]">${renderPanel(t('signalDashboard'), t('signalDashboardDesc'), renderSignalChart(rows))}${renderPanel(t('trendJudgement'), t('trendJudgementDesc'), renderTrend(trend, t))}</div><div class="mt-4">${renderPanel(t('macroAnalyst'), t('macroAnalystDesc'), renderMacroAnalyst(state, t))}</div>`
   }
   if (route === 'market-list') {
     return `${renderPageHeader(t('marketList'), t('marketListDesc'))}${metrics}<div class="mt-4">${renderPanel(t('signalList'), t('signalListDesc'), renderSignalTable(rows, t))}</div>`
@@ -35,7 +35,7 @@ export function renderMarket(state: AppState, t: Translator, route: RouteId = 'm
       ${renderPanel(t('signalDashboard'), t('signalDashboardDesc'), renderSignalChart(rows) + renderLatest(signal, tone, t))}
       ${renderPanel(t('trendJudgement'), t('trendJudgementDesc'), renderTrend(trend, t))}
     </div>
-    <div class="mt-4">${renderPanel(t('macroAnalyst'), t('macroAnalystDesc'), renderMacroAnalyst(state.hermesMacroAnalysis, t))}</div>
+    <div class="mt-4">${renderPanel(t('macroAnalyst'), t('macroAnalystDesc'), renderMacroAnalyst(state, t))}</div>
   `
 }
 
@@ -77,10 +77,13 @@ function renderTrend(trend: AppState['marketTrend'], t: Translator): string {
   `
 }
 
-function renderMacroAnalyst(interpretation: HermesMacroAnalysisPayload | null | undefined, t: Translator): string {
+function renderMacroAnalyst(state: AppState, t: Translator): string {
+  const interpretation: HermesMacroAnalysisPayload | null | undefined = state.hermesMacroAnalysis
   if (!interpretation) return `<div class="rounded-md border border-line bg-panel px-3 py-4 text-sm text-muted">${escapeHtml(t('macroAnalystNoData'))}</div>`
   const tone = interpretation.macro_state === 'offense' ? 'good' : interpretation.macro_state === 'defense' || interpretation.judgement === 'risk_off' ? 'bad' : 'warn'
   const metrics = interpretation.metrics ?? {}
+  const llmStatus = interpretation.llm?.used ? t('macroLlmUsed') : interpretation.llm?.mode === 'fallback' ? t('macroLlmFallback') : t('macroLlmNotRun')
+  const llmTone = interpretation.llm?.used ? 'good' : interpretation.llm?.mode === 'fallback' ? 'warn' : 'neutral'
   return `
     <div class="space-y-4">
       <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -92,9 +95,14 @@ function renderMacroAnalyst(interpretation: HermesMacroAnalysisPayload | null | 
           <h3 class="mt-2 text-base font-semibold text-ink">${escapeHtml(interpretation.title)}</h3>
           <p class="mt-1 text-sm text-muted">${escapeHtml(interpretation.summary)}</p>
         </div>
-        <div class="grid grid-cols-2 gap-2 text-sm sm:min-w-60">
+        <div class="flex flex-col gap-2 sm:min-w-60">
+          <button id="macroLlmButton" type="button" class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-accent px-4 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60" ${state.macroLlmInFlight ? 'disabled' : ''}><i data-lucide="braces" class="h-4 w-4 ${state.macroLlmInFlight ? 'animate-pulse' : ''}" aria-hidden="true"></i>${escapeHtml(state.macroLlmInFlight ? t('runningMacroLlm') : t('runMacroLlm'))}</button>
+          <div class="flex items-center justify-between gap-2 rounded-md border border-line bg-panel px-3 py-2 text-xs text-muted"><span>${escapeHtml(t('macroLlmStatus'))}</span>${renderStatusPill(escapeHtml(llmStatus), llmTone)}</div>
+          ${state.macroLlmResult?.run_id ? `<div class="truncate text-xs text-muted" title="${escapeHtml(state.macroLlmResult.run_id)}">run_id: ${escapeHtml(state.macroLlmResult.run_id)}</div>` : ''}
+          <div class="grid grid-cols-2 gap-2 text-sm">
           <div class="rounded-md border border-line bg-panel px-3 py-2"><div class="label">${escapeHtml(t('greenRatio'))}</div><div class="font-semibold text-ink">${Math.round((metrics.green_ratio ?? 0) * 100)}%</div></div>
           <div class="rounded-md border border-line bg-panel px-3 py-2"><div class="label">${escapeHtml(t('vixClose'))}</div><div class="font-semibold text-ink">${formatNumber(metrics.avg_vix, 1)}</div></div>
+          </div>
         </div>
       </div>
       ${(interpretation.sections ?? []).map((section) => `
@@ -109,6 +117,7 @@ function renderMacroAnalyst(interpretation: HermesMacroAnalysisPayload | null | 
       ${renderMacroList(t('growthImplications'), interpretation.growth_implications)}
       ${renderMacroList(t('watchlistImplications'), interpretation.watchlist_implications)}
       ${renderMacroList(t('nextChecks'), interpretation.next_checks)}
+      ${renderMacroList(t('riskQuestions'), interpretation.risk_questions ?? interpretation.llm_interpretation?.risk_questions)}
       <div>
         <div class="text-sm font-semibold text-ink">${escapeHtml(t('hermesActions'))}</div>
         <div class="mt-2 grid grid-cols-1 gap-2 md:grid-cols-3">
