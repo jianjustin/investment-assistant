@@ -99,18 +99,28 @@ export type MarketFetchResult = {
   error?: string
 }
 
-export type RouteId = 'workbench' | 'market' | 'filings' | 'services' | 'operations' | 'raw'
+export type RouteId = 'workbench' | 'market-overview' | 'market-trend' | 'market-list' | 'market-fetch' | 'filings' | 'services' | 'operations' | 'raw'
 
 export type RouteItem = {
   id: RouteId
   labelKey: CopyKey
   descriptionKey: CopyKey
-  icon: string
+  icon?: string
 }
+
+export type RouteParent = {
+  id: string
+  labelKey: CopyKey
+  descriptionKey: CopyKey
+  icon: string
+  children: RouteItem[]
+}
+
+export type RouteEntry = RouteItem | RouteParent
 
 export type RouteGroup = {
   labelKey: CopyKey
-  children: RouteItem[]
+  children: RouteEntry[]
 }
 
 export type AppState = {
@@ -118,6 +128,7 @@ export type AppState = {
   error: string | null
   language: Language
   navOpen: boolean
+  expandedMenus: string[]
   activeRoute: RouteId
   refreshedAt: Date | null
   status: StatusPayload | null

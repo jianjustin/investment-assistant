@@ -47,4 +47,28 @@
   .status-dot {
     @apply h-2.5 w-2.5 rounded-full;
   }
+
+  .menu-item {
+    @apply relative flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-sm transition;
+  }
+
+  .menu-item-active {
+    @apply bg-teal-50 text-ink ring-1 ring-teal-100;
+  }
+
+  .menu-item-inactive {
+    @apply text-slate-700 hover:bg-panel hover:text-ink;
+  }
+
+  .menu-dropdown-item {
+    @apply block rounded-md px-3 py-2 text-sm font-medium transition;
+  }
+
+  .menu-dropdown-item-active {
+    @apply bg-teal-50 text-accent;
+  }
+
+  .menu-dropdown-item-inactive {
+    @apply text-muted hover:bg-panel hover:text-ink;
+  }
 }

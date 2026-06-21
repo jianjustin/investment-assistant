@@ -1,33 +1,39 @@
-import type { AppState, MarketSignal } from '../app/types'
+import type { AppState, MarketSignal, RouteId } from '../app/types'
 import type { Translator } from '../i18n/messages'
 import { renderMetric, renderPanel, renderPageHeader, renderStatusPill, renderTable } from '../shared/components'
 import { formatBool, formatNumber, marketDot, marketLabel } from '../shared/format'
 import { escapeHtml } from '../shared/html'
 
-export function renderMarket(state: AppState, t: Translator): string {
+export function renderMarket(state: AppState, t: Translator, route: RouteId = 'market-overview'): string {
   const signal = state.latestSignal ?? state.status?.database?.latest_market_signal
   const rows = state.marketSignals?.rows ?? []
   const trend = state.marketTrend
   const status = signal?.market_status?.toLowerCase()
   const tone = status === 'green' ? 'good' : status === 'yellow' ? 'warn' : status === 'red' ? 'bad' : 'neutral'
 
-  return `
-    ${renderPageHeader(t('marketModule'), t('marketModuleDesc'))}
+  const metrics = `
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
       ${renderMetric(t('latestStatus'), marketLabel(signal, t), 'trending-up', signal?.signal_date ?? 'N/A', marketDot(signal))}
       ${renderMetric(t('sampleSize'), `${trend?.sample_size ?? rows.length}`, 'database', `${t('trendJudgement')} ${trend?.window ?? 20}`, 'bg-slate-500')}
       ${renderMetric(t('greenRatio'), `${Math.round((trend?.green_ratio ?? 0) * 100)}%`, 'activity', trendLabel(trend?.judgement, t), 'bg-emerald-500')}
       ${renderMetric(t('redRatio'), `${Math.round((trend?.red_ratio ?? 0) * 100)}%`, 'activity', trendSummary(trend?.judgement, t), 'bg-rose-500')}
     </div>
-
+  `
+  if (route === 'market-trend') {
+    return `${renderPageHeader(t('marketTrend'), t('marketTrendDesc'))}${metrics}<div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.15fr_0.85fr]">${renderPanel(t('signalDashboard'), t('signalDashboardDesc'), renderSignalChart(rows))}${renderPanel(t('trendJudgement'), t('trendJudgementDesc'), renderTrend(trend, t))}</div>`
+  }
+  if (route === 'market-list') {
+    return `${renderPageHeader(t('marketList'), t('marketListDesc'))}${metrics}<div class="mt-4">${renderPanel(t('signalList'), t('signalListDesc'), renderSignalTable(rows, t))}</div>`
+  }
+  if (route === 'market-fetch') {
+    return `${renderPageHeader(t('marketFetch'), t('marketFetchDesc'))}<div class="grid grid-cols-1 gap-4 xl:grid-cols-[0.9fr_1.1fr]">${renderPanel(t('manualFetch'), t('manualFetchDesc'), renderFetchForm(state, t))}${renderPanel(t('latestSignal'), t('latestSignalDesc'), renderLatest(signal, tone, t))}</div>`
+  }
+  return `
+    ${renderPageHeader(t('marketOverview'), t('marketOverviewDesc'))}
+    ${metrics}
     <div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.1fr_0.9fr]">
       ${renderPanel(t('signalDashboard'), t('signalDashboardDesc'), renderSignalChart(rows) + renderLatest(signal, tone, t))}
       ${renderPanel(t('trendJudgement'), t('trendJudgementDesc'), renderTrend(trend, t))}
-    </div>
-
-    <div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-      ${renderPanel(t('signalList'), t('signalListDesc'), renderSignalTable(rows, t))}
-      ${renderPanel(t('manualFetch'), t('manualFetchDesc'), renderFetchForm(state, t))}
     </div>
   `
 }

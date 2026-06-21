@@ -2,6 +2,7 @@ import {
   Activity,
   Braces,
   CalendarDays,
+  ChevronDown,
   createIcons,
   Database,
   FileText,
@@ -21,9 +22,9 @@ import { renderOperations } from '../features/operations'
 import { renderRaw } from '../features/raw'
 import { renderServices } from '../features/services'
 import { renderWorkbench } from '../features/workbench'
-import { routeGroups, routes } from './navigation'
-import { fetchMarketSignals, reloadData, setRouteFromHash, state, t, toggleLanguage } from './state'
-import type { RouteId, RouteItem } from './types'
+import { isRouteParent, parentForRoute, routeGroups, routes } from './navigation'
+import { fetchMarketSignals, reloadData, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
+import type { RouteEntry, RouteId, RouteItem, RouteParent } from './types'
 import { escapeHtml } from '../shared/html'
 
 let root: HTMLDivElement
@@ -65,6 +66,7 @@ function render(): void {
       Activity,
       Braces,
       CalendarDays,
+      ChevronDown,
       Database,
       FileText,
       Gauge,
@@ -126,7 +128,7 @@ function renderSidebar(): string {
           <div class="mb-5">
             <div class="px-3 text-xs font-semibold uppercase tracking-normal text-muted">${escapeHtml(t(group.labelKey))}</div>
             <div class="mt-2 space-y-1">
-              ${group.children.map(renderNavItem).join('')}
+              ${group.children.map(renderNavEntry).join('')}
             </div>
           </div>
         `).join('')}
@@ -142,16 +144,53 @@ function renderSidebar(): string {
   `
 }
 
+function renderNavEntry(entry: RouteEntry): string {
+  return isRouteParent(entry) ? renderNavParent(entry) : renderNavItem(entry)
+}
+
+function renderNavParent(parent: RouteParent): string {
+  const active = parent.children.some((child) => child.id === state.activeRoute)
+  const expanded = state.expandedMenus.includes(parent.id) || active
+  return `
+    <div>
+      <button type="button" class="menu-item group ${active ? 'menu-item-active' : 'menu-item-inactive'}" data-menu-toggle="${parent.id}">
+        <i data-lucide="${parent.icon}" class="h-5 w-5 shrink-0 ${active ? 'text-accent' : 'text-muted group-hover:text-accent'}" aria-hidden="true"></i>
+        <span class="menu-item-text min-w-0 flex-1 text-left">
+          <span class="block truncate font-medium">${escapeHtml(t(parent.labelKey))}</span>
+          <span class="mt-0.5 block truncate text-xs ${active ? 'text-teal-700' : 'text-muted'}">${escapeHtml(t(parent.descriptionKey))}</span>
+        </span>
+        <i data-lucide="chevron-down" class="h-4 w-4 shrink-0 transition ${expanded ? 'rotate-180 text-accent' : 'text-muted'}" aria-hidden="true"></i>
+      </button>
+      <div class="overflow-hidden ${expanded ? 'block' : 'hidden'}">
+        <ul class="mt-2 flex flex-col gap-1 pl-9">
+          ${parent.children.map(renderSubNavItem).join('')}
+        </ul>
+      </div>
+    </div>
+  `
+}
+
 function renderNavItem(route: RouteItem): string {
   const active = route.id === state.activeRoute
   return `
-    <a href="#/${route.id}" class="group flex items-start gap-3 rounded-md px-3 py-2 text-sm ${active ? 'bg-panel text-ink' : 'text-slate-700 hover:bg-panel hover:text-ink'}" data-route-link>
-      <i data-lucide="${route.icon}" class="mt-0.5 h-4 w-4 shrink-0 ${active ? 'text-accent' : 'text-muted group-hover:text-accent'}" aria-hidden="true"></i>
-      <span class="min-w-0">
+    <a href="#/${route.id}" class="menu-item group ${active ? 'menu-item-active' : 'menu-item-inactive'}" data-route-link>
+      <i data-lucide="${route.icon ?? 'circle'}" class="h-5 w-5 shrink-0 ${active ? 'text-accent' : 'text-muted group-hover:text-accent'}" aria-hidden="true"></i>
+      <span class="menu-item-text min-w-0 flex-1">
         <span class="block truncate font-medium">${escapeHtml(t(route.labelKey))}</span>
-        <span class="mt-0.5 block truncate text-xs text-muted">${escapeHtml(t(route.descriptionKey))}</span>
+        <span class="mt-0.5 block truncate text-xs ${active ? 'text-teal-700' : 'text-muted'}">${escapeHtml(t(route.descriptionKey))}</span>
       </span>
     </a>
+  `
+}
+
+function renderSubNavItem(route: RouteItem): string {
+  const active = route.id === state.activeRoute
+  return `
+    <li>
+      <a href="#/${route.id}" class="menu-dropdown-item ${active ? 'menu-dropdown-item-active' : 'menu-dropdown-item-inactive'}" data-route-link>
+        ${escapeHtml(t(route.labelKey))}
+      </a>
+    </li>
   `
 }
 
@@ -159,8 +198,11 @@ function renderActiveRoute(): string {
   const route = routes.find((item) => item.id === state.activeRoute) ?? routes[0]
   const header = route ? '' : ''
   switch (state.activeRoute) {
-    case 'market':
-      return renderMarket(state, t)
+    case 'market-overview':
+    case 'market-trend':
+    case 'market-list':
+    case 'market-fetch':
+      return renderMarket(state, t, state.activeRoute)
     case 'filings':
       return renderFilings(state, t)
     case 'services':
@@ -193,6 +235,15 @@ function bindEvents(): void {
   })
   document.querySelector<HTMLButtonElement>('#closeMobileMenu')?.addEventListener('click', closeNavigation)
   document.querySelector<HTMLButtonElement>('#navBackdrop')?.addEventListener('click', closeNavigation)
+  document.querySelectorAll<HTMLButtonElement>('[data-menu-toggle]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const menuId = button.dataset.menuToggle
+      if (menuId) {
+        toggleExpandedMenu(menuId)
+        render()
+      }
+    })
+  })
 
   document.querySelector<HTMLFormElement>('#marketFetchForm')?.addEventListener('submit', (event) => {
     event.preventDefault()

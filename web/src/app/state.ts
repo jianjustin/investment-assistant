@@ -1,5 +1,5 @@
 import { defaultLanguage, messages, type CopyKey } from '../i18n/messages'
-import { defaultRoute, routeFromHash } from './navigation'
+import { defaultRoute, parentForRoute, routeFromHash } from './navigation'
 import type { AppState, FilingsPayload, Language, MarketFetchResult, MarketSignal, MarketSignalsPayload, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
 
 export const state: AppState = {
@@ -7,6 +7,7 @@ export const state: AppState = {
   error: null,
   language: defaultLanguage,
   navOpen: false,
+  expandedMenus: ['market-signals'],
   activeRoute: routeFromHash(window.location.hash || `#/${defaultRoute}`),
   refreshedAt: null,
   status: null,
@@ -34,6 +35,16 @@ export function setLanguage(language: Language): void {
 
 export function setRouteFromHash(): void {
   state.activeRoute = routeFromHash(window.location.hash)
+  const parent = parentForRoute(state.activeRoute)
+  if (parent && !state.expandedMenus.includes(parent.id)) {
+    state.expandedMenus = [...state.expandedMenus, parent.id]
+  }
+}
+
+export function toggleExpandedMenu(menuId: string): void {
+  state.expandedMenus = state.expandedMenus.includes(menuId)
+    ? state.expandedMenus.filter((id) => id !== menuId)
+    : [...state.expandedMenus, menuId]
 }
 
 async function fetchJson<T>(url: string): Promise<T> {

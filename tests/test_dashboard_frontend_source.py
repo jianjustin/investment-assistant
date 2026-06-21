@@ -60,3 +60,15 @@ def test_market_signal_english_trend_copy_is_translated():
 
     assert "Market signals are constructive" in messages
     assert "Market risk is elevated" in messages
+
+
+def test_market_signal_is_parent_menu_with_second_level_routes():
+    navigation = Path("web/src/app/navigation.ts").read_text(encoding="utf-8")
+    app = Path("web/src/app/app.ts").read_text(encoding="utf-8")
+
+    assert "market-signals" in navigation
+    for route_id in ["market-overview", "market-trend", "market-list", "market-fetch"]:
+        assert route_id in navigation
+    assert "data-menu-toggle" in app
+    assert "renderNavParent" in app
+    assert "chevron-down" in app
