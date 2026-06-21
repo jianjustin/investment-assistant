@@ -98,6 +98,16 @@ def test_watchlist_api_lists_adds_and_deletes_tickers(monkeypatch):
     assert deleted == ["NVDA"]
 
 
+def test_ticker_trend_endpoint_returns_rows(monkeypatch):
+    rows = [{"ticker": "TSLA", "trend_state": "uptrend", "attention_level": "high", "trigger_reason": ["above_ma_stack"]}]
+    monkeypatch.setattr(server, "ticker_trend_rows", lambda: rows)
+
+    response = server.api_response_for_path("/api/tickers/trends")
+
+    assert response.status == 200
+    assert response.payload == {"rows": rows, "count": 1}
+
+
 def test_macro_analysis_uses_managed_watchlist_when_query_omits_watchlist(monkeypatch):
     captured = []
     rows = [{"signal_date": date(2026, 6, 21), "market_status": "green", "spy_close": 130, "spy_ma200": 120, "spy_above_200ma": True, "vix_close": 15}]

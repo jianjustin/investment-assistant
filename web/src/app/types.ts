@@ -82,6 +82,33 @@ export type WatchlistMutationResult = {
   error?: string
 }
 
+
+export type TickerTrendSnapshot = {
+  ticker: string
+  signal_date?: string
+  close?: string | number | null
+  ma20?: string | number | null
+  ma50?: string | number | null
+  ma200?: string | number | null
+  volume?: string | number | null
+  volume_ratio?: string | number | null
+  relative_strength_spy?: string | number | null
+  relative_strength_qqq?: string | number | null
+  trend_state: 'uptrend' | 'base' | 'downtrend' | 'volatile' | 'unknown' | string
+  attention_level: 'high' | 'medium' | 'low' | string
+  trigger_reason?: string[]
+  source?: string
+  error?: string | null
+  run_id?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export type TickerTrendsPayload = {
+  rows: TickerTrendSnapshot[]
+  count: number
+}
+
 export type Operation = {
   id: string
   label: string
@@ -229,7 +256,7 @@ export type MarketFetchResult = {
   error?: string
 }
 
-export type RouteId = 'workbench' | 'watchlist-list' | 'hermes-overview' | 'hermes-agents' | 'hermes-ideas' | 'market-overview' | 'market-trend' | 'market-list' | 'market-fetch' | 'filings' | 'services' | 'operations' | 'raw'
+export type RouteId = 'workbench' | 'watchlist-list' | 'ticker-trends' | 'hermes-overview' | 'hermes-agents' | 'hermes-ideas' | 'market-overview' | 'market-trend' | 'market-list' | 'market-fetch' | 'filings' | 'services' | 'operations' | 'raw'
 
 export type RouteItem = {
   id: RouteId
@@ -269,6 +296,7 @@ export type AppState = {
   watchlist: WatchlistPayload | null
   watchlistSaving: boolean
   watchlistResult: WatchlistMutationResult | null
+  tickerTrends: TickerTrendsPayload | null
   marketSignals: MarketSignalsPayload | null
   marketTrend: MarketTrendPayload | null
   marketFetchResult: MarketFetchResult | null

@@ -21,3 +21,15 @@ def test_watchlist_items_migration_defines_manageable_watchlist_table():
     assert "status TEXT NOT NULL" in sql
     assert "thesis TEXT" in sql
     assert "CREATE INDEX IF NOT EXISTS idx_watchlist_items_status" in sql
+
+
+def test_ticker_signal_snapshots_migration_defines_required_table():
+    sql = Path("migrations/003_ticker_signal_snapshots.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS ticker_signal_snapshots" in sql
+    assert "ticker TEXT NOT NULL" in sql
+    assert "signal_date DATE NOT NULL" in sql
+    assert "trend_state TEXT NOT NULL" in sql
+    assert "attention_level TEXT NOT NULL" in sql
+    assert "trigger_reason JSONB NOT NULL" in sql
+    assert "UNIQUE (ticker, signal_date)" in sql

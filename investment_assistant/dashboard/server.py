@@ -132,6 +132,9 @@ def api_response_for_path(path: str) -> ApiResponse | None:
     if parsed_path == "/api/watchlist":
         rows = watchlist_rows()
         return ApiResponse({"rows": rows, "count": len(rows)})
+    if parsed_path == "/api/tickers/trends":
+        rows = ticker_trend_rows()
+        return ApiResponse({"rows": rows, "count": len(rows)})
     if parsed_path == "/api/market/signals/latest":
         return ApiResponse(database_status().get("latest_market_signal"))
     if parsed_path == "/api/market/signals":
@@ -235,6 +238,36 @@ def delete_watchlist_item(ticker: str) -> dict[str, Any]:
 
 def _config_watchlist_rows() -> list[dict[str, Any]]:
     return [{"ticker": ticker, "status": "active", "thesis": "来自配置文件的默认标的", "tags": [], "source": "config"} for ticker in load_config().watchlist]
+
+
+def ticker_trend_rows() -> list[dict[str, Any]]:
+    database_url = os.environ.get("INVESTMENT_ASSISTANT_DATABASE_URL")
+    if not database_url:
+        return []
+    try:
+        with connect(database_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT ticker, signal_date, close, ma20, ma50, ma200,
+                           volume, volume_ratio, relative_strength_spy, relative_strength_qqq,
+                           trend_state, attention_level, trigger_reason, source, error,
+                           run_id, created_at, updated_at
+                    FROM ticker_signal_snapshots
+                    ORDER BY signal_date DESC, attention_level ASC, ticker ASC
+                    LIMIT 100
+                    """
+                )
+                rows = cur.fetchall()
+    except Exception:
+        return []
+    keys = [
+        "ticker", "signal_date", "close", "ma20", "ma50", "ma200",
+        "volume", "volume_ratio", "relative_strength_spy", "relative_strength_qqq",
+        "trend_state", "attention_level", "trigger_reason", "source", "error",
+        "run_id", "created_at", "updated_at",
+    ]
+    return [dict(zip(keys, row)) for row in rows]
 
 
 def _parse_payload_tags(value: Any) -> list[str]:
