@@ -1,0 +1,21 @@
+[Unit]
+Description=Hermes Investment Assistant Dashboard
+After=network-online.target investment-assistant-postgres.service
+Wants=network-online.target investment-assistant-postgres.service
+
+[Service]
+Type=simple
+User=jianjustin
+Group=jianjustin
+WorkingDirectory=/opt/hermes-investment-assistant/app
+EnvironmentFile=/opt/hermes-investment-assistant/.env
+Environment=HERMES_DASHBOARD_HOST=0.0.0.0
+Environment=HERMES_DASHBOARD_PORT=8787
+ExecStart=/opt/hermes-investment-assistant/.venv/bin/python -m investment_assistant.dashboard.server
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

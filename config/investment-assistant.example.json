@@ -1,0 +1,21 @@
+{
+  "watchlist": ["CRDO", "MU", "RKLB", "NVDA"],
+  "market": {
+    "spy_ticker": "SPY",
+    "vix_ticker": "^VIX",
+    "ma_days": 200,
+    "history_days": 300,
+    "yellow_vix": 20,
+    "red_vix": 30
+  },
+  "filings": {
+    "forms": ["10-Q", "10-K"],
+    "lookback_years": 3,
+    "output_dir": "/srv/investment-assistant/filings"
+  },
+  "vault_ro": "/srv/vault-ro",
+  "draft_dir": "/srv/vault-staging/06-收集箱/AI草稿",
+  "brief_time_local": "08:30",
+  "max_daily_focus_items": 3,
+  "model_default": "deepseek-v4-pro"
+}

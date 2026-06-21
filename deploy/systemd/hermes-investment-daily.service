@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Hermes investment assistant daily task
+After=network-online.target investment-assistant-postgres.service
+Wants=network-online.target investment-assistant-postgres.service
+
+[Service]
+Type=oneshot
+User=jianjustin
+Group=jianjustin
+WorkingDirectory=/opt/hermes-investment-assistant/app
+EnvironmentFile=/opt/hermes-investment-assistant/.env
+ExecStart=/opt/hermes-investment-assistant/.venv/bin/python -m investment_assistant.ops.hermes_daily

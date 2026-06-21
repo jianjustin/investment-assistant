@@ -1,0 +1,15 @@
+[Unit]
+Description=Investment Assistant Postgres
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/hermes-investment-assistant/app
+EnvironmentFile=/opt/hermes-investment-assistant/.env
+ExecStart=/usr/bin/docker compose --env-file /opt/hermes-investment-assistant/.env -f /opt/hermes-investment-assistant/app/deploy/docker-compose.postgres.yml up -d
+ExecStop=/usr/bin/docker compose --env-file /opt/hermes-investment-assistant/.env -f /opt/hermes-investment-assistant/app/deploy/docker-compose.postgres.yml down
+
+[Install]
+WantedBy=multi-user.target

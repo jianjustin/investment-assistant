@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Hermes investment assistant timer
+
+[Timer]
+OnCalendar=*-*-* 08:30:00
+Persistent=true
+Unit=hermes-investment-daily.service
+
+[Install]
+WantedBy=timers.target

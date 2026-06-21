@@ -1,4 +1,8 @@
-# earnings-agent
+# Hermes Investment Assistant
+
+`investment-assistant` 是 Hermes 投资助手的源代码仓库：仓库存储逻辑、业务规则、数据库 schema、部署模板、测试和文档；业务运行产生的数据存入 Postgres、/srv/investment-assistant/filings 和 /opt/hermes-investment-assistant，不存入 Git。
+
+## Legacy: earnings-agent
 
 > 美股财报与技术面信号的自动化监听系统：每日扫描 watchlist，组合大盘门控、财报事件和技术形态，推送到 Discord 并存档到 Obsidian Vault。
 

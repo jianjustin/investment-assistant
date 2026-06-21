@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: investment-assistant-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${INVESTMENT_ASSISTANT_POSTGRES_DB:-investment_assistant}
+      POSTGRES_USER: ${INVESTMENT_ASSISTANT_POSTGRES_USER:-investment_assistant}
+      POSTGRES_PASSWORD: ${INVESTMENT_ASSISTANT_POSTGRES_PASSWORD:?set INVESTMENT_ASSISTANT_POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - /var/lib/investment-assistant/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
