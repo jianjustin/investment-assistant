@@ -1,27 +1,41 @@
 from pathlib import Path
 
 
-def test_frontend_defines_admin_navigation_and_language_switch():
-    source = Path("web/src/main.ts").read_text(encoding="utf-8")
+def test_frontend_uses_modular_admin_platform_structure():
+    expected_files = [
+        "web/src/app/app.ts",
+        "web/src/app/navigation.ts",
+        "web/src/app/state.ts",
+        "web/src/app/types.ts",
+        "web/src/i18n/messages.ts",
+        "web/src/shared/components.ts",
+        "web/src/shared/format.ts",
+        "web/src/shared/html.ts",
+        "web/src/features/workbench.ts",
+        "web/src/features/market.ts",
+        "web/src/features/filings.ts",
+        "web/src/features/services.ts",
+        "web/src/features/operations.ts",
+        "web/src/features/raw.ts",
+    ]
 
-    assert "type Language" in source
-    assert "type NavGroup" in source
-    assert "navGroups" in source
-    assert "languageToggle" in source
-    assert "mobileMenuToggle" in source
-    assert "sidebar" in source
-    assert "中文" in source
-    assert "English" in source
+    for filename in expected_files:
+        assert Path(filename).exists(), filename
+
+    main_source = Path("web/src/main.ts").read_text(encoding="utf-8")
+    assert "./app/app" in main_source
 
 
-def test_frontend_keeps_dashboard_sections_addressable():
-    source = Path("web/src/main.ts").read_text(encoding="utf-8")
+def test_frontend_defines_routes_tables_operations_and_default_chinese():
+    navigation = Path("web/src/app/navigation.ts").read_text(encoding="utf-8")
+    messages = Path("web/src/i18n/messages.ts").read_text(encoding="utf-8")
+    components = Path("web/src/shared/components.ts").read_text(encoding="utf-8")
+    operations = Path("web/src/features/operations.ts").read_text(encoding="utf-8")
 
-    for section_id in [
-        "overview",
-        "market-signal",
-        "service-runtime",
-        "filing-storage",
-        "raw-status",
-    ]:
-        assert section_id in source
+    assert "routeGroups" in navigation
+    for route_id in ["workbench", "market", "filings", "services", "operations", "raw"]:
+        assert route_id in navigation
+
+    assert "defaultLanguage = 'zh'" in messages
+    assert "renderTable" in components
+    assert "requires_confirmation" in operations

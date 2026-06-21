@@ -29,6 +29,12 @@ class StaticResponse:
     body: bytes
 
 
+@dataclass(frozen=True)
+class ApiResponse:
+    payload: Any
+    status: int = 200
+
+
 def status_payload() -> dict[str, Any]:
     return {"database": database_status(), "filings": filing_status(), "system": system_status()}
 
@@ -48,6 +54,81 @@ def filing_status() -> dict[str, Any]:
     root = DEFAULT_FILINGS_DIR
     files = [p for p in root.rglob("*") if p.is_file()] if root.exists() else []
     return {"path": str(root), "exists": root.exists(), "file_count": len(files)}
+
+
+def filing_rows(limit: int = 100) -> list[dict[str, Any]]:
+    root = DEFAULT_FILINGS_DIR
+    if not root.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        stat = path.stat()
+        try:
+            relative_path = str(path.relative_to(root))
+        except ValueError:
+            relative_path = path.name
+        rows.append({
+            "name": path.name,
+            "path": relative_path,
+            "size": stat.st_size,
+            "modified_at": stat.st_mtime,
+        })
+    rows.sort(key=lambda row: row["modified_at"], reverse=True)
+    return rows[:limit]
+
+
+def operation_registry() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "run_daily_scan",
+            "label": "运行每日扫描",
+            "description": "启动 hermes-investment-daily.service，重新执行每日市场与 filing 流程。",
+            "risk": "medium",
+            "enabled": False,
+            "requires_confirmation": True,
+            "method": "POST",
+            "endpoint": "/api/operations/run_daily_scan/run",
+        },
+        {
+            "id": "sync_filings",
+            "label": "同步 Filings",
+            "description": "重新下载 watchlist 中公司的 10-Q / 10-K 文件。",
+            "risk": "medium",
+            "enabled": False,
+            "requires_confirmation": True,
+            "method": "POST",
+            "endpoint": "/api/operations/sync_filings/run",
+        },
+        {
+            "id": "health_check",
+            "label": "服务健康检查",
+            "description": "检查 Postgres、Dashboard 和定时器状态。",
+            "risk": "low",
+            "enabled": False,
+            "requires_confirmation": False,
+            "method": "POST",
+            "endpoint": "/api/operations/health_check/run",
+        },
+    ]
+
+
+def api_response_for_path(path: str) -> ApiResponse | None:
+    parsed_path = unquote(urlparse(path).path)
+    if parsed_path == "/api/status" or parsed_path == "/api/raw/status":
+        return ApiResponse(status_payload())
+    if parsed_path == "/api/services":
+        return ApiResponse(system_status())
+    if parsed_path == "/api/market/signals/latest":
+        return ApiResponse(database_status().get("latest_market_signal"))
+    if parsed_path == "/api/filings":
+        return ApiResponse({"summary": filing_status(), "files": filing_rows()})
+    if parsed_path == "/api/operations":
+        return ApiResponse({"operations": operation_registry()})
+    if parsed_path.startswith("/api/"):
+        return None
+    return None
 
 
 def system_status() -> dict[str, Any]:
@@ -126,8 +207,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("WWW-Authenticate", "Basic realm=\"Hermes Investment Assistant\"")
             self.end_headers()
             return
-        if self.path == "/api/status":
-            self._send_json(status_payload())
+        api_response = api_response_for_path(self.path)
+        if api_response is not None:
+            self._send_json(api_response.payload, api_response.status)
             return
         static_response = static_response_for_path(self.path)
         if static_response is not None:
