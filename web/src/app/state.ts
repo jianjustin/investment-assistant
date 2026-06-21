@@ -1,6 +1,6 @@
 import { defaultLanguage, messages, type CopyKey } from '../i18n/messages'
 import { defaultRoute, parentForRoute, routeFromHash } from './navigation'
-import type { AppState, FilingsPayload, Language, HermesAgentSaveResult, HermesMacroAnalysisPayload, HermesMacroLlmResult, HermesMarketInterpretationPayload, HermesPayload, MarketFetchResult, MarketSignal, MarketSignalsPayload, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
+import type { AppState, FilingsPayload, Language, HermesAgentSaveResult, HermesMacroAnalysisPayload, HermesMacroLlmResult, HermesMarketInterpretationPayload, HermesPayload, MarketFetchResult, MarketSignal, MarketSignalsPayload, WatchlistMutationResult, WatchlistPayload, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
 
 export const state: AppState = {
   loading: true,
@@ -15,6 +15,9 @@ export const state: AppState = {
   latestSignal: null,
   filings: null,
   operations: null,
+  watchlist: null,
+  watchlistSaving: false,
+  watchlistResult: null,
   marketSignals: null,
   marketTrend: null,
   marketFetchResult: null,
@@ -72,12 +75,13 @@ export async function reloadData(): Promise<void> {
   state.error = null
 
   try {
-    const [status, services, latestSignal, filings, operations, marketSignals, marketTrend, hermesMacroAnalysis, hermes, raw] = await Promise.all([
+    const [status, services, latestSignal, filings, operations, watchlist, marketSignals, marketTrend, hermesMacroAnalysis, hermes, raw] = await Promise.all([
       fetchJson<StatusPayload>('/api/status'),
       fetchJson<ServicesPayload>('/api/services'),
       fetchJson<MarketSignal | null>('/api/market/signals/latest'),
       fetchJson<FilingsPayload>('/api/filings'),
       fetchJson<OperationsPayload>('/api/operations'),
+      fetchJson<WatchlistPayload>('/api/watchlist'),
       fetchJson<MarketSignalsPayload>('/api/market/signals?limit=90'),
       fetchJson<MarketTrendPayload>('/api/market/signals/trend?window=20'),
       fetchJson<HermesMacroAnalysisPayload>('/api/hermes/macro-analysis?window=30'),
@@ -89,6 +93,7 @@ export async function reloadData(): Promise<void> {
     state.latestSignal = latestSignal
     state.filings = filings
     state.operations = operations
+    state.watchlist = watchlist
     state.marketSignals = marketSignals
     state.marketTrend = marketTrend
     state.hermesMacroAnalysis = hermesMacroAnalysis
@@ -126,6 +131,52 @@ export async function runMacroAnalystLlm(payload: { window?: number; watchlist?:
     state.error = error instanceof Error ? error.message : String(error)
   } finally {
     state.macroLlmInFlight = false
+    state.loading = false
+  }
+}
+
+export async function addWatchlistItem(payload: { ticker: string; status?: string; thesis?: string; tags?: string[] }): Promise<void> {
+  state.watchlistSaving = true
+  state.watchlistResult = null
+  state.error = null
+  try {
+    const response = await fetch('/api/watchlist', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const result = (await response.json()) as WatchlistMutationResult
+    state.watchlistResult = result
+    if (!response.ok) {
+      throw new Error(result.error ?? `HTTP ${response.status}: ${response.statusText}`)
+    }
+    await reloadData()
+    state.watchlistResult = result
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error)
+  } finally {
+    state.watchlistSaving = false
+    state.loading = false
+  }
+}
+
+export async function deleteWatchlistItem(ticker: string): Promise<void> {
+  state.watchlistSaving = true
+  state.watchlistResult = null
+  state.error = null
+  try {
+    const response = await fetch(`/api/watchlist/${encodeURIComponent(ticker)}`, { method: 'DELETE', headers: { Accept: 'application/json' } })
+    const result = (await response.json()) as WatchlistMutationResult
+    state.watchlistResult = result
+    if (!response.ok) {
+      throw new Error(result.error ?? `HTTP ${response.status}: ${response.statusText}`)
+    }
+    await reloadData()
+    state.watchlistResult = result
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error)
+  } finally {
+    state.watchlistSaving = false
     state.loading = false
   }
 }

@@ -11,8 +11,10 @@ import {
   Languages,
   LayoutDashboard,
   Menu,
+  Plus,
   RefreshCw,
   Server,
+  Trash2,
   TrendingUp,
   X,
 } from 'lucide'
@@ -22,9 +24,10 @@ import { renderMarket } from '../features/market'
 import { renderOperations } from '../features/operations'
 import { renderRaw } from '../features/raw'
 import { renderServices } from '../features/services'
+import { renderWatchlist } from '../features/watchlist'
 import { renderWorkbench } from '../features/workbench'
 import { isRouteParent, parentForRoute, routeGroups, routes } from './navigation'
-import { fetchMarketSignals, reloadData, runMacroAnalystLlm, saveHermesAgent, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
+import { addWatchlistItem, deleteWatchlistItem, fetchMarketSignals, reloadData, runMacroAnalystLlm, saveHermesAgent, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
 import type { RouteEntry, RouteId, RouteItem, RouteParent } from './types'
 import { escapeHtml } from '../shared/html'
 
@@ -75,8 +78,10 @@ function render(): void {
       Languages,
       LayoutDashboard,
       Menu,
+      Plus,
       RefreshCw,
       Server,
+      Trash2,
       TrendingUp,
       X,
     },
@@ -203,6 +208,8 @@ function renderActiveRoute(): string {
     case 'hermes-agents':
     case 'hermes-ideas':
       return renderHermes(state, t, state.activeRoute)
+    case 'watchlist-list':
+      return renderWatchlist(state, t)
     case 'market-overview':
     case 'market-trend':
     case 'market-list':
@@ -247,6 +254,28 @@ function bindEvents(): void {
         toggleExpandedMenu(menuId)
         render()
       }
+    })
+  })
+  document.querySelector<HTMLFormElement>('#watchlistForm')?.addEventListener('submit', (event) => {
+    event.preventDefault()
+    const form = event.currentTarget as HTMLFormElement
+    const formData = new FormData(form)
+    state.watchlistSaving = true
+    render()
+    void addWatchlistItem({
+      ticker: String(formData.get('ticker') ?? ''),
+      status: String(formData.get('status') ?? 'active'),
+      thesis: String(formData.get('thesis') ?? ''),
+      tags: String(formData.get('tags') ?? '').split(',').map((item) => item.trim()).filter(Boolean),
+    }).then(render)
+  })
+  document.querySelectorAll<HTMLButtonElement>('[data-watchlist-delete]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const ticker = button.dataset.watchlistDelete
+      if (!ticker) return
+      state.watchlistSaving = true
+      render()
+      void deleteWatchlistItem(ticker).then(render)
     })
   })
 

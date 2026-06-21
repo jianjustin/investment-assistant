@@ -137,3 +137,23 @@ def test_frontend_can_run_macro_analyst_llm_interpretation_manually():
     assert "macroLlmButton" in market
     assert "#macroLlmButton" in app
     assert "runningMacroLlm" in messages
+
+
+def test_frontend_has_watchlist_management_menu_and_actions():
+    navigation = Path("web/src/app/navigation.ts").read_text(encoding="utf-8")
+    app = Path("web/src/app/app.ts").read_text(encoding="utf-8")
+    state = Path("web/src/app/state.ts").read_text(encoding="utf-8")
+    types = Path("web/src/app/types.ts").read_text(encoding="utf-8")
+    messages = Path("web/src/i18n/messages.ts").read_text(encoding="utf-8")
+    watchlist = Path("web/src/features/watchlist.ts").read_text(encoding="utf-8")
+
+    assert "watchlistModule" in navigation
+    assert "watchlist-list" in navigation
+    assert "WatchlistPayload" in types
+    assert "watchlistForm" in watchlist
+    assert "data-watchlist-delete" in watchlist
+    assert "/api/watchlist" in state
+    assert "addWatchlistItem" in state
+    assert "deleteWatchlistItem" in state
+    assert "renderWatchlist" in app
+    assert "标的池" in messages

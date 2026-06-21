@@ -26,6 +26,21 @@ export const routeGroups: RouteGroup[] = [
       },
     ],
   },
+
+  {
+    labelKey: 'watchlistModule',
+    children: [
+      {
+        id: 'watchlist',
+        labelKey: 'watchlistModule',
+        descriptionKey: 'watchlistModuleDesc',
+        icon: 'database',
+        children: [
+          { id: 'watchlist-list', labelKey: 'watchlistList', descriptionKey: 'watchlistListDesc' },
+        ],
+      },
+    ],
+  },
   {
     labelKey: 'marketModule',
     children: [

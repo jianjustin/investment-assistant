@@ -60,6 +60,28 @@ export type FilingsPayload = {
   files?: FilingRow[]
 }
 
+export type WatchlistItem = {
+  ticker: string
+  status?: 'active' | 'paused' | 'archived' | string
+  thesis?: string | null
+  tags?: string[]
+  source?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export type WatchlistPayload = {
+  rows: WatchlistItem[]
+  count: number
+}
+
+export type WatchlistMutationResult = {
+  item?: WatchlistItem
+  ticker?: string
+  deleted?: boolean
+  error?: string
+}
+
 export type Operation = {
   id: string
   label: string
@@ -207,7 +229,7 @@ export type MarketFetchResult = {
   error?: string
 }
 
-export type RouteId = 'workbench' | 'hermes-overview' | 'hermes-agents' | 'hermes-ideas' | 'market-overview' | 'market-trend' | 'market-list' | 'market-fetch' | 'filings' | 'services' | 'operations' | 'raw'
+export type RouteId = 'workbench' | 'watchlist-list' | 'hermes-overview' | 'hermes-agents' | 'hermes-ideas' | 'market-overview' | 'market-trend' | 'market-list' | 'market-fetch' | 'filings' | 'services' | 'operations' | 'raw'
 
 export type RouteItem = {
   id: RouteId
@@ -244,6 +266,9 @@ export type AppState = {
   latestSignal: MarketSignal | null
   filings: FilingsPayload | null
   operations: OperationsPayload | null
+  watchlist: WatchlistPayload | null
+  watchlistSaving: boolean
+  watchlistResult: WatchlistMutationResult | null
   marketSignals: MarketSignalsPayload | null
   marketTrend: MarketTrendPayload | null
   marketFetchResult: MarketFetchResult | null

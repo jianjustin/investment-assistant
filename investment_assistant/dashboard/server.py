@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from investment_assistant.config import load_config
-from investment_assistant.db import connect, get_latest_market_signal, list_market_signals, upsert_market_signal
+from investment_assistant.db import connect, delete_watchlist_item as db_delete_watchlist_item, get_latest_market_signal, list_market_signals, list_watchlist_items, upsert_market_signal, upsert_watchlist_item
 from investment_assistant.hermes import agents as hermes_agents
 from investment_assistant.hermes.run_log import append_run
 from investment_assistant.hermes.macro_analyst import analyze_macro_environment
@@ -129,6 +129,9 @@ def api_response_for_path(path: str) -> ApiResponse | None:
         return ApiResponse(status_payload())
     if parsed_path == "/api/services":
         return ApiResponse(system_status())
+    if parsed_path == "/api/watchlist":
+        rows = watchlist_rows()
+        return ApiResponse({"rows": rows, "count": len(rows)})
     if parsed_path == "/api/market/signals/latest":
         return ApiResponse(database_status().get("latest_market_signal"))
     if parsed_path == "/api/market/signals":
@@ -155,6 +158,11 @@ def api_response_for_path(path: str) -> ApiResponse | None:
 
 def api_post_response_for_path(path: str, payload: dict[str, Any]) -> ApiResponse | None:
     parsed_path = unquote(urlparse(path).path)
+    if parsed_path == "/api/watchlist":
+        try:
+            return ApiResponse({"item": add_watchlist_item(payload)})
+        except ValueError as exc:
+            return ApiResponse({"error": str(exc)}, status=400)
     if parsed_path == "/api/hermes/macro-analysis/run":
         try:
             return ApiResponse(run_hermes_macro_llm_analysis(payload))
@@ -173,6 +181,70 @@ def api_post_response_for_path(path: str, payload: dict[str, Any]) -> ApiRespons
     if parsed_path.startswith("/api/"):
         return None
     return None
+
+
+def api_delete_response_for_path(path: str) -> ApiResponse | None:
+    parsed_path = unquote(urlparse(path).path)
+    if parsed_path.startswith("/api/watchlist/"):
+        ticker = parsed_path.rsplit("/", 1)[-1]
+        try:
+            return ApiResponse(delete_watchlist_item(ticker))
+        except ValueError as exc:
+            return ApiResponse({"error": str(exc)}, status=400)
+    if parsed_path.startswith("/api/"):
+        return None
+    return None
+
+
+def watchlist_rows() -> list[dict[str, Any]]:
+    database_url = os.environ.get("INVESTMENT_ASSISTANT_DATABASE_URL")
+    if not database_url:
+        return _config_watchlist_rows()
+    try:
+        with connect(database_url) as conn:
+            return list_watchlist_items(conn)
+    except Exception:
+        return _config_watchlist_rows()
+
+
+def current_watchlist() -> list[str]:
+    rows = watchlist_rows()
+    active = [str(row.get("ticker", "")).upper() for row in rows if row.get("status", "active") == "active" and row.get("ticker")]
+    return active or list(load_config().watchlist)
+
+
+def add_watchlist_item(payload: dict[str, Any]) -> dict[str, Any]:
+    database_url = os.environ.get("INVESTMENT_ASSISTANT_DATABASE_URL")
+    if not database_url:
+        raise ValueError("INVESTMENT_ASSISTANT_DATABASE_URL missing")
+    ticker = str(payload.get("ticker", ""))
+    status = str(payload.get("status") or "active")
+    thesis = str(payload.get("thesis") or "").strip() or None
+    tags = _parse_payload_tags(payload.get("tags"))
+    with connect(database_url) as conn:
+        return upsert_watchlist_item(conn, ticker=ticker, status=status, thesis=thesis, tags=tags)
+
+
+def delete_watchlist_item(ticker: str) -> dict[str, Any]:
+    database_url = os.environ.get("INVESTMENT_ASSISTANT_DATABASE_URL")
+    if not database_url:
+        raise ValueError("INVESTMENT_ASSISTANT_DATABASE_URL missing")
+    with connect(database_url) as conn:
+        return db_delete_watchlist_item(conn, ticker)
+
+
+def _config_watchlist_rows() -> list[dict[str, Any]]:
+    return [{"ticker": ticker, "status": "active", "thesis": "来自配置文件的默认标的", "tags": [], "source": "config"} for ticker in load_config().watchlist]
+
+
+def _parse_payload_tags(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    raise ValueError("tags must be a list or comma-separated string")
 
 
 def market_signal_rows(query: dict[str, list[str]]) -> list[dict[str, Any]]:
@@ -225,7 +297,7 @@ def hermes_macro_analysis(query: dict[str, list[str]]) -> dict[str, Any]:
     rows = market_signal_rows({"limit": [str(window)]})
     watchlist = _parse_csv(_first(query, "watchlist"))
     if not watchlist:
-        watchlist = list(load_config().watchlist)
+        watchlist = current_watchlist()
     return analyze_macro_environment(rows, window=window, watchlist=watchlist)
 
 
@@ -233,7 +305,7 @@ def run_hermes_macro_llm_analysis(payload: dict[str, Any]) -> dict[str, Any]:
     config = load_config()
     window = _parse_int(str(payload.get("window")) if payload.get("window") is not None else None, default=30, minimum=5, maximum=90)
     model = str(payload.get("model") or config.model_default or "deepseek-v4-pro")
-    watchlist = _parse_payload_watchlist(payload.get("watchlist")) or list(config.watchlist)
+    watchlist = _parse_payload_watchlist(payload.get("watchlist")) or current_watchlist()
     rows = market_signal_rows({"limit": [str(window)]})
     run_id = f"macro-llm-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
     analysis = analyze_macro_environment(rows, window=window, watchlist=watchlist, use_llm=True, model=model)
@@ -446,6 +518,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": f"invalid json: {exc}"}, 400)
             return
         api_response = api_post_response_for_path(self.path, payload)
+        if api_response is not None:
+            self._send_json(api_response.payload, api_response.status)
+            return
+        self._send_json({"error": "not found"}, 404)
+
+    def do_DELETE(self):
+        if not self._authorized():
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", "Basic realm=\"Hermes Investment Assistant\"")
+            self.end_headers()
+            return
+        api_response = api_delete_response_for_path(self.path)
         if api_response is not None:
             self._send_json(api_response.payload, api_response.status)
             return

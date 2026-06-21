@@ -119,3 +119,66 @@ def list_market_signals(conn, *, start_date=None, end_date=None, limit: int = 10
         "created_at", "updated_at",
     ]
     return [dict(zip(keys, row)) for row in rows]
+
+
+def list_watchlist_items(conn, *, include_archived: bool = False) -> list[dict[str, Any]]:
+    where = "" if include_archived else "WHERE status <> 'archived'"
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT ticker, status, thesis, tags, created_at, updated_at
+            FROM watchlist_items
+            {where}
+            ORDER BY ticker ASC
+            """
+        )
+        rows = cur.fetchall()
+    keys = ["ticker", "status", "thesis", "tags", "created_at", "updated_at"]
+    return [dict(zip(keys, row)) for row in rows]
+
+
+def upsert_watchlist_item(conn, *, ticker: str, status: str = "active", thesis: str | None = None, tags: list[str] | None = None) -> dict[str, Any]:
+    payload = {
+        "ticker": _normalize_ticker(ticker),
+        "status": status or "active",
+        "thesis": thesis or None,
+        "tags": tags or [],
+    }
+    if payload["status"] not in {"active", "paused", "archived"}:
+        raise ValueError("status must be active, paused, or archived")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO watchlist_items (ticker, status, thesis, tags)
+            VALUES (%(ticker)s, %(status)s, %(thesis)s, %(tags)s)
+            ON CONFLICT (ticker) DO UPDATE SET
+              status = EXCLUDED.status,
+              thesis = EXCLUDED.thesis,
+              tags = EXCLUDED.tags,
+              updated_at = now()
+            RETURNING ticker, status, thesis, tags, created_at, updated_at
+            """,
+            payload,
+        )
+        row = cur.fetchone()
+    conn.commit()
+    keys = ["ticker", "status", "thesis", "tags", "created_at", "updated_at"]
+    return dict(zip(keys, row))
+
+
+def delete_watchlist_item(conn, ticker: str) -> dict[str, Any]:
+    normalized = _normalize_ticker(ticker)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM watchlist_items WHERE ticker = %(ticker)s RETURNING ticker", {"ticker": normalized})
+        row = cur.fetchone()
+    conn.commit()
+    return {"ticker": normalized, "deleted": row is not None}
+
+
+def _normalize_ticker(ticker: str) -> str:
+    normalized = str(ticker or "").strip().upper()
+    if not normalized:
+        raise ValueError("ticker is required")
+    if not normalized.replace(".", "").replace("-", "").isalnum():
+        raise ValueError("ticker contains unsupported characters")
+    return normalized

@@ -73,3 +73,41 @@ def test_hermes_market_signal_interpretation_endpoint_uses_recent_window(monkeyp
     assert response.payload["source"] == "hermes.macro_analyst"
     assert response.payload["sections"][0]["title"]
     assert response.payload["actions"]
+
+
+def test_watchlist_api_lists_adds_and_deletes_tickers(monkeypatch):
+    rows = [{"ticker": "TSLA", "status": "active", "thesis": "EV and autonomy", "created_at": "2026-06-21", "updated_at": "2026-06-21"}]
+    added = []
+    deleted = []
+
+    monkeypatch.setattr(server, "watchlist_rows", lambda: rows)
+    monkeypatch.setattr(server, "add_watchlist_item", lambda payload: added.append(payload) or {"ticker": "NVDA", "status": "active", "thesis": "AI compute"})
+    monkeypatch.setattr(server, "delete_watchlist_item", lambda ticker: deleted.append(ticker) or {"ticker": ticker, "deleted": True})
+
+    list_response = server.api_response_for_path("/api/watchlist")
+    add_response = server.api_post_response_for_path("/api/watchlist", {"ticker": " nvda ", "status": "active", "thesis": "AI compute"})
+    delete_response = server.api_delete_response_for_path("/api/watchlist/NVDA")
+
+    assert list_response.status == 200
+    assert list_response.payload == {"rows": rows, "count": 1}
+    assert add_response.status == 200
+    assert add_response.payload["item"]["ticker"] == "NVDA"
+    assert added == [{"ticker": " nvda ", "status": "active", "thesis": "AI compute"}]
+    assert delete_response.status == 200
+    assert delete_response.payload == {"ticker": "NVDA", "deleted": True}
+    assert deleted == ["NVDA"]
+
+
+def test_macro_analysis_uses_managed_watchlist_when_query_omits_watchlist(monkeypatch):
+    captured = []
+    rows = [{"signal_date": date(2026, 6, 21), "market_status": "green", "spy_close": 130, "spy_ma200": 120, "spy_above_200ma": True, "vix_close": 15}]
+
+    monkeypatch.setattr(server, "market_signal_rows", lambda query: rows)
+    monkeypatch.setattr(server, "current_watchlist", lambda: ["TSLA", "NVDA"])
+    monkeypatch.setattr(server, "analyze_macro_environment", lambda rows, *, window, watchlist, **kwargs: captured.append(watchlist) or {"watchlist": watchlist})
+
+    response = server.api_response_for_path("/api/hermes/macro-analysis?window=30")
+
+    assert response.status == 200
+    assert response.payload == {"watchlist": ["TSLA", "NVDA"]}
+    assert captured == [["TSLA", "NVDA"]]
