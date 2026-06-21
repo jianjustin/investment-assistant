@@ -75,6 +75,30 @@ export type OperationsPayload = {
   operations: Operation[]
 }
 
+export type MarketSignalsPayload = {
+  rows: MarketSignal[]
+  count: number
+}
+
+export type MarketTrendPayload = {
+  window: number
+  sample_size: number
+  latest_status: string
+  status_counts: Record<string, number>
+  green_ratio: number
+  red_ratio: number
+  judgement: 'risk_on' | 'neutral' | 'risk_off' | string
+  summary: string
+  rows: MarketSignal[]
+}
+
+export type MarketFetchResult = {
+  requested?: { from: string; to: string }
+  rows?: MarketSignal[]
+  failures?: Array<{ signal_date: string; error: string }>
+  error?: string
+}
+
 export type RouteId = 'workbench' | 'market' | 'filings' | 'services' | 'operations' | 'raw'
 
 export type RouteItem = {
@@ -101,6 +125,9 @@ export type AppState = {
   latestSignal: MarketSignal | null
   filings: FilingsPayload | null
   operations: OperationsPayload | null
+  marketSignals: MarketSignalsPayload | null
+  marketTrend: MarketTrendPayload | null
+  marketFetchResult: MarketFetchResult | null
   raw: StatusPayload | null
 }
 

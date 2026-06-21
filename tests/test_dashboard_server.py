@@ -40,7 +40,7 @@ def test_api_response_for_path_returns_feature_payloads(monkeypatch):
     assert filings_payload["summary"] == {"path": "/srv/filings", "exists": True, "file_count": 2}
     assert filings_payload["files"] == [{"name": "a.htm", "size": 10}]
     operations_payload = server.api_response_for_path("/api/operations").payload
-    assert operations_payload["operations"][0]["id"] == "run_daily_scan"
-    assert operations_payload["operations"][0]["enabled"] is False
+    assert operations_payload["operations"][0]["id"] == "fetch_market_signals"
+    assert operations_payload["operations"][0]["enabled"] is True
     assert sorted(server.api_response_for_path("/api/raw/status").payload) == ["database", "filings", "system"]
     assert server.api_response_for_path("/api/missing") is None

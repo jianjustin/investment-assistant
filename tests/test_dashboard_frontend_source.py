@@ -39,3 +39,24 @@ def test_frontend_defines_routes_tables_operations_and_default_chinese():
     assert "defaultLanguage = 'zh'" in messages
     assert "renderTable" in components
     assert "requires_confirmation" in operations
+
+
+def test_market_signal_module_has_first_class_navigation_dashboard_and_manual_fetch():
+    navigation = Path("web/src/app/navigation.ts").read_text(encoding="utf-8")
+    market = Path("web/src/features/market.ts").read_text(encoding="utf-8")
+    state = Path("web/src/app/state.ts").read_text(encoding="utf-8")
+
+    assert "marketModule" in navigation
+    assert "renderSignalChart" in market
+    assert "renderSignalTable" in market
+    assert "marketFetchForm" in market
+    assert "/api/market/signals?limit=90" in state
+    assert "/api/market/signals/trend?window=20" in state
+    assert "/api/market/signals/fetch" in state
+
+
+def test_market_signal_english_trend_copy_is_translated():
+    messages = Path("web/src/i18n/messages.ts").read_text(encoding="utf-8")
+
+    assert "Market signals are constructive" in messages
+    assert "Market risk is elevated" in messages

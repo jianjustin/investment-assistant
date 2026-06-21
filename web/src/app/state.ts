@@ -1,6 +1,6 @@
 import { defaultLanguage, messages, type CopyKey } from '../i18n/messages'
 import { defaultRoute, routeFromHash } from './navigation'
-import type { AppState, FilingsPayload, Language, MarketSignal, OperationsPayload, ServicesPayload, StatusPayload } from './types'
+import type { AppState, FilingsPayload, Language, MarketFetchResult, MarketSignal, MarketSignalsPayload, MarketTrendPayload, OperationsPayload, ServicesPayload, StatusPayload } from './types'
 
 export const state: AppState = {
   loading: true,
@@ -14,6 +14,9 @@ export const state: AppState = {
   latestSignal: null,
   filings: null,
   operations: null,
+  marketSignals: null,
+  marketTrend: null,
+  marketFetchResult: null,
   raw: null,
 }
 
@@ -49,12 +52,14 @@ export async function reloadData(): Promise<void> {
   state.error = null
 
   try {
-    const [status, services, latestSignal, filings, operations, raw] = await Promise.all([
+    const [status, services, latestSignal, filings, operations, marketSignals, marketTrend, raw] = await Promise.all([
       fetchJson<StatusPayload>('/api/status'),
       fetchJson<ServicesPayload>('/api/services'),
       fetchJson<MarketSignal | null>('/api/market/signals/latest'),
       fetchJson<FilingsPayload>('/api/filings'),
       fetchJson<OperationsPayload>('/api/operations'),
+      fetchJson<MarketSignalsPayload>('/api/market/signals?limit=90'),
+      fetchJson<MarketTrendPayload>('/api/market/signals/trend?window=20'),
       fetchJson<StatusPayload>('/api/raw/status'),
     ])
     state.status = status
@@ -62,8 +67,34 @@ export async function reloadData(): Promise<void> {
     state.latestSignal = latestSignal
     state.filings = filings
     state.operations = operations
+    state.marketSignals = marketSignals
+    state.marketTrend = marketTrend
     state.raw = raw
     state.refreshedAt = new Date()
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error)
+  } finally {
+    state.loading = false
+  }
+}
+
+
+export async function fetchMarketSignals(payload: { date?: string; from?: string; to?: string }): Promise<void> {
+  state.loading = true
+  state.error = null
+  try {
+    const response = await fetch('/api/market/signals/fetch', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const result = (await response.json()) as MarketFetchResult
+    state.marketFetchResult = result
+    if (!response.ok) {
+      throw new Error(result.error ?? `HTTP ${response.status}: ${response.statusText}`)
+    }
+    await reloadData()
+    state.marketFetchResult = result
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error)
   } finally {

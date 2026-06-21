@@ -1,6 +1,7 @@
 import {
   Activity,
   Braces,
+  CalendarDays,
   createIcons,
   Database,
   FileText,
@@ -11,6 +12,7 @@ import {
   Menu,
   RefreshCw,
   Server,
+  TrendingUp,
   X,
 } from 'lucide'
 import { renderFilings } from '../features/filings'
@@ -20,7 +22,7 @@ import { renderRaw } from '../features/raw'
 import { renderServices } from '../features/services'
 import { renderWorkbench } from '../features/workbench'
 import { routeGroups, routes } from './navigation'
-import { reloadData, setRouteFromHash, state, t, toggleLanguage } from './state'
+import { fetchMarketSignals, reloadData, setRouteFromHash, state, t, toggleLanguage } from './state'
 import type { RouteId, RouteItem } from './types'
 import { escapeHtml } from '../shared/html'
 
@@ -62,6 +64,7 @@ function render(): void {
     icons: {
       Activity,
       Braces,
+      CalendarDays,
       Database,
       FileText,
       Gauge,
@@ -71,6 +74,7 @@ function render(): void {
       Menu,
       RefreshCw,
       Server,
+      TrendingUp,
       X,
     },
   })
@@ -189,6 +193,19 @@ function bindEvents(): void {
   })
   document.querySelector<HTMLButtonElement>('#closeMobileMenu')?.addEventListener('click', closeNavigation)
   document.querySelector<HTMLButtonElement>('#navBackdrop')?.addEventListener('click', closeNavigation)
+
+  document.querySelector<HTMLFormElement>('#marketFetchForm')?.addEventListener('submit', (event) => {
+    event.preventDefault()
+    const form = event.currentTarget as HTMLFormElement
+    const formData = new FormData(form)
+    const mode = String(formData.get('mode') ?? 'single')
+    const date = String(formData.get('date') ?? '')
+    const from = String(formData.get('from') ?? '')
+    const to = String(formData.get('to') ?? '')
+    const payload = mode === 'range' ? { from, to } : { date }
+    void fetchMarketSignals(payload).then(render)
+  })
+
 }
 
 function closeNavigation(): void {

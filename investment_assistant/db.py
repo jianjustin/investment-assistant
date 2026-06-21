@@ -86,3 +86,36 @@ def _signal_payload(signal) -> dict[str, Any]:
         "details": json.dumps(details, ensure_ascii=False),
         "run_id": getattr(signal, "run_id", None),
     }
+
+
+
+def list_market_signals(conn, *, start_date=None, end_date=None, limit: int = 100) -> list[dict[str, Any]]:
+    clauses = []
+    params: dict[str, Any] = {"limit": limit}
+    if start_date is not None:
+        clauses.append("signal_date >= %(start_date)s")
+        params["start_date"] = start_date
+    if end_date is not None:
+        clauses.append("signal_date <= %(end_date)s")
+        params["end_date"] = end_date
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT signal_date, market_status, spy_ticker, spy_close, spy_ma200,
+                   spy_above_200ma, vix_ticker, vix_close, source, details, run_id,
+                   created_at, updated_at
+            FROM market_signals
+            {where}
+            ORDER BY signal_date DESC
+            LIMIT %(limit)s
+            """,
+            params,
+        )
+        rows = cur.fetchall()
+    keys = [
+        "signal_date", "market_status", "spy_ticker", "spy_close", "spy_ma200",
+        "spy_above_200ma", "vix_ticker", "vix_close", "source", "details", "run_id",
+        "created_at", "updated_at",
+    ]
+    return [dict(zip(keys, row)) for row in rows]

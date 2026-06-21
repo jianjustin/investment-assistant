@@ -10,9 +10,14 @@ export const routeGroups: RouteGroup[] = [
     ],
   },
   {
+    labelKey: 'marketModule',
+    children: [
+      { id: 'market', labelKey: 'marketSignals', descriptionKey: 'marketModuleDesc', icon: 'trending-up' },
+    ],
+  },
+  {
     labelKey: 'marketData',
     children: [
-      { id: 'market', labelKey: 'marketSignals', descriptionKey: 'marketSignalsDesc', icon: 'activity' },
       { id: 'filings', labelKey: 'filings', descriptionKey: 'filingsDesc', icon: 'file-text' },
     ],
   },

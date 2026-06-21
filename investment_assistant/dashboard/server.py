@@ -4,15 +4,19 @@ import base64
 import hmac
 import json
 import mimetypes
+import uuid
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
-from investment_assistant.db import connect, get_latest_market_signal
+from investment_assistant.config import load_config
+from investment_assistant.db import connect, get_latest_market_signal, list_market_signals, upsert_market_signal
+from investment_assistant.market.service import compute_market_signal_for_date
 from investment_assistant.runtime_paths import DEFAULT_FILINGS_DIR
 
 HOST = os.environ.get("HERMES_DASHBOARD_HOST", "0.0.0.0")
@@ -82,14 +86,14 @@ def filing_rows(limit: int = 100) -> list[dict[str, Any]]:
 def operation_registry() -> list[dict[str, Any]]:
     return [
         {
-            "id": "run_daily_scan",
-            "label": "运行每日扫描",
-            "description": "启动 hermes-investment-daily.service，重新执行每日市场与 filing 流程。",
+            "id": "fetch_market_signals",
+            "label": "拉取市场信号",
+            "description": "按日期或日期区间计算市场信号，并写入 market_signals。",
             "risk": "medium",
-            "enabled": False,
+            "enabled": True,
             "requires_confirmation": True,
             "method": "POST",
-            "endpoint": "/api/operations/run_daily_scan/run",
+            "endpoint": "/api/market/signals/fetch",
         },
         {
             "id": "sync_filings",
@@ -115,13 +119,20 @@ def operation_registry() -> list[dict[str, Any]]:
 
 
 def api_response_for_path(path: str) -> ApiResponse | None:
-    parsed_path = unquote(urlparse(path).path)
+    parsed = urlparse(path)
+    parsed_path = unquote(parsed.path)
+    query = parse_qs(parsed.query)
     if parsed_path == "/api/status" or parsed_path == "/api/raw/status":
         return ApiResponse(status_payload())
     if parsed_path == "/api/services":
         return ApiResponse(system_status())
     if parsed_path == "/api/market/signals/latest":
         return ApiResponse(database_status().get("latest_market_signal"))
+    if parsed_path == "/api/market/signals":
+        rows = market_signal_rows(query)
+        return ApiResponse({"rows": rows, "count": len(rows)})
+    if parsed_path == "/api/market/signals/trend":
+        return ApiResponse(market_signal_trend(query))
     if parsed_path == "/api/filings":
         return ApiResponse({"summary": filing_status(), "files": filing_rows()})
     if parsed_path == "/api/operations":
@@ -129,6 +140,139 @@ def api_response_for_path(path: str) -> ApiResponse | None:
     if parsed_path.startswith("/api/"):
         return None
     return None
+
+
+def api_post_response_for_path(path: str, payload: dict[str, Any]) -> ApiResponse | None:
+    parsed_path = unquote(urlparse(path).path)
+    if parsed_path == "/api/market/signals/fetch":
+        try:
+            return ApiResponse(fetch_market_signals(payload))
+        except ValueError as exc:
+            return ApiResponse({"error": str(exc)}, status=400)
+    if parsed_path.startswith("/api/"):
+        return None
+    return None
+
+
+def market_signal_rows(query: dict[str, list[str]]) -> list[dict[str, Any]]:
+    url = os.environ.get("INVESTMENT_ASSISTANT_DATABASE_URL")
+    if not url:
+        return []
+    start_date = _parse_optional_date(_first(query, "from"))
+    end_date = _parse_optional_date(_first(query, "to"))
+    limit = _parse_int(_first(query, "limit"), default=100, minimum=1, maximum=500)
+    with connect(url) as conn:
+        return list_market_signals(conn, start_date=start_date, end_date=end_date, limit=limit)
+
+
+def market_signal_trend(query: dict[str, list[str]]) -> dict[str, Any]:
+    window = _parse_int(_first(query, "window"), default=20, minimum=3, maximum=120)
+    rows = market_signal_rows({"limit": [str(window)]})
+    counts = {"green": 0, "yellow": 0, "red": 0}
+    for row in rows:
+        status = str(row.get("market_status", "")).lower()
+        if status in counts:
+            counts[status] += 1
+    latest_status = str(rows[0].get("market_status", "unknown")) if rows else "unknown"
+    total = max(len(rows), 1)
+    green_ratio = counts["green"] / total
+    red_ratio = counts["red"] / total
+    if latest_status == "red" or red_ratio >= 0.3:
+        judgement = "risk_off"
+        summary = "市场风险偏高，优先控制仓位。"
+    elif latest_status == "green" and green_ratio >= 0.6:
+        judgement = "risk_on"
+        summary = "市场信号偏积极，可以正常跟踪候选机会。"
+    else:
+        judgement = "neutral"
+        summary = "市场信号混合，建议等待更明确趋势。"
+    return {
+        "window": window,
+        "sample_size": len(rows),
+        "latest_status": latest_status,
+        "status_counts": counts,
+        "green_ratio": green_ratio,
+        "red_ratio": red_ratio,
+        "judgement": judgement,
+        "summary": summary,
+        "rows": rows,
+    }
+
+
+def fetch_market_signals(payload: dict[str, Any]) -> dict[str, Any]:
+    start_date, end_date = _manual_fetch_range(payload)
+    config = load_config()
+    rows = []
+    failures = []
+    target = start_date
+    while target <= end_date:
+        run_id = f"manual-market-{target.isoformat()}-{uuid.uuid4().hex[:8]}"
+        try:
+            signal = compute_market_signal_for_date(getattr(config, "market", config), target, run_id=run_id)
+            _persist_manual_market_signal(signal)
+            rows.append(_plain_signal(signal))
+        except Exception as exc:
+            failures.append({"signal_date": target.isoformat(), "error": str(exc)})
+        target += timedelta(days=1)
+    return {
+        "requested": {"from": start_date.isoformat(), "to": end_date.isoformat()},
+        "rows": rows,
+        "failures": failures,
+    }
+
+
+def _persist_manual_market_signal(signal) -> None:
+    database_url = os.environ["INVESTMENT_ASSISTANT_DATABASE_URL"]
+    with connect(database_url) as conn:
+        upsert_market_signal(conn, signal)
+
+
+def _plain_signal(signal) -> dict[str, Any]:
+    if is_dataclass(signal):
+        payload = asdict(signal)
+    else:
+        payload = {key: getattr(signal, key) for key in [
+            "signal_date", "market_status", "spy_ticker", "spy_close", "spy_ma200",
+            "spy_above_200ma", "vix_ticker", "vix_close", "source", "details", "run_id",
+        ] if hasattr(signal, key)}
+    if "signal_date" in payload:
+        payload["signal_date"] = str(payload["signal_date"])
+    return payload
+
+
+def _manual_fetch_range(payload: dict[str, Any]) -> tuple[date, date]:
+    raw_date = payload.get("date")
+    raw_from = payload.get("from") or payload.get("start_date")
+    raw_to = payload.get("to") or payload.get("end_date")
+    if raw_date:
+        start_date = end_date = date.fromisoformat(str(raw_date))
+    else:
+        if not raw_from or not raw_to:
+            raise ValueError("date or from/to is required")
+        start_date = date.fromisoformat(str(raw_from))
+        end_date = date.fromisoformat(str(raw_to))
+    if end_date < start_date:
+        raise ValueError("to must be greater than or equal to from")
+    if (end_date - start_date).days > 45:
+        raise ValueError("manual market fetch range is limited to 45 days")
+    return start_date, end_date
+
+
+def _first(query: dict[str, list[str]], key: str) -> str | None:
+    values = query.get(key)
+    return values[0] if values else None
+
+
+def _parse_optional_date(value: str | None) -> date | None:
+    return date.fromisoformat(value) if value else None
+
+
+def _parse_int(value: str | None, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value) if value is not None else default
+    except ValueError:
+        parsed = default
+    return max(minimum, min(maximum, parsed))
 
 
 def system_status() -> dict[str, Any]:
@@ -214,6 +358,26 @@ class Handler(BaseHTTPRequestHandler):
         static_response = static_response_for_path(self.path)
         if static_response is not None:
             self._send(static_response.body, static_response.content_type, static_response.status)
+            return
+        self._send_json({"error": "not found"}, 404)
+
+
+    def do_POST(self):
+        if not self._authorized():
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", "Basic realm=\"Hermes Investment Assistant\"")
+            self.end_headers()
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(length) if length else b"{}"
+            payload = json.loads(raw_body.decode("utf-8") or "{}")
+        except Exception as exc:
+            self._send_json({"error": f"invalid json: {exc}"}, 400)
+            return
+        api_response = api_post_response_for_path(self.path, payload)
+        if api_response is not None:
+            self._send_json(api_response.payload, api_response.status)
             return
         self._send_json({"error": "not found"}, 404)
 

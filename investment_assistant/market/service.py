@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Callable
 
 import pandas as pd
@@ -60,6 +60,29 @@ def compute_market_signal(
         details=details,
         run_id=run_id,
     )
+
+
+def compute_market_signal_for_date(
+    config: MarketConfig,
+    target_date: date,
+    *,
+    price_fetcher: PriceFetcher | None = None,
+    run_id: str | None = None,
+) -> MarketSignal:
+    fetcher = price_fetcher or (lambda ticker, days: _default_price_fetcher_until(ticker, days, target_date))
+    return compute_market_signal(config, price_fetcher=fetcher, run_id=run_id, signal_date=target_date)
+
+
+def _default_price_fetcher_until(ticker: str, days: int, target_date: date) -> pd.DataFrame:
+    import yfinance as yf
+
+    calendar_days = max(days * 2, days + 30)
+    start = target_date - timedelta(days=calendar_days)
+    end = target_date + timedelta(days=1)
+    df = yf.Ticker(ticker).history(start=start.isoformat(), end=end.isoformat())
+    if df.empty:
+        raise ValueError(f"No price data returned for {ticker} through {target_date}")
+    return df[["Open", "High", "Low", "Close", "Volume"]]
 
 
 def _default_price_fetcher(ticker: str, days: int) -> pd.DataFrame:
