@@ -157,3 +157,17 @@ def test_frontend_has_watchlist_management_menu_and_actions():
     assert "deleteWatchlistItem" in state
     assert "renderWatchlist" in app
     assert "标的池" in messages
+
+
+def test_ticker_trends_has_clickable_metric_help_panel():
+    app = Path("web/src/app/app.ts").read_text(encoding="utf-8")
+    ticker_trends = Path("web/src/features/ticker-trends.ts").read_text(encoding="utf-8")
+    types = Path("web/src/app/types.ts").read_text(encoding="utf-8")
+
+    assert "tickerTrendHelpTopic" in types
+    assert "[data-ticker-help]" in app
+    assert "data-ticker-help" in ticker_trends
+    assert "renderMetricHelpPanel" in ticker_trends
+    assert "指标说明" in ticker_trends
+    assert "指标逻辑" in ticker_trends
+    assert "指标下枚举带来的意义" in ticker_trends

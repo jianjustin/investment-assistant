@@ -29,7 +29,7 @@ import { renderTickerTrends } from '../features/ticker-trends'
 import { renderWorkbench } from '../features/workbench'
 import { isRouteParent, parentForRoute, routeGroups, routes } from './navigation'
 import { addWatchlistItem, deleteWatchlistItem, fetchMarketSignals, reloadData, runMacroAnalystLlm, scanTickerTrends, saveHermesAgent, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
-import type { RouteEntry, RouteId, RouteItem, RouteParent } from './types'
+import type { AppState, RouteEntry, RouteId, RouteItem, RouteParent } from './types'
 import { escapeHtml } from '../shared/html'
 
 let root: HTMLDivElement
@@ -288,6 +288,14 @@ function bindEvents(): void {
     state.tickerTrendScanResult = null
     render()
     void scanTickerTrends().then(render)
+  })
+  document.querySelectorAll<HTMLButtonElement>('[data-ticker-help]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const topic = button.dataset.tickerHelp as NonNullable<AppState['tickerTrendHelpTopic']> | undefined
+      if (!topic) return
+      state.tickerTrendHelpTopic = state.tickerTrendHelpTopic === topic ? null : topic
+      render()
+    })
   })
 
   document.querySelector<HTMLFormElement>('#hermesAgentForm')?.addEventListener('submit', (event) => {

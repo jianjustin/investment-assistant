@@ -118,6 +118,8 @@ export type TickerTrendScanResult = {
   error?: string
 }
 
+export type TickerTrendHelpTopic = 'trend_state' | 'attention_level' | 'trigger_reason' | 'volume_ratio' | 'relative_strength'
+
 export type Operation = {
   id: string
   label: string
@@ -308,6 +310,7 @@ export type AppState = {
   tickerTrends: TickerTrendsPayload | null
   tickerTrendScanInFlight: boolean
   tickerTrendScanResult: TickerTrendScanResult | null
+  tickerTrendHelpTopic: TickerTrendHelpTopic | null
   marketSignals: MarketSignalsPayload | null
   marketTrend: MarketTrendPayload | null
   marketFetchResult: MarketFetchResult | null

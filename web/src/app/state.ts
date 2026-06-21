@@ -21,6 +21,7 @@ export const state: AppState = {
   tickerTrends: null,
   tickerTrendScanInFlight: false,
   tickerTrendScanResult: null,
+  tickerTrendHelpTopic: null,
   marketSignals: null,
   marketTrend: null,
   marketFetchResult: null,

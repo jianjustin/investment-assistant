@@ -3,6 +3,7 @@ import { escapeHtml } from './html'
 export type TableColumn<T> = {
   key: string
   label: string
+  header?: string
   align?: 'left' | 'right' | 'center'
   render: (row: T) => string
 }
@@ -63,7 +64,7 @@ export function renderTable<T>(columns: TableColumn<T>[], rows: T[], emptyText: 
       <table class="min-w-full divide-y divide-line text-sm">
         <thead class="bg-panel text-left text-xs font-semibold uppercase tracking-normal text-muted">
           <tr>
-            ${columns.map((column) => `<th class="px-3 py-2 ${column.align === 'right' ? 'text-right' : column.align === 'center' ? 'text-center' : 'text-left'}">${escapeHtml(column.label)}</th>`).join('')}
+            ${columns.map((column) => `<th class="px-3 py-2 ${column.align === 'right' ? 'text-right' : column.align === 'center' ? 'text-center' : 'text-left'}">${column.header ?? escapeHtml(column.label)}</th>`).join('')}
           </tr>
         </thead>
         <tbody class="divide-y divide-line bg-white text-slate-700">
