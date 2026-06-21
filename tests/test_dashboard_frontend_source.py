@@ -223,3 +223,22 @@ def test_strategy_scores_has_clickable_column_help_panel():
     assert "生成逻辑" in strategy_scores
     assert "字段值/枚举意义" in strategy_scores
     assert "下一步动作" in strategy_scores
+
+
+def test_frontend_has_decision_evidence_page_and_manual_deepseek_run():
+    navigation = Path("web/src/app/navigation.ts").read_text(encoding="utf-8")
+    app = Path("web/src/app/app.ts").read_text(encoding="utf-8")
+    state = Path("web/src/app/state.ts").read_text(encoding="utf-8")
+    types = Path("web/src/app/types.ts").read_text(encoding="utf-8")
+    messages = Path("web/src/i18n/messages.ts").read_text(encoding="utf-8")
+
+    assert "decision-evidence" in navigation
+    assert "DecisionEvidencePayload" in types
+    assert "decisionEvidenceInFlight" in state
+    assert "decisionEvidenceResult" in state
+    assert "/api/hermes/decision-evidence/run" in state
+    assert "runDecisionEvidence" in state
+    assert "renderDecisionEvidence" in app
+    assert "decisionEvidenceButton" in app
+    assert "决策依据" in messages
+    assert Path("web/src/features/decision-evidence.ts").exists()

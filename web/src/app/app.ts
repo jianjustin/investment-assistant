@@ -18,6 +18,7 @@ import {
   TrendingUp,
   X,
 } from 'lucide'
+import { renderDecisionEvidence } from '../features/decision-evidence'
 import { renderFilings } from '../features/filings'
 import { renderHermes } from '../features/hermes'
 import { renderMarket } from '../features/market'
@@ -29,7 +30,7 @@ import { renderWatchlist } from '../features/watchlist'
 import { renderTickerTrends } from '../features/ticker-trends'
 import { renderWorkbench } from '../features/workbench'
 import { isRouteParent, parentForRoute, routeGroups, routes } from './navigation'
-import { addWatchlistItem, deleteWatchlistItem, fetchMarketSignals, reloadData, runMacroAnalystLlm, runStrategyScores, scanTickerTrends, saveHermesAgent, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
+import { addWatchlistItem, deleteWatchlistItem, fetchMarketSignals, reloadData, runDecisionEvidence, runMacroAnalystLlm, runStrategyScores, scanTickerTrends, saveHermesAgent, setRouteFromHash, state, t, toggleExpandedMenu, toggleLanguage } from './state'
 import type { AppState, RouteEntry, RouteId, RouteItem, RouteParent } from './types'
 import { escapeHtml } from '../shared/html'
 
@@ -210,6 +211,8 @@ function renderActiveRoute(): string {
     case 'hermes-agents':
     case 'hermes-ideas':
       return renderHermes(state, t, state.activeRoute)
+    case 'decision-evidence':
+      return renderDecisionEvidence(state, t)
     case 'watchlist-list':
       return renderWatchlist(state, t)
     case 'ticker-trends':
@@ -338,6 +341,12 @@ function bindEvents(): void {
     state.strategyScoreRunResult = null
     render()
     void runStrategyScores({ mode: 'manual' }).then(render)
+  })
+  document.querySelector<HTMLButtonElement>('#decisionEvidenceButton')?.addEventListener('click', () => {
+    state.decisionEvidenceInFlight = true
+    state.decisionEvidenceResult = null
+    render()
+    void runDecisionEvidence({ window: 30, use_llm: true }).then(render)
   })
 
   document.querySelector<HTMLFormElement>('#marketFetchForm')?.addEventListener('submit', (event) => {

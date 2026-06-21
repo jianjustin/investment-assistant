@@ -22,6 +22,7 @@ export const routeGroups: RouteGroup[] = [
           { id: 'hermes-overview', labelKey: 'hermesOverview', descriptionKey: 'hermesOverviewDesc' },
           { id: 'hermes-agents', labelKey: 'hermesAgents', descriptionKey: 'hermesAgentsDesc' },
           { id: 'hermes-ideas', labelKey: 'hermesIdeas', descriptionKey: 'hermesIdeasDesc' },
+          { id: 'decision-evidence', labelKey: 'decisionEvidence', descriptionKey: 'decisionEvidenceDesc' },
         ],
       },
     ],

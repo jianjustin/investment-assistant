@@ -19,6 +19,7 @@ from investment_assistant.db import connect, delete_watchlist_item as db_delete_
 from investment_assistant.hermes import agents as hermes_agents
 from investment_assistant.hermes.run_log import append_run
 from investment_assistant.hermes.macro_analyst import analyze_macro_environment
+from investment_assistant.hermes.decision_evidence import build_decision_evidence
 from investment_assistant.market.service import compute_market_signal_for_date
 from investment_assistant.runtime_paths import DEFAULT_FILINGS_DIR
 from investment_assistant.strategies.trend_relative_strength import score_trend_relative_strength
@@ -174,6 +175,11 @@ def api_post_response_for_path(path: str, payload: dict[str, Any]) -> ApiRespons
     if parsed_path == "/api/hermes/macro-analysis/run":
         try:
             return ApiResponse(run_hermes_macro_llm_analysis(payload))
+        except ValueError as exc:
+            return ApiResponse({"error": str(exc)}, status=400)
+    if parsed_path == "/api/hermes/decision-evidence/run":
+        try:
+            return ApiResponse(run_decision_evidence(payload))
         except ValueError as exc:
             return ApiResponse({"error": str(exc)}, status=400)
     if parsed_path == "/api/market/signals/fetch":
@@ -501,6 +507,39 @@ def run_hermes_macro_llm_analysis(payload: dict[str, Any]) -> dict[str, Any]:
     return {"run_id": run_id, "analysis": analysis}
 
 
+def run_decision_evidence(payload: dict[str, Any]) -> dict[str, Any]:
+    config = load_config()
+    window = _parse_int(str(payload.get("window")) if payload.get("window") is not None else None, default=30, minimum=5, maximum=90)
+    model = str(payload.get("model") or config.model_default or "deepseek-v4-pro")
+    use_llm = _parse_payload_bool(payload.get("use_llm"), default=True)
+    run_id = f"decision-evidence-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    macro = hermes_macro_analysis({"window": [str(window)]})
+    ticker_signals = ticker_trend_rows()
+    strategy_scores = strategy_score_rows()
+    evidence = build_decision_evidence(
+        macro=macro,
+        ticker_signals=ticker_signals,
+        strategy_scores=strategy_scores,
+        use_llm=use_llm,
+        model=model,
+    )
+    record = {
+        "type": "hermes_decision_evidence",
+        "run_id": run_id,
+        "created_at": datetime.now(UTC).isoformat(),
+        "window": window,
+        "model": model,
+        "use_llm": use_llm,
+        "macro_state": evidence.get("market_context", {}).get("macro_state"),
+        "ticker_count": len(evidence.get("ticker_focus") or []),
+        "strategy_score_count": len(evidence.get("strategy_evidence") or []),
+        "llm": evidence.get("llm"),
+        "summary": evidence.get("summary"),
+    }
+    append_run(record)
+    return {"run_id": run_id, "decision_evidence": evidence}
+
+
 def run_ticker_trend_scan(payload: dict[str, Any]) -> dict[str, Any]:
     target_date = date.fromisoformat(str(payload.get("date"))) if payload.get("date") else date.today()
     tickers = _parse_payload_watchlist(payload.get("tickers")) or current_watchlist()
@@ -651,6 +690,20 @@ def _parse_payload_watchlist(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip().upper() for item in value if str(item).strip()]
     raise ValueError("watchlist must be a list or comma-separated string")
+
+
+def _parse_payload_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError("boolean payload value is invalid")
 
 
 def system_status() -> dict[str, Any]:

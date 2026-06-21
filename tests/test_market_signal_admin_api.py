@@ -177,3 +177,41 @@ def test_strategy_score_run_post_scores_latest_snapshots_and_persists(monkeypatc
     assert response.payload["rows"][0]["score_date"] == "2026-06-21"
     assert response.payload["rows"][0]["source_snapshot_id"] == 12
     assert persisted == response.payload["rows"]
+
+
+def test_decision_evidence_run_endpoint_invokes_builder_and_appends_audit(monkeypatch):
+    audit_records = []
+    calls = []
+    macro = {"macro_state": "offense", "summary": "宏观偏进攻"}
+    ticker_rows = [{"ticker": "TSLA", "attention_level": "high", "trigger_reason": ["above_ma_stack"]}]
+    score_rows = [{"ticker": "TSLA", "strategy": "trend_relative_strength", "score": 82, "evidence": ["macro_offense"]}]
+
+    def fake_build_decision_evidence(*, macro, ticker_signals, strategy_scores, use_llm, model):
+        calls.append({"macro": macro, "ticker_signals": ticker_signals, "strategy_scores": strategy_scores, "use_llm": use_llm, "model": model})
+        return {
+            "source": "hermes.decision_evidence",
+            "summary": "LLM decision summary",
+            "market_context": {"macro_state": "offense"},
+            "ticker_focus": [{"ticker": "TSLA"}],
+            "strategy_evidence": [{"ticker": "TSLA", "score": 82}],
+            "risk_questions": ["反方问题"],
+            "next_actions": ["继续观察"],
+            "llm": {"provider": "deepseek", "mode": "enabled", "used": True, "model": model},
+        }
+
+    monkeypatch.setattr(server, "hermes_macro_analysis", lambda query: macro)
+    monkeypatch.setattr(server, "ticker_trend_rows", lambda: ticker_rows)
+    monkeypatch.setattr(server, "strategy_score_rows", lambda: score_rows)
+    monkeypatch.setattr(server, "build_decision_evidence", fake_build_decision_evidence)
+    monkeypatch.setattr(server, "append_run", lambda record: audit_records.append(record))
+    monkeypatch.setattr(server.uuid, "uuid4", lambda: type("FakeUuid", (), {"hex": "abcdef123456"})())
+
+    response = server.api_post_response_for_path("/api/hermes/decision-evidence/run", {"use_llm": True, "model": "deepseek-v4-pro"})
+
+    assert response.status == 200
+    assert response.payload["run_id"].startswith("decision-evidence-")
+    assert response.payload["decision_evidence"]["source"] == "hermes.decision_evidence"
+    assert calls == [{"macro": macro, "ticker_signals": ticker_rows, "strategy_scores": score_rows, "use_llm": True, "model": "deepseek-v4-pro"}]
+    assert audit_records[0]["type"] == "hermes_decision_evidence"
+    assert audit_records[0]["run_id"] == response.payload["run_id"]
+    assert audit_records[0]["llm"]["used"] is True

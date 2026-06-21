@@ -287,6 +287,28 @@ export type HermesMacroLlmResult = {
   error?: string
 }
 
+export type DecisionEvidencePayload = {
+  source?: string
+  agent_role?: string
+  stage?: string
+  artifact_type?: string
+  generated_at?: string
+  summary?: string
+  market_context?: Record<string, unknown>
+  ticker_focus?: Array<Record<string, unknown>>
+  strategy_evidence?: Array<Record<string, unknown>>
+  risk_questions?: string[]
+  next_actions?: string[]
+  llm?: { provider?: string; mode?: string; used?: boolean; model?: string; error?: string | null }
+  llm_interpretation?: Record<string, unknown> | null
+}
+
+export type DecisionEvidenceRunResult = {
+  run_id?: string
+  decision_evidence?: DecisionEvidencePayload
+  error?: string
+}
+
 export type HermesMarketInterpretationPayload = HermesMacroAnalysisPayload
 
 export type MarketFetchResult = {
@@ -296,7 +318,7 @@ export type MarketFetchResult = {
   error?: string
 }
 
-export type RouteId = 'workbench' | 'watchlist-list' | 'ticker-trends' | 'strategy-scores' | 'strategy-runs' | 'hermes-overview' | 'hermes-agents' | 'hermes-ideas' | 'market-overview' | 'market-trend' | 'market-list' | 'market-fetch' | 'filings' | 'services' | 'operations' | 'raw'
+export type RouteId = 'workbench' | 'watchlist-list' | 'ticker-trends' | 'strategy-scores' | 'strategy-runs' | 'hermes-overview' | 'hermes-agents' | 'hermes-ideas' | 'decision-evidence' | 'market-overview' | 'market-trend' | 'market-list' | 'market-fetch' | 'filings' | 'services' | 'operations' | 'raw'
 
 export type RouteItem = {
   id: RouteId
@@ -352,6 +374,9 @@ export type AppState = {
   hermesMacroAnalysis: HermesMacroAnalysisPayload | null
   macroLlmInFlight: boolean
   macroLlmResult: HermesMacroLlmResult | null
+  decisionEvidence: DecisionEvidencePayload | null
+  decisionEvidenceInFlight: boolean
+  decisionEvidenceResult: DecisionEvidenceRunResult | null
   hermesMarketInterpretation: HermesMarketInterpretationPayload | null
   hermes: HermesPayload | null
   hermesAgentSaving: boolean
