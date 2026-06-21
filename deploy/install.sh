@@ -12,7 +12,7 @@ install -d /var/lib/investment-assistant/postgres
 
 rm -rf "$APP"
 mkdir -p "$APP"
-tar --exclude=.git --exclude=.venv --exclude=__pycache__ -C "$REPO_ROOT" -cf - . | tar -C "$APP" -xf -
+tar --exclude=.git --exclude=.venv --exclude=__pycache__ --exclude=web/node_modules --exclude=web/dist -C "$REPO_ROOT" -cf - . | tar -C "$APP" -xf -
 chown -R jianjustin:jianjustin "$APP" /srv/investment-assistant
 
 if [[ ! -f "$BASE/config/investment-assistant.json" ]]; then
@@ -23,6 +23,11 @@ fi
 python3 -m venv "$VENV"
 "$VENV/bin/python" -m pip install --upgrade pip
 "$VENV/bin/python" -m pip install -r "$APP/requirements.txt"
+
+if command -v npm >/dev/null 2>&1 && [[ -f "$APP/web/package.json" ]]; then
+  (cd "$APP/web" && if [[ -f package-lock.json ]]; then npm ci; else npm install; fi && npm run build)
+  chown -R jianjustin:jianjustin "$APP/web"
+fi
 
 install -m 0644 "$APP/deploy/systemd/"*.service /etc/systemd/system/
 install -m 0644 "$APP/deploy/systemd/"*.timer /etc/systemd/system/
