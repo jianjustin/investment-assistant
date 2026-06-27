@@ -5,17 +5,29 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "tsc && vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "build": "svelte-check --tsconfig ./tsconfig.json && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "vitest run"
   },
   "dependencies": {
-    "lucide": "^0.468.0"
+    "@fontsource/inter": "^5.2.8",
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "echarts": "^5.6.0",
+    "lightweight-charts": "^4.2.3",
+    "lucide": "^0.468.0",
+    "svelte": "^5.56.4",
+    "svelte-check": "^4.7.1"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/svelte": "^5.4.2",
+    "@vitest/ui": "^4.1.9",
     "autoprefixer": "^10.4.20",
+    "jsdom": "^29.1.1",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "vitest": "^4.1.9"
   }
 }

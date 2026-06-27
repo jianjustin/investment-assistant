@@ -86,7 +86,7 @@ def _default_price_fetcher_until(ticker: str, days: int, target_date: date) -> p
 
 
 def _default_price_fetcher(ticker: str, days: int) -> pd.DataFrame:
-    from data.price import get_price_history
+    from investment_assistant.data.price import get_price_history
 
     return get_price_history(ticker, days=days)
 

@@ -42,14 +42,12 @@ def test_deepseek_returns_structured_error_without_key(monkeypatch):
 def test_dashboard_refuses_public_bind_without_optin(monkeypatch):
     monkeypatch.setenv("HERMES_DASHBOARD_HOST", "0.0.0.0")
     monkeypatch.delenv("HERMES_DASHBOARD_ALLOW_PUBLIC", raising=False)
-    server = importlib.reload(importlib.import_module("investment_assistant.dashboard.server"))
+    api_auth = importlib.reload(importlib.import_module("investment_assistant.api.auth"))
     with pytest.raises(SystemExit):
-        server._resolve_bind_host()
-    monkeypatch.setenv("HERMES_DASHBOARD_HOST", "127.0.0.1")
-    importlib.reload(server)
+        api_auth.resolve_bind_host()
 
 
 def test_dashboard_allows_localhost_bind(monkeypatch):
     monkeypatch.setenv("HERMES_DASHBOARD_HOST", "127.0.0.1")
-    server = importlib.reload(importlib.import_module("investment_assistant.dashboard.server"))
-    assert server._resolve_bind_host() == "127.0.0.1"
+    api_auth = importlib.reload(importlib.import_module("investment_assistant.api.auth"))
+    assert api_auth.resolve_bind_host() == "127.0.0.1"

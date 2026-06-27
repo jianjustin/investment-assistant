@@ -1,0 +1,15 @@
+:root {
+  --bg: #f6f8fa; --surface: #ffffff; --surface-2: #f0f3f6;
+  --border: #d9e2ec; --text: #111827; --text-muted: #6b7280;
+  --accent: #0f766e; --success: #16a34a; --warn: #b45309; --danger: #dc2626;
+  --up: #16a34a; --down: #dc2626;
+  --elev-1: 0 1px 2px rgba(15,23,42,.06); --elev-2: 0 14px 35px rgba(15,23,42,.08);
+}
+[data-theme='dark'] {
+  --bg: #0b0f14; --surface: #121822; --surface-2: #1a2330;
+  --border: #243040; --text: #e5e9f0; --text-muted: #94a3b8;
+  --accent: #2dd4bf; --success: #22c55e; --warn: #f59e0b; --danger: #f87171;
+  --up: #22c55e; --down: #f87171;
+  --elev-1: 0 1px 2px rgba(0,0,0,.4); --elev-2: 0 14px 35px rgba(0,0,0,.5);
+}
+.tabular { font-variant-numeric: tabular-nums; }

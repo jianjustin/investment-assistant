@@ -145,6 +145,6 @@ def _validate_frame(frame: pd.DataFrame, ticker: str, *, min_rows: int) -> pd.Da
 
 
 def _default_price_fetcher(ticker: str, days: int) -> pd.DataFrame:
-    from data.price import get_price_history
+    from investment_assistant.data.price import get_price_history
 
     return get_price_history(ticker, days=days)
