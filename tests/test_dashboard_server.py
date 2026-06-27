@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import investment_assistant.api.static_files as static_files_mod
 import investment_assistant.services.status as status_svc
 from investment_assistant.dashboard import server
 
@@ -8,7 +9,7 @@ def test_static_response_serves_index_html(tmp_path, monkeypatch):
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "index.html").write_text("<html><body>Hermes Dashboard</body></html>", encoding="utf-8")
-    monkeypatch.setattr(server, "STATIC_DIR", dist)
+    monkeypatch.setattr(static_files_mod, "STATIC_DIR", dist)
 
     response = server.static_response_for_path("/")
 
