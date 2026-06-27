@@ -15,6 +15,8 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from investment_assistant.config import load_config
+from investment_assistant.dashboard.health import health_report
+from investment_assistant.dashboard.status_page import STATUS_PAGE_HTML
 from investment_assistant.db import connect, delete_watchlist_item as db_delete_watchlist_item, get_latest_market_signal, list_market_signals, list_watchlist_items, upsert_market_signal, upsert_watchlist_item
 from investment_assistant.hermes import agents as hermes_agents
 from investment_assistant.hermes.run_log import append_run
@@ -25,10 +27,14 @@ from investment_assistant.runtime_paths import DEFAULT_FILINGS_DIR
 from investment_assistant.strategies.trend_relative_strength import score_trend_relative_strength
 from investment_assistant.tickers.trend import scan_ticker_trends
 
-HOST = os.environ.get("HERMES_DASHBOARD_HOST", "0.0.0.0")
+HOST = os.environ.get("HERMES_DASHBOARD_HOST", "127.0.0.1")
 PORT = int(os.environ.get("HERMES_DASHBOARD_PORT", "8787"))
 AUTH_USER = os.environ.get("HERMES_DASHBOARD_USER", "jianjustin")
 AUTH_PASSWORD = os.environ.get("SERVER_PWD") or os.environ.get("HERMES_DASHBOARD_PASSWORD", "")
+# Allow binding to a public interface only when an operator has *explicitly*
+# opted in. This keeps the default deployment private (localhost) instead of
+# silently exposing mutation endpoints on 0.0.0.0.
+ALLOW_PUBLIC_BIND = os.environ.get("HERMES_DASHBOARD_ALLOW_PUBLIC", "").lower() in ("1", "true", "yes")
 STATIC_DIR = Path(__file__).resolve().parents[2] / "web" / "dist"
 
 
@@ -130,6 +136,8 @@ def api_response_for_path(path: str) -> ApiResponse | None:
     query = parse_qs(parsed.query)
     if parsed_path == "/api/status" or parsed_path == "/api/raw/status":
         return ApiResponse(status_payload())
+    if parsed_path == "/api/health":
+        return ApiResponse(health_report())
     if parsed_path == "/api/services":
         return ApiResponse(system_status())
     if parsed_path == "/api/watchlist":
@@ -716,6 +724,8 @@ def system_status() -> dict[str, Any]:
 
 def static_response_for_path(path: str) -> StaticResponse | None:
     parsed_path = unquote(urlparse(path).path)
+    if parsed_path == "/status":
+        return StaticResponse(200, "text/html; charset=utf-8", STATUS_PAGE_HTML.encode("utf-8"))
     if parsed_path == "/":
         target = STATIC_DIR / "index.html"
     elif parsed_path.startswith("/assets/"):
@@ -825,8 +835,25 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"error": "not found"}, 404)
 
 
+def _resolve_bind_host() -> str:
+    """Refuse to expose the dashboard publicly without auth (fail closed)."""
+    public = HOST not in ("127.0.0.1", "localhost", "::1")
+    if public and not ALLOW_PUBLIC_BIND:
+        raise SystemExit(
+            f"Refusing to bind dashboard to public host {HOST!r}. "
+            "Set HERMES_DASHBOARD_ALLOW_PUBLIC=1 to opt in (and front it with TLS)."
+        )
+    if public and not AUTH_PASSWORD:
+        raise SystemExit(
+            f"Refusing to bind dashboard to public host {HOST!r} without auth. "
+            "Set SERVER_PWD (or HERMES_DASHBOARD_PASSWORD) first."
+        )
+    return HOST
+
+
 def main() -> None:
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    host = _resolve_bind_host()
+    ThreadingHTTPServer((host, PORT), Handler).serve_forever()
 
 
 if __name__ == "__main__":

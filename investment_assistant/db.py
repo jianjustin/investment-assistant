@@ -18,6 +18,50 @@ def apply_migration(conn, sql_path: str | Path) -> None:
     conn.commit()
 
 
+def _ensure_migration_ledger(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+              filename TEXT PRIMARY KEY,
+              applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+    conn.commit()
+
+
+def applied_migrations(conn) -> set[str]:
+    _ensure_migration_ledger(conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT filename FROM schema_migrations")
+        return {row[0] for row in cur.fetchall()}
+
+
+def apply_pending_migrations(conn, migrations_dir: str | Path) -> list[str]:
+    """Apply every ``*.sql`` in ``migrations_dir`` not yet recorded, in order.
+
+    Records each in ``schema_migrations`` so re-runs are no-ops and the suite
+    supports ``ALTER``/data migrations (not only ``CREATE ... IF NOT EXISTS``).
+    Returns the filenames that were applied this call.
+    """
+    done = applied_migrations(conn)
+    applied: list[str] = []
+    for sql_path in sorted(Path(migrations_dir).glob("*.sql")):
+        if sql_path.name in done:
+            continue
+        sql = sql_path.read_text(encoding="utf-8")
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            cur.execute(
+                "INSERT INTO schema_migrations (filename) VALUES (%s) ON CONFLICT DO NOTHING",
+                (sql_path.name,),
+            )
+        conn.commit()
+        applied.append(sql_path.name)
+    return applied
+
+
 def upsert_market_signal(conn, signal) -> None:
     payload = _signal_payload(signal)
     with conn.cursor() as cur:
