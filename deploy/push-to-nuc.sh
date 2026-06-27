@@ -68,10 +68,9 @@ c_ok "已推送到 GitHub"
 # 3-5) 在 NUC 上执行（-t 分配 TTY 以便 sudo 输入密码）
 c_step "SSH 部署到 ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}"
 
-ssh -t "${REMOTE_USER}@${REMOTE_HOST}" \
-  REMOTE_DIR="$REMOTE_DIR" BRANCH="$BRANCH" \
-  SERVICE="$SERVICE" SKIP_INSTALL="$SKIP_INSTALL" NO_RESTART="$NO_RESTART" \
-  'bash -s' <<'REMOTE'
+# 组装远程脚本：本地变量在此展开（$REMOTE_DIR/$BRANCH/...）；
+# 需要远程执行的命令替换用 \$ 转义，避免在本地被求值。
+REMOTE_SCRIPT=$(cat <<REMOTE
 set -euo pipefail
 cd "$REMOTE_DIR"
 
@@ -79,7 +78,7 @@ echo "▶ git fetch & pull --ff-only ($BRANCH)"
 git fetch origin "$BRANCH"
 git checkout "$BRANCH"
 git pull --ff-only origin "$BRANCH"
-echo "  当前 HEAD: $(git rev-parse --short HEAD)  $(git log -1 --pretty=%s)"
+echo "  当前 HEAD: \$(git rev-parse --short HEAD)  \$(git log -1 --pretty=%s)"
 
 if [[ "$SKIP_INSTALL" -eq 0 ]]; then
   echo "▶ 运行 deploy/install.sh (需要 sudo)"
@@ -97,5 +96,13 @@ else
   echo "! 跳过重启 (--no-restart)"
 fi
 REMOTE
+)
+
+# 关键：不要把脚本重定向进 ssh 的 stdin，否则 ssh 不分配伪终端，
+# 远程 sudo 会报 "A terminal is required to authenticate"。
+# 改为把脚本 base64 编码后作为参数传过去，远程解码再交给 bash 执行；
+# ssh 的 stdin 保持为本地终端，-t 才能正常分配 pty 供 sudo 读取密码。
+REMOTE_B64="$(printf '%s' "$REMOTE_SCRIPT" | base64)"
+ssh -t "${REMOTE_USER}@${REMOTE_HOST}" "echo '$REMOTE_B64' | base64 --decode | bash"
 
 c_ok "部署完成。NUC 服务: http://${REMOTE_HOST} (dashboard)"
