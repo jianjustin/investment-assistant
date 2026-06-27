@@ -44,26 +44,23 @@ Discord 三频道推送  +  Obsidian Vault 存档
 ## 目录结构
 
 ```
-earnings-agent/
-├── data/                  # 数据获取层（不含信号计算）
-│   ├── price.py           # yfinance OHLCV 历史价
-│   ├── earnings.py        # yfinance 财报日历
-│   └── sec.py             # SEC EDGAR 8-K 下载（Exhibit 99.1 优先）
-├── signals/               # 信号计算层
-│   ├── market.py          # 大盘环境（SPY 200MA + VIX）
-│   └── technicals.py      # 个股技术信号（VCP / RS / MA Reclaim）
-├── notify/                # 通知层
-│   ├── discord.py         # Discord Webhook 客户端
-│   └── templates.py       # Embed 模板（含方向颜色编码）
-├── vault/                 # Obsidian 输出层
-│   └── writer.py          # 财报分析笔记写入
-├── ops/                   # 调度入口
-│   ├── earnings_monitor.py  # 财报监听主程序（cron 06:03）
-│   ├── daily_scan.py        # 技术面每日扫描（cron 21:00）
-│   └── diagnose.py          # SEC EDGAR 调试工具
-├── scripts/               # 独立验证脚本
+investment-assistant/
+├── investment_assistant/  # 生产包
+│   ├── api/               # HTTP 传输层（router / handler / auth / static）
+│   ├── services/          # 业务逻辑层（market / tickers / strategies / hermes / watchlist）
+│   ├── tasks/             # 定时任务入口（daily / nightly_scores / runner）
+│   ├── data/              # 数据获取（yfinance OHLCV）
+│   ├── notify/            # Discord 通知（discord + templates）
+│   ├── hermes/            # Hermes 宏观分析与决策证据
+│   ├── market/            # 大盘信号
+│   ├── tickers/           # 个股趋势
+│   ├── strategies/        # 策略评分
+│   └── dashboard/         # 兼容入口 shim
+├── web/                   # Svelte 5 前端（vite build → web/dist）
+├── deploy/                # systemd service / timer 文件
+├── migrations/            # PostgreSQL schema 迁移
 ├── tests/                 # pytest 单元测试（全 mock，无网络）
-├── docs/                  # architecture / getting-started / test-report
+├── docs/                  # 架构文档
 ├── .env                   # 环境变量（不入库）
 └── requirements.txt
 ```

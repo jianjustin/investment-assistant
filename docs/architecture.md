@@ -1,5 +1,8 @@
 # earning-agent — 架构与产品文档
 
+> ⚠️ 已废弃（2026-06-27）：本文描述的 earnings-agent 旧代码库（data/ signals/ notify/ ops/ vault/）已删除。
+> 当前生产架构见 docs/audit-and-redesign-2026-06.md 与 docs/execution-plan-2026-06.md。
+
 > 美股量化分析系统：从市场信号到 Discord 通知的自动化投资辅助工具。
 
 ---
