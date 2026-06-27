@@ -3,6 +3,7 @@
   import * as api from '../lib/api'
   import Skeleton from '../lib/components/Skeleton.svelte'
   import DataTable from '../lib/components/DataTable.svelte'
+  let { sub }: { sub?: string } = $props()
   import Drawer from '../lib/components/Drawer.svelte'
 
   let watchlist = $state<any[]>([])

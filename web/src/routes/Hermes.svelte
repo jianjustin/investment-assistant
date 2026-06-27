@@ -4,8 +4,11 @@
   import Skeleton from '../lib/components/Skeleton.svelte'
   import StatusPill from '../lib/components/StatusPill.svelte'
 
+  let { sub }: { sub?: string } = $props()
   type Tab = 'overview' | 'macro' | 'decision'
+  const validTabs: Tab[] = ['overview', 'macro', 'decision']
   let tab = $state<Tab>('overview')
+  $effect(() => { if (sub && validTabs.includes(sub as Tab)) tab = sub as Tab })
   let hermes = $state<any>(null)
   let macro = $state<any>(null)
   let macroRunning = $state(false)

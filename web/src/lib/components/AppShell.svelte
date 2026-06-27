@@ -2,9 +2,8 @@
   import { toggleTheme } from '../theme'
   import SideNav from './SideNav.svelte'
   import { createEventStream } from '../sse'
-  import { t } from '../i18n'
 
-  let { route, children }: { route: string; children?: any } = $props()
+  let { route, sub, children }: { route: string; sub?: string; children?: any } = $props()
   const events = createEventStream('/api/events')
   let lastEvent = $state<string | null>(null)
   $effect(() => {
@@ -14,7 +13,7 @@
 </script>
 
 <div class="flex h-screen overflow-hidden bg-bg text-ink">
-  <SideNav current={route} />
+  <SideNav current={route} {sub} />
   <div class="flex flex-col flex-1 min-w-0">
     <header class="flex items-center justify-between px-4 py-2 border-b border-border bg-surface shadow-elev-1">
       <span class="font-semibold text-accent">Hermes</span>

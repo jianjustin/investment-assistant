@@ -34,13 +34,13 @@ afterEach(() => cleanup())
 
 describe('app routing', () => {
   it('defaults to Dashboard zone', async () => {
-    const { getByText } = render(App)
-    expect(getByText(/总览|dashboard/i)).toBeTruthy()
+    const { getAllByText } = render(App)
+    expect(getAllByText(/总览|dashboard/i).length).toBeGreaterThan(0)
   })
 
   it('renders Market zone on #market hash', async () => {
     location.hash = '#market'
-    const { getByText } = render(App)
-    expect(getByText(/市场|market/i)).toBeTruthy()
+    const { getAllByText } = render(App)
+    expect(getAllByText(/市场|market/i).length).toBeGreaterThan(0)
   })
 })
