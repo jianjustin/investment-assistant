@@ -26,7 +26,7 @@
     return {
       xAxis: { data: ['0-40', '40-70', '70-100'] },
       yAxis: {},
-      series: [{ type: 'bar', data: bins, itemStyle: { color: 'var(--accent)' } }],
+      series: [{ type: 'bar' as const, data: bins, itemStyle: { color: 'var(--accent)' } }],
     }
   }
 
