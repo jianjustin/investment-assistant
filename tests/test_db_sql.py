@@ -44,3 +44,14 @@ def test_strategy_scores_migration_defines_required_table():
     assert "score INTEGER NOT NULL" in sql
     assert "evidence JSONB NOT NULL" in sql
     assert "limits JSONB NOT NULL" in sql
+
+
+def test_strategy_scores_fk_migration_adds_constraint():
+    sql = Path("migrations/005_strategy_scores_fk.sql").read_text()
+    assert "fk_strategy_scores_snapshot" in sql
+    assert "REFERENCES ticker_signal_snapshots (id)" in sql
+    assert "ON DELETE SET NULL" in sql
+    # must clean up orphans before adding constraint
+    assert "UPDATE strategy_scores" in sql
+    # idempotent guard
+    assert "pg_constraint" in sql
