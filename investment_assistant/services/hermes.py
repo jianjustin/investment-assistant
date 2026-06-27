@@ -9,6 +9,7 @@ from investment_assistant.config import load_config
 from investment_assistant.hermes.decision_evidence import build_decision_evidence
 from investment_assistant.hermes.macro_analyst import analyze_macro_environment
 from investment_assistant.hermes.run_log import append_run
+from investment_assistant.tasks import runner
 
 
 def hermes_macro_analysis(query: dict[str, list[str]]) -> dict[str, Any]:
@@ -22,7 +23,7 @@ def hermes_macro_analysis(query: dict[str, list[str]]) -> dict[str, Any]:
     return analyze_macro_environment(rows, window=window, watchlist=watchlist)
 
 
-def run_hermes_macro_llm_analysis(payload: dict[str, Any]) -> dict[str, Any]:
+def _macro_llm_job(payload: dict[str, Any]) -> dict[str, Any]:
     from investment_assistant.services.market import market_signal_rows
     from investment_assistant.services.watchlist import current_watchlist
     config = load_config()
@@ -48,8 +49,16 @@ def run_hermes_macro_llm_analysis(payload: dict[str, Any]) -> dict[str, Any]:
     return {"run_id": run_id, "analysis": analysis}
 
 
-def run_decision_evidence(payload: dict[str, Any]) -> dict[str, Any]:
-    from investment_assistant.services.market import market_signal_rows
+def run_hermes_macro_llm_analysis(payload: dict[str, Any]) -> dict[str, Any]:
+    return _macro_llm_job(payload)
+
+
+def submit_macro_llm(payload: dict[str, Any]) -> dict[str, Any]:
+    rid = runner.submit("macro-llm", lambda: _macro_llm_job(payload))
+    return {"run_id": rid, "status": "pending"}
+
+
+def _decision_evidence_job(payload: dict[str, Any]) -> dict[str, Any]:
     from investment_assistant.services.tickers import ticker_trend_rows
     from investment_assistant.services.strategies import strategy_score_rows
     config = load_config()
@@ -82,3 +91,12 @@ def run_decision_evidence(payload: dict[str, Any]) -> dict[str, Any]:
     }
     append_run(record)
     return {"run_id": run_id, "decision_evidence": evidence}
+
+
+def run_decision_evidence(payload: dict[str, Any]) -> dict[str, Any]:
+    return _decision_evidence_job(payload)
+
+
+def submit_decision_evidence(payload: dict[str, Any]) -> dict[str, Any]:
+    rid = runner.submit("decision-evidence", lambda: _decision_evidence_job(payload))
+    return {"run_id": rid, "status": "pending"}

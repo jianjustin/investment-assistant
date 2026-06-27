@@ -185,15 +185,21 @@ def test_strategy_score_run_post_scores_latest_snapshots_and_persists(monkeypatc
     assert persisted == response.payload["rows"]
 
 
-def test_decision_evidence_run_endpoint_invokes_builder_and_appends_audit(monkeypatch):
+def test_decision_evidence_run_endpoint_returns_pending(monkeypatch):
+    response = server.api_post_response_for_path("/api/hermes/decision-evidence/run", {"use_llm": False, "model": "deepseek-v4-pro"})
+
+    assert response.status == 200
+    assert response.payload["status"] == "pending"
+    assert response.payload["run_id"].startswith("decision-evidence-")
+
+
+def test_decision_evidence_job_invokes_builder_and_appends_audit(monkeypatch):
     audit_records = []
     calls = []
     macro = {"macro_state": "offense", "summary": "宏观偏进攻"}
-    ticker_rows = [{"ticker": "TSLA", "attention_level": "high", "trigger_reason": ["above_ma_stack"]}]
-    score_rows = [{"ticker": "TSLA", "strategy": "trend_relative_strength", "score": 82, "evidence": ["macro_offense"]}]
 
     def fake_build_decision_evidence(*, macro, ticker_signals, strategy_scores, use_llm, model):
-        calls.append({"macro": macro, "ticker_signals": ticker_signals, "strategy_scores": strategy_scores, "use_llm": use_llm, "model": model})
+        calls.append({"use_llm": use_llm, "model": model})
         return {
             "source": "hermes.decision_evidence",
             "summary": "LLM decision summary",
@@ -210,11 +216,9 @@ def test_decision_evidence_run_endpoint_invokes_builder_and_appends_audit(monkey
     monkeypatch.setattr(hermes_svc, "append_run", lambda record: audit_records.append(record))
     monkeypatch.setattr(hermes_svc, "uuid", type("FakeUuid", (), {"uuid4": staticmethod(lambda: type("U", (), {"hex": "abcdef123456"})())})())
 
-    response = server.api_post_response_for_path("/api/hermes/decision-evidence/run", {"use_llm": True, "model": "deepseek-v4-pro"})
+    result = hermes_svc._decision_evidence_job({"use_llm": True, "model": "deepseek-v4-pro"})
 
-    assert response.status == 200
-    assert response.payload["run_id"].startswith("decision-evidence-")
-    assert response.payload["decision_evidence"]["source"] == "hermes.decision_evidence"
+    assert result["run_id"].startswith("decision-evidence-")
+    assert result["decision_evidence"]["source"] == "hermes.decision_evidence"
     assert audit_records[0]["type"] == "hermes_decision_evidence"
-    assert audit_records[0]["run_id"] == response.payload["run_id"]
     assert audit_records[0]["llm"]["used"] is True

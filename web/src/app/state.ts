@@ -148,6 +148,18 @@ export async function runStrategyScores(payload: { mode?: string } = { mode: 'ma
   }
 }
 
+async function pollRun(runId: string, timeoutMs = 120_000): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 1500))
+    const resp = await fetch(`/api/runs/${runId}`, { headers: { Accept: 'application/json' } })
+    const rec = await resp.json()
+    if (rec.status === 'done') return rec.result as Record<string, unknown>
+    if (rec.status === 'error') throw new Error(rec.error ?? 'run failed')
+  }
+  throw new Error('run timed out')
+}
+
 export async function runMacroAnalystLlm(payload: { window?: number; watchlist?: string[]; model?: string } = { window: 30 }): Promise<void> {
   state.macroLlmInFlight = true
   state.macroLlmResult = null
@@ -158,14 +170,13 @@ export async function runMacroAnalystLlm(payload: { window?: number; watchlist?:
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify({ window: 30, ...payload }),
     })
-    const result = (await response.json()) as HermesMacroLlmResult
+    const pending = (await response.json()) as { run_id: string; status: string }
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+    const result = await pollRun(pending.run_id) as HermesMacroLlmResult
     state.macroLlmResult = result
-    if (!response.ok) {
-      throw new Error(result.error ?? `HTTP ${response.status}: ${response.statusText}`)
-    }
-    if (result.analysis) {
-      state.hermesMacroAnalysis = result.analysis
-      state.hermesMarketInterpretation = result.analysis
+    if ((result as any).analysis) {
+      state.hermesMacroAnalysis = (result as any).analysis
+      state.hermesMarketInterpretation = (result as any).analysis
     }
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error)
@@ -185,12 +196,11 @@ export async function runDecisionEvidence(payload: { window?: number; model?: st
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify({ window: 30, use_llm: true, ...payload }),
     })
-    const result = (await response.json()) as DecisionEvidenceRunResult
+    const pending = (await response.json()) as { run_id: string; status: string }
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+    const result = await pollRun(pending.run_id) as DecisionEvidenceRunResult
     state.decisionEvidenceResult = result
-    if (!response.ok) {
-      throw new Error(result.error ?? `HTTP ${response.status}: ${response.statusText}`)
-    }
-    state.decisionEvidence = result.decision_evidence ?? null
+    state.decisionEvidence = (result as any).decision_evidence ?? null
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error)
   } finally {

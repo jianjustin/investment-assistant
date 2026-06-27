@@ -36,6 +36,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self._reject_unauthorized():
             return
+        from urllib.parse import unquote, urlparse
+        if unquote(urlparse(self.path).path) == "/api/events":
+            self._handle_sse()
+            return
         api_response = dispatch("GET", self.path, None)
         if api_response is not None:
             self._send_json(api_response.payload, api_response.status)
@@ -45,6 +49,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send(static_response.body, static_response.content_type, static_response.status)
             return
         self._send_json({"error": "not found"}, 404)
+
+    def _handle_sse(self):
+        from investment_assistant.tasks.runner import subscribe, unsubscribe
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        q = subscribe()
+        try:
+            while True:
+                event = q.get()
+                data = json.dumps(event, ensure_ascii=False, default=str)
+                self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            unsubscribe(q)
 
     def do_POST(self):
         if self._reject_unauthorized():
