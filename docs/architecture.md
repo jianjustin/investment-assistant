@@ -2,6 +2,44 @@
 
 > ⚠️ 已废弃（2026-06-27）：本文描述的 earnings-agent 旧代码库（data/ signals/ notify/ ops/ vault/）已删除。
 > 当前生产架构见 docs/audit-and-redesign-2026-06.md 与 docs/execution-plan-2026-06.md。
+>
+> **2026-06-27 Part B 分层完成**：见下方「后端分层架构」一节。
+
+---
+
+## 后端分层架构（2026-06-27 重构后）
+
+```
+investment_assistant/
+  api/
+    auth.py            # 鉴权 (authorize/resolve_bind_host)，fail-closed 公网绑定
+    http.py            # ApiResponse/StaticResponse + 解析助手
+    router.py          # 路由注册表 register(method,exact=|prefix=) + dispatch()
+    server.py          # 薄 Handler(do_GET/POST/DELETE) + SSE /api/events + main()
+    static_files.py    # 服务 web/dist 静态资源 + /status HTML
+    routes/
+      status.py market.py tickers.py strategies.py hermes.py watchlist.py runs.py
+  services/
+    status.py market.py tickers.py strategies.py hermes.py watchlist.py
+  tasks/
+    runner.py          # 后台任务线程池：submit/get/subscribe/unsubscribe
+    daily.py           # hermes 日任务入口（CLI + filing 失败容错）
+    nightly_scores.py  # 夜间评分任务入口（CLI）
+  dashboard/server.py  # 向后兼容 shim，委托给 api/server.py
+  ops/hermes_daily.py  # 向后兼容 shim，委托给 tasks/daily.py
+```
+
+**关键 API 端点：**
+- `GET /api/runs/{id}` — 轮询后台任务状态（`pending|done|error`）
+- `GET /api/events` — SSE 推送任务完成事件（`text/event-stream`）
+- `POST /api/hermes/macro-analysis/run` — 异步提交，立即返回 `{run_id, status:"pending"}`
+- `POST /api/hermes/decision-evidence/run` — 同上
+
+**systemd 定时任务（US/Eastern）：**
+- `hermes-investment-daily.timer` → 周一至周五 08:30 ET
+- `hermes-investment-scores.timer` → 周一至周五 18:00 ET
+
+---
 
 > 美股量化分析系统：从市场信号到 Discord 通知的自动化投资辅助工具。
 
