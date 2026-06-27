@@ -32,17 +32,8 @@ if [[ -f "$BASE/.env" ]]; then
   set +a
 fi
 if [[ -n "${INVESTMENT_ASSISTANT_DATABASE_URL:-}" ]]; then
-  echo "Applying database migrations"
-  "$VENV/bin/python" - <<'PY'
-import os
-from pathlib import Path
-from investment_assistant.db import apply_migration, connect
-
-app = Path(os.environ.get("HERMES_APP_DIR", "/opt/hermes-investment-assistant/app"))
-with connect(os.environ["INVESTMENT_ASSISTANT_DATABASE_URL"]) as conn:
-    for sql_path in sorted((app / "migrations").glob("*.sql")):
-        apply_migration(conn, sql_path)
-PY
+  echo "Applying database migrations (versioned)"
+  (cd "$APP" && "$VENV/bin/python" -m investment_assistant.migrate)
 fi
 
 if command -v npm >/dev/null 2>&1 && [[ -f "$APP/web/package.json" ]]; then
