@@ -1,4 +1,5 @@
-import { bootApp } from './app/app'
-import './styles.css'
+import { mount } from 'svelte'
+import App from './app.svelte'
+import './styles/app.css'
 
-bootApp()
+mount(App, { target: document.querySelector('#app')! })
