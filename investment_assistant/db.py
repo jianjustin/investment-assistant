@@ -1,14 +1,52 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from pathlib import Path
 from typing import Any
 
+_POOLS: dict[str, Any] = {}
+_POOLS_LOCK = threading.Lock()
+
+
+def _get_pool(database_url: str):
+    with _POOLS_LOCK:
+        pool = _POOLS.get(database_url)
+        if pool is None:
+            from psycopg_pool import ConnectionPool
+
+            pool = ConnectionPool(
+                database_url,
+                min_size=1,
+                max_size=int(os.environ.get("INVESTMENT_ASSISTANT_DB_POOL_MAX", "8")),
+                open=True,
+            )
+            _POOLS[database_url] = pool
+        return pool
+
 
 def connect(database_url: str):
-    import psycopg
+    """Return a pooled connection context manager.
 
-    return psycopg.connect(database_url)
+    Usage is unchanged from the old per-call psycopg.connect:
+        with connect(url) as conn:
+            ...
+    On exit the connection is returned to the process-wide pool instead of
+    being closed.
+    """
+    return _get_pool(database_url).connection()
+
+
+def _reset_pools() -> None:
+    """Test helper: drop cached pools (closing them best-effort)."""
+    with _POOLS_LOCK:
+        for pool in _POOLS.values():
+            try:
+                pool.close()
+            except Exception:
+                pass
+        _POOLS.clear()
 
 
 def apply_migration(conn, sql_path: str | Path) -> None:
