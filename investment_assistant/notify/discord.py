@@ -36,7 +36,7 @@ class DiscordClient:
 
 if __name__ == "__main__":
     import argparse
-    from notify.templates import earnings_alert_embed, signal_alert_embed, daily_summary_embed
+    from investment_assistant.notify.templates import earnings_alert_embed, signal_alert_embed, daily_summary_embed
 
     parser = argparse.ArgumentParser(description="发送测试消息到指定 Discord 频道")
     parser.add_argument(
