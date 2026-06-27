@@ -2,7 +2,7 @@
 Description=Daily Hermes investment assistant timer
 
 [Timer]
-OnCalendar=*-*-* 08:30:00
+OnCalendar=Mon..Fri *-*-* 08:30:00 America/New_York
 Persistent=true
 Unit=hermes-investment-daily.service
 
