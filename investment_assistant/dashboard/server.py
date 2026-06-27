@@ -8,18 +8,12 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import unquote, urlparse
 
+import investment_assistant.api.routes  # noqa: F401 — triggers route registration
 from investment_assistant.api.http import ApiResponse, StaticResponse
-from investment_assistant.dashboard.health import health_report
+from investment_assistant.api.router import dispatch
 from investment_assistant.dashboard.status_page import STATUS_PAGE_HTML
-from investment_assistant.hermes import agents as hermes_agents
-from investment_assistant.services.status import status_payload, database_status, filing_status, filing_rows, operation_registry, system_status
-from investment_assistant.services.watchlist import watchlist_rows, current_watchlist, add_watchlist_item, delete_watchlist_item
-from investment_assistant.services.tickers import ticker_trend_rows, run_ticker_trend_scan
-from investment_assistant.services.strategies import strategy_score_rows, run_strategy_score_scan
-from investment_assistant.services.market import market_signal_rows, market_signal_trend, fetch_market_signals
-from investment_assistant.services.hermes import hermes_macro_analysis, run_hermes_macro_llm_analysis, run_decision_evidence
 
 HOST = os.environ.get("HERMES_DASHBOARD_HOST", "127.0.0.1")
 PORT = int(os.environ.get("HERMES_DASHBOARD_PORT", "8787"))
@@ -33,100 +27,15 @@ STATIC_DIR = Path(__file__).resolve().parents[2] / "web" / "dist"
 
 
 def api_response_for_path(path: str) -> ApiResponse | None:
-    parsed = urlparse(path)
-    parsed_path = unquote(parsed.path)
-    query = parse_qs(parsed.query)
-    if parsed_path == "/api/status" or parsed_path == "/api/raw/status":
-        return ApiResponse(status_payload())
-    if parsed_path == "/api/health":
-        return ApiResponse(health_report())
-    if parsed_path == "/api/services":
-        return ApiResponse(system_status())
-    if parsed_path == "/api/watchlist":
-        rows = watchlist_rows()
-        return ApiResponse({"rows": rows, "count": len(rows)})
-    if parsed_path == "/api/tickers/trends":
-        rows = ticker_trend_rows()
-        return ApiResponse({"rows": rows, "count": len(rows)})
-    if parsed_path == "/api/strategies/scores":
-        rows = strategy_score_rows()
-        return ApiResponse({"rows": rows, "count": len(rows)})
-    if parsed_path == "/api/market/signals/latest":
-        return ApiResponse(database_status().get("latest_market_signal"))
-    if parsed_path == "/api/market/signals":
-        rows = market_signal_rows(query)
-        return ApiResponse({"rows": rows, "count": len(rows)})
-    if parsed_path == "/api/market/signals/trend":
-        return ApiResponse(market_signal_trend(query))
-    if parsed_path == "/api/hermes":
-        return ApiResponse(hermes_agents.hermes_overview())
-    if parsed_path == "/api/hermes/agents":
-        return ApiResponse({"agents": hermes_agents.list_agents()})
-    if parsed_path == "/api/hermes/macro-analysis":
-        return ApiResponse(hermes_macro_analysis(query))
-    if parsed_path == "/api/hermes/market-signals/interpretation":
-        return ApiResponse(hermes_macro_analysis(query))
-    if parsed_path == "/api/filings":
-        return ApiResponse({"summary": filing_status(), "files": filing_rows()})
-    if parsed_path == "/api/operations":
-        return ApiResponse({"operations": operation_registry()})
-    if parsed_path.startswith("/api/"):
-        return None
-    return None
+    return dispatch("GET", path, None)
 
 
 def api_post_response_for_path(path: str, payload: dict[str, Any]) -> ApiResponse | None:
-    parsed_path = unquote(urlparse(path).path)
-    if parsed_path == "/api/watchlist":
-        try:
-            return ApiResponse({"item": add_watchlist_item(payload)})
-        except ValueError as exc:
-            return ApiResponse({"error": str(exc)}, status=400)
-    if parsed_path == "/api/hermes/macro-analysis/run":
-        try:
-            return ApiResponse(run_hermes_macro_llm_analysis(payload))
-        except ValueError as exc:
-            return ApiResponse({"error": str(exc)}, status=400)
-    if parsed_path == "/api/hermes/decision-evidence/run":
-        try:
-            return ApiResponse(run_decision_evidence(payload))
-        except ValueError as exc:
-            return ApiResponse({"error": str(exc)}, status=400)
-    if parsed_path == "/api/market/signals/fetch":
-        try:
-            return ApiResponse(fetch_market_signals(payload))
-        except ValueError as exc:
-            return ApiResponse({"error": str(exc)}, status=400)
-    if parsed_path == "/api/tickers/trends/scan":
-        try:
-            return ApiResponse(run_ticker_trend_scan(payload))
-        except ValueError as exc:
-            return ApiResponse({"error": str(exc)}, status=400)
-    if parsed_path == "/api/strategies/scores/run":
-        try:
-            return ApiResponse(run_strategy_score_scan(payload))
-        except ValueError as exc:
-            return ApiResponse({"error": str(exc)}, status=400)
-    if parsed_path == "/api/hermes/agents":
-        try:
-            return ApiResponse({"agent": hermes_agents.save_agent(payload)})
-        except ValueError as exc:
-            return ApiResponse({"error": str(exc)}, status=400)
-    if parsed_path.startswith("/api/"):
-        return None
-    return None
+    return dispatch("POST", path, payload)
 
 
 def api_delete_response_for_path(path: str) -> ApiResponse | None:
-    parsed_path = unquote(urlparse(path).path)
-    if parsed_path.startswith("/api/watchlist/"):
-        ticker = parsed_path.rsplit("/", 1)[-1]
-        try:
-            return ApiResponse(delete_watchlist_item(ticker))
-        except ValueError as exc:
-            return ApiResponse({"error": str(exc)}, status=400)
-    if parsed_path.startswith("/api/"):
-        return None
+    return dispatch("DELETE", path, None)
     return None
 
 

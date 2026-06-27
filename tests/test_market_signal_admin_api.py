@@ -4,6 +4,7 @@ import investment_assistant.services.market as market_svc
 import investment_assistant.services.tickers as tickers_svc
 import investment_assistant.services.strategies as strategies_svc
 import investment_assistant.services.hermes as hermes_svc
+import investment_assistant.services.watchlist as watchlist_svc
 from investment_assistant.dashboard import server
 
 
@@ -15,7 +16,6 @@ def test_market_signal_list_and_trend_endpoints(monkeypatch):
     ]
     # Patch at the service level so both list and trend endpoints see the same fake
     monkeypatch.setattr(market_svc, "market_signal_rows", lambda query: rows)
-    monkeypatch.setattr(server, "market_signal_rows", lambda query: rows)
 
     list_response = server.api_response_for_path("/api/market/signals?limit=3")
     trend_response = server.api_response_for_path("/api/market/signals/trend?window=3")
@@ -87,9 +87,9 @@ def test_watchlist_api_lists_adds_and_deletes_tickers(monkeypatch):
     added = []
     deleted = []
 
-    monkeypatch.setattr(server, "watchlist_rows", lambda: rows)
-    monkeypatch.setattr(server, "add_watchlist_item", lambda payload: added.append(payload) or {"ticker": "NVDA", "status": "active", "thesis": "AI compute"})
-    monkeypatch.setattr(server, "delete_watchlist_item", lambda ticker: deleted.append(ticker) or {"ticker": ticker, "deleted": True})
+    monkeypatch.setattr(watchlist_svc, "watchlist_rows", lambda: rows)
+    monkeypatch.setattr(watchlist_svc, "add_watchlist_item", lambda payload: added.append(payload) or {"ticker": "NVDA", "status": "active", "thesis": "AI compute"})
+    monkeypatch.setattr(watchlist_svc, "delete_watchlist_item", lambda ticker: deleted.append(ticker) or {"ticker": ticker, "deleted": True})
 
     list_response = server.api_response_for_path("/api/watchlist")
     add_response = server.api_post_response_for_path("/api/watchlist", {"ticker": " nvda ", "status": "active", "thesis": "AI compute"})
@@ -107,7 +107,7 @@ def test_watchlist_api_lists_adds_and_deletes_tickers(monkeypatch):
 
 def test_ticker_trend_endpoint_returns_rows(monkeypatch):
     rows = [{"ticker": "TSLA", "trend_state": "uptrend", "attention_level": "high", "trigger_reason": ["above_ma_stack"]}]
-    monkeypatch.setattr(server, "ticker_trend_rows", lambda: rows)
+    monkeypatch.setattr(tickers_svc, "ticker_trend_rows", lambda: rows)
 
     response = server.api_response_for_path("/api/tickers/trends")
 
@@ -149,7 +149,7 @@ def test_macro_analysis_uses_managed_watchlist_when_query_omits_watchlist(monkey
 
 def test_strategy_scores_endpoint_returns_rows(monkeypatch):
     rows = [{"ticker": "TSLA", "strategy": "trend_relative_strength", "score": 85, "evidence": ["uptrend"], "limits": ["not trading instruction"]}]
-    monkeypatch.setattr(server, "strategy_score_rows", lambda: rows)
+    monkeypatch.setattr(strategies_svc, "strategy_score_rows", lambda: rows)
 
     response = server.api_response_for_path("/api/strategies/scores")
 
