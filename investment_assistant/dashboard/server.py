@@ -7,12 +7,25 @@ import mimetypes
 import uuid
 import os
 import subprocess
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, is_dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
+
+from investment_assistant.api.http import (
+    ApiResponse,
+    StaticResponse,
+    first as _first,
+    parse_optional_date as _parse_optional_date,
+    parse_int as _parse_int,
+    parse_csv as _parse_csv,
+    parse_payload_watchlist as _parse_payload_watchlist,
+    parse_payload_bool as _parse_payload_bool,
+    parse_payload_tags as _parse_payload_tags,
+    json_body as _json_body,
+)
 
 from investment_assistant.config import load_config
 from investment_assistant.dashboard.health import health_report
@@ -36,19 +49,6 @@ AUTH_PASSWORD = os.environ.get("SERVER_PWD") or os.environ.get("HERMES_DASHBOARD
 # silently exposing mutation endpoints on 0.0.0.0.
 ALLOW_PUBLIC_BIND = os.environ.get("HERMES_DASHBOARD_ALLOW_PUBLIC", "").lower() in ("1", "true", "yes")
 STATIC_DIR = Path(__file__).resolve().parents[2] / "web" / "dist"
-
-
-@dataclass(frozen=True)
-class StaticResponse:
-    status: int
-    content_type: str
-    body: bytes
-
-
-@dataclass(frozen=True)
-class ApiResponse:
-    payload: Any
-    status: int = 200
 
 
 def status_payload() -> dict[str, Any]:
@@ -427,16 +427,6 @@ def _persist_strategy_scores(rows: list[dict[str, Any]]) -> None:
         conn.commit()
 
 
-def _parse_payload_tags(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    raise ValueError("tags must be a list or comma-separated string")
-
-
 def market_signal_rows(query: dict[str, list[str]]) -> list[dict[str, Any]]:
     url = os.environ.get("INVESTMENT_ASSISTANT_DATABASE_URL")
     if not url:
@@ -665,53 +655,6 @@ def _manual_fetch_range(payload: dict[str, Any]) -> tuple[date, date]:
     if (end_date - start_date).days > 45:
         raise ValueError("manual market fetch range is limited to 45 days")
     return start_date, end_date
-
-
-def _first(query: dict[str, list[str]], key: str) -> str | None:
-    values = query.get(key)
-    return values[0] if values else None
-
-
-def _parse_optional_date(value: str | None) -> date | None:
-    return date.fromisoformat(value) if value else None
-
-
-def _parse_int(value: str | None, *, default: int, minimum: int, maximum: int) -> int:
-    try:
-        parsed = int(value) if value is not None else default
-    except ValueError:
-        parsed = default
-    return max(minimum, min(maximum, parsed))
-
-
-def _parse_csv(value: str | None) -> list[str]:
-    if not value:
-        return []
-    return [item.strip().upper() for item in value.split(",") if item.strip()]
-
-
-def _parse_payload_watchlist(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return _parse_csv(value)
-    if isinstance(value, list):
-        return [str(item).strip().upper() for item in value if str(item).strip()]
-    raise ValueError("watchlist must be a list or comma-separated string")
-
-
-def _parse_payload_bool(value: Any, *, default: bool) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    raise ValueError("boolean payload value is invalid")
 
 
 def system_status() -> dict[str, Any]:
