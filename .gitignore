@@ -15,7 +15,7 @@ __pycache__/
 data/earnings_reports/
 data/earnings_today.json
 data/daily_scan.json
-filings/
+/filings/
 postgres-data/
 *.sqlite3
 logs/
