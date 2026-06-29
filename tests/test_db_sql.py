@@ -55,3 +55,12 @@ def test_strategy_scores_fk_migration_adds_constraint():
     assert "UPDATE strategy_scores" in sql
     # idempotent guard
     assert "pg_constraint" in sql
+
+
+def test_job_reports_migration():
+    sql = Path("migrations/006_job_reports.sql").read_text()
+    assert "CREATE TABLE IF NOT EXISTS job_reports" in sql
+    assert "task        TEXT NOT NULL" in sql or "task TEXT NOT NULL" in sql
+    assert "run_id" in sql and "status" in sql
+    assert "summary     JSONB" in sql or "summary JSONB" in sql
+    assert "created_at  TIMESTAMPTZ" in sql or "created_at TIMESTAMPTZ" in sql

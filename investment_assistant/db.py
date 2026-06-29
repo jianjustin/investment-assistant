@@ -264,3 +264,32 @@ def _normalize_ticker(ticker: str) -> str:
     if not normalized.replace(".", "").replace("-", "").isalnum():
         raise ValueError("ticker contains unsupported characters")
     return normalized
+
+
+def insert_job_report(
+    conn,
+    *,
+    task: str,
+    run_id: str,
+    status: str,
+    started_at,
+    finished_at,
+    summary: dict[str, Any],
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO job_reports (task, run_id, status, started_at, finished_at, summary)
+            VALUES (%(task)s, %(run_id)s, %(status)s, %(started_at)s, %(finished_at)s, %(summary)s::jsonb)
+            """,
+            {
+                "task": task,
+                "run_id": run_id,
+                "status": status,
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "summary": json.dumps(summary or {}, ensure_ascii=False, default=str),
+            },
+        )
+        cur.execute("DELETE FROM job_reports WHERE created_at < now() - INTERVAL '30 days'")
+    conn.commit()
