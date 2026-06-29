@@ -293,3 +293,32 @@ def insert_job_report(
         )
         cur.execute("DELETE FROM job_reports WHERE created_at < now() - INTERVAL '30 days'")
     conn.commit()
+
+
+def due_scheduled_jobs(conn, *, now) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, name, time_local, weekday_mask, timezone, next_run_at
+            FROM scheduled_jobs
+            WHERE enabled AND (next_run_at IS NULL OR next_run_at <= %(now)s)
+            FOR UPDATE SKIP LOCKED
+            """,
+            {"now": now},
+        )
+        rows = cur.fetchall()
+    keys = ["id", "name", "time_local", "weekday_mask", "timezone", "next_run_at"]
+    return [dict(zip(keys, row)) for row in rows]
+
+
+def reschedule_job(conn, name: str, *, next_run_at, last_run_at) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE scheduled_jobs
+            SET next_run_at = %(next_run_at)s, last_run_at = %(last_run_at)s, updated_at = now()
+            WHERE name = %(name)s
+            """,
+            {"name": name, "next_run_at": next_run_at, "last_run_at": last_run_at},
+        )
+    conn.commit()

@@ -64,3 +64,13 @@ def test_job_reports_migration():
     assert "run_id" in sql and "status" in sql
     assert "summary     JSONB" in sql or "summary JSONB" in sql
     assert "created_at  TIMESTAMPTZ" in sql or "created_at TIMESTAMPTZ" in sql
+
+
+def test_scheduled_jobs_migration():
+    sql = Path("migrations/007_scheduled_jobs.sql").read_text()
+    assert "CREATE TABLE IF NOT EXISTS scheduled_jobs" in sql
+    assert "name         TEXT NOT NULL UNIQUE" in sql or "name TEXT NOT NULL UNIQUE" in sql
+    assert "time_local" in sql and "weekday_mask" in sql and "timezone" in sql
+    assert "next_run_at" in sql
+    assert "'metrics'" in sql and "'filings'" in sql and "'scores'" in sql  # seed
+    assert "ON CONFLICT (name) DO NOTHING" in sql
