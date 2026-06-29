@@ -90,3 +90,55 @@ def daily_summary_embed(
             "footer": _footer(),
         }]
     }
+
+
+def metrics_summary_embed(summary: dict) -> dict:
+    status = str(summary.get("market_status", "?")).upper()
+    vix = summary.get("vix")
+    tickers = summary.get("tickers", [])
+    rows = "\n".join(f"• **{t.get('ticker')}** — {t.get('trend_state', '?')}" for t in tickers[:10]) or "无"
+    return {
+        "embeds": [{
+            "title": "🗓 每日指标 · 08:00",
+            "color": 3447003,
+            "fields": [
+                {"name": "市场环境", "value": f"{status} | VIX {vix}", "inline": False},
+                {"name": f"关注列表 ({len(tickers)})", "value": rows, "inline": False},
+            ],
+            "footer": _footer(),
+        }]
+    }
+
+
+def filings_digest_embed(summary: dict) -> dict:
+    filings = summary.get("filings", [])
+    rows = "\n".join(
+        f"• **{f.get('ticker')}** {f.get('form')} — {f.get('filed_at', '')}" for f in filings[:15]
+    ) or "昨日无新财报"
+    return {
+        "embeds": [{
+            "title": "📄 昨日财报 · 09:00",
+            "color": 15844367,
+            "fields": [
+                {"name": f"新提交 ({summary.get('downloaded_count', 0)})", "value": rows, "inline": False},
+            ],
+            "footer": _footer(),
+        }]
+    }
+
+
+def scores_summary_embed(summary: dict) -> dict:
+    rows = summary.get("rows", [])
+    listing = "\n".join(
+        f"• **{r.get('ticker')}** — {r.get('score')}" for r in rows[:10]
+    ) or "无评分"
+    return {
+        "embeds": [{
+            "title": "📈 策略评分 · 18:00",
+            "color": 10070709,
+            "fields": [
+                {"name": f"评分 ({len(rows)})", "value": listing, "inline": False},
+            ],
+            "footer": _footer(),
+        }]
+    }
