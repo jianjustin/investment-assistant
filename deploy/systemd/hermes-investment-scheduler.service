@@ -1,12 +1,17 @@
 [Unit]
-Description=Run Hermes investment assistant daily task
+Description=Hermes investment assistant scheduler daemon
 After=network-online.target investment-assistant-postgres.service
 Wants=network-online.target investment-assistant-postgres.service
 
 [Service]
-Type=oneshot
+Type=simple
 User=jianjustin
 Group=jianjustin
 WorkingDirectory=/opt/hermes-investment-assistant/app
 EnvironmentFile=/opt/hermes-investment-assistant/.env
-ExecStart=/opt/hermes-investment-assistant/.venv/bin/python -m investment_assistant.ops.hermes_daily
+ExecStart=/opt/hermes-investment-assistant/.venv/bin/python -m investment_assistant.tasks.scheduler
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

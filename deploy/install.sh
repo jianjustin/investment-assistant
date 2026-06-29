@@ -42,6 +42,8 @@ if command -v npm >/dev/null 2>&1 && [[ -f "$APP/web/package.json" ]]; then
 fi
 
 install -m 0644 "$APP/deploy/systemd/"*.service /etc/systemd/system/
-install -m 0644 "$APP/deploy/systemd/"*.timer /etc/systemd/system/
+if compgen -G "$APP/deploy/systemd/"*.timer >/dev/null; then
+  install -m 0644 "$APP/deploy/systemd/"*.timer /etc/systemd/system/
+fi
 systemctl daemon-reload
-systemctl enable investment-assistant-postgres.service hermes-investment-dashboard.service hermes-investment-daily.timer
+systemctl enable investment-assistant-postgres.service hermes-investment-dashboard.service hermes-investment-scheduler.service
