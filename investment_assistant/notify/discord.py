@@ -33,6 +33,21 @@ class DiscordClient:
             daily_url=os.environ["DISCORD_WEBHOOK_DAILY"],
         )
 
+    @classmethod
+    def from_config(cls, notify_cfg) -> "DiscordClient":
+        from dotenv import load_dotenv
+        import os
+        load_dotenv()
+
+        def url(channel: str, env_key: str) -> str:
+            return notify_cfg.webhooks.get(channel) or os.environ.get(env_key, "")
+
+        return cls(
+            earnings_url=url("earnings", "DISCORD_WEBHOOK_EARNINGS"),
+            signals_url=url("signals", "DISCORD_WEBHOOK_SIGNALS"),
+            daily_url=url("daily", "DISCORD_WEBHOOK_DAILY"),
+        )
+
 
 if __name__ == "__main__":
     import argparse

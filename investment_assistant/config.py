@@ -44,6 +44,13 @@ class NotifyConfig:
 
     discord_enabled: bool = True
     email_enabled: bool = True
+    webhooks: dict[str, str] = field(default_factory=dict)
+    task_channels: dict[str, str] = field(
+        default_factory=lambda: {"metrics": "daily", "filings": "earnings", "scores": "signals"}
+    )
+    task_enabled: dict[str, bool] = field(
+        default_factory=lambda: {"metrics": True, "filings": True, "scores": True}
+    )
 
 
 @dataclass(frozen=True)
