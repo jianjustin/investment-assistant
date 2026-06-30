@@ -46,19 +46,17 @@ Discord 三频道推送  +  Obsidian Vault 存档
 ```
 investment-assistant/
 ├── investment_assistant/  # 生产包
-│   ├── api/               # HTTP 传输层（router / handler / auth / static）
+│   ├── api/               # HTTP 传输层（router / handler / auth / static / routes）
 │   ├── services/          # 业务逻辑层（market / tickers / strategies / hermes / watchlist）
-│   ├── tasks/             # 定时任务入口（daily / nightly_scores / runner）
-│   ├── data/              # 数据获取（yfinance OHLCV）
-│   ├── notify/            # Discord 通知（discord + templates）
+│   ├── tasks/             # 定时任务入口（_harness / scheduler / runner / metrics / filings / nightly_scores）
+│   ├── filings/           # SEC EDGAR 下载（SecEdgarDownloader）
 │   ├── hermes/            # Hermes 宏观分析与决策证据
 │   ├── market/            # 大盘信号
 │   ├── tickers/           # 个股趋势
-│   ├── strategies/        # 策略评分
-│   └── dashboard/         # 兼容入口 shim
-├── web/                   # Svelte 5 前端（vite build → web/dist）
+│   └── strategies/        # 策略评分
+├── web/                   # Svelte 5 前端（5层 IA：工具/数据/策略/交易/设置）
 ├── deploy/                # systemd service / timer 文件
-├── migrations/            # PostgreSQL schema 迁移
+├── migrations/            # PostgreSQL schema 迁移（001-008）
 ├── tests/                 # pytest 单元测试（全 mock，无网络）
 ├── docs/                  # 架构文档
 ├── .env                   # 环境变量（不入库）
@@ -120,47 +118,26 @@ RKLB
 
 ## 手动运行
 
-### 财报监听
-
 ```bash
-python ops/earnings_monitor.py                  # 上一交易日
-python ops/earnings_monitor.py --date 2026-05-07
-python ops/earnings_monitor.py --dry-run        # 仅检测，不下载
+python -m investment_assistant.tasks.metrics          # 08:00 指标采集
+python -m investment_assistant.tasks.filings          # 09:00 SEC 财报下载
+python -m investment_assistant.tasks.nightly_scores   # 18:00 策略评分
+python -m investment_assistant.tasks.scheduler        # 常驻调度守护进程
 ```
 
-产物：
-- `data/earnings_today.json` — 命中清单 + 8-K 路径，供 Claude Scheduled Task 读取
-- `data/earnings_reports/{TICKER}/{accession}.htm` — 下载的 8-K 原文
-- `logs/earnings_monitor.log` — 运行日志
-- Discord `#earnings-alerts` — 推送通知（已配置时）
-
-### 每日技术面扫描
-
-```bash
-python ops/daily_scan.py
-```
-
-产物：
-- `data/daily_scan.json` — 当日候选清单 + 大盘状态
-- `logs/daily_scan.log`
-- Discord `#trade-signals` — 个股触发信号
-- Discord `#daily-scan` — 每日大盘摘要（必发）
+每个任务执行结果写入 `job_reports` 表，并按通知配置推送 Discord。
 
 ---
 
-## 调度计划（Cowork Scheduled Task）
+## 调度计划
 
-| Task | Cron | 北京时间 | 美东对应 |
-|------|------|----------|----------|
-| `earnings-monitor-daily` | `3 6 * * 1-5` | 周一至五 06:03 | 前日 18:03 EDT |
-| `daily-scan`             | `0 21 * * 1-5` | 周一至五 21:00 | 当日 09:00 EDT |
+| 任务 | Cron（US/Eastern） | 说明 |
+|------|--------------------|------|
+| `metrics` | `0 8 * * 1-5` | 08:00 ET 指标采集 |
+| `filings` | `0 9 * * 1-5` | 09:00 ET SEC 财报下载 |
+| `nightly_scores` | `0 18 * * 1-5` | 18:00 ET 策略评分 |
 
-示例命令：
-
-```bash
-cd /Users/.../earnings-agent && source .venv/bin/activate && python ops/earnings_monitor.py
-cd /Users/.../earnings-agent && source .venv/bin/activate && python ops/daily_scan.py
-```
+调度守护进程读取 `scheduled_jobs` 表（迁移 007），支持通过设置层界面启用/禁用单个任务。详见 [docs/scheduling-and-notifications.md](docs/scheduling-and-notifications.md)。
 
 ---
 
@@ -182,13 +159,7 @@ python scripts/test_vcp.py [TICKER]   # 默认 NVDA，可指定其他 ticker
 python -m pytest tests/ -v
 ```
 
-14 个用例，全部使用 `unittest.mock` 隔离 yfinance / SEC EDGAR / Discord，无任何网络调用，可离线运行。覆盖：
-- `notify/discord.py` — 频道路由、HTTP 错误处理
-- `data/price.py` — DataFrame 列过滤、空数据异常
-- `signals/market.py` — green / yellow / red 三种状态及双触发路径
-- `signals/technicals.py` — RS、MA Reclaim、VCP、平价无信号
-
-测试报告详情见 [docs/test-report.md](docs/test-report.md)。
+全部使用 `unittest.mock` 隔离外部依赖（yfinance / SEC EDGAR / Discord / DB），无任何网络调用，可离线运行。
 
 ---
 
@@ -217,8 +188,7 @@ python -m pytest tests/ -v
 
 ## 相关文档
 
-- [docs/architecture.md](docs/architecture.md) — 完整架构、信号定义、Phase 3 预告
-- [docs/getting-started.md](docs/getting-started.md) — 起步指南（更详细的安装与配置步骤）
-- [docs/test-report.md](docs/test-report.md) — 测试用例与运行记录
-
-Vault 项目计划：`02-项目/美股投资项目/交易Agent-财报监听系统.md`
+- [docs/architecture.md](docs/architecture.md) — 五层 IA、后端分层、API 端点映射、迁移清单
+- [docs/getting-started.md](docs/getting-started.md) — 安装与配置步骤
+- [docs/scheduling-and-notifications.md](docs/scheduling-and-notifications.md) — 调度与 Discord 通知配置
+- [docs/sec-downloader.md](docs/sec-downloader.md) — SEC EDGAR 下载器使用说明

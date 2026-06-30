@@ -2,7 +2,7 @@
 
 负责从 SEC EDGAR 拉取美股上市公司的 **8-K 表单及其 Exhibit 99.1**（财报新闻稿）。
 
-模块入口：[sec_downloader.py](../sec_downloader.py) 中的 `SECDownloader` 类。
+模块入口：[investment_assistant/filings/sec_downloader.py](../investment_assistant/filings/sec_downloader.py) 中的 `SecEdgarDownloader` 类。
 
 ---
 
@@ -28,7 +28,7 @@ ticker (如 "AAPL")
 EDGAR 要求请求头里带 `User-Agent: <名字> <邮箱>`，否则会被限速或返回 403：
 
 ```python
-sec = SECDownloader(user_agent="Your Name your@email.com")
+sec = SecEdgarDownloader(user_agent="Your Name your@email.com")
 ```
 
 在本项目里通过 `.env` 的 `SEC_USER_AGENT` 注入，详见 [getting-started.md](./getting-started.md)。
@@ -44,7 +44,7 @@ sec = SECDownloader(user_agent="Your Name your@email.com")
 | `download_exhibit(cik, accession, output_dir, primary_document="")` | filing 标识 + 落盘目录 | `Path \| None` | 下载该 filing 的最佳文档：优先 Exhibit 99.1，其次 8-K 主文件，再次第一个 HTML。文件名为 `{accession}{ext}`。 |
 | `get_latest_8k_for_earnings(ticker, earnings_date, output_base)` | 标的、`YYYY-MM-DD`、根目录 | `Path \| None` | 找距 `earnings_date` 最近（优先当天或之后）的 8-K，下载到 `output_base/TICKER/`。 |
 
-> ⚠️ 关于"5 年财报"：EDGAR `submissions/CIK*.json` 的 `filings.recent` 段大约覆盖**最近 1,000 份**或最近 ~1 年的 filings，5 年 8-K（≈ 20-40 份）通常能全部包含；如不够，需要再去解析 `filings.files[]` 里指向的历史分片 JSON——`SECDownloader` **暂未实现**这一步，所以下面的示例假定 5 年内的 8-K 都在 `recent` 段里。绝大多数活跃上市公司满足这一条件。
+> ⚠️ 关于"5 年财报"：EDGAR `submissions/CIK*.json` 的 `filings.recent` 段大约覆盖**最近 1,000 份**或最近 ~1 年的 filings，5 年 8-K（≈ 20-40 份）通常能全部包含；如不够，需要再去解析 `filings.files[]` 里指向的历史分片 JSON——`SecEdgarDownloader` **暂未实现**这一步，所以下面的示例假定 5 年内的 8-K 都在 `recent` 段里。绝大多数活跃上市公司满足这一条件。
 
 ---
 
@@ -60,7 +60,7 @@ from pathlib import Path
 from datetime import date, timedelta
 from dotenv import load_dotenv
 
-from sec_downloader import SECDownloader
+from investment_assistant.filings.sec_downloader import SecEdgarDownloader
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 load_dotenv()
@@ -69,7 +69,7 @@ TICKER = "AAPL"
 OUTPUT_DIR = Path("./data/earnings") / TICKER
 CUTOFF = (date.today() - timedelta(days=365 * 5)).isoformat()  # 5 年前那天
 
-sec = SECDownloader(user_agent=os.environ["SEC_USER_AGENT"])
+sec = SecEdgarDownloader(user_agent=os.environ["SEC_USER_AGENT"])
 
 # 1) Ticker → CIK
 cik = sec.get_cik(TICKER)
@@ -124,7 +124,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-from sec_downloader import SECDownloader
+from investment_assistant.filings.sec_downloader import SecEdgarDownloader
 
 load_dotenv()
 
@@ -134,7 +134,7 @@ EARNINGS_DATE = "2026-02-20"
 # 任意可写目录都行——脚本会自动 mkdir
 TARGET = Path.home() / "Obsidian" / "investment-vault" / "attachments" / "earnings"
 
-sec = SECDownloader(user_agent=os.environ["SEC_USER_AGENT"])
+sec = SecEdgarDownloader(user_agent=os.environ["SEC_USER_AGENT"])
 
 # 用高级接口：自动选距 EARNINGS_DATE 最近的 8-K，落到 TARGET/NVDA/
 path = sec.get_latest_8k_for_earnings(

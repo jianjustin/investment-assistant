@@ -1,299 +1,143 @@
-# earning-agent — 架构与产品文档
-
-> ⚠️ 已废弃（2026-06-27）：本文描述的 earnings-agent 旧代码库（data/ signals/ notify/ ops/ vault/）已删除。
-> 当前生产架构见 docs/audit-and-redesign-2026-06.md 与 docs/execution-plan-2026-06.md。
->
-> **2026-06-27 Part B 分层完成**：见下方「后端分层架构」一节。
-
----
-
-## 后端分层架构（2026-06-27 重构后）
-
-```
-investment_assistant/
-  api/
-    auth.py            # 鉴权 (authorize/resolve_bind_host)，fail-closed 公网绑定
-    http.py            # ApiResponse/StaticResponse + 解析助手
-    router.py          # 路由注册表 register(method,exact=|prefix=) + dispatch()
-    server.py          # 薄 Handler(do_GET/POST/DELETE) + SSE /api/events + main()
-    static_files.py    # 服务 web/dist 静态资源 + /status HTML
-    routes/
-      status.py market.py tickers.py strategies.py hermes.py watchlist.py runs.py
-  services/
-    status.py market.py tickers.py strategies.py hermes.py watchlist.py
-  tasks/
-    runner.py          # 后台任务线程池：submit/get/subscribe/unsubscribe
-    daily.py           # hermes 日任务入口（CLI + filing 失败容错）
-    nightly_scores.py  # 夜间评分任务入口（CLI）
-  dashboard/server.py  # 向后兼容 shim，委托给 api/server.py
-  ops/hermes_daily.py  # 向后兼容 shim，委托给 tasks/daily.py
-```
-
-**关键 API 端点：**
-- `GET /api/runs/{id}` — 轮询后台任务状态（`pending|done|error`）
-- `GET /api/events` — SSE 推送任务完成事件（`text/event-stream`）
-- `POST /api/hermes/macro-analysis/run` — 异步提交，立即返回 `{run_id, status:"pending"}`
-- `POST /api/hermes/decision-evidence/run` — 同上
-
-**systemd 定时任务（US/Eastern）：**
-- `hermes-investment-daily.timer` → 周一至周五 08:30 ET
-- `hermes-investment-scores.timer` → 周一至周五 18:00 ET
-
----
+# Hermes Investment Assistant — 架构
 
 > 美股量化分析系统：从市场信号到 Discord 通知的自动化投资辅助工具。
 
 ---
 
-## 产品定位
+## 五层信息架构（前端）
 
-earning-agent 不预测价格，而是在**信号叠加充分**时降低决策成本：
+前端采用五层导航，每层对应一组业务职责：
 
-- 财报超预期 → 短期事件驱动机会
-- VCP 收缩 + RS 强势 → 技术面突破前兆
-- 大盘环境 → 门控所有个股信号，熊市不开多
+| 层 | 路由 | 职责 |
+|----|------|------|
+| 工具层 | `/tools` | 任务运维：调度任务管理、运行记录、运维指标、数据结果 |
+| 数据层 | `/data` | 市场数据：信号总览、趋势、技术面 |
+| 策略层 | `/strategy` | 策略评分：评分总览、运行历史、回测（占位） |
+| 交易层 | `/trade` | 交易决策：宏观分析、决策证据、交易指令（占位） |
+| 设置层 | `/settings` | 系统配置：Discord 通知、定时任务开关、环境变量、关注列表 |
 
-输出形式：Discord 多频道推送 + Obsidian 结构化存档。
+### 工具层二级页
 
----
+- **任务中心**（TaskCenter）：展示所有 scheduled_jobs，支持手动触发
+- **运行记录**（RunHistory）：job_reports 历史，含状态/耗时/错误摘要
+- **运维指标**（OpsMetrics）：job_metrics 聚合，最近 N 次成功率/平均耗时
+- **数据结果**（DataResults）：最新 job 产出快照
 
-## 系统路线图
+### 设置层二级页
 
-| Phase | 状态 | 核心功能 |
-|-------|------|----------|
-| Phase 1 | ✅ 已完成 | 财报监听：yfinance 检测 + SEC EDGAR 下载 + Obsidian 写入 |
-| **Phase 2** | **✅ 已完成** | 分层架构重组 + Discord 多频道通知 + 市场门控 + 技术面信号 |
-| Phase 3 | 📋 规划中 | 基本面质量评分 + Claude 决策引擎 + 综合评分 |
-| Phase 4 | 📋 规划中 | 历史信号回测 + 准确率统计 |
-
----
-
-## 信号流
-
-```
-┌──────────────────────────────────────────────────────────┐
-│  Layer 0: 大盘环境门控                                    │
-│  SPY 200MA 趋势 + VIX 水平                               │
-│  → green / yellow / red                                  │
-│  red 状态：个股信号全部暂停，仅发送每日摘要               │
-└───────────────────────────┬──────────────────────────────┘
-                            ↓ (green / yellow)
-┌──────────────────────────────────────────────────────────┐
-│  Layer 1: 个股信号并行计算                                │
-│  ┌─────────────────┐  ┌─────────────────┐               │
-│  │   财报事件信号   │  │   技术面信号     │               │
-│  │  EPS beat/miss  │  │  VCP / RS / MA  │               │
-│  │  指引变化       │  │  Reclaim        │               │
-│  └─────────────────┘  └─────────────────┘               │
-│  (Phase 3: 基本面质量信号 — EPS加速/ROE/FCF)             │
-└───────────────────────────┬──────────────────────────────┘
-                            ↓
-┌──────────────────────────────────────────────────────────┐
-│  Layer 2: 决策引擎 (Phase 3)                              │
-│  信号聚合评分 → Claude 叙事分析 → Long/Short/Watch/Wait  │
-└───────────────────────────┬──────────────────────────────┘
-                            ↓
-┌──────────────────────────────────────────────────────────┐
-│  Layer 3: Discord 多频道通知                              │
-│  #earnings-alerts  #trade-signals  #daily-scan           │
-└───────────────────────────┬──────────────────────────────┘
-                            ↓
-                      Obsidian 存档
-                  (04-知识/投资/财报分析/)
-```
+- **Discord 通知**：effective_notify_config 预览 + 覆盖配置（notify_settings 008）
+- **定时任务**：scheduled_jobs 启用/禁用切换（PATCH）
+- **环境变量**：env 状态只读面板
+- **关注列表**：watchlist 增删
 
 ---
 
-## 目录结构
+## 后端分层
 
 ```
-earnings-agent/
-├── data/                    # 数据获取层
-│   ├── price.py             # yfinance OHLCV 历史数据
-│   ├── earnings.py          # yfinance 财报日历检测
-│   └── sec.py               # SEC EDGAR 8-K 下载
-│
-├── signals/                 # 信号计算层
-│   ├── market.py            # 大盘环境门控 (SPY/VIX)
-│   └── technicals.py        # 技术面信号 (VCP/RS/MA)
-│
-├── notify/                  # 通知层
-│   ├── discord.py           # Discord webhook 客户端
-│   └── templates.py         # Discord embed 消息模板
-│
-├── vault/                   # Obsidian 输出层
-│   └── writer.py            # 财报分析笔记写入
-│
-├── ops/                     # 调度入口
-│   ├── earnings_monitor.py  # 财报监听主程序 (Phase 1+2)
-│   ├── daily_scan.py        # 每日技术面扫描 (Phase 2)
-│   └── diagnose.py          # EDGAR API 调试工具
-│
-├── scripts/                 # 小脚本验证目录
-│   ├── test_discord.py      # 验证 Discord webhook 连接
-│   ├── test_market.py       # 验证大盘环境检测
-│   └── test_vcp.py          # 验证技术面信号计算
-│
-├── tests/                   # 单元测试
-│   ├── test_discord.py
-│   ├── test_market.py
-│   ├── test_price.py
-│   └── test_technicals.py
-│
-├── docs/                    # 项目文档
-├── .env                     # 环境变量 (不提交)
-└── requirements.txt
+investment_assistant/
+  api/                       # HTTP 传输层
+    auth.py                  # 鉴权（authorize / resolve_bind_host），fail-closed 公网绑定
+    http.py                  # ApiResponse / StaticResponse + 解析助手
+    router.py                # 路由注册表 register(method, exact= | prefix=) + dispatch()
+    server.py                # 薄 Handler(do_GET/POST/DELETE/PATCH) + main()
+    static_files.py          # 服务 web/dist 静态资源 + /status HTML
+    routes/
+      status.py              # /api/status · /api/health · /api/services · /api/filings · /api/operations
+      market.py              # /api/market/signals/*
+      tickers.py             # /api/tickers/trends
+      strategies.py          # /api/strategies/scores
+      hermes.py              # /api/hermes/*
+      watchlist.py           # /api/watchlist
+      jobs.py                # /api/jobs/*
+      settings.py            # /api/settings/*
+      runs.py                # /api/runs/{id}（兼容旧轮询接口）
+  services/                  # 业务逻辑层
+    market.py  tickers.py  strategies.py  hermes.py  watchlist.py
+  db.py                      # psycopg_pool 连接池 + 所有 DB 函数
+  tasks/                     # 定时任务入口
+    _harness.py              # 通用任务 harness：写 job_reports，推 Discord
+    scheduler.py             # 常驻调度守护进程，读 scheduled_jobs 表
+    runner.py                # 后台任务线程池（submit / get / subscribe）
+    metrics.py               # 08:00 指标采集任务
+    filings.py               # 09:00 SEC 财报下载任务
+    nightly_scores.py        # 18:00 策略评分任务
+  filings/
+    sec_downloader.py        # SecEdgarDownloader：CIK 解析 + 8-K/10-Q 下载
 ```
 
 ---
 
-## 各层详细设计
+## 调度与通知
 
-### data/ — 数据获取层
+```
+scheduled_jobs 表（迁移 007）
+        │  scheduler.py 守护进程每分钟检查
+        ▼
+  tasks/_harness.py
+        │  执行具体任务（metrics / filings / nightly_scores）
+        │  写入 job_reports 表（迁移 006）
+        ▼
+  effective_notify_config
+        │  文件基线配置 ⊕ notify_settings 表（迁移 008）覆盖
+        ▼
+  Discord 推送（成功/失败通知）
+```
 
-所有模块只负责获取原始数据，不做任何信号计算。
-
-| 模块 | 接口 | 数据源 |
-|------|------|--------|
-| `price.py` | `get_price_history(ticker, days) → DataFrame` | yfinance OHLCV |
-| `earnings.py` | `scan_watchlist(tickers, date)` / `check_earnings_on_date(ticker, date)` | yfinance earnings_dates |
-| `sec.py` | `SECDownloader.get_latest_8k_for_earnings(ticker, date, dir)` | SEC EDGAR API |
-
-**`price.py` 是信号层的基础依赖**：`signals/market.py` 和 `signals/technicals.py` 均通过 `get_price_history` 获取 SPY/VIX/个股数据，不直接调用 yfinance。
+调度与通知的完整配置说明见 [docs/scheduling-and-notifications.md](scheduling-and-notifications.md)。
 
 ---
 
-### signals/ — 信号计算层
+## 数据与 API 映射表
 
-**`signals/market.py` — 大盘环境门控**
-
-```
-输入: SPY (300天) + ^VIX (5天)
-输出: MarketCondition(status, vix, spy_above_200ma)
-
-逻辑:
-  VIX > 30          → "red"   (高恐慌，停止所有个股操作)
-  SPY < 200MA 或 VIX > 20 → "yellow" (谨慎)
-  其他              → "green"  (正常)
-```
-
-**`signals/technicals.py` — 技术面信号**
-
-```
-输入: 个股 (200天) + SPY (200天，用于 RS 计算)
-输出: TechnicalSignal(rs_score, vcp, ma_reclaim)
-
-RS Score = 个股126日涨幅 / SPY126日涨幅
-  ≥ 1.2 = 强势
-
-VCP (Volatility Contraction Pattern):
-  ATR_20 < ATR_60 × 0.70  (近期波幅收窄)
-  AND
-  Volume_20 < Volume_60 × 0.70  (近期成交量萎缩)
-
-MA Reclaim:
-  昨日收盘 < 21-EMA
-  AND
-  今日收盘 > 21-EMA  (价格重新站上短期均线)
-
-has_signal = vcp OR ma_reclaim OR rs_score ≥ 1.2
-```
+| 层 | 二级页 | 方法 | 端点 |
+|----|--------|------|------|
+| 工具 | 任务中心 | GET | `/api/jobs/scheduled` |
+| 工具 | 任务中心（触发） | POST | `/api/jobs/{name}/run` |
+| 工具 | 任务中心（开关） | PATCH | `/api/jobs/scheduled/{name}` |
+| 工具 | 运行记录 | GET | `/api/jobs/reports` |
+| 工具 | 运维指标 | GET | `/api/jobs/metrics` |
+| 数据 | 信号总览 | GET | `/api/market/signals` |
+| 数据 | 信号最新 | GET | `/api/market/signals/latest` |
+| 数据 | 信号趋势 | GET | `/api/market/signals/trend` |
+| 数据 | 信号抓取 | POST | `/api/market/signals/fetch` |
+| 数据 | 个股趋势 | GET | `/api/tickers/trends` |
+| 数据 | 个股扫描 | POST | `/api/tickers/trends/scan` |
+| 策略 | 评分总览 | GET | `/api/strategies/scores` |
+| 策略 | 触发评分 | POST | `/api/strategies/scores/run` |
+| 交易 | 宏观分析 | GET | `/api/hermes/macro-analysis` |
+| 交易 | 市场解读 | GET | `/api/hermes/market-signals/interpretation` |
+| 交易 | 触发宏观 | POST | `/api/hermes/macro-analysis/run` |
+| 交易 | 触发决策 | POST | `/api/hermes/decision-evidence/run` |
+| 设置 | Discord 通知 | GET | `/api/settings/notify` |
+| 设置 | Discord 通知（更新） | PATCH | `/api/settings/notify` |
+| 设置 | Discord 通知（测试） | POST | `/api/settings/notify/test` |
+| 设置 | 环境变量 | GET | `/api/settings/env` |
+| 设置 | 关注列表 | GET / POST / DELETE | `/api/watchlist` |
+| 通用 | 系统状态 | GET | `/api/status` · `/api/health` · `/api/services` |
+| 通用 | 运营数据 | GET | `/api/filings` · `/api/operations` |
 
 ---
 
-### notify/ — 通知层
+## 迁移清单
 
-**三个 Discord 频道**
-
-| 频道 | 触发时机 | 消息内容 |
-|------|---------|---------|
-| `#earnings-alerts` | 财报监听发现新财报 | Ticker、EPS/Revenue/Guidance、置信度、亮点 |
-| `#trade-signals` | 个股 `has_signal=True` | 触发的信号类型、RS Score、市场状态 |
-| `#daily-scan` | 每日 21:00 必发 | 大盘状态 (VIX)、当日候选列表 |
-
-**消息颜色编码**
-
-| 方向 | 颜色 |
+| 编号 | 内容 |
 |------|------|
-| Long | 绿色 `#2ecc71` |
-| Short | 红色 `#e74c3c` |
-| Watch | 黄色 `#ffff00` |
-| Wait / 未知 | 灰色 `#955f66` |
+| 001 | market_snapshots（市场快照） |
+| 002 | watchlist（关注列表） |
+| 003 | snapshots 扩展字段 |
+| 004 | strategy_scores（策略评分） |
+| 005 | 外键约束 |
+| 006 | job_reports（任务运行记录） |
+| 007 | scheduled_jobs（调度配置） |
+| 008 | notify_settings（通知覆盖配置） |
 
 ---
 
-### ops/ — 调度入口
+## 后续子项目
 
-**`ops/earnings_monitor.py`** — 财报监听
-
-```
-触发: Cowork Scheduled Task，cron 3 6 * * 1-5 (北京时间 06:03)
-流程:
-  1. 读取 watchlist.md
-  2. yfinance 批量检测是否有财报 (±2天窗口)
-  3. SEC EDGAR 下载对应 8-K (Exhibit 99.1)
-  4. 写入 data/earnings_today.json
-  5. Discord #earnings-alerts 推送 (非致命，失败仅记录警告)
-```
-
-**`ops/daily_scan.py`** — 每日技术面扫描
-
-```
-触发: cron 0 21 * * 1-5 (北京时间 21:00，美股收盘后约2小时)
-流程:
-  1. 读取 watchlist.md
-  2. get_market_condition() — red 则跳过个股扫描
-  3. 逐个 compute_technicals() — has_signal → Discord #trade-signals
-  4. 写入 data/daily_scan.json (先写文件，再推 Discord)
-  5. Discord #daily-scan 发送每日摘要 (必发)
-```
-
----
-
-## 调度计划
-
-| 任务 | Cron | 北京时间 | 对应美东时间 |
-|------|------|---------|------------|
-| earnings-monitor | `3 6 * * 1-5` | 周一至五 06:03 | 前一日 18:03 EDT |
-| daily-scan | `0 21 * * 1-5` | 周一至五 21:00 | 当日 09:00 EDT |
-
----
-
-## 环境变量
-
-| 变量 | 必需 | 说明 |
-|------|------|------|
-| `SEC_USER_AGENT` | ✅ | SEC EDGAR 要求，格式：`Name email@example.com` |
-| `VAULT_PATH` | ✅ | Obsidian vault 根目录路径 |
-| `WATCHLIST_PATH` | ✅ | watchlist.md 的绝对路径 |
-| `DISCORD_WEBHOOK_EARNINGS` | ✅ | `#earnings-alerts` webhook URL |
-| `DISCORD_WEBHOOK_SIGNALS` | ✅ | `#trade-signals` webhook URL |
-| `DISCORD_WEBHOOK_DAILY` | ✅ | `#daily-scan` webhook URL |
-
----
-
-## Phase 3 设计预告
-
-Phase 3 将在 Phase 2 稳定后单独规划，核心新增：
-
-| 模块 | 功能 |
-|------|------|
-| `data/financials.py` | 8季度 EPS/Revenue/Margins、年度 ROE/FCF |
-| `signals/fundamentals.py` | EPS 加速度评分、ROE 趋势、FCF Margin |
-| `engine/scorer.py` | 信号聚合评分（财报40% + 技术35% + 基本面25%） |
-| `engine/claude_client.py` | Claude API 结构化分析调用 |
-| `engine/prompts.py` | 分析提示词模板 |
-
----
-
-## 依赖清单
-
-| 包 | 版本要求 | 用途 |
-|----|---------|------|
-| `requests` | ≥ 2.31.0 | SEC EDGAR 下载 + Discord webhook |
-| `python-dotenv` | ≥ 1.0.0 | 环境变量加载 |
-| `yfinance` | ≥ 0.2.40 | 价格数据 + 财报日历 |
-| `lxml` | ≥ 5.0.0 | SEC EDGAR HTML 解析 |
-| `pandas` | (yfinance 依赖) | 数据处理 |
-| `numpy` | (yfinance 依赖) | 数值计算 |
-| `pytest` | 开发依赖 | 单元测试 |
+| 子项目 | 对应层 | 核心功能 |
+|--------|--------|----------|
+| B：回测引擎 | 策略层 | 历史信号回测、准确率统计 |
+| C：LLM 交易指令 | 交易层 | Claude 结构化决策 → 可执行交易指令 |
+| 总览通知 | 通知机制 | 跨层汇总，以 Discord 推送形式实现 |
