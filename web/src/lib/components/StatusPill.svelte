@@ -7,6 +7,7 @@
     active: 'bg-success/20 text-success',
     error: 'bg-danger/20 text-danger',
     done: 'bg-success/20 text-success',
+    success: 'bg-success/20 text-success',
     pending: 'bg-warn/20 text-warn',
   }
 </script>

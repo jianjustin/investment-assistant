@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import replace
 from typing import Any, Callable
 
@@ -85,8 +86,11 @@ def test_notify_channel(channel: str, url: str | None = None, *, client=None) ->
     try:
         client.send(ch, payload)
         return {"ok": True}
-    except Exception as exc:  # 测试失败结构化返回，不抛
-        return {"ok": False, "error": str(exc)}
+    except Exception as exc:  # 测试失败结构化返回，不抛；脱敏 webhook 明文
+        msg = str(exc)
+        # redact any discord webhook URL (with token) that requests may embed in the error
+        msg = re.sub(r"https?://\S*discord(?:app)?\.com/api/webhooks/\S+", "<webhook redacted>", msg)
+        return {"ok": False, "error": msg}
 
 
 def read_env_status() -> dict[str, bool]:

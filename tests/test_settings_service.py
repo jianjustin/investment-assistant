@@ -59,6 +59,21 @@ def test_test_notify_channel_reports_failure():
     assert out["ok"] is False and "network" in out["error"]
 
 
+def test_test_notify_channel_sanitizes_webhook_token_in_error():
+    """Error messages containing Discord webhook URLs must not leak the secret token."""
+    class LeakyClient:
+        def send(self, channel, payload):
+            raise RuntimeError(
+                "Max retries exceeded with url: "
+                "https://discord.com/api/webhooks/123/SECRETTOKEN"
+            )
+
+    out = settings.test_notify_channel("daily", url="https://x", client=LeakyClient())
+    assert out["ok"] is False
+    assert "SECRETTOKEN" not in out["error"]
+    assert "<webhook redacted>" in out["error"]
+
+
 def test_read_env_status_booleans(monkeypatch):
     monkeypatch.setenv("SEC_USER_AGENT", "x y@z")
     monkeypatch.delenv("INVESTMENT_ASSISTANT_DATABASE_URL", raising=False)

@@ -4,7 +4,6 @@
   import Skeleton from '../lib/components/Skeleton.svelte'
   import DataTable from '../lib/components/DataTable.svelte'
   import StatusPill from '../lib/components/StatusPill.svelte'
-  import Placeholder from './Placeholder.svelte'
 
   let { sub }: { sub?: string } = $props()
 
@@ -18,6 +17,7 @@
 
   let signals = $state<any[]>([])
   let trend = $state<any>(null)
+  let tickers = $state<any[]>([])
   let loading = $state(true)
 
   const cols = [
@@ -27,6 +27,12 @@
     { key: 'vix_close', label: 'VIX' },
   ]
 
+  const tkCols = [
+    { key: 'ticker', label: 'Ticker' },
+    { key: 'trend_state', label: '趋势' },
+    { key: 'attention_level', label: '关注度' },
+  ]
+
   async function load() {
     loading = true
     try {
@@ -34,6 +40,9 @@
         api.getMarketSignals(60).then((r: any) => r.rows ?? []),
         api.getMarketSignalsTrend(),
       ])
+      if (tab === 'tickers') {
+        tickers = (await api.getTickerTrends() as any).rows ?? []
+      }
     } finally { loading = false }
   }
 
@@ -56,11 +65,9 @@
   {#if loading}
     <Skeleton rows={4} />
   {:else if tab === 'tickers'}
-    <Placeholder
-      title="技术面趋势"
-      note="按 ticker 维度展示技术面趋势信号，整合到数据层。"
-      planned="将在后续任务中实现"
-    />
+    <div class="bg-surface rounded-lg shadow-elev-1 overflow-hidden">
+      <DataTable rows={tickers} columns={tkCols} />
+    </div>
   {:else if tab === 'trend'}
     {#if trend}
       <div class="bg-surface rounded-lg p-4 shadow-elev-1">
