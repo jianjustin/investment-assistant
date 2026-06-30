@@ -19,6 +19,15 @@ vi.mock('./lib/api', () => ({
   getOperations: vi.fn(async () => ({ operations: [] })),
   getServices: vi.fn(async () => ({})),
   pollRun: vi.fn(async () => ({ status: 'done', result: {} })),
+  getScheduledJobs: vi.fn(async () => ({ jobs: [], degraded: false })),
+  getJobReports: vi.fn(async () => ({ reports: [], degraded: false })),
+  getJobMetrics: vi.fn(async () => ({ metrics: [], degraded: false })),
+  runJob: vi.fn(async () => ({ run_id: 'x', status: 'pending' })),
+  fetchMarketSignals: vi.fn(async () => ({})),
+  getNotifySettings: vi.fn(async () => ({})),
+  patchNotifySettings: vi.fn(async () => ({})),
+  testNotifyChannel: vi.fn(async () => ({ ok: true })),
+  getEnvStatus: vi.fn(async () => ({})),
 }))
 
 // Mock EventSource for SSE
