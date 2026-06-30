@@ -36,13 +36,11 @@
   async function load() {
     loading = true
     try {
-      ;[signals, trend] = await Promise.all([
+      ;[signals, trend, tickers] = await Promise.all([
         api.getMarketSignals(60).then((r: any) => r.rows ?? []),
         api.getMarketSignalsTrend(),
+        api.getTickerTrends().then((r: any) => r.rows ?? []),
       ])
-      if (tab === 'tickers') {
-        tickers = (await api.getTickerTrends() as any).rows ?? []
-      }
     } finally { loading = false }
   }
 
