@@ -5,34 +5,44 @@
   let { current, sub }: { current: string; sub?: string } = $props()
 
   const nav: NavItem[] = [
-    { id: 'dashboard', label: '总览', icon: '⊞' },
     {
-      id: 'market', label: '市场', icon: '📈', children: [
-        { id: 'overview', label: '信号总览' },
-        { id: 'trend',    label: '趋势分析' },
-        { id: 'fetch',    label: '手动抓取' },
+      id: 'tools', label: '工具', icon: '🔧', children: [
+        { id: 'tasks',   label: '任务中心' },
+        { id: 'runs',    label: '运行记录' },
+        { id: 'ops',     label: '运维指标' },
+        { id: 'results', label: '数据结果' },
       ],
     },
     {
-      id: 'watchlist', label: '关注', icon: '🔍', children: [
-        { id: 'list',    label: '关注列表' },
+      id: 'data', label: '数据', icon: '📊', children: [
+        { id: 'signals', label: '信号总览' },
+        { id: 'trend',   label: '趋势分析' },
         { id: 'tickers', label: '技术面趋势' },
       ],
     },
     {
       id: 'strategy', label: '策略', icon: '🎯', children: [
-        { id: 'scores', label: '策略评分' },
-        { id: 'runs',   label: '运行历史' },
+        { id: 'scores',   label: '策略评分' },
+        { id: 'runs',     label: '运行历史' },
+        { id: 'backtest', label: '回测' },
       ],
     },
     {
-      id: 'hermes', label: 'Hermes', icon: '🤖', children: [
-        { id: 'overview',  label: '总览' },
-        { id: 'macro',     label: '宏观分析' },
-        { id: 'decision',  label: '决策证据' },
+      id: 'trade', label: '交易', icon: '🤖', children: [
+        { id: 'macro',    label: '宏观分析' },
+        { id: 'decision', label: '决策证据' },
+        { id: 'orders',   label: '交易指令' },
       ],
     },
-    { id: 'system', label: '系统', icon: '⚙️' },
+    {
+      id: 'settings', label: '设置', icon: '⚙️', children: [
+        { id: 'system',    label: '系统' },
+        { id: 'watchlist', label: '关注列表' },
+        { id: 'discord',   label: 'Discord 推送' },
+        { id: 'jobs',      label: '定时任务' },
+        { id: 'env',       label: '环境变量' },
+      ],
+    },
   ]
 
   let collapsed = $state(false)

@@ -33,14 +33,18 @@ beforeEach(() => { location.hash = '' })
 afterEach(() => cleanup())
 
 describe('app routing', () => {
-  it('defaults to Dashboard zone', async () => {
+  it('defaults to tools zone and renders 5-layer nav', async () => {
     const { getAllByText } = render(App)
-    expect(getAllByText(/总览|dashboard/i).length).toBeGreaterThan(0)
+    expect(getAllByText('工具').length).toBeGreaterThan(0)
+    expect(getAllByText('数据').length).toBeGreaterThan(0)
+    expect(getAllByText('策略').length).toBeGreaterThan(0)
+    expect(getAllByText('交易').length).toBeGreaterThan(0)
+    expect(getAllByText('设置').length).toBeGreaterThan(0)
   })
 
-  it('renders Market zone on #market hash', async () => {
-    location.hash = '#market'
+  it('renders data zone on #data hash', async () => {
+    location.hash = '#data'
     const { getAllByText } = render(App)
-    expect(getAllByText(/市场|market/i).length).toBeGreaterThan(0)
+    expect(getAllByText('数据').length).toBeGreaterThan(0)
   })
 })

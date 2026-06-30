@@ -3,6 +3,7 @@
   import * as api from '../lib/api'
   import Skeleton from '../lib/components/Skeleton.svelte'
   import DataTable from '../lib/components/DataTable.svelte'
+  import Placeholder from './Placeholder.svelte'
   let { sub }: { sub?: string } = $props()
   import EChart from '../lib/charts/EChart.svelte'
 
@@ -51,20 +52,28 @@
 </script>
 
 <div>
-  <div class="flex justify-between items-center mb-4">
-    <h2 class="text-lg font-semibold">策略评分</h2>
-    <button onclick={doRun} disabled={running} class="px-3 py-1 bg-accent text-white rounded text-sm disabled:opacity-50">
-      {running ? '运行中…' : '运行评分'}
-    </button>
-  </div>
-  {#if loading}
-    <Skeleton rows={3} />
+  {#if sub === 'backtest'}
+    <Placeholder
+      title="回测"
+      note="用历史信号回测策略，统计准确率与收益。"
+      planned="计划于子项目 B 实现"
+    />
   {:else}
-    <div class="bg-surface rounded-lg shadow-elev-1 p-3 mb-4">
-      <EChart option={buildScoreOption(scores)} />
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-lg font-semibold">策略评分</h2>
+      <button onclick={doRun} disabled={running} class="px-3 py-1 bg-accent text-white rounded text-sm disabled:opacity-50">
+        {running ? '运行中…' : '运行评分'}
+      </button>
     </div>
-    <div class="bg-surface rounded-lg shadow-elev-1 overflow-hidden">
-      <DataTable rows={scores} columns={cols} />
-    </div>
+    {#if loading}
+      <Skeleton rows={3} />
+    {:else}
+      <div class="bg-surface rounded-lg shadow-elev-1 p-3 mb-4">
+        <EChart option={buildScoreOption(scores)} />
+      </div>
+      <div class="bg-surface rounded-lg shadow-elev-1 overflow-hidden">
+        <DataTable rows={scores} columns={cols} />
+      </div>
+    {/if}
   {/if}
 </div>

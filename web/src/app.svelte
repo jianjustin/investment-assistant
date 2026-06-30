@@ -2,19 +2,18 @@
   import { onMount } from 'svelte'
   import { applyTheme } from './lib/theme'
   import AppShell from './lib/components/AppShell.svelte'
-  import Dashboard from './routes/Dashboard.svelte'
-  import Market from './routes/Market.svelte'
-  import Watchlist from './routes/Watchlist.svelte'
+  import Tools from './routes/Tools.svelte'
+  import Data from './routes/Data.svelte'
   import Strategy from './routes/Strategy.svelte'
-  import Hermes from './routes/Hermes.svelte'
-  import System from './routes/System.svelte'
+  import Trade from './routes/Trade.svelte'
+  import Settings from './routes/Settings.svelte'
 
-  type Zone = 'dashboard' | 'market' | 'watchlist' | 'strategy' | 'hermes' | 'system'
-  const zones: Zone[] = ['dashboard', 'market', 'watchlist', 'strategy', 'hermes', 'system']
+  type Zone = 'tools' | 'data' | 'strategy' | 'trade' | 'settings'
+  const zones: Zone[] = ['tools', 'data', 'strategy', 'trade', 'settings']
 
   function parseHash(hash: string): { zone: Zone; sub: string | undefined } {
     const [rawZone, rawSub] = hash.replace(/^#/, '').split('/')
-    const zone = zones.includes(rawZone as Zone) ? (rawZone as Zone) : 'dashboard'
+    const zone = zones.includes(rawZone as Zone) ? (rawZone as Zone) : 'tools'
     return { zone, sub: rawSub || undefined }
   }
 
@@ -33,17 +32,15 @@
 </script>
 
 <AppShell route={zone} {sub}>
-  {#if zone === 'dashboard'}
-    <Dashboard />
-  {:else if zone === 'market'}
-    <Market {sub} />
-  {:else if zone === 'watchlist'}
-    <Watchlist {sub} />
+  {#if zone === 'tools'}
+    <Tools {sub} />
+  {:else if zone === 'data'}
+    <Data {sub} />
   {:else if zone === 'strategy'}
     <Strategy {sub} />
-  {:else if zone === 'hermes'}
-    <Hermes {sub} />
+  {:else if zone === 'trade'}
+    <Trade {sub} />
   {:else}
-    <System />
+    <Settings {sub} />
   {/if}
 </AppShell>
