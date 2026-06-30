@@ -28,3 +28,6 @@ logs/
 .vscode/
 web/node_modules/
 web/dist/
+
+# git worktrees for parallel agent work
+.worktrees/
