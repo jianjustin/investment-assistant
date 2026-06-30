@@ -322,3 +322,77 @@ def reschedule_job(conn, name: str, *, next_run_at, last_run_at) -> None:
             {"name": name, "next_run_at": next_run_at, "last_run_at": last_run_at},
         )
     conn.commit()
+
+
+def list_scheduled_jobs(conn) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT name, time_local, weekday_mask, timezone, enabled, next_run_at, last_run_at
+            FROM scheduled_jobs
+            ORDER BY name
+            """
+        )
+        rows = cur.fetchall()
+    keys = ["name", "time_local", "weekday_mask", "timezone", "enabled", "next_run_at", "last_run_at"]
+    return [dict(zip(keys, row)) for row in rows]
+
+
+def list_job_reports(conn, *, task: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    where = "WHERE task = %(task)s" if task else ""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT task, run_id, status, started_at, finished_at, summary, created_at
+            FROM job_reports
+            {where}
+            ORDER BY created_at DESC
+            LIMIT %(limit)s
+            """,
+            {"task": task, "limit": limit},
+        )
+        rows = cur.fetchall()
+    keys = ["task", "run_id", "status", "started_at", "finished_at", "summary", "created_at"]
+    return [dict(zip(keys, row)) for row in rows]
+
+
+def job_report_metrics(conn, *, task: str | None = None, since) -> list[dict[str, Any]]:
+    where = "WHERE created_at >= %(since)s" + (" AND task = %(task)s" if task else "")
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT
+              task,
+              count(*) AS total,
+              count(*) FILTER (WHERE status = 'success') AS success,
+              avg(EXTRACT(EPOCH FROM (finished_at - started_at))) AS avg_seconds,
+              coalesce(
+                jsonb_agg(jsonb_build_object('day', to_char(created_at, 'YYYY-MM-DD'), 'count', 1))
+                  FILTER (WHERE status = 'error'),
+                '[]'::jsonb
+              ) AS error_days
+            FROM job_reports
+            {where}
+            GROUP BY task
+            ORDER BY task
+            """,
+            {"task": task, "since": since},
+        )
+        rows = cur.fetchall()
+    keys = ["task", "total", "success", "avg_seconds", "error_days"]
+    return [dict(zip(keys, row)) for row in rows]
+
+
+def update_scheduled_job(conn, name: str, *, enabled=None, time_local=None) -> None:
+    sets = ["updated_at = now()"]
+    params: dict[str, Any] = {"name": name}
+    if enabled is not None:
+        sets.append("enabled = %(enabled)s")
+        params["enabled"] = enabled
+    if time_local is not None:
+        sets.append("time_local = %(time_local)s")
+        sets.append("next_run_at = NULL")  # 改时间 → 下一 tick 重算
+        params["time_local"] = time_local
+    with conn.cursor() as cur:
+        cur.execute(f"UPDATE scheduled_jobs SET {', '.join(sets)} WHERE name = %(name)s", params)
+    conn.commit()
