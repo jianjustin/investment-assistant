@@ -94,6 +94,22 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"error": "not found"}, 404)
 
+    def do_PATCH(self):
+        if self._reject_unauthorized():
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(length) if length else b"{}"
+            payload = json.loads(raw_body.decode("utf-8") or "{}")
+        except Exception as exc:
+            self._send_json({"error": f"invalid json: {exc}"}, 400)
+            return
+        api_response = dispatch("PATCH", self.path, payload)
+        if api_response is not None:
+            self._send_json(api_response.payload, api_response.status)
+            return
+        self._send_json({"error": "not found"}, 404)
+
 
 def main() -> None:
     host = auth.resolve_bind_host()

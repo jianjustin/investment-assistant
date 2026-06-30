@@ -1,1 +1,1 @@
-from . import status, market, tickers, strategies, hermes, watchlist, runs  # noqa: F401
+from . import status, market, tickers, strategies, hermes, watchlist, runs, jobs  # noqa: F401
