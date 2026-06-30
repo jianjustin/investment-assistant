@@ -12,7 +12,9 @@ def test_svelte_entrypoint_and_app_root():
 
 
 def test_svelte_route_views_exist():
-    routes = ["Dashboard", "Market", "Watchlist", "Strategy", "Hermes", "System"]
+    # 5-layer IA: Tools/Data/Strategy/Trade/Settings (+ shared Placeholder).
+    # Old Dashboard/Market/Hermes/System/Watchlist routes were retired.
+    routes = ["Tools", "Data", "Strategy", "Trade", "Settings", "Placeholder"]
     for r in routes:
         path = Path(f"web/src/routes/{r}.svelte")
         assert path.exists(), str(path)
@@ -61,9 +63,9 @@ def test_api_client_exports_core_functions():
         assert fn in api, f"missing: {fn}"
 
 
-def test_app_svelte_has_six_zone_hash_router():
+def test_app_svelte_has_five_zone_hash_router():
     app = Path("web/src/app.svelte").read_text(encoding="utf-8")
-    for zone in ["dashboard", "market", "watchlist", "strategy", "hermes", "system"]:
+    for zone in ["tools", "data", "strategy", "trade", "settings"]:
         assert zone in app, f"missing zone: {zone}"
     assert "hashchange" in app
 
