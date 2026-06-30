@@ -22,6 +22,17 @@ export async function del<T>(path: string): Promise<T> {
   return data as T
 }
 
+export async function patch<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, {
+    method: 'PATCH',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await r.json()
+  if (!r.ok) throw new Error(data?.error ?? `HTTP ${r.status}`)
+  return data as T
+}
+
 export interface RunRecord {
   run_id: string
   status: 'pending' | 'done' | 'error'
@@ -67,3 +78,25 @@ export const deleteWatchlistItem = (ticker: string) => del<unknown>(`/api/watchl
 export const runMacroLlm = (body: object) => post<{ run_id: string; status: string }>('/api/hermes/macro-analysis/run', body)
 export const runDecisionEvidence = (body: object) => post<{ run_id: string; status: string }>('/api/hermes/decision-evidence/run', body)
 export const getRun = (runId: string) => get<RunRecord>(`/api/runs/${runId}`)
+
+// jobs
+export const getScheduledJobs = () => get<{ jobs: any[]; degraded: boolean }>('/api/jobs/scheduled')
+export const getJobReports = (task?: string, limit = 50) =>
+  get<{ reports: any[]; degraded: boolean }>(
+    `/api/jobs/reports?limit=${limit}${task ? `&task=${task}` : ''}`,
+  )
+export const getJobMetrics = (task?: string, window = 7) =>
+  get<{ metrics: any[]; degraded: boolean }>(
+    `/api/jobs/metrics?window=${window}${task ? `&task=${task}` : ''}`,
+  )
+export const runJob = (name: string) =>
+  post<{ run_id: string; status: string }>(`/api/jobs/${name}/run`, {})
+export const patchScheduledJob = (name: string, body: object) =>
+  patch<unknown>(`/api/jobs/scheduled/${name}`, body)
+
+// settings
+export const getNotifySettings = () => get<any>('/api/settings/notify')
+export const patchNotifySettings = (body: object) => patch<unknown>('/api/settings/notify', body)
+export const testNotifyChannel = (body: object) =>
+  post<{ ok: boolean; error?: string }>('/api/settings/notify/test', body)
+export const getEnvStatus = () => get<Record<string, boolean>>('/api/settings/env')

@@ -1,7 +1,39 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { get, post, pollRun } from './api'
+import * as api from './api'
 
 afterEach(() => vi.restoreAllMocks())
+
+describe('jobs/settings api wrappers', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, json: async () => ({ ok: true }),
+    })))
+  })
+
+  it('getJobReports builds task+limit query', async () => {
+    await api.getJobReports('metrics', 10)
+    const url = (fetch as any).mock.calls[0][0]
+    expect(url).toContain('/api/jobs/reports')
+    expect(url).toContain('task=metrics')
+    expect(url).toContain('limit=10')
+  })
+
+  it('runJob posts to /run', async () => {
+    await api.runJob('metrics')
+    expect((fetch as any).mock.calls[0][0]).toBe('/api/jobs/metrics/run')
+  })
+
+  it('patchScheduledJob uses PATCH', async () => {
+    await api.patchScheduledJob('metrics', { time_local: '09:30' })
+    expect((fetch as any).mock.calls[0][1].method).toBe('PATCH')
+  })
+
+  it('testNotifyChannel posts channel', async () => {
+    await api.testNotifyChannel({ channel: 'daily', url: 'u' })
+    expect((fetch as any).mock.calls[0][0]).toBe('/api/settings/notify/test')
+  })
+})
 
 describe('api client', () => {
   it('get parses json', async () => {
