@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
   import * as api from '../lib/api'
   import StatusPill from '../lib/components/StatusPill.svelte'
   import Skeleton from '../lib/components/Skeleton.svelte'
@@ -42,7 +41,6 @@
   async function fetchMarket() { await api.fetchMarketSignals({ mode: 'single' }) }
 
   $effect(() => { sub; load() })
-  onMount(load)
 </script>
 
 {#if loading}
