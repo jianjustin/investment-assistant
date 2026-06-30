@@ -74,3 +74,12 @@ def test_scheduled_jobs_migration():
     assert "next_run_at" in sql
     assert "'metrics'" in sql and "'filings'" in sql and "'scores'" in sql  # seed
     assert "ON CONFLICT (name) DO NOTHING" in sql
+
+
+def test_notify_settings_migration():
+    sql = Path("migrations/008_notify_settings.sql").read_text()
+    assert "CREATE TABLE IF NOT EXISTS notify_settings" in sql
+    assert "id" in sql and "CHECK (id = 1)" in sql
+    assert "webhooks" in sql and "task_channels" in sql and "task_enabled" in sql
+    assert "JSONB" in sql
+    assert "ON CONFLICT (id) DO NOTHING" in sql

@@ -396,3 +396,32 @@ def update_scheduled_job(conn, name: str, *, enabled=None, time_local=None) -> N
     with conn.cursor() as cur:
         cur.execute(f"UPDATE scheduled_jobs SET {', '.join(sets)} WHERE name = %(name)s", params)
     conn.commit()
+
+
+def get_notify_settings(conn) -> dict[str, Any]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT discord_enabled, webhooks, task_channels, task_enabled FROM notify_settings WHERE id = 1"
+        )
+        rows = cur.fetchall()
+    if not rows:
+        return {}
+    keys = ["discord_enabled", "webhooks", "task_channels", "task_enabled"]
+    return dict(zip(keys, rows[0]))
+
+
+def update_notify_settings(
+    conn, *, discord_enabled=None, webhooks=None, task_channels=None, task_enabled=None
+) -> None:
+    sets = ["updated_at = now()"]
+    params: dict[str, Any] = {}
+    if discord_enabled is not None:
+        sets.append("discord_enabled = %(discord_enabled)s")
+        params["discord_enabled"] = discord_enabled
+    for col, value in (("webhooks", webhooks), ("task_channels", task_channels), ("task_enabled", task_enabled)):
+        if value is not None:
+            sets.append(f"{col} = {col} || %({col})s::jsonb")
+            params[col] = json.dumps(value, ensure_ascii=False)
+    with conn.cursor() as cur:
+        cur.execute(f"UPDATE notify_settings SET {', '.join(sets)} WHERE id = 1", params)
+    conn.commit()

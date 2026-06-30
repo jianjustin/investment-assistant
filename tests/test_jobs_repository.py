@@ -78,3 +78,24 @@ def test_update_scheduled_job_enabled_only_keeps_next_run():
     db.update_scheduled_job(conn, "metrics", enabled=False)
     sql, _ = conn.store[0]
     assert "enabled = %(enabled)s" in sql and "next_run_at = NULL" not in sql
+
+
+def test_get_notify_settings_maps_row():
+    rows = [(True, {"daily": "u"}, {"metrics": "daily"}, {"metrics": True})]
+    conn = FakeConn(rows=rows)
+    out = db.get_notify_settings(conn)
+    assert out["discord_enabled"] is True and out["webhooks"]["daily"] == "u"
+
+
+def test_get_notify_settings_empty_when_no_row():
+    conn = FakeConn(rows=[])
+    assert db.get_notify_settings(conn) == {}
+
+
+def test_update_notify_settings_merges_jsonb():
+    conn = FakeConn()
+    db.update_notify_settings(conn, webhooks={"daily": "u2"}, discord_enabled=False)
+    sql, params = conn.store[0]
+    assert "UPDATE notify_settings" in sql and "webhooks = webhooks ||" in sql
+    assert "discord_enabled = %(discord_enabled)s" in sql
+    assert conn.commits == 1
