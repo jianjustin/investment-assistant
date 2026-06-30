@@ -22,7 +22,8 @@ def run_task(task: str, fn: Callable[[], dict[str, Any]], *, config: AssistantCo
     finished_at = datetime.now(UTC)
     _record(task=task, run_id=run_id, status=status, started_at=started_at,
             finished_at=finished_at, summary=summary)
-    dispatch(task, status, summary, config.notify)
+    from investment_assistant.services.settings import effective_notify_config
+    dispatch(task, status, summary, effective_notify_config(config.notify))
     return {"run_id": run_id, "task": task, "status": status, "summary": summary}
 
 
