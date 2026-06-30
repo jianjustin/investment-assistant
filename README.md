@@ -167,7 +167,7 @@ python -m pytest tests/ -v
 
 **SEC EDGAR 路径中的 CIK**。EDGAR accession `{filer_cik}-{year}-{sequence}` 的前缀是**报送方**（Filing Agent）的 CIK，而归档路径必须使用**注册方**（Registrant）的 CIK。代码统一从 `company_tickers.json` 解析注册方 CIK，避免对使用 Toppan Merrill 等代理报送的公司（如 RKLB）404。
 
-**yfinance VIX 偶发空数据**。`^VIX` 历史接口有时返回空 DataFrame，`signals/market.py` 在该情形下抛出 `ValueError`；调度脚本将其作为非致命错误记入日志，下一周期会自动恢复。
+**yfinance VIX 偶发空数据**。`^VIX` 历史接口有时返回空 DataFrame，`investment_assistant/market/service.py` 的 `compute_market_signal` 在该情形下抛出 `ValueError`；指标任务将其作为非致命错误记入 `job_reports`，下一周期会自动恢复。
 
 **numpy 标量与 `is False`**。技术信号 `has_signal` 必须 `bool(...)` 包装，否则 `numpy.bool_(False) is False` 为 `False`，会让 identity 断言失败。
 

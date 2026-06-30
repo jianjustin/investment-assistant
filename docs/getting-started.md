@@ -2,10 +2,11 @@
 
 ## 前置条件
 
-- Python 3.10+
-- Discord 服务器管理权限（创建 webhook）
-- Obsidian vault（可选，用于笔记存档）
+- Python 3.11+
+- Node.js 18+（构建 `web/` 前端）
+- PostgreSQL 16（可选；缺省时调度/报告路径优雅降级，不崩）
 - SEC EDGAR 用户标识（免费，填邮箱即可）
+- Discord webhook（可选，用于推送；也可在「设置 · Discord 推送」页配置）
 
 ---
 
@@ -14,7 +15,7 @@
 ```bash
 # 克隆仓库
 git clone <repo-url>
-cd earnings-agent
+cd investment-assistant
 
 # 创建虚拟环境
 python3 -m venv .venv
@@ -34,272 +35,126 @@ pip install pytest
 在项目根目录创建 `.env`（已在 `.gitignore` 中，不会提交）：
 
 ```env
-# SEC EDGAR — 必填，格式固定
+# SEC EDGAR — 下载财报必填，格式固定（含邮箱）
 SEC_USER_AGENT=YourName your@email.com
 
-# 路径配置
-VAULT_PATH=/Users/you/your-obsidian-vault
-WATCHLIST_PATH=/Users/you/your-obsidian-vault/02-项目/美股投资项目/watchlist.md
+# PostgreSQL — 可选；不配置时报告/快照路径跳过，不影响离线运行
+INVESTMENT_ASSISTANT_DATABASE_URL=postgresql://user:pass@localhost:5432/investment
 
-# Discord webhooks — 见下方"配置 Discord"章节
+# Discord webhooks — 可选；也可在「设置 · Discord 推送」页填写并验证
 DISCORD_WEBHOOK_EARNINGS=https://discord.com/api/webhooks/...
 DISCORD_WEBHOOK_SIGNALS=https://discord.com/api/webhooks/...
 DISCORD_WEBHOOK_DAILY=https://discord.com/api/webhooks/...
 ```
 
----
-
-## 配置 watchlist.md
-
-watchlist.md 使用 markdown 代码块格式存放股票代码（与 Obsidian 兼容）：
-
-```markdown
-# Watchlist
-
-```
-AAPL
-NVDA
-MSFT
-TSLA
-RKLB
-```
-```
-
-程序会解析代码块内的每一行，大小写不敏感，空行和 `#` 注释行自动跳过。
+> Discord 配置优先级：「设置 · Discord 推送」页写入数据库的 `notify_settings`（overlay）> `.env` 中的 webhook 环境变量。详见 [scheduling-and-notifications.md](scheduling-and-notifications.md)。
 
 ---
 
-## 配置 Discord
+## 初始化数据库（可选）
 
-### 创建频道和 Webhook
-
-1. 在 Discord 服务器创建三个文本频道：
-   - `#earnings-alerts`
-   - `#trade-signals`
-   - `#daily-scan`
-
-2. 每个频道：**频道设置 → 整合 → Webhook → 新建 Webhook**
-
-3. 复制 Webhook URL，分别填入 `.env` 对应字段
-
-### 验证连接
+配置了 `INVESTMENT_ASSISTANT_DATABASE_URL` 后，按编号顺序执行 `migrations/` 下的 SQL（001-008）建表。迁移均为幂等（`CREATE TABLE IF NOT EXISTS` + `ON CONFLICT DO NOTHING`），可重复执行：
 
 ```bash
-python scripts/test_discord.py
+for f in migrations/0*.sql; do
+  psql "$INVESTMENT_ASSISTANT_DATABASE_URL" -f "$f"
+done
 ```
 
-成功输出：`✅ Discord #earnings-alerts 发送成功`，并在频道中看到测试消息。
+`scheduled_jobs`（007）已 seed 三个任务：`metrics` 08:00 / `filings` 09:00 / `scores` 18:00（America/New_York，周一至周五）。
 
 ---
 
-## 子流程独立运行
-
-每个子流程都可以单独调用，无需启动完整的调度链。适用于调试、回测或按需触发。
-
----
-
-### 子流程 1：拉取财报（SEC EDGAR 下载）
-
-#### 单次模式：下载指定日期附近最近的 8-K
+## 构建并运行
 
 ```bash
-# 拉取 AAPL 今天附近最近的 8-K（默认）
-python data/sec.py AAPL
+# 构建前端（产物落到 web/dist，由 API server 提供静态资源）
+cd web && npm install && npm run build && cd ..
 
-# 指定财报日期
-python data/sec.py AAPL --date 2026-05-01
-
-# 指定输出目录（默认：data/earnings_reports）
-python data/sec.py AAPL --date 2026-05-01 --out /tmp/my-reports
+# 启动 API server（含前端面板与 SSE）
+python -m investment_assistant.api.server
 ```
 
-输出示例：
-```
-INFO AAPL: using 8-K dated 2026-05-01 (accession 0000320193-26-000056)
-INFO Downloaded: data/earnings_reports/AAPL/0000320193-26-000056.htm
-Downloaded: data/earnings_reports/AAPL/0000320193-26-000056.htm
-```
+面板为五层信息架构：**工具 / 数据 / 策略 / 交易 / 设置**，默认落地「工具」层。
 
-#### 批量模式：拉取过去 N 年的 8-K 和 10-Q
+---
+
+## 手动运行单个任务
+
+每个定时任务都可单独调用，无需启动常驻调度器。适用于调试与按需补跑。结果写入 `job_reports` 表（有 DB 时），并按配置推送 Discord；在面板「工具 · 运行记录 / 数据结果」页可回看。
 
 ```bash
-# 过去 3 年的 8-K 和 10-Q（默认表单）
-python data/sec.py AAPL --years 3
+# 08:00 指标任务（大盘信号 + 个股趋势快照）
+python -m investment_assistant.tasks.metrics
 
-# 只拉 10-Q
-python data/sec.py NVDA --years 3 --form 10-Q
+# 09:00 财报任务（SEC EDGAR 下载昨日新提交财报落盘）
+python -m investment_assistant.tasks.filings
 
-# 指定起始日期
-python data/sec.py TSLA --since 2023-01-01 --form 8-K,10-Q
-
-# 指定输出目录
-python data/sec.py AAPL --years 3 --out /tmp/aapl-filings
+# 18:00 策略评分任务
+python -m investment_assistant.tasks.nightly_scores
 ```
 
-文件落盘结构：
-```
-data/earnings_reports/
-└── AAPL/
-    ├── 8-K/
-    │   ├── 0000320193-26-000056.htm   # Q1 2026
-    │   ├── 0000320193-25-000089.htm   # Q4 2025
-    │   └── ...
-    └── 10-Q/
-        ├── 0000320193-25-000123.htm   # Q3 2025
-        └── ...
-```
-
-输出示例：
-```
-INFO AAPL: 35 filing(s) since 2023-05-20 (8-K, 10-Q)
-INFO Downloaded: data/earnings_reports/AAPL/8-K/0000320193-26-000056.htm
-INFO Downloaded: data/earnings_reports/AAPL/10-Q/0000320193-25-000123.htm
-...
-Downloaded 35 filing(s) to data/earnings_reports/AAPL/
-```
+财报下载器细节（落盘路径、`SEC_USER_AGENT` 降级行为）见 [sec-downloader.md](sec-downloader.md)。
 
 ---
 
-### 子流程 2：发送 Discord 消息
+## 常驻调度守护进程
+
+自研 pg 调度器按 `scheduled_jobs` 表定时触发已注册任务，取代了逐任务 systemd timer：
 
 ```bash
-# 发送测试消息到 #earnings-alerts（默认）
-python notify/discord.py
-
-# 指定频道
-python notify/discord.py --channel signals
-python notify/discord.py --channel daily
+python -m investment_assistant.tasks.scheduler
 ```
 
-需要 `.env` 中已填入真实 Webhook URL。输出：
-```
-✅ 测试消息已发送至 #earnings
-```
+- 改运行时间 / 启停某任务：在面板「设置 · 定时任务」页操作（写 `scheduled_jobs`），或直接 `UPDATE scheduled_jobs ...`。
+- 生产部署见 `deploy/systemd/hermes-investment-scheduler.service`（`Restart=always`，单一常驻 service）。
+- 调度、报告（`job_reports` 30 天 TTL）与通知机制详见 [scheduling-and-notifications.md](scheduling-and-notifications.md)。
 
 ---
 
-### 子流程 3：财报监听（检测 + 下载 + 推送）
+## 验证 Discord 推送
 
-```bash
-# 检查上一个交易日的财报（自动模式）
-python ops/earnings_monitor.py
-
-# 检查指定日期
-python ops/earnings_monitor.py --date 2026-05-07
-
-# 仅检测，不下载 8-K（不发 Discord）
-python ops/earnings_monitor.py --dry-run
-```
-
-运行后生成：
-- `data/earnings_today.json` — 命中结果（供后续 Claude 分析读取）
-- `data/earnings_reports/{TICKER}/` — 下载的 8-K 文件
-- `logs/earnings_monitor.log` — 运行日志
-- Discord `#earnings-alerts` — 推送通知（如已配置）
-
----
-
-### 子流程 4：每日技术面扫描
-
-```bash
-# 正常运行（扫描 + 发 Discord）
-python ops/daily_scan.py
-
-# 仅扫描，不发送 Discord 消息
-python ops/daily_scan.py --dry-run
-```
-
-运行后生成：
-- `data/daily_scan.json` — 当日候选列表
-- `logs/daily_scan.log` — 运行日志
-- Discord `#trade-signals` — 有信号的个股通知（非 dry-run）
-- Discord `#daily-scan` — 每日摘要（非 dry-run）
-
----
-
-### 子流程验证脚本（仅检测，无副作用）
-
-| 脚本 | 用途 | 所需配置 |
-|---|---|---|
-| `python scripts/test_market.py` | 检测大盘环境（SPY/VIX） | 无（yfinance） |
-| `python scripts/test_vcp.py [TICKER]` | 检测个股技术信号 | 无（yfinance） |
-| `python scripts/test_discord.py` | 验证 Discord webhook 连通性 | `.env` Webhook URL |
-
-`test_market.py` 示例输出：
-```
-大盘环境:
-  Status      : GREEN
-  VIX         : 17.3
-  SPY > 200MA : True
-```
-
-`test_vcp.py AAPL` 示例输出：
-```
-AAPL 技术信号:
-  RS Score    : 1.85  ✅ 强势 (≥1.2)
-  VCP         : —
-  MA Reclaim  : —
-  Has Signal  : ✅ 是
-```
-
----
-
-## 配置定时任务（Cowork Scheduled Task）
-
-### 财报监听 — 每天 06:03 北京时间
-
-```
-Task ID: earnings-monitor-daily
-Cron:    3 6 * * 1-5
-命令:    cd /path/to/earnings-agent && source .venv/bin/activate && python ops/earnings_monitor.py
-```
-
-### 每日扫描 — 每天 21:00 北京时间
-
-```
-Task ID: daily-scan
-Cron:    0 21 * * 1-5
-命令:    cd /path/to/earnings-agent && source .venv/bin/activate && python ops/daily_scan.py
-```
+无需命令行脚本：在面板「设置 · Discord 推送」页，为每个频道（earnings / signals / daily）填入 webhook 并点「验证」即时发送测试消息；webhook 明文不回显（仅显示是否已配置）。
 
 ---
 
 ## 运行测试
 
 ```bash
-# 运行所有单元测试
-python -m pytest tests/ -v
+# 运行所有单元测试（全程 mock，离线可跑）
+.venv/bin/python -m pytest -q
 
-# 运行特定模块测试
-python -m pytest tests/test_technicals.py -v
+# 运行特定测试文件
+.venv/bin/python -m pytest tests/test_jobs_repository.py -v
 ```
 
-所有测试均使用 mock，不调用真实网络接口，可离线运行。
+外部依赖（SEC / Discord / yfinance / DB）全部 mock 或注入，无网络与真实 DB 也能跑；DB 集成测试在缺少 `INVESTMENT_ASSISTANT_TEST_DATABASE_URL` 时自动 skip。
 
 ---
 
 ## 常见问题
 
 **Q: `No price data returned for ^VIX`**  
-A: yfinance 有时对 VIX 返回空数据，重试通常可以解决。如果持续失败，检查网络连接。
+A: yfinance 有时对 VIX 返回空数据，重试通常可解决。指标任务将其作为非致命错误记录，下一周期自动恢复。
 
-**Q: `Discord notification skipped`**  
-A: `.env` 中的 Webhook URL 是占位符，需替换为真实 URL。这是非致命错误，其他功能不受影响。
+**Q: Discord 没有收到推送**  
+A: 检查「设置 · Discord 推送」页是否启用且 webhook 已配置（或 `.env` 中的 webhook 环境变量）；`discord_enabled=False` 或该任务被关闭时不推送。
 
-**Q: `Watchlist not found`**  
-A: `WATCHLIST_PATH` 路径不存在或路径错误，检查 `.env` 配置。
+**Q: 财报没有下载 / 返回空**  
+A: 确认 `SEC_USER_AGENT` 已设置且格式含邮箱；缺失时下载器优雅降级返回空结果。SEC EDGAR 有访问频率限制，必要时重试。
 
-**Q: SEC EDGAR 下载失败**  
-A: SEC EDGAR 有访问频率限制，重试或检查 `SEC_USER_AGENT` 格式（必须包含邮箱）。
+**Q: 报告/快照相关功能不生效**  
+A: 未配置 `INVESTMENT_ASSISTANT_DATABASE_URL` 时，报告与快照路径会被跳过（接口返回 `degraded: true`），属预期降级。
 
 ---
 
 ## 项目结构快速参考
 
 ```
-investment_assistant/   生产包（api / services / tasks / filings / …）
+investment_assistant/   生产包（api / services / tasks / filings / notify / db.py）
 web/                    Svelte 5 前端（工具 / 数据 / 策略 / 交易 / 设置 五层 IA）
 migrations/             PostgreSQL schema 迁移（001-008）
+deploy/                 systemd service 模板与安装脚本
 tests/                  单元测试
 docs/                   项目文档
 ```
