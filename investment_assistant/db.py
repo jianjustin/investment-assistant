@@ -425,3 +425,40 @@ def update_notify_settings(
     with conn.cursor() as cur:
         cur.execute(f"UPDATE notify_settings SET {', '.join(sets)} WHERE id = 1", params)
     conn.commit()
+
+
+def upsert_event_study(conn, *, kind: str, params_hash: str, result: dict[str, Any]) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO event_studies (kind, params_hash, result, generated_at)
+            VALUES (%(kind)s, %(params_hash)s, %(result)s::jsonb, now())
+            ON CONFLICT (kind, params_hash) DO UPDATE SET
+              result = EXCLUDED.result,
+              generated_at = EXCLUDED.generated_at,
+              updated_at = now()
+            """,
+            {
+                "kind": kind,
+                "params_hash": params_hash,
+                "result": json.dumps(result or {}, ensure_ascii=False, default=str),
+            },
+        )
+    conn.commit()
+
+
+def get_event_study(conn, *, kind: str, params_hash: str) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT kind, params_hash, result, generated_at
+            FROM event_studies
+            WHERE kind = %(kind)s AND params_hash = %(params_hash)s
+            """,
+            {"kind": kind, "params_hash": params_hash},
+        )
+        rows = cur.fetchall()
+    if not rows:
+        return None
+    keys = ["kind", "params_hash", "result", "generated_at"]
+    return dict(zip(keys, rows[0]))
