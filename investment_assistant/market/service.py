@@ -4,9 +4,9 @@ from datetime import date
 from typing import Callable
 
 import pandas as pd
-from investment_assistant.data.price import get_price_history_asof
 
 from investment_assistant.config import MarketConfig
+from investment_assistant.data.price import get_price_history_asof
 from investment_assistant.market.models import MarketSignal
 
 
