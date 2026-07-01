@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 from typing import Callable
 
 import pandas as pd
+from investment_assistant.data.price import get_price_history_asof
 
 from investment_assistant.config import MarketConfig
 from investment_assistant.market.models import MarketSignal
@@ -74,15 +75,7 @@ def compute_market_signal_for_date(
 
 
 def _default_price_fetcher_until(ticker: str, days: int, target_date: date) -> pd.DataFrame:
-    import yfinance as yf
-
-    calendar_days = max(days * 2, days + 30)
-    start = target_date - timedelta(days=calendar_days)
-    end = target_date + timedelta(days=1)
-    df = yf.Ticker(ticker).history(start=start.isoformat(), end=end.isoformat())
-    if df.empty:
-        raise ValueError(f"No price data returned for {ticker} through {target_date}")
-    return df[["Open", "High", "Low", "Close", "Volume"]]
+    return get_price_history_asof(ticker, target_date, days=days)
 
 
 def _default_price_fetcher(ticker: str, days: int) -> pd.DataFrame:
