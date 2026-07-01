@@ -62,7 +62,7 @@ def detect_split_jumps(
     threshold: float = 0.5,
     earnings_dates: set[date] | None = None,
 ) -> list[dict]:
-    """扫描相邻日收益，|ret|>threshold 且非财报日 → 疑似未复权 split。只告警不改数。"""
+    """扫描相邻日收益，|ret|>=threshold 且非财报日 → 疑似未复权 split。只告警不改数。"""
     if frame.empty or "Close" not in frame.columns or len(frame) < 2:
         return []
     earnings = earnings_dates or set()
