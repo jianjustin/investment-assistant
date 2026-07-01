@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **分支**：沿用当前 `feat/scheduled-ingestion-discord`；不主动 push；提交结尾 `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`。
+- **分支**：直接在 `main` 上开发，不新建特性分支；不主动 push；提交结尾 `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`。
 - **测试隔离**：新增/改动逻辑必须有单测；外部依赖（DB / Discord / 网络）**全部 mock 或注入**，离线可跑。
 - **DB 写法对齐现有**：`with conn.cursor() as cur` + 具名参数 + `conn.commit()`；读函数 `dict(zip(keys, row))`。
 - **迁移幂等**：`CREATE TABLE IF NOT EXISTS` + `ON CONFLICT DO NOTHING`。本计划占 `008_notify_settings`；若上游 `2026-06-27-phase2-data-layer.md` 先落地 008，则本计划顺延为下一个可用编号（同步改所有引用）。
