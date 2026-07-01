@@ -86,7 +86,6 @@ def test_notify_settings_migration():
 
 
 def test_event_studies_migration():
-    from pathlib import Path
     sql = Path("migrations/009_event_studies.sql").read_text()  # 用实测编号
     assert "CREATE TABLE IF NOT EXISTS event_studies" in sql
     assert "kind" in sql and "params_hash" in sql

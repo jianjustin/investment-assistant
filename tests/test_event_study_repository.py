@@ -1,3 +1,5 @@
+import json
+
 from investment_assistant import db
 
 
@@ -36,6 +38,7 @@ def test_upsert_event_study_uses_conflict():
     assert "INSERT INTO event_studies" in sql
     assert "ON CONFLICT (kind, params_hash) DO UPDATE" in sql
     assert params["kind"] == "rs_strong" and params["params_hash"] == "h1"
+    assert params["result"] == json.dumps({"n": 5}, ensure_ascii=False)
     assert conn.commits == 1
 
 
