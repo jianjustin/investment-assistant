@@ -45,6 +45,10 @@ def nyse_holidays(year: int) -> frozenset[date]:
     days: set[date] = set()
     # 固定假日（逢周末顺延到相邻工作日）
     days.add(_observed(date(year, 1, 1)))     # New Year's Day
+    # 跨年修正：若下一年 1 月 1 日是周六，其观察日为本年 12 月 31 日，需纳入本年假日
+    next_ny = date(year + 1, 1, 1)
+    if next_ny.isoweekday() == 6:
+        days.add(date(year, 12, 31))
     days.add(_observed(date(year, 6, 19)))     # Juneteenth（2021 起，早年无害）
     days.add(_observed(date(year, 7, 4)))      # Independence Day
     days.add(_observed(date(year, 12, 25)))    # Christmas

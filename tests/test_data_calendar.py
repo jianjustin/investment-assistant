@@ -30,6 +30,13 @@ def test_holiday_on_weekend_observed_adjacent_weekday():
     assert cal.is_trading_day(date(2021, 12, 24)) is False
 
 
+def test_new_years_observed_rolls_back_to_prior_dec31():
+    # 2022-01-01 是周六 → 观察日为 2021-12-31（周五），NYSE 休市
+    assert cal.is_trading_day(date(2021, 12, 31)) is False
+    # 正向对照：2019-12-31 是周二，且 2020-01-01 是周三（非周六），应为交易日
+    assert cal.is_trading_day(date(2019, 12, 31)) is True
+
+
 def test_add_trading_days_skips_weekend():
     # 周五 +1 交易日 → 下周一
     assert cal.add_trading_days(date(2024, 3, 1), 1) == date(2024, 3, 4)
