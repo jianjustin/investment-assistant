@@ -175,7 +175,8 @@ def run_event_study(
 
     n = max((s.n for s in horizons_stats.values()), default=0)
     caveats: list[str] = []
-    if n < min_sample:
+    undersampled = [h for h, s in horizons_stats.items() if s.n < min_sample]
+    if undersampled:
         caveats.append(f"n<{min_sample}, 结论不可信")
     if any(ev.meta.get("source") == "placeholder" for ev in events):
         caveats.append("事件来源含占位数据（yfinance earnings_dates），不作去留结论依据")

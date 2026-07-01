@@ -126,6 +126,28 @@ def test_skipped_events_recorded_not_raised():
     assert result.params["skipped"][0]["ticker"] == "BBB"
 
 
+def test_caveat_fires_when_any_horizon_undersampled():
+    # horizon=5 解析成功 (n=1)，horizon=20 缺失前瞻价 (n=0)
+    # min_sample=1：旧 max(1,0)=1 不触发 caveat；新逻辑检测任意 horizon n<1 应触发
+    price_map = {
+        ("NVDA", "2024-03-01"): 100.0, ("SPY", "2024-03-01"): 400.0,
+        ("NVDA", "2024-03-06"): 110.0, ("SPY", "2024-03-06"): 420.0,
+        # horizon=20 的前瞻日 (2024-03-21) 故意缺失，迫使该 horizon n=0
+    }
+    events = [Event("NVDA", date(2024, 3, 1), "rs_strong")]
+    result = run_event_study(
+        events, horizons=(5, 20), price_fetcher=_make_fetcher(price_map),
+        regime_fn=lambda d: "green", add_trading_days_fn=_add_td,
+        min_sample=1,
+    )
+    # EventStudyResult.n 应保留 max(1, 0)=1（最佳覆盖数）
+    assert result.n == 1
+    # 但 horizon=20 的 n=0 < min_sample=1，统计诚实要求 caveat 必须出现
+    assert any("n<1" in c for c in result.caveats), (
+        f"期望含 'n<1' 的 caveat，实际 caveats={result.caveats}"
+    )
+
+
 def test_to_dict_is_json_friendly():
     price_map = {
         ("AAA", "2024-03-01"): 100.0, ("SPY", "2024-03-01"): 400.0,
