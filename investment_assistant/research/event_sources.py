@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Callable
 
 from investment_assistant.research.event_study import Event
@@ -18,6 +18,8 @@ def _in_window(d: date, *, asof: date | None, since: date | None) -> bool:
 
 
 def _as_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
         return value
     if isinstance(value, str) and value:

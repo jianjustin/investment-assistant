@@ -69,3 +69,17 @@ def test_collect_events_filters_by_kind():
     )
     assert all(e.kind == "score_high" for e in events)
     assert events[0].ticker == "RKLB"
+
+
+def test_rs_strong_requires_outperform_spy_reason():
+    # rs 达标但 reasons 缺 outperform_spy → 不触发 rs_strong
+    rows = [_snap("NVDA", date(2024, 3, 1), 1.5, ["above_ma_stack"])]
+    events = events_from_snapshots(rows, rs_strong=1.2)
+    assert all(e.kind != "rs_strong" for e in events)
+
+
+def test_as_date_normalizes_datetime_to_date():
+    from datetime import datetime
+    rows = [_snap("NVDA", datetime(2024, 3, 1, 15, 30), 1.5, ["outperform_spy"])]
+    events = events_from_snapshots(rows, rs_strong=1.2)
+    assert events and events[0].date == date(2024, 3, 1)
