@@ -14,7 +14,7 @@ def test_get_price_history_returns_ohlcv_columns():
     with patch("investment_assistant.data.price.yf.Ticker", return_value=fake) as ticker:
         result = get_price_history("NVDA", days=30)
     ticker.assert_called_once_with("NVDA")
-    fake.history.assert_called_once_with(period="30d")
+    fake.history.assert_called_once_with(period="30d", auto_adjust=True)
     assert list(result.columns) == ["Open", "High", "Low", "Close", "Volume"]
 
 
