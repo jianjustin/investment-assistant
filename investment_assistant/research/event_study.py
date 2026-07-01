@@ -202,3 +202,14 @@ def _default_regime_fn(d: date) -> str:
 
     signal = compute_market_signal_for_date(load_config().market, d)
     return signal.market_status
+
+
+def _cli_main() -> None:
+    """委托到 tasks.event_study.main，对齐 roadmap 文档化的调用路径（DRY，不复制 argparse）。"""
+    from investment_assistant.tasks.event_study import main as _task_main
+
+    _task_main()
+
+
+if __name__ == "__main__":
+    _cli_main()

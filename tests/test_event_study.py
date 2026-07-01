@@ -163,3 +163,12 @@ def test_to_dict_is_json_friendly():
     assert d["horizons"]["5"]["mean_excess"] is not None
     import json
     json.dumps(d)  # 不抛 = JSON 可序列化
+
+
+def test_research_cli_delegates_to_task(monkeypatch):
+    import investment_assistant.research.event_study as rs
+    called = {}
+    monkeypatch.setattr("investment_assistant.tasks.event_study.main",
+                        lambda: called.setdefault("ran", True))
+    rs._cli_main()
+    assert called.get("ran") is True
