@@ -36,7 +36,7 @@ def test_api_response_for_path_returns_feature_payloads(monkeypatch, client):
     monkeypatch.setattr(status_svc, "system_status", lambda: {"dashboard_service": {"ok": True, "output": "active"}})
 
     assert client.get("/api/services").json() == {"dashboard_service": {"ok": True, "output": "active"}}
-    assert dispatch("GET", "/api/market/signals/latest", None).payload == {"market_status": "green"}  # Task 4: migrate to client
+    assert client.get("/api/market/signals/latest").json() == {"market_status": "green"}
     filings_payload = client.get("/api/filings").json()
     assert filings_payload["summary"] == {"path": "/srv/filings", "exists": True, "file_count": 2}
     assert filings_payload["files"] == [{"name": "a.htm", "size": 10}]

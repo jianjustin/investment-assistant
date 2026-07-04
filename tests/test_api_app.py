@@ -31,6 +31,14 @@ def test_sse_events_route_registered(client):
     assert "/api/events" in paths
 
 
+def test_value_error_from_handler_returns_400(client, monkeypatch):
+    import investment_assistant.services.market as _market
+    monkeypatch.setattr(_market, "fetch_market_signals", lambda payload: (_ for _ in ()).throw(ValueError("bad date")))
+    resp = client.post("/api/market/signals/fetch", json={})
+    assert resp.status_code == 400
+    assert resp.json() == {"error": "bad date"}
+
+
 def test_event_stream_frames_events_and_survives_keepalive(monkeypatch):
     import queue as _queue
 

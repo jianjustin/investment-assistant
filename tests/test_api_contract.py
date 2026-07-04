@@ -34,9 +34,9 @@ def test_watchlist_get_falls_back_to_config_without_db():
     assert all(row["source"] == "config" for row in resp.payload["rows"])
 
 
-def test_post_market_fetch_requires_date():
-    resp = dispatch("POST", "/api/market/signals/fetch", {})
-    assert resp.status == 400 and "error" in resp.payload
+def test_post_market_fetch_requires_date(client):
+    resp = client.post("/api/market/signals/fetch", json={})
+    assert resp.status_code == 400 and "error" in resp.json()
 
 
 def test_delete_route_resolves():

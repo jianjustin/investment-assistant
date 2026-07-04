@@ -8,7 +8,7 @@ import investment_assistant.services.watchlist as watchlist_svc
 from investment_assistant.api.router import dispatch
 
 
-def test_market_signal_list_and_trend_endpoints(monkeypatch):
+def test_market_signal_list_and_trend_endpoints(monkeypatch, client):
     rows = [
         {"signal_date": date(2026, 6, 21), "market_status": "green", "spy_close": 130, "spy_ma200": 120, "vix_close": 15},
         {"signal_date": date(2026, 6, 20), "market_status": "green", "spy_close": 128, "spy_ma200": 120, "vix_close": 16},
@@ -17,18 +17,22 @@ def test_market_signal_list_and_trend_endpoints(monkeypatch):
     # Patch at the service level so both list and trend endpoints see the same fake
     monkeypatch.setattr(market_svc, "market_signal_rows", lambda query: rows)
 
-    list_response = dispatch("GET", "/api/market/signals?limit=3", None)
-    trend_response = dispatch("GET", "/api/market/signals/trend?window=3", None)
+    list_response = client.get("/api/market/signals?limit=3")
+    trend_response = client.get("/api/market/signals/trend?window=3")
 
-    assert list_response.payload["rows"] == rows
-    assert list_response.payload["count"] == 3
-    assert trend_response.payload["window"] == 3
-    assert trend_response.payload["latest_status"] == "green"
-    assert trend_response.payload["judgement"] == "risk_on"
-    assert trend_response.payload["status_counts"] == {"green": 2, "yellow": 1, "red": 0}
+    assert list_response.json()["rows"] == [
+        {"signal_date": "2026-06-21", "market_status": "green", "spy_close": 130, "spy_ma200": 120, "vix_close": 15},
+        {"signal_date": "2026-06-20", "market_status": "green", "spy_close": 128, "spy_ma200": 120, "vix_close": 16},
+        {"signal_date": "2026-06-19", "market_status": "yellow", "spy_close": 118, "spy_ma200": 120, "vix_close": 22},
+    ]
+    assert list_response.json()["count"] == 3
+    assert trend_response.json()["window"] == 3
+    assert trend_response.json()["latest_status"] == "green"
+    assert trend_response.json()["judgement"] == "risk_on"
+    assert trend_response.json()["status_counts"] == {"green": 2, "yellow": 1, "red": 0}
 
 
-def test_market_signal_fetch_post_computes_and_persists(monkeypatch):
+def test_market_signal_fetch_post_computes_and_persists(monkeypatch, client):
     calls = []
 
     class Signal:
@@ -48,11 +52,11 @@ def test_market_signal_fetch_post_computes_and_persists(monkeypatch):
     monkeypatch.setattr(market_svc, "compute_market_signal_for_date", lambda config, target_date, run_id: Signal())
     monkeypatch.setattr(market_svc, "_persist_manual_market_signal", lambda signal: calls.append(signal.signal_date))
 
-    response = dispatch("POST", "/api/market/signals/fetch", {"date": "2026-06-18"})
+    response = client.post("/api/market/signals/fetch", json={"date": "2026-06-18"})
 
-    assert response.status == 200
-    assert response.payload["requested"] == {"from": "2026-06-18", "to": "2026-06-18"}
-    assert response.payload["rows"][0]["market_status"] == "green"
+    assert response.status_code == 200
+    assert response.json()["requested"] == {"from": "2026-06-18", "to": "2026-06-18"}
+    assert response.json()["rows"][0]["market_status"] == "green"
     assert calls == [date(2026, 6, 18)]
 
 
@@ -105,17 +109,17 @@ def test_watchlist_api_lists_adds_and_deletes_tickers(monkeypatch):
     assert deleted == ["NVDA"]
 
 
-def test_ticker_trend_endpoint_returns_rows(monkeypatch):
+def test_ticker_trend_endpoint_returns_rows(monkeypatch, client):
     rows = [{"ticker": "TSLA", "trend_state": "uptrend", "attention_level": "high", "trigger_reason": ["above_ma_stack"]}]
     monkeypatch.setattr(tickers_svc, "ticker_trend_rows", lambda: rows)
 
-    response = dispatch("GET", "/api/tickers/trends", None)
+    response = client.get("/api/tickers/trends")
 
-    assert response.status == 200
-    assert response.payload == {"rows": rows, "count": 1}
+    assert response.status_code == 200
+    assert response.json() == {"rows": rows, "count": 1}
 
 
-def test_ticker_trend_scan_post_scans_active_watchlist_and_persists(monkeypatch):
+def test_ticker_trend_scan_post_scans_active_watchlist_and_persists(monkeypatch, client):
     persisted = []
     rows = [{"ticker": "TSLA", "signal_date": "2026-06-21", "trend_state": "uptrend", "attention_level": "high", "trigger_reason": ["above_ma_stack"], "error": None}]
 
@@ -124,12 +128,12 @@ def test_ticker_trend_scan_post_scans_active_watchlist_and_persists(monkeypatch)
     monkeypatch.setattr(tickers_svc, "_persist_ticker_trend_snapshots", lambda snapshots: persisted.extend(snapshots))
     monkeypatch.setattr(tickers_svc, "uuid", type("FakeUuid", (), {"uuid4": staticmethod(lambda: type("U", (), {"hex": "abcdef123456"})())})())
 
-    response = dispatch("POST", "/api/tickers/trends/scan", {"date": "2026-06-21", "tickers": ["TSLA"]})
+    response = client.post("/api/tickers/trends/scan", json={"date": "2026-06-21", "tickers": ["TSLA"]})
 
-    assert response.status == 200
-    assert response.payload["requested"] == {"date": "2026-06-21", "tickers": ["TSLA"]}
-    assert response.payload["count"] == 1
-    assert response.payload["failures"] == []
+    assert response.status_code == 200
+    assert response.json()["requested"] == {"date": "2026-06-21", "tickers": ["TSLA"]}
+    assert response.json()["count"] == 1
+    assert response.json()["failures"] == []
     assert persisted == rows
 
 
@@ -147,17 +151,17 @@ def test_macro_analysis_uses_managed_watchlist_when_query_omits_watchlist(monkey
     assert len(captured) == 1
 
 
-def test_strategy_scores_endpoint_returns_rows(monkeypatch):
+def test_strategy_scores_endpoint_returns_rows(monkeypatch, client):
     rows = [{"ticker": "TSLA", "strategy": "trend_relative_strength", "score": 85, "evidence": ["uptrend"], "limits": ["not trading instruction"]}]
     monkeypatch.setattr(strategies_svc, "strategy_score_rows", lambda: rows)
 
-    response = dispatch("GET", "/api/strategies/scores", None)
+    response = client.get("/api/strategies/scores")
 
-    assert response.status == 200
-    assert response.payload == {"rows": rows, "count": 1}
+    assert response.status_code == 200
+    assert response.json() == {"rows": rows, "count": 1}
 
 
-def test_strategy_score_run_post_scores_latest_snapshots_and_persists(monkeypatch):
+def test_strategy_score_run_post_scores_latest_snapshots_and_persists(monkeypatch, client):
     persisted = []
     snapshots = [{
         "id": 12,
@@ -173,16 +177,16 @@ def test_strategy_score_run_post_scores_latest_snapshots_and_persists(monkeypatc
     monkeypatch.setattr(strategies_svc, "_persist_strategy_scores", lambda rows: persisted.extend(rows))
     monkeypatch.setattr(strategies_svc, "uuid", type("FakeUuid", (), {"uuid4": staticmethod(lambda: type("U", (), {"hex": "abcdef123456"})())})())
 
-    response = dispatch("POST", "/api/strategies/scores/run", {})
+    response = client.post("/api/strategies/scores/run", json={})
 
-    assert response.status == 200
-    assert response.payload["run_id"].startswith("manual-strategy-scores-")
-    assert response.payload["count"] == 1
-    assert response.payload["rows"][0]["ticker"] == "TSLA"
-    assert response.payload["rows"][0]["score"] >= 70
-    assert response.payload["rows"][0]["score_date"] == "2026-06-21"
-    assert response.payload["rows"][0]["source_snapshot_id"] == 12
-    assert persisted == response.payload["rows"]
+    assert response.status_code == 200
+    assert response.json()["run_id"].startswith("manual-strategy-scores-")
+    assert response.json()["count"] == 1
+    assert response.json()["rows"][0]["ticker"] == "TSLA"
+    assert response.json()["rows"][0]["score"] >= 70
+    assert response.json()["rows"][0]["score_date"] == "2026-06-21"
+    assert response.json()["rows"][0]["source_snapshot_id"] == 12
+    assert persisted == response.json()["rows"]
 
 
 def test_decision_evidence_run_endpoint_returns_pending(monkeypatch):

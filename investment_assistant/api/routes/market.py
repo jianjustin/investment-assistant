@@ -1,25 +1,30 @@
+from typing import Any
+
+from fastapi import APIRouter, Body, Depends
+
 import investment_assistant.services.market as _market
 import investment_assistant.services.status as _status
-from investment_assistant.api.http import ApiResponse
-from investment_assistant.api.router import register
+from investment_assistant.api.params import query_lists
+
+router = APIRouter()
 
 
-@register("GET", exact="/api/market/signals")
-def _signals(path, query, payload):
+@router.get("/api/market/signals")
+def signals(query: dict[str, list[str]] = Depends(query_lists)):
     rows = _market.market_signal_rows(query)
-    return ApiResponse({"rows": rows, "count": len(rows)})
+    return {"rows": rows, "count": len(rows)}
 
 
-@register("GET", exact="/api/market/signals/latest")
-def _latest(path, query, payload):
-    return ApiResponse(_status.database_status().get("latest_market_signal"))
+@router.get("/api/market/signals/latest")
+def latest():
+    return _status.database_status().get("latest_market_signal")
 
 
-@register("GET", exact="/api/market/signals/trend")
-def _trend(path, query, payload):
-    return ApiResponse(_market.market_signal_trend(query))
+@router.get("/api/market/signals/trend")
+def trend(query: dict[str, list[str]] = Depends(query_lists)):
+    return _market.market_signal_trend(query)
 
 
-@register("POST", exact="/api/market/signals/fetch")
-def _fetch(path, query, payload):
-    return ApiResponse(_market.fetch_market_signals(payload or {}))
+@router.post("/api/market/signals/fetch")
+def fetch(payload: dict[str, Any] = Body(default_factory=dict)):
+    return _market.fetch_market_signals(payload)
