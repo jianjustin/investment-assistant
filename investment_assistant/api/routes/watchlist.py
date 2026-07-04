@@ -1,20 +1,23 @@
+from typing import Any
+
+from fastapi import APIRouter, Body
+
 import investment_assistant.services.watchlist as _watchlist
-from investment_assistant.api.http import ApiResponse
-from investment_assistant.api.router import register
+
+router = APIRouter()
 
 
-@register("GET", exact="/api/watchlist")
-def _list(path, query, payload):
+@router.get("/api/watchlist")
+def list_items():
     rows = _watchlist.watchlist_rows()
-    return ApiResponse({"rows": rows, "count": len(rows)})
+    return {"rows": rows, "count": len(rows)}
 
 
-@register("POST", exact="/api/watchlist")
-def _add(path, query, payload):
-    return ApiResponse({"item": _watchlist.add_watchlist_item(payload or {})})
+@router.post("/api/watchlist")
+def add(payload: dict[str, Any] = Body(default_factory=dict)):
+    return {"item": _watchlist.add_watchlist_item(payload)}
 
 
-@register("DELETE", prefix="/api/watchlist/")
-def _delete(path, query, payload):
-    ticker = path.rsplit("/", 1)[-1]
-    return ApiResponse(_watchlist.delete_watchlist_item(ticker))
+@router.delete("/api/watchlist/{ticker}")
+def delete(ticker: str):
+    return _watchlist.delete_watchlist_item(ticker)

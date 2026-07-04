@@ -1,18 +1,23 @@
-from investment_assistant.api.http import ApiResponse, first, parse_optional_date
-from investment_assistant.api.router import register
+from datetime import date
+
+from fastapi import APIRouter, HTTPException
+
 from investment_assistant.services import research
 
-
-@register("GET", exact="/api/research/event-study/kinds")
-def _kinds(path, query, payload):
-    return ApiResponse(research.available_kinds())
+router = APIRouter()
 
 
-@register("GET", exact="/api/research/event-study")
-def _event_study(path, query, payload):
-    kind = first(query, "kind")
+@router.get("/api/research/event-study/kinds")
+def kinds():
+    return research.available_kinds()
+
+
+@router.get("/api/research/event-study")
+def event_study(kind: str | None = None, since: str | None = None, asof: str | None = None):
     if not kind:
-        return ApiResponse({"error": "kind is required"}, status=400)
-    since = parse_optional_date(first(query, "since"))
-    asof = parse_optional_date(first(query, "asof"))
-    return ApiResponse(research.event_study_view(kind, since=since, asof=asof))
+        raise HTTPException(status_code=400, detail="kind is required")
+    return research.event_study_view(
+        kind,
+        since=date.fromisoformat(since) if since else None,
+        asof=date.fromisoformat(asof) if asof else None,
+    )

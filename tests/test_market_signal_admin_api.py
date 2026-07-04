@@ -5,7 +5,6 @@ import investment_assistant.services.tickers as tickers_svc
 import investment_assistant.services.strategies as strategies_svc
 import investment_assistant.services.hermes as hermes_svc
 import investment_assistant.services.watchlist as watchlist_svc
-from investment_assistant.api.router import dispatch  # still needed for watchlist/dispatch tests
 
 
 def test_market_signal_list_and_trend_endpoints(monkeypatch, client):
@@ -86,7 +85,7 @@ def test_hermes_market_signal_interpretation_endpoint_uses_recent_window(monkeyp
     assert response.json()["actions"]
 
 
-def test_watchlist_api_lists_adds_and_deletes_tickers(monkeypatch):
+def test_watchlist_api_lists_adds_and_deletes_tickers(monkeypatch, client):
     rows = [{"ticker": "TSLA", "status": "active", "thesis": "EV and autonomy", "created_at": "2026-06-21", "updated_at": "2026-06-21"}]
     added = []
     deleted = []
@@ -95,17 +94,17 @@ def test_watchlist_api_lists_adds_and_deletes_tickers(monkeypatch):
     monkeypatch.setattr(watchlist_svc, "add_watchlist_item", lambda payload: added.append(payload) or {"ticker": "NVDA", "status": "active", "thesis": "AI compute"})
     monkeypatch.setattr(watchlist_svc, "delete_watchlist_item", lambda ticker: deleted.append(ticker) or {"ticker": ticker, "deleted": True})
 
-    list_response = dispatch("GET", "/api/watchlist", None)
-    add_response = dispatch("POST", "/api/watchlist", {"ticker": " nvda ", "status": "active", "thesis": "AI compute"})
-    delete_response = dispatch("DELETE", "/api/watchlist/NVDA", None)
+    list_response = client.get("/api/watchlist")
+    add_response = client.post("/api/watchlist", json={"ticker": " nvda ", "status": "active", "thesis": "AI compute"})
+    delete_response = client.delete("/api/watchlist/NVDA")
 
-    assert list_response.status == 200
-    assert list_response.payload == {"rows": rows, "count": 1}
-    assert add_response.status == 200
-    assert add_response.payload["item"]["ticker"] == "NVDA"
+    assert list_response.status_code == 200
+    assert list_response.json() == {"rows": rows, "count": 1}
+    assert add_response.status_code == 200
+    assert add_response.json()["item"]["ticker"] == "NVDA"
     assert added == [{"ticker": " nvda ", "status": "active", "thesis": "AI compute"}]
-    assert delete_response.status == 200
-    assert delete_response.payload == {"ticker": "NVDA", "deleted": True}
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"ticker": "NVDA", "deleted": True}
     assert deleted == ["NVDA"]
 
 
