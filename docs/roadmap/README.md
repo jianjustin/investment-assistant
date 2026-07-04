@@ -18,7 +18,8 @@
 | 文档 | 内容 | 给谁看 |
 |------|------|--------|
 | [00-principles-and-direction.md](00-principles-and-direction.md) | 方向判断、量化陷阱（过拟合/小样本/幸存者偏差）、护城河论证、系统定位 | **先读这篇**，它解释了后面所有优先级排序的依据 |
-| [01-phase0-data-quality-and-event-study.md](01-phase0-data-quality-and-event-study.md) | 第 0 步：复权/数据质量地基 + 事件研究框架（用最小成本拿到「信号有没有边际」的诚实答案） | 实施起点 |
+| [01-phase0-data-quality-and-event-study.md](01-phase0-data-quality-and-event-study.md) | 第 0 步：复权/数据质量地基 + 事件研究框架（用最小成本拿到「信号有没有边际」的诚实答案） | ✅ 后端已完成（2026-07-03），决策门待走 |
+| [07-phase-r-fastapi-migration.md](07-phase-r-fastapi-migration.md) | 第 R 步：API 层迁移 FastAPI（Phase 2 表单密集，先迁地基后开发）+ Phase 0 的 DoD 欠账收尾 | **当前阶段** |
 | [02-phase1-data-foundation.md](02-phase1-data-foundation.md) | 第 1 步：OHLCV 落库 + 市场广度指标（替代大部分宏观）+ 财报结构化（精简版 XBRL） | |
 | [03-phase2-plan-execution-loop.md](03-phase2-plan-execution-loop.md) | 第 2 步：`execution_plans` + `trade_journal` 共享主键 → 计划遵守度 + 实盘期望值（**你三个目标真正的连接点**） | 系统价值核心 |
 | [04-phase3-review-and-regime.md](04-phase3-review-and-regime.md) | 第 3 步：跨笔行为模式识别（DeepSeek）+ 三方业绩对比 + 区制条件化 + LLM 校准追踪 | 复盘火力 |
@@ -46,8 +47,11 @@
 ## 3. 阶段总览与依赖
 
 ```
-Phase 0  数据质量地基 + 事件研究          ← 最先做，最小成本验证「信号有没有用」
+Phase 0  数据质量地基 + 事件研究          ✅ 后端完成 2026-07-03（决策门待走）
    │      (复权正确性 / point-in-time 取价 / 事件收益分布)
+   ▼
+Phase R  API 层迁移 FastAPI               ← 当前阶段：重构地基 + Phase 0 前端/文档欠账收尾
+   │      (36 路由换壳，services/db/调度器不动，契约测试钉住)
    ▼
 Phase 1  数据地基（精简）                  ← 只补被事件研究证明有用的数据
    │      (OHLCV 落库 / 市场广度 / EPS surprise 结构化)
@@ -68,17 +72,17 @@ Phase 3  复盘引擎 + 区制条件化            ← 复盘火力 + 让结论�
 
 ## 4. 迁移编号约定
 
-现有迁移到 `008_notify_settings`。本 roadmap 涉及的新表从 **009** 起，按阶段顺延：
+现有迁移到 `009_event_studies`（事件研究缓存已在 Phase 0 落地，占用了原规划给 ohlcv 的 009）。后续新表顺延：
 
-| 迁移 | 表 | 阶段 |
-|------|----|----|
-| 009 | `ohlcv_bars` | Phase 1 |
-| 010 | `market_breadth` | Phase 1 |
-| 011 | `fundamentals` | Phase 1 |
-| 012 | `event_studies`（事件研究结果缓存，可选） | Phase 0/1 |
-| 013 | `execution_plans` | Phase 2 |
-| 014 | `trade_journal` | Phase 2 |
-| 015 | `llm_predictions`（校准追踪） | Phase 3 |
+| 迁移 | 表 | 阶段 | 状态 |
+|------|----|----|----|
+| 009 | `event_studies`（事件研究结果缓存） | Phase 0 | ✅ 已建 |
+| 010 | `ohlcv_bars` | Phase 1 | 规划 |
+| 011 | `market_breadth` | Phase 1 | 规划 |
+| 012 | `fundamentals` | Phase 1 | 规划 |
+| 013 | `execution_plans` | Phase 2 | 规划 |
+| 014 | `trade_journal` | Phase 2 | 规划 |
+| 015 | `llm_predictions`（校准追踪） | Phase 3 | 规划 |
 
 > 实际实施时以落地顺序为准，本表是规划参考。每个迁移遵循现有约定：`CREATE TABLE IF NOT EXISTS` + 幂等。
 
@@ -94,10 +98,12 @@ Phase 3  复盘引擎 + 区制条件化            ← 复盘火力 + 让结论�
 
 ---
 
-## 6. 待你确认的输入（会影响数据模型细节）
+## 6. 已确认的输入（2026-07-04）
 
-这些信息能让 Phase 2/3 的数据模型更贴合你的实际，建议在进入 Phase 2 前补充到 [03](03-phase2-plan-execution-loop.md) 的「待定」区：
+三个输入已确认并写入 [03「已确认的输入」](03-phase2-plan-execution-loop.md#已确认的输入2026-07-04原待你确认)：
 
-1. **交易记录现状**：你现在怎么记交易？（Obsidian 笔记 / 券商 CSV / 纯脑子）——决定 `trade_journal` 的录入方式（表单 / 导入 / 解析）。
-2. **标的池规模与风格**：watchlist 当前默认 `CRDO/MU/RKLB/NVDA`（半导体+成长/趋势）。你实际池子多大、主要风格是波段 / 趋势 / 事件驱动？——决定事件研究的样本聚合方式与区制定义。
-3. **复盘关注点**：你最想被系统「揪出来」的坏习惯是什么？（追高 / 过早止盈 / 死扛亏损 / 高波动时过度交易）——决定 Phase 3 行为模式检测的指标。
+1. **交易记录现状：基本没正式记录** → `trade_journal` 走表单从零录入；CSV 导入 / Obsidian 解析按 YAGNI 删除。
+2. **标的池：小池趋势波段（≤20 只）**，半导体/成长为主 → 事件研究整池聚合，区制用大盘三态。
+3. **复盘关注点：四个坏习惯全要**（追高进场 / 过早止盈 / 死扛亏损 / 计划外交易）→ 各对应一个可计算指标，见 03 的映射表。
+
+另：交付硬性标准（手动入口 + 验证入口 + 功能说明 + 如何验证示例）已升级为 [00 §6 DoD](00-principles-and-direction.md#6-交付硬性标准dod)，横切贯穿所有阶段。
