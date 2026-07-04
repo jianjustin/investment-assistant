@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -11,17 +10,6 @@ class StaticResponse:
     status: int
     content_type: str
     body: bytes
-
-
-@dataclass(frozen=True)
-class ApiResponse:
-    payload: Any
-    status: int = 200
-
-
-def json_body(payload: Any, code: int = 200) -> tuple[bytes, str]:
-    body = json.dumps(payload, ensure_ascii=False, default=str, indent=2).encode("utf-8")
-    return body, "application/json; charset=utf-8"
 
 
 def first(query: dict[str, list[str]], key: str) -> str | None:
