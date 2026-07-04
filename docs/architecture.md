@@ -34,13 +34,16 @@
 
 ## 后端分层
 
+HTTP 传输层基于 **FastAPI + uvicorn**（Phase R 迁移完成），入口 `python -m investment_assistant.api.server`；
+`api/app.py` 的 `create_app()` 组装所有路由，OpenAPI 文档自动生成于 `/docs`。
+
 ```
 investment_assistant/
-  api/                       # HTTP 传输层
+  api/                       # HTTP 传输层（FastAPI + uvicorn）
+    app.py                   # create_app()：组装路由、鉴权 middleware、异常处理器
     auth.py                  # 鉴权（authorize / resolve_bind_host），fail-closed 公网绑定
     http.py                  # ApiResponse / StaticResponse + 解析助手
-    router.py                # 路由注册表 register(method, exact= | prefix=) + dispatch()
-    server.py                # 薄 Handler(do_GET/POST/DELETE/PATCH) + main()
+    server.py                # uvicorn 入口：main() 调用 uvicorn.run(create_app)
     static_files.py          # 服务 web/dist 静态资源 + /status HTML
     routes/
       status.py              # /api/status · /api/health · /api/services · /api/filings · /api/operations
@@ -52,8 +55,9 @@ investment_assistant/
       jobs.py                # /api/jobs/*
       settings.py            # /api/settings/*
       runs.py                # /api/runs/{id}（兼容旧轮询接口）
+      research.py            # /api/research/event-study/kinds · /api/research/event-study
   services/                  # 业务逻辑层
-    market.py  tickers.py  strategies.py  hermes.py  watchlist.py
+    market.py  tickers.py  strategies.py  hermes.py  watchlist.py  research.py
   db.py                      # psycopg_pool 连接池 + 所有 DB 函数
   tasks/                     # 定时任务入口
     _harness.py              # 通用任务 harness：写 job_reports，推 Discord
@@ -62,6 +66,10 @@ investment_assistant/
     metrics.py               # 08:00 指标采集任务
     filings.py               # 09:00 SEC 财报下载任务
     nightly_scores.py        # 18:00 策略评分任务
+    event_study.py           # 每日事件研究任务（结果入 event_studies 缓存表）
+  research/                  # 事件研究核心计算
+    event_study.py           # run_event_study()：超额收益统计 + HorizonStat
+    event_sources.py         # collect_events()：各 kind 的事件采集
   filings/
     sec_downloader.py        # SecEdgarDownloader：CIK 解析 + 8-K/10-Q 下载
 ```
@@ -105,6 +113,8 @@ scheduled_jobs 表（迁移 007）
 | 数据 | 个股扫描 | POST | `/api/tickers/trends/scan` |
 | 策略 | 评分总览 | GET | `/api/strategies/scores` |
 | 策略 | 触发评分 | POST | `/api/strategies/scores/run` |
+| 策略 | 事件研究 kinds | GET | `/api/research/event-study/kinds` |
+| 策略 | 事件研究结果 | GET | `/api/research/event-study?kind=X` |
 | 交易 | 宏观分析 | GET | `/api/hermes/macro-analysis` |
 | 交易 | 市场解读 | GET | `/api/hermes/market-signals/interpretation` |
 | 交易 | 触发宏观 | POST | `/api/hermes/macro-analysis/run` |

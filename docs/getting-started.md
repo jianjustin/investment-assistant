@@ -71,11 +71,13 @@ done
 # 构建前端（产物落到 web/dist，由 API server 提供静态资源）
 cd web && npm install && npm run build && cd ..
 
-# 启动 API server（含前端面板与 SSE）
+# 启动 API server（FastAPI + uvicorn，默认 8787 端口）
 python -m investment_assistant.api.server
 ```
 
 面板为五层信息架构：**工具 / 数据 / 策略 / 交易 / 设置**，默认落地「工具」层。
+
+浏览 `http://localhost:8787/docs` 可查看全部 API 的 OpenAPI 文档（每个端点的功能说明、参数与响应结构）。
 
 ---
 

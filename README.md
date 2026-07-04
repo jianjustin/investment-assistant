@@ -76,7 +76,7 @@ pip install -r requirements.txt
 pip install pytest  # 仅在跑测试时需要
 ```
 
-依赖：`requests`、`python-dotenv`、`yfinance`、`lxml`，以及 yfinance 自带的 `pandas` / `numpy`。
+依赖：`fastapi`、`uvicorn`、`requests`、`python-dotenv`、`yfinance`、`lxml`，以及 yfinance 自带的 `pandas` / `numpy`。
 
 ### 2. 配置 `.env`
 
@@ -119,11 +119,14 @@ RKLB
 ## 手动运行
 
 ```bash
+python -m investment_assistant.api.server             # API server（FastAPI + uvicorn，默认 8787 端口）
 python -m investment_assistant.tasks.metrics          # 08:00 指标采集
 python -m investment_assistant.tasks.filings          # 09:00 SEC 财报下载
 python -m investment_assistant.tasks.nightly_scores   # 18:00 策略评分
 python -m investment_assistant.tasks.scheduler        # 常驻调度守护进程
 ```
+
+API server 启动后可访问 `http://localhost:8787/docs` 查看全部端点的 OpenAPI 文档。
 
 每个任务执行结果写入 `job_reports` 表，并按通知配置推送 Discord。
 
