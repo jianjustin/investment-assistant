@@ -2,7 +2,6 @@ from datetime import date
 
 import investment_assistant.services.market as market_svc
 import investment_assistant.services.hermes as hermes_svc
-from investment_assistant.api.router import dispatch
 from investment_assistant.hermes import agents
 from investment_assistant.hermes.macro_analyst import analyze_macro_environment
 
@@ -83,30 +82,30 @@ def test_macro_analyst_reports_llm_fallback_when_model_is_unavailable():
     assert result["llm_interpretation"] is None
 
 
-def test_macro_analyst_api_replaces_market_signal_interpretation(monkeypatch):
+def test_macro_analyst_api_replaces_market_signal_interpretation(monkeypatch, client):
     calls = []
     monkeypatch.setattr(market_svc, "market_signal_rows", lambda query: calls.append(query) or _rows())
 
-    response = dispatch("GET", "/api/hermes/macro-analysis?window=30&watchlist=TSLA,NVDA", None)
-    legacy = dispatch("GET", "/api/hermes/market-signals/interpretation?window=30", None)
+    response = client.get("/api/hermes/macro-analysis?window=30&watchlist=TSLA,NVDA")
+    legacy = client.get("/api/hermes/market-signals/interpretation?window=30")
 
-    assert response.status == 200
+    assert response.status_code == 200
     assert calls[0] == {"limit": ["30"]}
-    assert response.payload["source"] == "hermes.macro_analyst"
-    assert response.payload["macro_snapshot"]["watchlist"] == ["TSLA", "NVDA"]
-    assert legacy.status == 200
-    assert legacy.payload["source"] == "hermes.macro_analyst"
+    assert response.json()["source"] == "hermes.macro_analyst"
+    assert response.json()["macro_snapshot"]["watchlist"] == ["TSLA", "NVDA"]
+    assert legacy.status_code == 200
+    assert legacy.json()["source"] == "hermes.macro_analyst"
 
 
-def test_macro_analyst_llm_run_endpoint_returns_pending(monkeypatch):
-    response = dispatch("POST", 
+def test_macro_analyst_llm_run_endpoint_returns_pending(monkeypatch, client):
+    response = client.post(
         "/api/hermes/macro-analysis/run",
-        {"window": 30, "watchlist": ["TSLA", "NVDA"], "model": "deepseek-v4-pro"},
+        json={"window": 30, "watchlist": ["TSLA", "NVDA"], "model": "deepseek-v4-pro"},
     )
 
-    assert response.status == 200
-    assert response.payload["status"] == "pending"
-    assert response.payload["run_id"].startswith("macro-llm-")
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    assert response.json()["run_id"].startswith("macro-llm-")
 
 
 def test_macro_analyst_llm_job_invokes_model_and_appends_audit(monkeypatch):

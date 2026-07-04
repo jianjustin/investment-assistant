@@ -1,19 +1,18 @@
-from investment_assistant.api.router import dispatch
 from investment_assistant.hermes import agents
 
 
-def test_hermes_overview_exposes_capabilities_agents_and_ideas(monkeypatch, tmp_path):
+def test_hermes_overview_exposes_capabilities_agents_and_ideas(monkeypatch, tmp_path, client):
     monkeypatch.setattr(agents, "AGENT_REGISTRY_PATH", tmp_path / "agents.json")
-    response = dispatch("GET", "/api/hermes", None)
+    response = client.get("/api/hermes")
 
-    assert response.status == 200
-    assert response.payload["capabilities"]
-    assert response.payload["agents"]
-    assert response.payload["ideas"]
-    assert response.payload["capabilities"][0]["id"] == "macro_analyst"
+    assert response.status_code == 200
+    assert response.json()["capabilities"]
+    assert response.json()["agents"]
+    assert response.json()["ideas"]
+    assert response.json()["capabilities"][0]["id"] == "macro_analyst"
 
 
-def test_hermes_agent_post_creates_custom_agent(monkeypatch, tmp_path):
+def test_hermes_agent_post_creates_custom_agent(monkeypatch, tmp_path, client):
     monkeypatch.setattr(agents, "AGENT_REGISTRY_PATH", tmp_path / "agents.json")
     payload = {
         "id": "risk-reviewer",
@@ -26,19 +25,19 @@ def test_hermes_agent_post_creates_custom_agent(monkeypatch, tmp_path):
         "enabled": True,
     }
 
-    response = dispatch("POST", "/api/hermes/agents", payload)
-    list_response = dispatch("GET", "/api/hermes/agents", None)
+    response = client.post("/api/hermes/agents", json=payload)
+    list_response = client.get("/api/hermes/agents")
 
-    assert response.status == 200
-    assert response.payload["agent"]["id"] == "risk-reviewer"
-    assert response.payload["agent"]["custom"] is True
-    assert any(agent["id"] == "risk-reviewer" for agent in list_response.payload["agents"])
+    assert response.status_code == 200
+    assert response.json()["agent"]["id"] == "risk-reviewer"
+    assert response.json()["agent"]["custom"] is True
+    assert any(agent["id"] == "risk-reviewer" for agent in list_response.json()["agents"])
 
 
-def test_hermes_agent_post_rejects_invalid_id(monkeypatch, tmp_path):
+def test_hermes_agent_post_rejects_invalid_id(monkeypatch, tmp_path, client):
     monkeypatch.setattr(agents, "AGENT_REGISTRY_PATH", tmp_path / "agents.json")
 
-    response = dispatch("POST", "/api/hermes/agents", {"id": "bad id", "name": "bad"})
+    response = client.post("/api/hermes/agents", json={"id": "bad id", "name": "bad"})
 
-    assert response.status == 400
-    assert "agent id" in response.payload["error"]
+    assert response.status_code == 400
+    assert "agent id" in response.json()["error"]

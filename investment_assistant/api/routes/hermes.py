@@ -1,35 +1,40 @@
+from typing import Any
+
+from fastapi import APIRouter, Body, Depends
+
 import investment_assistant.services.hermes as _hermes
-from investment_assistant.api.http import ApiResponse
-from investment_assistant.api.router import register
+from investment_assistant.api.params import query_lists
 from investment_assistant.hermes import agents as hermes_agents
 
-
-@register("GET", exact="/api/hermes")
-def _overview(path, query, payload):
-    return ApiResponse(hermes_agents.hermes_overview())
+router = APIRouter()
 
 
-@register("GET", exact="/api/hermes/agents")
-def _agents_list(path, query, payload):
-    return ApiResponse({"agents": hermes_agents.list_agents()})
+@router.get("/api/hermes")
+def overview():
+    return hermes_agents.hermes_overview()
 
 
-@register("GET", exact="/api/hermes/macro-analysis")
-@register("GET", exact="/api/hermes/market-signals/interpretation")
-def _macro_analysis(path, query, payload):
-    return ApiResponse(_hermes.hermes_macro_analysis(query))
+@router.get("/api/hermes/agents")
+def agents_list():
+    return {"agents": hermes_agents.list_agents()}
 
 
-@register("POST", exact="/api/hermes/macro-analysis/run")
-def _macro_run(path, query, payload):
-    return ApiResponse(_hermes.submit_macro_llm(payload or {}))
+@router.get("/api/hermes/macro-analysis")
+@router.get("/api/hermes/market-signals/interpretation")
+def macro_analysis(query: dict[str, list[str]] = Depends(query_lists)):
+    return _hermes.hermes_macro_analysis(query)
 
 
-@register("POST", exact="/api/hermes/decision-evidence/run")
-def _decision_run(path, query, payload):
-    return ApiResponse(_hermes.submit_decision_evidence(payload or {}))
+@router.post("/api/hermes/macro-analysis/run")
+def macro_run(payload: dict[str, Any] = Body(default_factory=dict)):
+    return _hermes.submit_macro_llm(payload)
 
 
-@register("POST", exact="/api/hermes/agents")
-def _agents_save(path, query, payload):
-    return ApiResponse({"agent": hermes_agents.save_agent(payload or {})})
+@router.post("/api/hermes/decision-evidence/run")
+def decision_run(payload: dict[str, Any] = Body(default_factory=dict)):
+    return _hermes.submit_decision_evidence(payload)
+
+
+@router.post("/api/hermes/agents")
+def agents_save(payload: dict[str, Any] = Body(default_factory=dict)):
+    return {"agent": hermes_agents.save_agent(payload)}

@@ -5,7 +5,7 @@ import investment_assistant.services.tickers as tickers_svc
 import investment_assistant.services.strategies as strategies_svc
 import investment_assistant.services.hermes as hermes_svc
 import investment_assistant.services.watchlist as watchlist_svc
-from investment_assistant.api.router import dispatch
+from investment_assistant.api.router import dispatch  # still needed for watchlist/dispatch tests
 
 
 def test_market_signal_list_and_trend_endpoints(monkeypatch, client):
@@ -60,7 +60,7 @@ def test_market_signal_fetch_post_computes_and_persists(monkeypatch, client):
     assert calls == [date(2026, 6, 18)]
 
 
-def test_hermes_market_signal_interpretation_endpoint_uses_recent_window(monkeypatch):
+def test_hermes_market_signal_interpretation_endpoint_uses_recent_window(monkeypatch, client):
     rows = [
         {"signal_date": date(2026, 6, 21), "market_status": "green", "spy_close": 130, "spy_ma200": 120, "vix_close": 15},
         {"signal_date": date(2026, 6, 20), "market_status": "yellow", "spy_close": 128, "spy_ma200": 120, "vix_close": 19},
@@ -75,15 +75,15 @@ def test_hermes_market_signal_interpretation_endpoint_uses_recent_window(monkeyp
     # hermes_macro_analysis does a lazy import of market_signal_rows from services.market
     monkeypatch.setattr(market_svc, "market_signal_rows", fake_rows)
 
-    response = dispatch("GET", "/api/hermes/market-signals/interpretation?window=30", None)
+    response = client.get("/api/hermes/market-signals/interpretation?window=30")
 
-    assert response.status == 200
+    assert response.status_code == 200
     assert calls == [{"limit": ["30"]}]
-    assert response.payload["window"] == 30
-    assert response.payload["sample_size"] == 3
-    assert response.payload["source"] == "hermes.macro_analyst"
-    assert response.payload["sections"][0]["title"]
-    assert response.payload["actions"]
+    assert response.json()["window"] == 30
+    assert response.json()["sample_size"] == 3
+    assert response.json()["source"] == "hermes.macro_analyst"
+    assert response.json()["sections"][0]["title"]
+    assert response.json()["actions"]
 
 
 def test_watchlist_api_lists_adds_and_deletes_tickers(monkeypatch):
@@ -137,17 +137,17 @@ def test_ticker_trend_scan_post_scans_active_watchlist_and_persists(monkeypatch,
     assert persisted == rows
 
 
-def test_macro_analysis_uses_managed_watchlist_when_query_omits_watchlist(monkeypatch):
+def test_macro_analysis_uses_managed_watchlist_when_query_omits_watchlist(monkeypatch, client):
     captured = []
     rows = [{"signal_date": date(2026, 6, 21), "market_status": "green", "spy_close": 130, "spy_ma200": 120, "spy_above_200ma": True, "vix_close": 15}]
 
     monkeypatch.setattr(market_svc, "market_signal_rows", lambda query: rows)
     monkeypatch.setattr(hermes_svc, "analyze_macro_environment", lambda rows, *, window, watchlist, **kwargs: captured.append(watchlist) or {"watchlist": watchlist})
 
-    response = dispatch("GET", "/api/hermes/macro-analysis?window=30", None)
+    response = client.get("/api/hermes/macro-analysis?window=30")
 
-    assert response.status == 200
-    assert response.payload == {"watchlist": ["TSLA", "NVDA"]} or True  # watchlist comes from config
+    assert response.status_code == 200
+    assert response.json() == {"watchlist": ["TSLA", "NVDA"]} or True  # watchlist comes from config
     assert len(captured) == 1
 
 
@@ -189,12 +189,12 @@ def test_strategy_score_run_post_scores_latest_snapshots_and_persists(monkeypatc
     assert persisted == response.json()["rows"]
 
 
-def test_decision_evidence_run_endpoint_returns_pending(monkeypatch):
-    response = dispatch("POST", "/api/hermes/decision-evidence/run", {"use_llm": False, "model": "deepseek-v4-pro"})
+def test_decision_evidence_run_endpoint_returns_pending(monkeypatch, client):
+    response = client.post("/api/hermes/decision-evidence/run", json={"use_llm": False, "model": "deepseek-v4-pro"})
 
-    assert response.status == 200
-    assert response.payload["status"] == "pending"
-    assert response.payload["run_id"].startswith("decision-evidence-")
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    assert response.json()["run_id"].startswith("decision-evidence-")
 
 
 def test_decision_evidence_job_invokes_builder_and_appends_audit(monkeypatch):
