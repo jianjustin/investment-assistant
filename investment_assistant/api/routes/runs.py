@@ -1,12 +1,13 @@
-from investment_assistant.api.http import ApiResponse
-from investment_assistant.api.router import register
+from fastapi import APIRouter, HTTPException
+
 from investment_assistant.tasks import runner
 
+router = APIRouter()
 
-@register("GET", prefix="/api/runs/")
-def _get_run(path, query, payload):
-    run_id = path.removeprefix("/api/runs/")
+
+@router.get("/api/runs/{run_id}")
+def get_run(run_id: str):
     rec = runner.get(run_id)
     if rec is None:
-        return ApiResponse({"error": "unknown run"}, status=404)
-    return ApiResponse(rec)
+        raise HTTPException(status_code=404, detail="unknown run")
+    return rec

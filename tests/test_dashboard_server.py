@@ -2,7 +2,6 @@ from pathlib import Path
 
 import investment_assistant.api.static_files as static_files_mod
 import investment_assistant.services.status as status_svc
-from investment_assistant.api.router import dispatch
 
 
 def test_static_route_serves_index_html(tmp_path, monkeypatch, client):

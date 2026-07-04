@@ -1,44 +1,36 @@
-from investment_assistant.api.http import ApiResponse, first, parse_int
-from investment_assistant.api.router import register
+from typing import Any
+
+from fastapi import APIRouter, Body, HTTPException
+
+from investment_assistant.api.http import parse_int
 from investment_assistant.services import jobs
 
-
-@register("GET", exact="/api/jobs/scheduled")
-def _scheduled(path, query, payload):
-    return ApiResponse(jobs.scheduled_jobs())
+router = APIRouter()
 
 
-@register("GET", exact="/api/jobs/reports")
-def _reports(path, query, payload):
-    task = first(query, "task")
-    limit = parse_int(first(query, "limit"), default=50, minimum=1, maximum=200)
-    return ApiResponse(jobs.job_reports(task=task, limit=limit))
+@router.get("/api/jobs/scheduled")
+def scheduled():
+    return jobs.scheduled_jobs()
 
 
-@register("GET", exact="/api/jobs/metrics")
-def _metrics(path, query, payload):
-    task = first(query, "task")
-    days = parse_int(first(query, "window"), default=7, minimum=1, maximum=90)
-    return ApiResponse(jobs.job_metrics(task=task, days=days))
+@router.get("/api/jobs/reports")
+def reports(task: str | None = None, limit: str | None = None):
+    return jobs.job_reports(task=task, limit=parse_int(limit, default=50, minimum=1, maximum=200))
 
 
-@register("POST", prefix="/api/jobs/")
-def _run(path, query, payload):
-    # only handles /api/jobs/{name}/run
-    suffix = path.removeprefix("/api/jobs/")
-    if not suffix.endswith("/run"):
-        return ApiResponse({"error": "not found"}, status=404)
-    name = suffix.removesuffix("/run")
+@router.get("/api/jobs/metrics")
+def metrics(task: str | None = None, window: str | None = None):
+    return jobs.job_metrics(task=task, days=parse_int(window, default=7, minimum=1, maximum=90))
+
+
+@router.post("/api/jobs/{name}/run")
+def run_job(name: str, payload: dict[str, Any] = Body(default_factory=dict)):
     try:
-        return ApiResponse(jobs.trigger_job(name))
+        return jobs.trigger_job(name)
     except ValueError as exc:
-        return ApiResponse({"error": str(exc)}, status=404)
+        raise HTTPException(status_code=404, detail=str(exc))  # 旧契约：未知任务 404
 
 
-@register("PATCH", prefix="/api/jobs/scheduled/")
-def _patch(path, query, payload):
-    name = path.removeprefix("/api/jobs/scheduled/")
-    body = payload or {}
-    return ApiResponse(jobs.patch_scheduled_job(
-        name, enabled=body.get("enabled"), time_local=body.get("time_local")
-    ))
+@router.patch("/api/jobs/scheduled/{name}")
+def patch_job(name: str, payload: dict[str, Any] = Body(default_factory=dict)):
+    return jobs.patch_scheduled_job(name, enabled=payload.get("enabled"), time_local=payload.get("time_local"))

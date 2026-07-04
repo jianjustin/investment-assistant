@@ -74,3 +74,17 @@ def test_event_stream_frames_events_and_survives_keepalive(monkeypatch):
 
     gen.close()
     assert unsubscribed == [q]
+
+
+def test_get_unknown_run_returns_404(client):
+    resp = client.get("/api/runs/nope-123")
+    assert resp.status_code == 404
+    assert resp.json() == {"error": "unknown run"}
+
+
+def test_jobs_run_requires_run_suffix_contract(client, monkeypatch):
+    from investment_assistant.services import jobs as jobs_svc
+    monkeypatch.setattr(jobs_svc, "trigger_job", lambda name: {"run_id": f"{name}-1", "status": "pending"})
+    resp = client.post("/api/jobs/metrics/run", json={})
+    assert resp.status_code == 200
+    assert resp.json()["run_id"] == "metrics-1"
