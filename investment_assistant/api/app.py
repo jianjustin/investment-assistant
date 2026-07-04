@@ -62,4 +62,40 @@ def create_app() -> FastAPI:
     for router in ALL_ROUTERS:
         app.include_router(router)
 
+    from fastapi.responses import Response, StreamingResponse
+
+    @app.get("/api/events")
+    def _events():
+        import queue as _queue
+
+        from investment_assistant.tasks import runner
+
+        q = runner.subscribe()
+
+        def stream():
+            try:
+                while True:
+                    try:
+                        event = q.get(timeout=15)
+                    except _queue.Empty:
+                        yield ": keep-alive\n\n"  # 心跳；之后生成器终止，客户端按 SSE retry 重连
+                        return
+                    yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+            finally:
+                runner.unsubscribe(q)
+
+        return StreamingResponse(stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache"})
+
+    @app.get("/{full_path:path}")
+    def _static(full_path: str):
+        from fastapi import HTTPException
+
+        from investment_assistant.api import static_files
+
+        resp = static_files.static_response_for_path("/" + full_path)
+        if resp is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return Response(content=resp.body, media_type=resp.content_type, status_code=resp.status)
+
     return app

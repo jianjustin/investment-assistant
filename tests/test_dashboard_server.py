@@ -5,18 +5,17 @@ import investment_assistant.services.status as status_svc
 from investment_assistant.api.router import dispatch
 
 
-def test_static_response_serves_index_html(tmp_path, monkeypatch):
+def test_static_route_serves_index_html(tmp_path, monkeypatch, client):
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "index.html").write_text("<html><body>Hermes Dashboard</body></html>", encoding="utf-8")
     monkeypatch.setattr(static_files_mod, "STATIC_DIR", dist)
 
-    response = static_files_mod.static_response_for_path("/")
+    resp = client.get("/")
 
-    assert response is not None
-    assert response.status == 200
-    assert response.content_type.startswith("text/html")
-    assert b"Hermes Dashboard" in response.body
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    assert b"Hermes Dashboard" in resp.content
 
 
 def test_status_payload_includes_system(monkeypatch):
