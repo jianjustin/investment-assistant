@@ -23,6 +23,7 @@ def test_status_get_route_resolves(client):
 
 def test_operations_registry_shape(client):
     resp = client.get("/api/operations")
+    assert resp.status_code == 200
     ids = {op["id"] for op in resp.json()["operations"]}
     assert ids == {"fetch_market_signals", "sync_filings", "health_check"}
 

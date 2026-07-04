@@ -44,5 +44,6 @@ def test_api_response_for_path_returns_feature_payloads(monkeypatch, client):
     assert operations_payload["operations"][0]["id"] == "fetch_market_signals"
     assert operations_payload["operations"][0]["enabled"] is True
     assert sorted(client.get("/api/raw/status").json()) == ["database", "filings", "system"]
-    assert client.get("/api/missing").status_code == 404
-    assert client.get("/api/missing").json() == {"error": "not found"}
+    missing_resp = client.get("/api/missing")
+    assert missing_resp.status_code == 404
+    assert missing_resp.json() == {"error": "not found"}
