@@ -5,7 +5,7 @@ import investment_assistant.services.tickers as tickers_svc
 import investment_assistant.services.strategies as strategies_svc
 import investment_assistant.services.hermes as hermes_svc
 import investment_assistant.services.watchlist as watchlist_svc
-from investment_assistant.dashboard import server
+from investment_assistant.api.router import dispatch
 
 
 def test_market_signal_list_and_trend_endpoints(monkeypatch):
@@ -17,8 +17,8 @@ def test_market_signal_list_and_trend_endpoints(monkeypatch):
     # Patch at the service level so both list and trend endpoints see the same fake
     monkeypatch.setattr(market_svc, "market_signal_rows", lambda query: rows)
 
-    list_response = server.api_response_for_path("/api/market/signals?limit=3")
-    trend_response = server.api_response_for_path("/api/market/signals/trend?window=3")
+    list_response = dispatch("GET", "/api/market/signals?limit=3", None)
+    trend_response = dispatch("GET", "/api/market/signals/trend?window=3", None)
 
     assert list_response.payload["rows"] == rows
     assert list_response.payload["count"] == 3
@@ -48,7 +48,7 @@ def test_market_signal_fetch_post_computes_and_persists(monkeypatch):
     monkeypatch.setattr(market_svc, "compute_market_signal_for_date", lambda config, target_date, run_id: Signal())
     monkeypatch.setattr(market_svc, "_persist_manual_market_signal", lambda signal: calls.append(signal.signal_date))
 
-    response = server.api_post_response_for_path("/api/market/signals/fetch", {"date": "2026-06-18"})
+    response = dispatch("POST", "/api/market/signals/fetch", {"date": "2026-06-18"})
 
     assert response.status == 200
     assert response.payload["requested"] == {"from": "2026-06-18", "to": "2026-06-18"}
@@ -71,7 +71,7 @@ def test_hermes_market_signal_interpretation_endpoint_uses_recent_window(monkeyp
     # hermes_macro_analysis does a lazy import of market_signal_rows from services.market
     monkeypatch.setattr(market_svc, "market_signal_rows", fake_rows)
 
-    response = server.api_response_for_path("/api/hermes/market-signals/interpretation?window=30")
+    response = dispatch("GET", "/api/hermes/market-signals/interpretation?window=30", None)
 
     assert response.status == 200
     assert calls == [{"limit": ["30"]}]
@@ -91,9 +91,9 @@ def test_watchlist_api_lists_adds_and_deletes_tickers(monkeypatch):
     monkeypatch.setattr(watchlist_svc, "add_watchlist_item", lambda payload: added.append(payload) or {"ticker": "NVDA", "status": "active", "thesis": "AI compute"})
     monkeypatch.setattr(watchlist_svc, "delete_watchlist_item", lambda ticker: deleted.append(ticker) or {"ticker": ticker, "deleted": True})
 
-    list_response = server.api_response_for_path("/api/watchlist")
-    add_response = server.api_post_response_for_path("/api/watchlist", {"ticker": " nvda ", "status": "active", "thesis": "AI compute"})
-    delete_response = server.api_delete_response_for_path("/api/watchlist/NVDA")
+    list_response = dispatch("GET", "/api/watchlist", None)
+    add_response = dispatch("POST", "/api/watchlist", {"ticker": " nvda ", "status": "active", "thesis": "AI compute"})
+    delete_response = dispatch("DELETE", "/api/watchlist/NVDA", None)
 
     assert list_response.status == 200
     assert list_response.payload == {"rows": rows, "count": 1}
@@ -109,7 +109,7 @@ def test_ticker_trend_endpoint_returns_rows(monkeypatch):
     rows = [{"ticker": "TSLA", "trend_state": "uptrend", "attention_level": "high", "trigger_reason": ["above_ma_stack"]}]
     monkeypatch.setattr(tickers_svc, "ticker_trend_rows", lambda: rows)
 
-    response = server.api_response_for_path("/api/tickers/trends")
+    response = dispatch("GET", "/api/tickers/trends", None)
 
     assert response.status == 200
     assert response.payload == {"rows": rows, "count": 1}
@@ -124,7 +124,7 @@ def test_ticker_trend_scan_post_scans_active_watchlist_and_persists(monkeypatch)
     monkeypatch.setattr(tickers_svc, "_persist_ticker_trend_snapshots", lambda snapshots: persisted.extend(snapshots))
     monkeypatch.setattr(tickers_svc, "uuid", type("FakeUuid", (), {"uuid4": staticmethod(lambda: type("U", (), {"hex": "abcdef123456"})())})())
 
-    response = server.api_post_response_for_path("/api/tickers/trends/scan", {"date": "2026-06-21", "tickers": ["TSLA"]})
+    response = dispatch("POST", "/api/tickers/trends/scan", {"date": "2026-06-21", "tickers": ["TSLA"]})
 
     assert response.status == 200
     assert response.payload["requested"] == {"date": "2026-06-21", "tickers": ["TSLA"]}
@@ -140,7 +140,7 @@ def test_macro_analysis_uses_managed_watchlist_when_query_omits_watchlist(monkey
     monkeypatch.setattr(market_svc, "market_signal_rows", lambda query: rows)
     monkeypatch.setattr(hermes_svc, "analyze_macro_environment", lambda rows, *, window, watchlist, **kwargs: captured.append(watchlist) or {"watchlist": watchlist})
 
-    response = server.api_response_for_path("/api/hermes/macro-analysis?window=30")
+    response = dispatch("GET", "/api/hermes/macro-analysis?window=30", None)
 
     assert response.status == 200
     assert response.payload == {"watchlist": ["TSLA", "NVDA"]} or True  # watchlist comes from config
@@ -151,7 +151,7 @@ def test_strategy_scores_endpoint_returns_rows(monkeypatch):
     rows = [{"ticker": "TSLA", "strategy": "trend_relative_strength", "score": 85, "evidence": ["uptrend"], "limits": ["not trading instruction"]}]
     monkeypatch.setattr(strategies_svc, "strategy_score_rows", lambda: rows)
 
-    response = server.api_response_for_path("/api/strategies/scores")
+    response = dispatch("GET", "/api/strategies/scores", None)
 
     assert response.status == 200
     assert response.payload == {"rows": rows, "count": 1}
@@ -173,7 +173,7 @@ def test_strategy_score_run_post_scores_latest_snapshots_and_persists(monkeypatc
     monkeypatch.setattr(strategies_svc, "_persist_strategy_scores", lambda rows: persisted.extend(rows))
     monkeypatch.setattr(strategies_svc, "uuid", type("FakeUuid", (), {"uuid4": staticmethod(lambda: type("U", (), {"hex": "abcdef123456"})())})())
 
-    response = server.api_post_response_for_path("/api/strategies/scores/run", {})
+    response = dispatch("POST", "/api/strategies/scores/run", {})
 
     assert response.status == 200
     assert response.payload["run_id"].startswith("manual-strategy-scores-")
@@ -186,7 +186,7 @@ def test_strategy_score_run_post_scores_latest_snapshots_and_persists(monkeypatc
 
 
 def test_decision_evidence_run_endpoint_returns_pending(monkeypatch):
-    response = server.api_post_response_for_path("/api/hermes/decision-evidence/run", {"use_llm": False, "model": "deepseek-v4-pro"})
+    response = dispatch("POST", "/api/hermes/decision-evidence/run", {"use_llm": False, "model": "deepseek-v4-pro"})
 
     assert response.status == 200
     assert response.payload["status"] == "pending"

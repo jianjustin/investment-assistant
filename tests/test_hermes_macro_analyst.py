@@ -2,7 +2,7 @@ from datetime import date
 
 import investment_assistant.services.market as market_svc
 import investment_assistant.services.hermes as hermes_svc
-from investment_assistant.dashboard import server
+from investment_assistant.api.router import dispatch
 from investment_assistant.hermes import agents
 from investment_assistant.hermes.macro_analyst import analyze_macro_environment
 
@@ -87,8 +87,8 @@ def test_macro_analyst_api_replaces_market_signal_interpretation(monkeypatch):
     calls = []
     monkeypatch.setattr(market_svc, "market_signal_rows", lambda query: calls.append(query) or _rows())
 
-    response = server.api_response_for_path("/api/hermes/macro-analysis?window=30&watchlist=TSLA,NVDA")
-    legacy = server.api_response_for_path("/api/hermes/market-signals/interpretation?window=30")
+    response = dispatch("GET", "/api/hermes/macro-analysis?window=30&watchlist=TSLA,NVDA", None)
+    legacy = dispatch("GET", "/api/hermes/market-signals/interpretation?window=30", None)
 
     assert response.status == 200
     assert calls[0] == {"limit": ["30"]}
@@ -99,7 +99,7 @@ def test_macro_analyst_api_replaces_market_signal_interpretation(monkeypatch):
 
 
 def test_macro_analyst_llm_run_endpoint_returns_pending(monkeypatch):
-    response = server.api_post_response_for_path(
+    response = dispatch("POST", 
         "/api/hermes/macro-analysis/run",
         {"window": 30, "watchlist": ["TSLA", "NVDA"], "model": "deepseek-v4-pro"},
     )

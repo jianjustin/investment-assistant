@@ -1,10 +1,10 @@
-from investment_assistant.dashboard import server
+from investment_assistant.api.router import dispatch
 from investment_assistant.hermes import agents
 
 
 def test_hermes_overview_exposes_capabilities_agents_and_ideas(monkeypatch, tmp_path):
     monkeypatch.setattr(agents, "AGENT_REGISTRY_PATH", tmp_path / "agents.json")
-    response = server.api_response_for_path("/api/hermes")
+    response = dispatch("GET", "/api/hermes", None)
 
     assert response.status == 200
     assert response.payload["capabilities"]
@@ -26,8 +26,8 @@ def test_hermes_agent_post_creates_custom_agent(monkeypatch, tmp_path):
         "enabled": True,
     }
 
-    response = server.api_post_response_for_path("/api/hermes/agents", payload)
-    list_response = server.api_response_for_path("/api/hermes/agents")
+    response = dispatch("POST", "/api/hermes/agents", payload)
+    list_response = dispatch("GET", "/api/hermes/agents", None)
 
     assert response.status == 200
     assert response.payload["agent"]["id"] == "risk-reviewer"
@@ -38,7 +38,7 @@ def test_hermes_agent_post_creates_custom_agent(monkeypatch, tmp_path):
 def test_hermes_agent_post_rejects_invalid_id(monkeypatch, tmp_path):
     monkeypatch.setattr(agents, "AGENT_REGISTRY_PATH", tmp_path / "agents.json")
 
-    response = server.api_post_response_for_path("/api/hermes/agents", {"id": "bad id", "name": "bad"})
+    response = dispatch("POST", "/api/hermes/agents", {"id": "bad id", "name": "bad"})
 
     assert response.status == 400
     assert "agent id" in response.payload["error"]

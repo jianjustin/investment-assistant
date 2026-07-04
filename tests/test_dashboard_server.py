@@ -2,7 +2,7 @@ from pathlib import Path
 
 import investment_assistant.api.static_files as static_files_mod
 import investment_assistant.services.status as status_svc
-from investment_assistant.dashboard import server
+from investment_assistant.api.router import dispatch
 
 
 def test_static_response_serves_index_html(tmp_path, monkeypatch):
@@ -11,7 +11,7 @@ def test_static_response_serves_index_html(tmp_path, monkeypatch):
     (dist / "index.html").write_text("<html><body>Hermes Dashboard</body></html>", encoding="utf-8")
     monkeypatch.setattr(static_files_mod, "STATIC_DIR", dist)
 
-    response = server.static_response_for_path("/")
+    response = static_files_mod.static_response_for_path("/")
 
     assert response is not None
     assert response.status == 200
@@ -36,13 +36,13 @@ def test_api_response_for_path_returns_feature_payloads(monkeypatch):
     monkeypatch.setattr(status_svc, "filing_rows", lambda: [{"name": "a.htm", "size": 10}])
     monkeypatch.setattr(status_svc, "system_status", lambda: {"dashboard_service": {"ok": True, "output": "active"}})
 
-    assert server.api_response_for_path("/api/services").payload == {"dashboard_service": {"ok": True, "output": "active"}}
-    assert server.api_response_for_path("/api/market/signals/latest").payload == {"market_status": "green"}
-    filings_payload = server.api_response_for_path("/api/filings").payload
+    assert dispatch("GET", "/api/services", None).payload == {"dashboard_service": {"ok": True, "output": "active"}}
+    assert dispatch("GET", "/api/market/signals/latest", None).payload == {"market_status": "green"}
+    filings_payload = dispatch("GET", "/api/filings", None).payload
     assert filings_payload["summary"] == {"path": "/srv/filings", "exists": True, "file_count": 2}
     assert filings_payload["files"] == [{"name": "a.htm", "size": 10}]
-    operations_payload = server.api_response_for_path("/api/operations").payload
+    operations_payload = dispatch("GET", "/api/operations", None).payload
     assert operations_payload["operations"][0]["id"] == "fetch_market_signals"
     assert operations_payload["operations"][0]["enabled"] is True
-    assert sorted(server.api_response_for_path("/api/raw/status").payload) == ["database", "filings", "system"]
-    assert server.api_response_for_path("/api/missing") is None
+    assert sorted(dispatch("GET", "/api/raw/status", None).payload) == ["database", "filings", "system"]
+    assert dispatch("GET", "/api/missing", None) is None

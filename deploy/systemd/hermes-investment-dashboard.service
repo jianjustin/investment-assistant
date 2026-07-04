@@ -11,7 +11,7 @@ WorkingDirectory=/opt/hermes-investment-assistant/app
 EnvironmentFile=/opt/hermes-investment-assistant/.env
 Environment=HERMES_DASHBOARD_HOST=0.0.0.0
 Environment=HERMES_DASHBOARD_PORT=8787
-ExecStart=/opt/hermes-investment-assistant/.venv/bin/python -m investment_assistant.dashboard.server
+ExecStart=/opt/hermes-investment-assistant/.venv/bin/python -m investment_assistant.api.server
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

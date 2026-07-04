@@ -1,7 +1,7 @@
 import investment_assistant.services.status as _status
 from investment_assistant.api.http import ApiResponse
 from investment_assistant.api.router import register
-from investment_assistant.dashboard.health import health_report
+from investment_assistant.services.health import health_report
 
 
 @register("GET", exact="/api/status")

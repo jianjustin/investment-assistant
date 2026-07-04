@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from investment_assistant.api.http import StaticResponse
-from investment_assistant.dashboard.status_page import STATUS_PAGE_HTML
+from investment_assistant.api.status_page import STATUS_PAGE_HTML
 
 STATIC_DIR = Path(__file__).resolve().parents[2] / "web" / "dist"
 
