@@ -43,8 +43,9 @@
 .venv/bin/python -m investment_assistant.tasks.event_study --help
 ```
 
-期望输出：JSON，顶层含 `results`（各 kind 的 horizons 数组与 caveats）和 `skipped_total`；
-样本不足时 caveats 含 `n<30, 结论不可信` 警告。
+期望输出：JSON，`--no-record` 模式下顶层为 `{"task": "event_study", "status": "manual", "summary": {...}}`，
+结果在 `summary` 内：`results`（各 kind 的 horizons 与 caveats）、`params`（本次运行的 kinds/asof/since/horizons 参数回显）、`skipped_total`；
+样本不足时 caveats 含 `n<30, 结论不可信` 警告。不带 `--no-record` 时输出为 `run_task` 的 job report 结构（结果同样在 `summary` 内）。
 
 > 注意：`python -m investment_assistant.research.event_study` 是内部委托入口，
 > 同样有效但参数接口以 `tasks.event_study` 为准。
