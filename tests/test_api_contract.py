@@ -9,19 +9,21 @@ def no_db(monkeypatch):
     monkeypatch.delenv("INVESTMENT_ASSISTANT_DATABASE_URL", raising=False)
 
 
-def test_unknown_api_get_returns_none():
-    assert dispatch("GET", "/api/does-not-exist", None) is None
+def test_unknown_api_get_returns_404(client):
+    resp = client.get("/api/does-not-exist")
+    assert resp.status_code == 404
+    assert resp.json() == {"error": "not found"}
 
 
-def test_status_get_route_resolves():
-    resp = dispatch("GET", "/api/status", None)
-    assert resp is not None and resp.status == 200
-    assert set(resp.payload.keys()) == {"database", "filings", "system"}
+def test_status_get_route_resolves(client):
+    resp = client.get("/api/status")
+    assert resp.status_code == 200
+    assert set(resp.json().keys()) == {"database", "filings", "system"}
 
 
-def test_operations_registry_shape():
-    resp = dispatch("GET", "/api/operations", None)
-    ids = {op["id"] for op in resp.payload["operations"]}
+def test_operations_registry_shape(client):
+    resp = client.get("/api/operations")
+    ids = {op["id"] for op in resp.json()["operations"]}
     assert ids == {"fetch_market_signals", "sync_filings", "health_check"}
 
 

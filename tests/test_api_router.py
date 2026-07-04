@@ -8,12 +8,11 @@ def test_dispatch_unknown_returns_none():
     assert dispatch("GET", "/api/nope", None) is None
 
 
-def test_dispatch_status_get(monkeypatch):
+def test_dispatch_status_get(monkeypatch, client):
     monkeypatch.delenv("INVESTMENT_ASSISTANT_DATABASE_URL", raising=False)
-    import investment_assistant.api.routes  # noqa: F401
-    from investment_assistant.api.router import dispatch
-    resp = dispatch("GET", "/api/status", None)
-    assert resp is not None and resp.status == 200
+    resp = client.get("/api/status")
+    assert resp.status_code == 200
+    assert set(resp.json().keys()) == {"database", "filings", "system"}
 
 
 def test_dispatch_delete_prefix():

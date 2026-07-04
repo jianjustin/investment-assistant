@@ -29,19 +29,20 @@ def test_status_payload_includes_system(monkeypatch):
     assert payload["system"]["dashboard_service"] == "active"
 
 
-def test_api_response_for_path_returns_feature_payloads(monkeypatch):
+def test_api_response_for_path_returns_feature_payloads(monkeypatch, client):
     monkeypatch.setattr(status_svc, "database_status", lambda: {"ok": True, "latest_market_signal": {"market_status": "green"}})
     monkeypatch.setattr(status_svc, "filing_status", lambda: {"path": "/srv/filings", "exists": True, "file_count": 2})
     monkeypatch.setattr(status_svc, "filing_rows", lambda: [{"name": "a.htm", "size": 10}])
     monkeypatch.setattr(status_svc, "system_status", lambda: {"dashboard_service": {"ok": True, "output": "active"}})
 
-    assert dispatch("GET", "/api/services", None).payload == {"dashboard_service": {"ok": True, "output": "active"}}
-    assert dispatch("GET", "/api/market/signals/latest", None).payload == {"market_status": "green"}
-    filings_payload = dispatch("GET", "/api/filings", None).payload
+    assert client.get("/api/services").json() == {"dashboard_service": {"ok": True, "output": "active"}}
+    assert dispatch("GET", "/api/market/signals/latest", None).payload == {"market_status": "green"}  # Task 4: migrate to client
+    filings_payload = client.get("/api/filings").json()
     assert filings_payload["summary"] == {"path": "/srv/filings", "exists": True, "file_count": 2}
     assert filings_payload["files"] == [{"name": "a.htm", "size": 10}]
-    operations_payload = dispatch("GET", "/api/operations", None).payload
+    operations_payload = client.get("/api/operations").json()
     assert operations_payload["operations"][0]["id"] == "fetch_market_signals"
     assert operations_payload["operations"][0]["enabled"] is True
-    assert sorted(dispatch("GET", "/api/raw/status", None).payload) == ["database", "filings", "system"]
-    assert dispatch("GET", "/api/missing", None) is None
+    assert sorted(client.get("/api/raw/status").json()) == ["database", "filings", "system"]
+    assert client.get("/api/missing").status_code == 404
+    assert client.get("/api/missing").json() == {"error": "not found"}
