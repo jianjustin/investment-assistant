@@ -18,6 +18,26 @@
     { key: 'score', label: '分数' },
   ]
 
+  let esKinds = $state<string[]>([])
+  let esKind = $state('rs_strong')
+  let esResult = $state<any>(null)
+  let esLoading = $state(false)
+  const esCols = [
+    { key: 'horizon', label: '窗口(交易日)' },
+    { key: 'n', label: '样本数' },
+    { key: 'mean_excess', label: '平均超额' },
+    { key: 'median', label: '中位超额' },
+    { key: 'hit_rate', label: '胜率' },
+    { key: 't_stat', label: 't统计量' },
+  ]
+  async function loadEventStudyKinds() {
+    try { esKinds = (await api.getEventStudyKinds()).kinds } catch { esKinds = [] }
+  }
+  async function runEventStudy() {
+    esLoading = true
+    try { esResult = await api.getEventStudy(esKind) } finally { esLoading = false }
+  }
+
   function buildScoreOption(rows: any[]) {
     const bins = [0, 0, 0]
     for (const r of rows) {
@@ -48,16 +68,36 @@
     } finally { running = false }
   }
 
-  onMount(load)
+  onMount(() => { load(); loadEventStudyKinds() })
 </script>
 
 <div>
-  {#if sub === 'backtest'}
-    <Placeholder
-      title="回测"
-      note="用历史信号回测策略，统计准确率与收益。"
-      planned="计划于子项目 B 实现"
-    />
+  {#if sub === 'event-study'}
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-lg font-semibold">事件研究</h2>
+      <div class="flex gap-2 items-center">
+        <select bind:value={esKind} class="text-sm border rounded px-2 py-1 bg-surface">
+          {#each esKinds as k}<option value={k}>{k}</option>{/each}
+        </select>
+        <button onclick={runEventStudy} disabled={esLoading} class="px-3 py-1 bg-accent text-white rounded text-sm disabled:opacity-50">
+          {esLoading ? '计算中…' : '运行'}
+        </button>
+      </div>
+    </div>
+    <p class="text-sm text-muted mb-3">统计某类信号事件后 N 个交易日的超额收益分布（A 层回测）。结果可能来自缓存（source=cache）。</p>
+    {#if esResult}
+      {#if esResult.result?.caveats?.length}
+        <div class="bg-surface rounded p-3 mb-3 text-sm text-warning">
+          {#each esResult.result.caveats as c}<div>⚠ {c}</div>{/each}
+        </div>
+      {/if}
+      <div class="bg-surface rounded-lg shadow-elev-1 overflow-hidden">
+        <DataTable rows={Object.values(esResult.result?.horizons ?? {})} columns={esCols} />
+      </div>
+      <p class="text-xs text-muted mt-2">source: {esResult.source}{esResult.degraded ? ' · degraded（无数据库）' : ''}</p>
+    {:else if !esLoading}
+      <Placeholder title="事件研究" note="选择信号类型后点「运行」。" planned="" />
+    {/if}
   {:else}
     <div class="flex justify-between items-center mb-4">
       <h2 class="text-lg font-semibold">策略评分</h2>

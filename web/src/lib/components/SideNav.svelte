@@ -24,7 +24,7 @@
       id: 'strategy', label: '策略', icon: '🎯', children: [
         { id: 'scores',   label: '策略评分' },
         { id: 'runs',     label: '运行历史' },
-        { id: 'backtest', label: '回测' },
+        { id: 'event-study', label: '事件研究' },
       ],
     },
     {

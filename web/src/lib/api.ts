@@ -100,3 +100,10 @@ export const patchNotifySettings = (body: object) => patch<unknown>('/api/settin
 export const testNotifyChannel = (body: object) =>
   post<{ ok: boolean; error?: string }>('/api/settings/notify/test', body)
 export const getEnvStatus = () => get<Record<string, boolean>>('/api/settings/env')
+
+// research
+export const getEventStudyKinds = () => get<{ kinds: string[] }>('/api/research/event-study/kinds')
+export const getEventStudy = (kind: string, since?: string, asof?: string) =>
+  get<{ result: any; degraded: boolean; source: string }>(
+    `/api/research/event-study?kind=${kind}${since ? `&since=${since}` : ''}${asof ? `&asof=${asof}` : ''}`,
+  )
