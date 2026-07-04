@@ -4,8 +4,6 @@ import base64
 import hmac
 import os
 
-from fastapi import Request
-
 HOST = os.environ.get("HERMES_DASHBOARD_HOST", "127.0.0.1")
 PORT = int(os.environ.get("HERMES_DASHBOARD_PORT", "8787"))
 AUTH_USER = os.environ.get("HERMES_DASHBOARD_USER", "jianjustin")
@@ -41,14 +39,3 @@ def resolve_bind_host() -> str:
     return HOST
 
 
-def require_auth(request: Request) -> None:
-    """FastAPI dependency：HTTP Basic 校验，失败抛 401 + Basic challenge。"""
-    from fastapi import HTTPException
-
-    if authorize(request.headers.get("Authorization")):
-        return
-    raise HTTPException(
-        status_code=401,
-        detail="unauthorized",
-        headers={"WWW-Authenticate": 'Basic realm="Hermes Investment Assistant"'},
-    )

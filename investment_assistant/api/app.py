@@ -89,7 +89,7 @@ def create_app() -> FastAPI:
         return StreamingResponse(event_stream(runner.subscribe()), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache"})
 
-    @app.get("/{full_path:path}")
+    @app.get("/{full_path:path}", include_in_schema=False)
     def _static(full_path: str):
         from fastapi import HTTPException
 
@@ -100,7 +100,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="not found")
         return Response(content=resp.body, media_type=resp.content_type, status_code=resp.status)
 
-    @app.api_route("/{full_path:path}", methods=["POST", "PUT", "PATCH", "DELETE"])
+    @app.api_route("/{full_path:path}", methods=["POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
     def _catch_all_methods(full_path: str):
         from fastapi import HTTPException
 

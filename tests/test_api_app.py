@@ -88,3 +88,16 @@ def test_jobs_run_requires_run_suffix_contract(client, monkeypatch):
     resp = client.post("/api/jobs/metrics/run", json={})
     assert resp.status_code == 200
     assert resp.json()["run_id"] == "metrics-1"
+
+
+def test_openapi_schema_builds_clean_without_catchall_pollution(client):
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # 重复 operation ID 会以 UserWarning 形式出现
+        schema = client.app.openapi()
+
+    paths = set(schema["paths"])
+    assert "/{full_path}" not in paths          # catch-all 不进公开 API 面
+    assert "/api/events" in paths               # 真实端点保留
+    assert "/api/status" in paths
