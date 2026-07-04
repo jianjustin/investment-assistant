@@ -4,17 +4,25 @@ Hermes 是投资助手中的自动化解释层：它读取已经落库的数据�
 
 ## 在后台页面中使用
 
-打开服务看板后进入 `市场信号` 一级菜单：
+打开服务看板后进入 **数据** 层：
 
-- `市场总览`：查看最新市场状态、趋势判断和“宏观分析师”最近窗口分析。
-- `趋势看板`：查看 VIX 趋势、周期判断和同一份宏观分析。
-- `手动拉取`：回补某一天或一段日期的市场信号；提交后会显示“正在拉取市场信号...”状态栏。
+- **信号总览**：查看最新市场状态（最近 60 条信号）与宏观趋势摘要。
+- **趋势分析**：查看 VIX 趋势与周期判断（最近 30 天窗口）。
+
+信号回补（回补某一天的市场信号）在信号总览页内触发（POST `/api/market/signals/fetch`），无独立子页。
 
 宏观分析师的目标不是预测涨跌，而是稳定回答投资决策系统第一阶段的问题：当前市场适合进攻、谨慎还是防守；哪些指标支持；对成长股和 watchlist 有什么影响；下一次应该重点观察什么。
 
+Hermes agent 概览与宏观分析入口位于 **交易** 层：
+
+- **宏观分析**（macro）：展示 Hermes 总览、当前宏观状态（`GET /api/hermes/macro-analysis`），支持手动触发 LLM 分析。
+- **决策证据**（decision）：展示决策证据聚合（`POST /api/hermes/decision-evidence/run`）。
+
+目前无名为「Hermes Agents」的独立导航页；agent 列表可通过 API（`GET /api/hermes/agents`）或 Hermes 总览（`GET /api/hermes`）查看。
+
 ## 自定义 Hermes Agent
 
-打开 `Hermes -> Hermes Agents` 可以查看内置 agent 与自定义 agent。当前自定义 agent 会持久化到：
+自定义 agent 可通过 `POST /api/hermes/agents` API 创建（见下方 API 调用示例）。当前自定义 agent 会持久化到：
 
 ```text
 /opt/hermes-investment-assistant/config/hermes-agents.json

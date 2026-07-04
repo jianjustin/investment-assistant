@@ -11,7 +11,7 @@
 这是一个**长驻守护进程**，不依赖 systemd timer / cron。它按固定节拍（tick）轮询 `scheduled_jobs` 表，把到期的 job 派发给注册表里的任务函数：
 
 - **tick 循环**：每 `SCHEDULER_TICK_SECONDS`（环境变量，默认 `60` 秒）醒来一次，用 `due_scheduled_jobs(conn, now=...)` 取出 `enabled AND (next_run_at IS NULL OR next_run_at <= now)` 的 job（`FOR UPDATE SKIP LOCKED`，多实例安全）。
-- **registry**：`REGISTRY = {"metrics": ..., "filings": ..., "scores": ...}`。job 名未注册时只记 `warning` 并跳过，不崩。
+- **registry**：`REGISTRY = {"metrics": ..., "filings": ..., "scores": ..., "event_study": ...}`。job 名未注册时只记 `warning` 并跳过，不崩。注：`event_study` 已注册但 migration 007 未包含对应默认调度行，需手动 INSERT 或通过「设置 → 定时任务」页面 / PATCH `/api/jobs/scheduled/{name}` 启用。
 - **misfire / 重排**：每个 job 跑完后调用 `compute_next_run(time_local, weekday_mask, timezone, after=now)` 算出下一次运行时间，写回 `next_run_at` + `last_run_at`（`reschedule_job`）。
 - **兜底不中断**：单个 job 抛异常被捕获并记 `error`，循环继续；整个 tick 抛异常被主循环 `try/except` 兜底记录后继续 sleep。
 

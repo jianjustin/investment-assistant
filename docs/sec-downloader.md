@@ -1,6 +1,6 @@
 # SEC EDGAR 下载器（`sec_downloader.py`）
 
-负责从 SEC EDGAR 拉取美股上市公司的 **8-K 表单及其 Exhibit 99.1**（财报新闻稿）。
+从 SEC EDGAR 拉取美股上市公司公告（8-K、10-Q、10-K 等）并落盘。
 
 模块入口：[investment_assistant/filings/sec_downloader.py](../investment_assistant/filings/sec_downloader.py) 中的 `SecEdgarDownloader` 类。
 
@@ -11,27 +11,29 @@
 ```
 ticker (如 "AAPL")
    │
-   ├─ get_cik()              → CIK (10 位补零，如 "0000320193")
+   ├─ _resolve_cik(ticker, ua)   → CIK（10 位补零，如 "0000320193"，内部私有）
    │
-   ├─ get_recent_filings()   → 最近 N 份 8-K filings 列表
-   │
-   └─ download_exhibit()     → 下载该 filing 的最佳文档（优先 Ex 99.1）
-                               保存到 output_dir/{accession}.{htm,html,…}
+   └─ download_filings_batch(ticker, form_types, since_date, output_base)
+          → 按 since_date（当天）+ form_types 过滤，下载 primaryDocument
+          → 返回落盘文件路径列表 list[Path]
 ```
 
-`get_latest_8k_for_earnings()` 是上述三步的高级封装，针对"给定一个财报日，下载对应的 8-K"。
+`download_filings_batch` 是唯一公开方法。CIK 解析在方法内部完成，调用方无需单独处理。
 
 ---
 
 ## 前置条件
 
-EDGAR 要求请求头里带 `User-Agent: <名字> <邮箱>`，否则会被限速或返回 403：
+SEC EDGAR 要求请求头包含 `User-Agent: <名字> <邮箱>`。本项目通过环境变量 `SEC_USER_AGENT` 注入——**无需在构造函数传参**：
 
-```python
-sec = SecEdgarDownloader(user_agent="Your Name your@email.com")
+```env
+# .env
+SEC_USER_AGENT=YourName your@email.com
 ```
 
-在本项目里通过 `.env` 的 `SEC_USER_AGENT` 注入，详见 [getting-started.md](./getting-started.md)。
+**未设置 `SEC_USER_AGENT` 时**，`download_filings_batch` 直接返回空列表（`[]`），静默跳过下载，不抛异常、不发请求。
+
+详见 [getting-started.md](./getting-started.md)。
 
 ---
 
@@ -39,145 +41,80 @@ sec = SecEdgarDownloader(user_agent="Your Name your@email.com")
 
 | 方法 | 入参 | 返回 | 说明 |
 | --- | --- | --- | --- |
-| `get_cik(ticker)` | `str` | `str \| None` | Ticker → 10 位补零 CIK。首次调用会拉取 SEC 全量映射（约 12,000 家公司），后续走内存缓存。 |
-| `get_recent_filings(cik, form_type="8-K", limit=10)` | CIK、表单类型、上限 | `list[dict]` | 返回 `[{form, date, accession, primaryDocument}, …]`，按 EDGAR 倒序（最新在前）。 |
-| `download_exhibit(cik, accession, output_dir, primary_document="")` | filing 标识 + 落盘目录 | `Path \| None` | 下载该 filing 的最佳文档：优先 Exhibit 99.1，其次 8-K 主文件，再次第一个 HTML。文件名为 `{accession}{ext}`。 |
-| `get_latest_8k_for_earnings(ticker, earnings_date, output_base)` | 标的、`YYYY-MM-DD`、根目录 | `Path \| None` | 找距 `earnings_date` 最近（优先当天或之后）的 8-K，下载到 `output_base/TICKER/`。 |
+| `SecEdgarDownloader(*, getter=None, cache_dir=None)` | `getter`：可注入的 HTTP 函数（测试用）；`cache_dir`：`company_tickers.json` 缓存目录 | 实例 | 构造函数为 keyword-only 参数；生产环境不需要传任何参数 |
+| `download_filings_batch(ticker, form_types, since_date, output_base)` | `ticker: str`；`form_types: list[str]`（如 `["8-K", "10-Q"]`）；`since_date: date`（仅下载该日期当天 filed 的记录）；`output_base: Path` | `list[Path]` | 返回所有成功落盘的文件路径；UA 未设或 CIK 解析失败时返回 `[]` |
 
-> ⚠️ 关于"5 年财报"：EDGAR `submissions/CIK*.json` 的 `filings.recent` 段大约覆盖**最近 1,000 份**或最近 ~1 年的 filings，5 年 8-K（≈ 20-40 份）通常能全部包含；如不够，需要再去解析 `filings.files[]` 里指向的历史分片 JSON——`SecEdgarDownloader` **暂未实现**这一步，所以下面的示例假定 5 年内的 8-K 都在 `recent` 段里。绝大多数活跃上市公司满足这一条件。
+落盘路径规则：
+
+```
+<output_base>/<TICKER>/<FORM>/<accession>-<primaryDocument>
+```
+
+例如：`/srv/filings/AAPL/8-K/0000320193-26-000056-form8-k.htm`
 
 ---
 
-## 示例 1：拉取某美股标的过去 5 年的财报
-
-> 目标：下载 AAPL 最近 5 年内所有"带 Exhibit 99.1 的 8-K"（即财报发布日的 8-K）。
-
-```python
-# examples/pull_5y_earnings.py
-import os
-import logging
-from pathlib import Path
-from datetime import date, timedelta
-from dotenv import load_dotenv
-
-from investment_assistant.filings.sec_downloader import SecEdgarDownloader
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-load_dotenv()
-
-TICKER = "AAPL"
-OUTPUT_DIR = Path("./data/earnings") / TICKER
-CUTOFF = (date.today() - timedelta(days=365 * 5)).isoformat()  # 5 年前那天
-
-sec = SecEdgarDownloader(user_agent=os.environ["SEC_USER_AGENT"])
-
-# 1) Ticker → CIK
-cik = sec.get_cik(TICKER)
-assert cik, f"CIK not found for {TICKER}"
-
-# 2) 拉取近期 8-K（拉多一点确保覆盖 5 年）
-#    一家公司每年 4 次财报 + 若干临时披露，limit=80 足够覆盖 5 年。
-filings = sec.get_recent_filings(cik, form_type="8-K", limit=80)
-
-# 3) 按日期过滤到 5 年内
-recent_5y = [f for f in filings if f["date"] >= CUTOFF]
-print(f"{TICKER}: {len(recent_5y)} 8-K filings in the last 5 years")
-
-# 4) 逐份下载（download_exhibit 内部会优先挑 Exhibit 99.1）
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-for f in recent_5y:
-    path = sec.download_exhibit(
-        cik=cik,
-        accession=f["accession"],
-        output_dir=OUTPUT_DIR,
-        primary_document=f["primaryDocument"],
-    )
-    print(f"  {f['date']}  {f['accession']}  →  {path}")
-```
-
-运行：
+## 手动触发入口
 
 ```bash
-python examples/pull_5y_earnings.py
+# 下载今日（或 T-1）watchlist 所有公司的配置表单
+python -m investment_assistant.tasks.filings
 ```
 
-输出示例：
-
-```
-AAPL: 23 8-K filings in the last 5 years
-  2026-05-01  0000320193-26-000056  →  data/earnings/AAPL/0000320193-26-000056.htm
-  2026-01-30  0000320193-26-000013  →  data/earnings/AAPL/0000320193-26-000013.htm
-  …
-```
-
-> 💡 如果只想要"财报"而非全部 8-K，可在过滤步加一层："下载完成后丢弃文件大小 < 30 KB 的"，或在 `_pick_best_document` 未命中 Exhibit 99.1 时跳过。当前实现是**有就下、没有就拿主文件兜底**。
+该命令通过 `investment_assistant/filings/service.py` 的 `download_configured_filings(...)` 编排，`since_date` 默认为昨日（`date.today() - timedelta(days=1)`），表单类型来自配置文件 `FilingsConfig.forms`。
 
 ---
 
-## 示例 2：将拉取的财报下载到指定位置
-
-> 目标：把财报落到自定义目录，例如 Obsidian vault 的附件区。
+## 示例：下载指定日期的 8-K
 
 ```python
-# examples/download_to_vault.py
-import os
+from datetime import date
 from pathlib import Path
-from dotenv import load_dotenv
-
 from investment_assistant.filings.sec_downloader import SecEdgarDownloader
 
-load_dotenv()
+# SEC_USER_AGENT 已在环境变量中设置（或通过 .env 加载）
+sec = SecEdgarDownloader()
 
-TICKER = "NVDA"
-EARNINGS_DATE = "2026-02-20"
-
-# 任意可写目录都行——脚本会自动 mkdir
-TARGET = Path.home() / "Obsidian" / "investment-vault" / "attachments" / "earnings"
-
-sec = SecEdgarDownloader(user_agent=os.environ["SEC_USER_AGENT"])
-
-# 用高级接口：自动选距 EARNINGS_DATE 最近的 8-K，落到 TARGET/NVDA/
-path = sec.get_latest_8k_for_earnings(
-    ticker=TICKER,
-    earnings_date=EARNINGS_DATE,
-    output_base=TARGET,
+paths = sec.download_filings_batch(
+    ticker="AAPL",
+    form_types=["8-K"],
+    since_date=date(2026, 5, 1),      # 仅下载该日当天 filed 的记录
+    output_base=Path("/tmp/sec-cache"),
 )
 
-print(f"Saved to: {path}")
-# → Saved to: /Users/you/Obsidian/investment-vault/attachments/earnings/NVDA/0001045810-26-000023.htm
+for p in paths:
+    print(p)
+# 输出示例：/tmp/sec-cache/AAPL/8-K/0000320193-26-000056-form8-k.htm
 ```
 
-也可以走底层 API 更精细地控制落盘路径：
+**注意**：`since_date` 过滤的是 EDGAR 记录的 `filingDate`（当天精确匹配），不支持日期范围。如需拉取某时间段内的多份 filing，请循环多个日期调用。
+
+---
+
+## 测试注入（offline mock）
+
+测试中可通过 `getter=` 参数注入 mock，无需真实 HTTP 请求：
 
 ```python
-cik = sec.get_cik("NVDA")
-filings = sec.get_recent_filings(cik, form_type="8-K", limit=5)
-target = filings[0]  # 最新一份
+def mock_getter(url, *, headers=None):
+    if "company_tickers" in url:
+        return {"0": {"cik_str": "320193", "ticker": "AAPL"}}, {"ok": True}
+    return {"filings": {"recent": {"form": [], "filingDate": [], "accessionNumber": [], "primaryDocument": []}}}, {"ok": True}
 
-custom_dir = Path("/tmp/sec-cache/2026-Q4")
-path = sec.download_exhibit(
-    cik=cik,
-    accession=target["accession"],
-    output_dir=custom_dir,
-    primary_document=target["primaryDocument"],
-)
-# → /tmp/sec-cache/2026-Q4/0001045810-26-000023.htm
+sec = SecEdgarDownloader(getter=mock_getter)
+paths = sec.download_filings_batch("AAPL", ["8-K"], date.today(), Path("/tmp/test"))
+assert paths == []  # 无匹配记录时返回空列表
 ```
-
-落盘命名规则：`{accession}{原文件后缀}`，例如 `0001045810-26-000023.htm`。
 
 ---
 
 ## 常见问题
 
-**Q: 报 403 Forbidden？**
-A: `SEC_USER_AGENT` 没设或格式不对。必须是 `名字 邮箱` 两段，例如 `Jane Doe jane@example.com`。
+**Q: 下载结果为空列表（`[]`）？**
+A: 最常见原因：① `SEC_USER_AGENT` 未设置（静默降级）；② `since_date` 当天该 ticker 无对应表单 filed；③ ticker 无法解析为 CIK（可能是 ADR、OTC 或已更名）。可在 https://www.sec.gov/cgi-bin/browse-edgar 手动核查 CIK。
 
 **Q: CIK 找不到？**
-A: 该 ticker 可能是 ADR、OTC、或最近变更过代码。手动到 https://www.sec.gov/cgi-bin/browse-edgar 查证。
+A: 该 ticker 可能是 ADR、OTC 或最近变更了代码。到 https://www.sec.gov/cgi-bin/browse-edgar 查证后手动验证。
 
-**Q: 下载下来不是 Exhibit 99.1，而是 8-K 主文件？**
-A: 说明那份 8-K 不是财报披露（可能是高管变动、收购公告等），没有 Ex 99.1 附件，`_pick_best_document` 会兜底取主文件。需要"只要财报"的话，按上文 💡 提示过滤。
-
-**Q: 限速？**
-A: EDGAR 公开限制为 10 req/s。`download_exhibit` 内已 `sleep(0.1)`，正常使用不会触限。
+**Q: 有访问频率限制吗？**
+A: EDGAR 公开限制约 10 req/s。当前实现直接发送 `requests.get`，无内建 sleep；生产批量下载时建议在调用层控制并发频率。

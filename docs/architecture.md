@@ -12,7 +12,7 @@
 |----|------|------|
 | 工具层 | `/tools` | 任务运维：调度任务管理、运行记录、运维指标、数据结果 |
 | 数据层 | `/data` | 市场数据：信号总览、趋势、技术面 |
-| 策略层 | `/strategy` | 策略评分：评分总览、运行历史、回测（占位） |
+| 策略层 | `/strategy` | 策略评分：评分总览、运行历史、事件研究 |
 | 交易层 | `/trade` | 交易决策：宏观分析、决策证据、交易指令（占位） |
 | 设置层 | `/settings` | 系统配置：Discord 通知、定时任务开关、环境变量、关注列表 |
 
@@ -25,10 +25,11 @@
 
 ### 设置层二级页
 
+- **系统**（默认落地页）：状态卡片 + operations 注册表（GET `/api/status` · `/api/operations`）
+- **关注列表**：watchlist 增删（GET / POST / DELETE）
 - **Discord 通知**：effective_notify_config 预览 + 覆盖配置（notify_settings 008）
 - **定时任务**：scheduled_jobs 启用/禁用切换（PATCH）
 - **环境变量**：env 状态只读面板
-- **关注列表**：watchlist 增删
 
 ---
 
@@ -123,7 +124,8 @@ scheduled_jobs 表（迁移 007）
 | 设置 | Discord 通知（更新） | PATCH | `/api/settings/notify` |
 | 设置 | Discord 通知（测试） | POST | `/api/settings/notify/test` |
 | 设置 | 环境变量 | GET | `/api/settings/env` |
-| 设置 | 关注列表 | GET / POST / DELETE | `/api/watchlist` |
+| 设置 | 关注列表 | GET / POST | `/api/watchlist` |
+| 设置 | 关注列表（删除） | DELETE | `/api/watchlist/{ticker}` |
 | 通用 | 系统状态 | GET | `/api/status` · `/api/health` · `/api/services` |
 | 通用 | 运营数据 | GET | `/api/filings` · `/api/operations` |
 
@@ -141,6 +143,7 @@ scheduled_jobs 表（迁移 007）
 | 006 | job_reports（任务运行记录） |
 | 007 | scheduled_jobs（调度配置） |
 | 008 | notify_settings（通知覆盖配置） |
+| 009 | event_studies（事件研究结果缓存） |
 
 ---
 

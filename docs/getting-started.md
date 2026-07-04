@@ -53,7 +53,7 @@ DISCORD_WEBHOOK_DAILY=https://discord.com/api/webhooks/...
 
 ## 初始化数据库（可选）
 
-配置了 `INVESTMENT_ASSISTANT_DATABASE_URL` 后，按编号顺序执行 `migrations/` 下的 SQL（001-008）建表。迁移均为幂等（`CREATE TABLE IF NOT EXISTS` + `ON CONFLICT DO NOTHING`），可重复执行：
+配置了 `INVESTMENT_ASSISTANT_DATABASE_URL` 后，按编号顺序执行 `migrations/` 下的 SQL（001-009）建表。迁移均为幂等（`CREATE TABLE IF NOT EXISTS` + `ON CONFLICT DO NOTHING`），可重复执行：
 
 ```bash
 for f in migrations/0*.sql; do
@@ -155,7 +155,7 @@ A: 未配置 `INVESTMENT_ASSISTANT_DATABASE_URL` 时，报告与快照路径会�
 ```
 investment_assistant/   生产包（api / services / tasks / filings / notify / db.py）
 web/                    Svelte 5 前端（工具 / 数据 / 策略 / 交易 / 设置 五层 IA）
-migrations/             PostgreSQL schema 迁移（001-008）
+migrations/             PostgreSQL schema 迁移（001-009）
 deploy/                 systemd service 模板与安装脚本
 tests/                  单元测试
 docs/                   项目文档
