@@ -22,6 +22,7 @@
   let esKind = $state('rs_strong')
   let esResult = $state<any>(null)
   let esLoading = $state(false)
+  let esError = $state('')
   const esCols = [
     { key: 'horizon', label: '窗口(交易日)' },
     { key: 'n', label: '样本数' },
@@ -31,11 +32,17 @@
     { key: 't_stat', label: 't统计量' },
   ]
   async function loadEventStudyKinds() {
-    try { esKinds = (await api.getEventStudyKinds()).kinds } catch { esKinds = [] }
+    try {
+      esKinds = (await api.getEventStudyKinds()).kinds
+      if (esKinds.length && !esKinds.includes(esKind)) esKind = esKinds[0]
+    } catch { esKinds = [] }
   }
   async function runEventStudy() {
+    esError = ''
     esLoading = true
-    try { esResult = await api.getEventStudy(esKind) } finally { esLoading = false }
+    try { esResult = await api.getEventStudy(esKind) }
+    catch (e) { esError = e instanceof Error ? e.message : '请求失败' }
+    finally { esLoading = false }
   }
 
   function buildScoreOption(rows: any[]) {
@@ -85,6 +92,9 @@
       </div>
     </div>
     <p class="text-sm text-muted mb-3">统计某类信号事件后 N 个交易日的超额收益分布（A 层回测）。结果可能来自缓存（source=cache）。</p>
+    {#if esError}
+      <div class="bg-surface rounded p-3 mb-3 text-sm text-danger">运行失败：{esError}</div>
+    {/if}
     {#if esResult}
       {#if esResult.result?.caveats?.length}
         <div class="bg-surface rounded p-3 mb-3 text-sm text-warning">
