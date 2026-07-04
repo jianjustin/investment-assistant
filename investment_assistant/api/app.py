@@ -12,6 +12,24 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from investment_assistant.api import auth
 
 
+def event_stream(q):
+    """SSE 帧生成器：事件转 data: 帧，空闲 15s 发心跳后继续等待（永不主动断连，对齐旧 server 行为）。"""
+    import queue as _queue
+
+    from investment_assistant.tasks import runner
+
+    try:
+        while True:
+            try:
+                event = q.get(timeout=15)
+            except _queue.Empty:
+                yield ": keep-alive\n\n"
+                continue
+            yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+    finally:
+        runner.unsubscribe(q)
+
+
 class CompatJSONResponse(JSONResponse):
     """对齐旧 server 的序列化：ensure_ascii=False, default=str, indent=2。"""
 
@@ -66,25 +84,9 @@ def create_app() -> FastAPI:
 
     @app.get("/api/events")
     def _events():
-        import queue as _queue
-
         from investment_assistant.tasks import runner
 
-        q = runner.subscribe()
-
-        def stream():
-            try:
-                while True:
-                    try:
-                        event = q.get(timeout=15)
-                    except _queue.Empty:
-                        yield ": keep-alive\n\n"  # 心跳；之后生成器终止，客户端按 SSE retry 重连
-                        return
-                    yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
-            finally:
-                runner.unsubscribe(q)
-
-        return StreamingResponse(stream(), media_type="text/event-stream",
+        return StreamingResponse(event_stream(runner.subscribe()), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache"})
 
     @app.get("/{full_path:path}")
