@@ -100,7 +100,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="not found")
         return Response(content=resp.body, media_type=resp.content_type, status_code=resp.status)
 
-    @app.api_route("/{full_path:path}", methods=["POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
+    @app.api_route("/{full_path:path}", methods=["POST", "PUT", "PATCH", "DELETE"])
     def _catch_all_methods(full_path: str):
         from fastapi import HTTPException
 

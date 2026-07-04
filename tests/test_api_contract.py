@@ -41,6 +41,7 @@ def test_delete_route_resolves(monkeypatch, client):
     import investment_assistant.services.watchlist as watchlist_svc
     monkeypatch.setattr(watchlist_svc, "delete_watchlist_item", lambda ticker: {"ticker": ticker, "deleted": True})
     resp = client.delete("/api/watchlist/NVDA")
-    assert resp.status_code != 404
+    assert resp.status_code == 200
+    assert resp.json() == {"ticker": "NVDA", "deleted": True}
     resp_nope = client.delete("/api/nope")
     assert resp_nope.status_code == 404
