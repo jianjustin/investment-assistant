@@ -1,0 +1,15 @@
+.git
+.venv
+.claude
+.superpowers
+__pycache__
+**/__pycache__
+*.pyc
+node_modules
+web/node_modules
+web/dist
+tests
+docs
+filings
+*.md
+!web/**/*.md
