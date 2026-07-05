@@ -124,6 +124,20 @@ def test_update_notify_passes_channel_and_email(monkeypatch):
     assert captured["email"] == {"to_addr": "you@outlook.com"}  # 空白值不覆盖
 
 
+def test_update_notify_rejects_unknown_email_keys(monkeypatch):
+    monkeypatch.setenv("INVESTMENT_ASSISTANT_DATABASE_URL", "postgres://x")
+    monkeypatch.setattr(settings, "_with_conn", lambda fn: fn("CONN"))
+    captured = {}
+
+    def fake_update(conn, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(settings.db, "update_notify_settings", fake_update)
+    settings.update_notify({"email": {"to_addr": "you@outlook.com", "password": "hunter2"}})
+    assert captured["email"] == {"to_addr": "you@outlook.com"}
+    assert "password" not in captured["email"]
+
+
 def test_test_notify_channel_email_uses_client():
     sent = []
 

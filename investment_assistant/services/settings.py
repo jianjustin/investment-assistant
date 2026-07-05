@@ -20,6 +20,8 @@ _ENV_KEYS = [
     "SMTP_PASSWORD",
 ]
 
+_EMAIL_FIELDS = {"from_addr", "to_addr", "host", "port"}
+
 
 def _has_db() -> bool:
     return bool(os.environ.get("INVESTMENT_ASSISTANT_DATABASE_URL"))
@@ -73,7 +75,8 @@ def update_notify(payload: dict[str, Any]) -> dict[str, Any]:
     if not _has_db():
         return {"updated": False, "degraded": True}
     webhooks = {k: v for k, v in (payload.get("webhooks") or {}).items() if str(v).strip()}  # 留空不覆盖
-    email = {k: v for k, v in (payload.get("email") or {}).items() if str(v).strip()}
+    email = {k: v for k, v in (payload.get("email") or {}).items()
+              if k in _EMAIL_FIELDS and str(v).strip()}
     _with_conn(lambda conn: db.update_notify_settings(
         conn,
         discord_enabled=payload.get("discord_enabled"),
