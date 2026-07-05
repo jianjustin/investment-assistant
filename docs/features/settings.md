@@ -12,7 +12,7 @@
   curl -s "localhost:8787/api/health"          # 多项健康检查（延迟/详情）
   curl -s "localhost:8787/api/services"        # 进程级服务状态
   curl -s "localhost:8787/api/operations"      # {"operations": [...]}
-  curl -s "localhost:8787/api/filings"         # {"summary": ..., "files": [...]}
+  curl -s "localhost:8787/api/filings/records" # 财报索引 {"records": [...], "tickers": [...]}
   ```
 - **如何验证**：`database.ok` 反映 `INVESTMENT_ASSISTANT_DATABASE_URL` 连通性；拔掉 DB URL 重启后各端点应降级（空数据 + degraded）而非 500。
 

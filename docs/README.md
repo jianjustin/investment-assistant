@@ -14,10 +14,10 @@
 
 | 区 | 文档 | 覆盖功能 |
 |----|------|---------|
-| 📊 数据 | [features/data.md](features/data.md) | 市场信号总览、趋势分析、技术面趋势 |
+| 📊 数据 | [features/data.md](features/data.md) | 市场信号总览、趋势分析、技术面趋势、财报 |
 | 🎯 策略 | [features/strategy.md](features/strategy.md) | 策略评分、事件研究 |
 | 🤖 交易 | [features/trade.md](features/trade.md) | 宏观分析、决策证据、agent 注册表 |
-| 🔧 工具 | [features/tools.md](features/tools.md) | 任务中心、运行记录、运维指标、SSE 事件流 |
+| 🔧 工具 | [features/tools.md](features/tools.md) | 任务中心（含按日期回补）、运行记录、SSE 事件流 |
 | ⚙️ 设置 | [features/settings.md](features/settings.md) | 系统状态、关注列表、Discord 推送、定时任务、认证 |
 
 全部 API 的参数与响应可在服务运行时访问 `http://localhost:8787/docs`（OpenAPI）交互查看。

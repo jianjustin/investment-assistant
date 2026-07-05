@@ -10,18 +10,16 @@
 
 | 层 | 路由 | 职责 |
 |----|------|------|
-| 工具层 | `/tools` | 任务运维：调度任务管理、运行记录、运维指标、数据结果 |
-| 数据层 | `/data` | 市场数据：信号总览、趋势、技术面 |
+| 工具层 | `/tools` | 任务运维：调度任务管理（支持按日期回补）、运行记录 |
+| 数据层 | `/data` | 市场数据：信号总览、趋势、技术面、财报 |
 | 策略层 | `/strategy` | 策略评分：评分总览、运行历史、事件研究 |
 | 交易层 | `/trade` | 交易决策：宏观分析、决策证据、交易指令（占位） |
 | 设置层 | `/settings` | 系统配置：Discord 通知、定时任务开关、环境变量、关注列表 |
 
 ### 工具层二级页
 
-- **任务中心**（TaskCenter）：展示所有 scheduled_jobs，支持手动触发
-- **运行记录**（RunHistory）：job_reports 历史，含状态/耗时/错误摘要
-- **运维指标**（OpsMetrics）：job_metrics 聚合，最近 N 次成功率/平均耗时
-- **数据结果**（DataResults）：最新 job 产出快照
+- **任务中心**（TaskCenter）：展示所有 scheduled_jobs，支持「立即运行」与「按日期运行」（单日/范围回补，上限 92 天）
+- **运行记录**（RunHistory）：job_reports 表格（状态/触发来源/运行时间/耗时/指定日期），详情弹窗展示摘要 JSON
 
 ### 设置层二级页
 
@@ -47,7 +45,8 @@ investment_assistant/
     server.py                # uvicorn 入口：main() 调用 uvicorn.run(create_app)
     static_files.py          # 服务 web/dist 静态资源 + /status HTML
     routes/
-      status.py              # /api/status · /api/health · /api/services · /api/filings · /api/operations
+      status.py              # /api/status · /api/health · /api/services · /api/operations
+      filings.py             # /api/filings/records · /api/filings/records/{id}/download
       market.py              # /api/market/signals/*
       tickers.py             # /api/tickers/trends
       strategies.py          # /api/strategies/scores
@@ -105,13 +104,14 @@ scheduled_jobs 表（迁移 007）
 | 工具 | 任务中心（触发） | POST | `/api/jobs/{name}/run` |
 | 工具 | 任务中心（开关） | PATCH | `/api/jobs/scheduled/{name}` |
 | 工具 | 运行记录 | GET | `/api/jobs/reports` |
-| 工具 | 运维指标 | GET | `/api/jobs/metrics` |
 | 数据 | 信号总览 | GET | `/api/market/signals` |
 | 数据 | 信号最新 | GET | `/api/market/signals/latest` |
 | 数据 | 信号趋势 | GET | `/api/market/signals/trend` |
 | 数据 | 信号抓取 | POST | `/api/market/signals/fetch` |
 | 数据 | 个股趋势 | GET | `/api/tickers/trends` |
 | 数据 | 个股扫描 | POST | `/api/tickers/trends/scan` |
+| 数据 | 财报索引 | GET | `/api/filings/records` |
+| 数据 | 财报下载 | GET | `/api/filings/records/{id}/download` |
 | 策略 | 评分总览 | GET | `/api/strategies/scores` |
 | 策略 | 触发评分 | POST | `/api/strategies/scores/run` |
 | 策略 | 事件研究 kinds | GET | `/api/research/event-study/kinds` |
@@ -127,7 +127,7 @@ scheduled_jobs 表（迁移 007）
 | 设置 | 关注列表 | GET / POST | `/api/watchlist` |
 | 设置 | 关注列表（删除） | DELETE | `/api/watchlist/{ticker}` |
 | 通用 | 系统状态 | GET | `/api/status` · `/api/health` · `/api/services` |
-| 通用 | 运营数据 | GET | `/api/filings` · `/api/operations` |
+| 通用 | 运维操作注册表 | GET | `/api/operations` |
 
 ---
 
@@ -144,6 +144,8 @@ scheduled_jobs 表（迁移 007）
 | 007 | scheduled_jobs（调度配置） |
 | 008 | notify_settings（通知覆盖配置） |
 | 009 | event_studies（事件研究结果缓存） |
+| 010 | job_reports 增加目标日期与触发来源（target_start/end_date · trigger_source） |
+| 011 | filings（财报文件索引，UNIQUE accession_number+primary_document） |
 
 ---
 
