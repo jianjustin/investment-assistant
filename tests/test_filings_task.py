@@ -1,5 +1,4 @@
 from datetime import date
-from pathlib import Path
 
 from investment_assistant.config import AssistantConfig, FilingsConfig
 from investment_assistant.tasks import filings

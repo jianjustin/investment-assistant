@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 from datetime import date, timedelta
 from typing import Any, Protocol
 
 from investment_assistant.config import FilingsConfig
+
+logger = logging.getLogger(__name__)
 
 
 class FilingDownloader(Protocol):
@@ -41,12 +44,20 @@ def download_configured_filings(
             filings_meta.extend(dl.download_filings_batch(ticker, list(cfg.forms), first, last, cfg.output_dir))
         except Exception as exc:  # 单标的失败不影响其余
             errors[ticker] = str(exc)
-    _persist_filing_index(filings_meta)
-    return {
+    index_error: str | None = None
+    try:
+        _persist_filing_index(filings_meta)
+    except Exception as exc:  # 索引写入失败不拖垮下载结果
+        logger.warning("filings index persist failed: %s", exc)
+        index_error = str(exc)
+    result = {
         "downloaded_count": sum(1 for m in filings_meta if m.get("downloaded")),
         "filings": filings_meta,
         "errors": errors,
     }
+    if index_error is not None:
+        result["index_error"] = index_error
+    return result
 
 
 def _persist_filing_index(filings_meta: list[dict[str, Any]]) -> None:

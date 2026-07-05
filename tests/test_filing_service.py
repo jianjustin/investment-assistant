@@ -69,3 +69,15 @@ def test_download_persists_filing_index(tmp_path, monkeypatch):
 
     download_configured_filings(["NVDA"], cfg, downloader=FakeDownloader())
     assert persisted and persisted[0]["accession_number"] == "000"
+
+
+def test_persist_failure_does_not_break_download(tmp_path, monkeypatch):
+    cfg = FilingsConfig(forms=["10-Q"], lookback_years=1, output_dir=tmp_path / "filings")
+
+    def boom(metas):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(service, "_persist_filing_index", boom)
+    result = download_configured_filings(["NVDA"], cfg, downloader=FakeDownloader())
+    assert result["downloaded_count"] == 1
+    assert result["index_error"] == "db down"
