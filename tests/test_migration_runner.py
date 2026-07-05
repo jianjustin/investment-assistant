@@ -68,3 +68,32 @@ def test_run_invokes_apply_pending(monkeypatch, tmp_path):
     conn.assert_called_once_with("postgres://x")
     app.assert_called_once()
     assert out == ["005_x.sql"]
+
+
+def test_run_closes_pools_before_exit(tmp_path):
+    # 一次性迁移进程若不关池，Python 3.13+ 会在解释器关闭时因
+    # ConnectionPool.__del__ join 线程抛 PythonFinalizationError
+    from investment_assistant import db
+
+    closed = []
+
+    class FakePool:
+        def close(self):
+            closed.append(True)
+
+    class Ctx:
+        def __enter__(self):
+            return "CONN"
+
+        def __exit__(self, *a):
+            return False
+
+    db._POOLS["postgres://x"] = FakePool()
+    try:
+        with patch.object(migrate, "connect", return_value=Ctx()), \
+             patch.object(migrate, "apply_pending_migrations", return_value=[]):
+            migrate.run("postgres://x", migrations_dir=tmp_path)
+        assert closed, "migrate.run should close cached pools before returning"
+        assert db._POOLS == {}
+    finally:
+        db._POOLS.pop("postgres://x", None)

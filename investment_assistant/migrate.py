@@ -4,15 +4,18 @@ import json
 import os
 from pathlib import Path
 
-from investment_assistant.db import apply_pending_migrations, connect
+from investment_assistant.db import apply_pending_migrations, close_pools, connect
 
 DEFAULT_MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
 
 def run(database_url: str, migrations_dir: str | Path | None = None) -> list[str]:
     target = Path(migrations_dir or DEFAULT_MIGRATIONS_DIR)
-    with connect(database_url) as conn:
-        return apply_pending_migrations(conn, target)
+    try:
+        with connect(database_url) as conn:
+            return apply_pending_migrations(conn, target)
+    finally:
+        close_pools()
 
 
 def main() -> None:

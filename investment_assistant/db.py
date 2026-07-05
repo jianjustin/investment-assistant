@@ -38,8 +38,13 @@ def connect(database_url: str):
     return _get_pool(database_url).connection()
 
 
-def _reset_pools() -> None:
-    """Test helper: drop cached pools (closing them best-effort)."""
+def close_pools() -> None:
+    """Close and drop all cached pools (best-effort, idempotent).
+
+    One-shot CLIs (e.g. investment_assistant.migrate) must call this before
+    exiting: on Python 3.13+ an unclosed ConnectionPool raises
+    PythonFinalizationError from __del__ at interpreter shutdown.
+    """
     with _POOLS_LOCK:
         for pool in _POOLS.values():
             try:
@@ -47,6 +52,9 @@ def _reset_pools() -> None:
             except Exception:
                 pass
         _POOLS.clear()
+
+
+_reset_pools = close_pools  # backwards-compatible test alias
 
 
 def apply_migration(conn, sql_path: str | Path) -> None:
