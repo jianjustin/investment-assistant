@@ -16,6 +16,7 @@
         { id: 'signals', label: '信号总览' },
         { id: 'trend',   label: '趋势分析' },
         { id: 'tickers', label: '技术面趋势' },
+        { id: 'filings', label: '财报' },
       ],
     },
     {
