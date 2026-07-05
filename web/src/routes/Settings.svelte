@@ -24,12 +24,14 @@
     { key: 'thesis', label: '论点' },
   ]
 
-  // discord
+  // notify（Discord / 邮件）
   let notify = $state<any>({
+    channel: 'discord',
     webhooks: {},
     task_channels: {},
     task_enabled: {},
     discord_enabled: true,
+    email: { from_addr: '', to_addr: '' },
   })
   let webhookInput = $state<Record<string, string>>({ earnings: '', signals: '', daily: '' })
   let testResult = $state<Record<string, string>>({})
@@ -51,7 +53,8 @@
       } else if (sub === 'watchlist') {
         watchlist = (await api.getWatchlist() as any).rows ?? []
       } else if (sub === 'discord') {
-        notify = await api.getNotifySettings()
+        ;[notify, env] = await Promise.all([api.getNotifySettings(), api.getEnvStatus()])
+        if (!notify.email) notify.email = { from_addr: '', to_addr: '' }
         webhookInput = { earnings: '', signals: '', daily: '' }
         testResult = {}
       } else if (sub === 'jobs') {
@@ -89,14 +92,21 @@
     testResult = { ...testResult, [ch]: r.ok ? '✅ 成功' : `❌ ${(r as any).error ?? '失败'}` }
   }
 
+  async function verifyEmail() {
+    const r = await api.testNotifyChannel({ channel: 'email', email: notify.email })
+    testResult = { ...testResult, email: r.ok ? '✅ 成功' : `❌ ${(r as any).error ?? '失败'}` }
+  }
+
   async function saveNotify() {
     const webhooks: Record<string, string> = {}
     for (const ch of ['earnings', 'signals', 'daily']) {
       if (webhookInput[ch]?.trim()) webhooks[ch] = webhookInput[ch]
     }
     await api.patchNotifySettings({
+      channel: notify.channel,
       discord_enabled: notify.discord_enabled,
       webhooks,
+      email: notify.email,
       task_enabled: notify.task_enabled,
       task_channels: notify.task_channels,
     })
@@ -176,42 +186,69 @@
   </Drawer>
 {:else if sub === 'discord'}
   <div class="space-y-4 max-w-lg">
-    <h2 class="text-lg font-semibold">Discord 通知</h2>
-    <label class="flex items-center gap-2 text-sm">
-      <input type="checkbox" bind:checked={notify.discord_enabled} />
-      启用 Discord 推送
-    </label>
-    {#each ['earnings', 'signals', 'daily'] as ch}
-      <div class="space-y-1">
-        <div class="text-sm font-medium">
-          {ch}
-          {#if notify.webhooks?.[ch]?.configured}
-            <span class="text-green-600 text-xs ml-1">（已配置）</span>
-          {:else}
-            <span class="text-muted text-xs ml-1">（未配置）</span>
-          {/if}
+    <h2 class="text-lg font-semibold">通知</h2>
+    <div class="flex gap-4 text-sm">
+      <label class="flex items-center gap-1">
+        <input type="radio" bind:group={notify.channel} value="discord" /> Discord
+      </label>
+      <label class="flex items-center gap-1">
+        <input type="radio" bind:group={notify.channel} value="email" /> 邮件
+      </label>
+    </div>
+    {#if notify.channel === 'email'}
+      <div class="space-y-2">
+        <div class="text-sm font-medium">发件地址（Gmail）</div>
+        <input bind:value={notify.email.from_addr} placeholder="you@gmail.com"
+               class="border border-border rounded px-2 py-1 text-sm bg-surface w-full" />
+        <div class="text-sm font-medium">收件地址</div>
+        <input bind:value={notify.email.to_addr} placeholder="you@outlook.com"
+               class="border border-border rounded px-2 py-1 text-sm bg-surface w-full" />
+        <div class="text-xs {env.SMTP_PASSWORD ? 'text-green-600' : 'text-red-500'}">
+          SMTP_PASSWORD {env.SMTP_PASSWORD ? '✅ 已配置' : '未配置——需以环境变量注入 Gmail 应用专用密码'}
         </div>
-        <div class="flex gap-2">
-          <input
-            type="password"
-            bind:value={webhookInput[ch]}
-            placeholder="留空则不修改"
-            class="border border-border rounded px-2 py-1 text-sm bg-surface flex-1"
-          />
-          <button
-            class="text-accent text-xs whitespace-nowrap px-2 py-1 border border-accent/30 rounded"
-            onclick={() => verify(ch)}
-          >验证 {ch}</button>
-        </div>
-        {#if testResult[ch]}
-          <div class="text-xs text-muted">{testResult[ch]}</div>
+        <button class="text-accent text-xs whitespace-nowrap px-2 py-1 border border-accent/30 rounded"
+                onclick={verifyEmail}>发送测试邮件</button>
+        {#if testResult.email}
+          <div class="text-xs text-muted">{testResult.email}</div>
         {/if}
       </div>
-    {/each}
+    {:else}
+      <label class="flex items-center gap-2 text-sm">
+        <input type="checkbox" bind:checked={notify.discord_enabled} />
+        启用 Discord 推送
+      </label>
+      {#each ['earnings', 'signals', 'daily'] as ch}
+        <div class="space-y-1">
+          <div class="text-sm font-medium">
+            {ch}
+            {#if notify.webhooks?.[ch]?.configured}
+              <span class="text-green-600 text-xs ml-1">（已配置）</span>
+            {:else}
+              <span class="text-muted text-xs ml-1">（未配置）</span>
+            {/if}
+          </div>
+          <div class="flex gap-2">
+            <input
+              type="password"
+              bind:value={webhookInput[ch]}
+              placeholder="留空则不修改"
+              class="border border-border rounded px-2 py-1 text-sm bg-surface flex-1"
+            />
+            <button
+              class="text-accent text-xs whitespace-nowrap px-2 py-1 border border-accent/30 rounded"
+              onclick={() => verify(ch)}
+            >验证 {ch}</button>
+          </div>
+          {#if testResult[ch]}
+            <div class="text-xs text-muted">{testResult[ch]}</div>
+          {/if}
+        </div>
+      {/each}
+    {/if}
     <div class="pt-2">
       <button class="px-3 py-1.5 rounded bg-accent/10 text-accent text-sm" onclick={saveNotify}>保存</button>
     </div>
-    <p class="text-xs text-muted">webhook 明文不回显；留空字段不会覆盖已存值。</p>
+    <p class="text-xs text-muted">webhook 明文不回显；留空字段不会覆盖已存值。SMTP 密码只能通过环境变量配置。</p>
   </div>
 {:else if sub === 'jobs'}
   <div>

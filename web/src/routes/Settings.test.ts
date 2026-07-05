@@ -31,12 +31,15 @@ describe('Settings · Discord', () => {
 
   it('verify button calls testNotifyChannel', async () => {
     vi.spyOn(api, 'getNotifySettings').mockResolvedValue({
+      channel: 'discord',
       discord_enabled: true,
       task_channels: { metrics: 'daily' },
       task_enabled: { metrics: true },
       webhooks: { daily: { configured: true } },
+      email: { from_addr: '', to_addr: '' },
       degraded: false,
     } as any)
+    vi.spyOn(api, 'getEnvStatus').mockResolvedValue({ SMTP_PASSWORD: false } as any)
     const spy = vi.spyOn(api, 'testNotifyChannel').mockResolvedValue({ ok: true })
 
     render(Settings, { props: { sub: 'discord' } })
@@ -49,12 +52,15 @@ describe('Settings · Discord', () => {
 
   it('webhook inputs are password type — plaintext never visible', async () => {
     vi.spyOn(api, 'getNotifySettings').mockResolvedValue({
+      channel: 'discord',
       discord_enabled: true,
       task_channels: {},
       task_enabled: {},
       webhooks: { earnings: { configured: false }, signals: { configured: false }, daily: { configured: false } },
+      email: { from_addr: '', to_addr: '' },
       degraded: false,
     } as any)
+    vi.spyOn(api, 'getEnvStatus').mockResolvedValue({ SMTP_PASSWORD: false } as any)
     vi.spyOn(api, 'testNotifyChannel').mockResolvedValue({ ok: true })
 
     render(Settings, { props: { sub: 'discord' } })
@@ -63,5 +69,59 @@ describe('Settings · Discord', () => {
 
     const inputs = document.querySelectorAll('input[type="password"]')
     expect(inputs.length).toBeGreaterThanOrEqual(3)
+  })
+})
+
+describe('Settings · 通知渠道（Discord/邮件）', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('switching to 邮件 hides Discord fields and shows the email form', async () => {
+    vi.spyOn(api, 'getNotifySettings').mockResolvedValue({
+      channel: 'discord',
+      discord_enabled: true,
+      task_channels: {},
+      task_enabled: {},
+      webhooks: { earnings: { configured: false }, signals: { configured: false }, daily: { configured: false } },
+      email: { from_addr: '', to_addr: '' },
+      degraded: false,
+    } as any)
+    vi.spyOn(api, 'getEnvStatus').mockResolvedValue({ SMTP_PASSWORD: true } as any)
+
+    render(Settings, { props: { sub: 'discord' } })
+
+    await screen.findByText('验证 daily')
+    const emailRadio = screen.getByLabelText('邮件') as HTMLInputElement
+    await fireEvent.click(emailRadio)
+
+    expect(screen.queryByText('验证 daily')).toBeNull()
+    await screen.findByPlaceholderText('you@gmail.com')
+    await screen.findByText(/SMTP_PASSWORD.*已配置/)
+  })
+
+  it('发送测试邮件 calls testNotifyChannel with the email channel', async () => {
+    vi.spyOn(api, 'getNotifySettings').mockResolvedValue({
+      channel: 'email',
+      discord_enabled: true,
+      task_channels: {},
+      task_enabled: {},
+      webhooks: {},
+      email: { from_addr: 'a@gmail.com', to_addr: 'b@outlook.com' },
+      degraded: false,
+    } as any)
+    vi.spyOn(api, 'getEnvStatus').mockResolvedValue({ SMTP_PASSWORD: false } as any)
+    const spy = vi.spyOn(api, 'testNotifyChannel').mockResolvedValue({ ok: true })
+
+    render(Settings, { props: { sub: 'discord' } })
+
+    const btn = await screen.findByText('发送测试邮件')
+    await fireEvent.click(btn)
+
+    expect(spy).toHaveBeenCalledWith({
+      channel: 'email',
+      email: { from_addr: 'a@gmail.com', to_addr: 'b@outlook.com' },
+    })
+    await screen.findByText('✅ 成功')
   })
 })
