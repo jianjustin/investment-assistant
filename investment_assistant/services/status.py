@@ -29,29 +29,6 @@ def filing_status() -> dict[str, Any]:
     return {"path": str(root), "exists": root.exists(), "file_count": len(files)}
 
 
-def filing_rows(limit: int = 100) -> list[dict[str, Any]]:
-    root = DEFAULT_FILINGS_DIR
-    if not root.exists():
-        return []
-    rows: list[dict[str, Any]] = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        stat = path.stat()
-        try:
-            relative_path = str(path.relative_to(root))
-        except ValueError:
-            relative_path = path.name
-        rows.append({
-            "name": path.name,
-            "path": relative_path,
-            "size": stat.st_size,
-            "modified_at": stat.st_mtime,
-        })
-    rows.sort(key=lambda row: row["modified_at"], reverse=True)
-    return rows[:limit]
-
-
 def operation_registry() -> list[dict[str, Any]]:
     return [
         {

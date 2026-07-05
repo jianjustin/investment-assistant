@@ -22,11 +22,6 @@ def services():
     return _status.system_status()
 
 
-@router.get("/api/filings")
-def filings():
-    return {"summary": _status.filing_status(), "files": _status.filing_rows()}
-
-
 @router.get("/api/operations")
 def operations():
     return {"operations": _status.operation_registry()}
