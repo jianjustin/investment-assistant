@@ -91,3 +91,11 @@ def test_event_studies_migration():
     assert "kind" in sql and "params_hash" in sql
     assert "result" in sql and "JSONB" in sql
     assert "UNIQUE (kind, params_hash)" in sql
+
+
+def test_job_reports_target_dates_migration():
+    sql = Path("migrations/010_job_reports_target_dates.sql").read_text()
+    assert "ALTER TABLE job_reports" in sql
+    assert "target_start_date DATE" in sql
+    assert "target_end_date DATE" in sql
+    assert "trigger_source TEXT NOT NULL DEFAULT 'scheduled'" in sql

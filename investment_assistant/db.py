@@ -283,12 +283,21 @@ def insert_job_report(
     started_at,
     finished_at,
     summary: dict[str, Any],
+    target_start_date=None,
+    target_end_date=None,
+    trigger_source: str = "scheduled",
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO job_reports (task, run_id, status, started_at, finished_at, summary)
-            VALUES (%(task)s, %(run_id)s, %(status)s, %(started_at)s, %(finished_at)s, %(summary)s::jsonb)
+            INSERT INTO job_reports (
+              task, run_id, status, started_at, finished_at, summary,
+              target_start_date, target_end_date, trigger_source
+            )
+            VALUES (
+              %(task)s, %(run_id)s, %(status)s, %(started_at)s, %(finished_at)s, %(summary)s::jsonb,
+              %(target_start_date)s, %(target_end_date)s, %(trigger_source)s
+            )
             """,
             {
                 "task": task,
@@ -297,6 +306,9 @@ def insert_job_report(
                 "started_at": started_at,
                 "finished_at": finished_at,
                 "summary": json.dumps(summary or {}, ensure_ascii=False, default=str),
+                "target_start_date": target_start_date,
+                "target_end_date": target_end_date,
+                "trigger_source": trigger_source,
             },
         )
         cur.execute("DELETE FROM job_reports WHERE created_at < now() - INTERVAL '30 days'")
@@ -351,7 +363,8 @@ def list_job_reports(conn, *, task: str | None = None, limit: int = 50) -> list[
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT task, run_id, status, started_at, finished_at, summary, created_at
+            SELECT task, run_id, status, started_at, finished_at, summary, created_at,
+                   target_start_date, target_end_date, trigger_source
             FROM job_reports
             {where}
             ORDER BY created_at DESC
@@ -360,7 +373,8 @@ def list_job_reports(conn, *, task: str | None = None, limit: int = 50) -> list[
             {"task": task, "limit": limit},
         )
         rows = cur.fetchall()
-    keys = ["task", "run_id", "status", "started_at", "finished_at", "summary", "created_at"]
+    keys = ["task", "run_id", "status", "started_at", "finished_at", "summary", "created_at",
+            "target_start_date", "target_end_date", "trigger_source"]
     return [dict(zip(keys, row)) for row in rows]
 
 

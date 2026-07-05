@@ -40,3 +40,20 @@ def test_insert_job_report_writes_and_prunes():
     assert any("INSERT INTO job_reports" in s for s in sqls)
     assert any("DELETE FROM job_reports" in s and "30 days" in s for s in sqls)
     assert conn.commits == 1
+
+
+def test_insert_job_report_writes_target_dates_and_trigger():
+    from datetime import date
+
+    conn = FakeConn()
+    now = datetime(2026, 6, 29, 12, 0, tzinfo=UTC)
+    db.insert_job_report(
+        conn, task="filings", run_id="filings-1", status="success",
+        started_at=now, finished_at=now, summary={},
+        target_start_date=date(2026, 6, 1), target_end_date=date(2026, 6, 30),
+        trigger_source="manual",
+    )
+    sql, params = conn.store[0]
+    assert "target_start_date" in sql and "trigger_source" in sql
+    assert params["target_start_date"] == date(2026, 6, 1)
+    assert params["trigger_source"] == "manual"
