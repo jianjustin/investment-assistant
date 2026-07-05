@@ -2,12 +2,13 @@
   import * as api from '../lib/api'
   import StatusPill from '../lib/components/StatusPill.svelte'
   import Skeleton from '../lib/components/Skeleton.svelte'
-  import LineChart from '../lib/charts/LineChart.svelte'
-  import { fmtTime, todayLocalISO } from '../lib/format'
+  import { fmtTime } from '../lib/format'
   import Modal from '../lib/components/Modal.svelte'
   import FetchDateModal from '../lib/components/FetchDateModal.svelte'
 
   let { sub = 'tasks' }: { sub?: string } = $props()
+  // 旧 hash（ops/results）一律回落到任务中心
+  const view = $derived(sub === 'runs' ? 'runs' : 'tasks')
 
   const JOB_HELP: Record<string, { goal: string; details: string[] }> = {
     metrics: {
@@ -15,13 +16,14 @@
       details: [
         '拉取 SPY 收盘价与 200 日均线、VIX 恐慌指数，计算市场红绿灯信号（green / yellow / red）。',
         '对关注列表标的逐一扫描趋势状态（上升 / 震荡 / 下降），写入数据库，供看板与策略评分使用。',
+        '支持「按日期运行」历史回补：用该日历史行情重算信号与快照（周末自动跳过）。',
       ],
     },
     filings: {
       goal: '自动跟踪关注列表公司的 SEC 信息披露。',
       details: [
-        '从 SEC EDGAR 下载 10-Q / 10-K 等财报文件，按「标的 / 表单类型」归档到本地。',
-        '定时运行默认拉取昨日（T-1）披露；也可点任务行的「按日期拉取」回补历史。',
+        '从 SEC EDGAR 下载 10-Q / 10-K 等财报文件，按「标的 / 表单类型」归档到本地，并写入财报索引。',
+        '定时运行默认拉取昨日（T-1）披露；也可点「按日期运行」回补历史。',
       ],
     },
     scores: {
@@ -41,32 +43,31 @@
     },
   }
 
-  let helpJob = $state<string | null>(null)
+  const DATE_FETCH: Record<string, { description: string; defaultLabel: string }> = {
+    metrics: { description: '按历史日期回补市场信号与关注列表快照（周末自动跳过）。', defaultLabel: '今日' },
+    filings: { description: '从 SEC EDGAR 回补财报文件，按披露日匹配。', defaultLabel: '昨日（T-1）' },
+    scores: { description: '按历史日期回补策略评分（基于该日快照，宏观取当前状态）。', defaultLabel: '今日' },
+    event_study: { description: '重算事件研究：开始日为事件下界，结束日为 as-of。', defaultLabel: '默认（全量）' },
+  }
 
+  let helpJob = $state<string | null>(null)
+  let dateJob = $state<string | null>(null)
   let jobs = $state<any[]>([])
   let reports = $state<any[]>([])
-  let metrics = $state<any[]>([])
-  let results = $state<any[]>([])
+  let detailReport = $state<any | null>(null)
   let loading = $state(true)
   let runningName = $state<string | null>(null)
   let filterTask = $state<string>('')
+  let actionMsg = $state('')
 
   async function loadTasks() { jobs = (await api.getScheduledJobs()).jobs }
   async function loadRuns() { reports = (await api.getJobReports(filterTask || undefined, 50)).reports }
-  async function loadOps() { metrics = (await api.getJobMetrics(undefined, 7)).metrics }
-  async function loadResults() {
-    const names = ['metrics', 'filings', 'scores']
-    const latest = await Promise.all(names.map((n) => api.getJobReports(n, 1)))
-    results = latest.map((r, i) => ({ task: names[i], summary: r.reports[0]?.summary ?? null }))
-  }
 
   async function load() {
     loading = true
     try {
-      if (sub === 'tasks') await loadTasks()
-      else if (sub === 'runs') await loadRuns()
-      else if (sub === 'ops') await loadOps()
-      else await loadResults()
+      if (view === 'tasks') await loadTasks()
+      else await loadRuns()
     } finally { loading = false }
   }
 
@@ -75,45 +76,38 @@
     try { await api.runJob(name) } finally { runningName = null; await loadTasks() }
   }
 
-  // 手动抓取市场信号 / filings 回补：弹窗选日期
-  let mktModalOpen = $state(false)
-  let filingsModalOpen = $state(false)
-  let actionMsg = $state('')
-
-  async function fetchMarket(payload: Record<string, string>) {
-    mktModalOpen = false
-    actionMsg = '市场信号抓取中…'
+  async function submitDated(payload: Record<string, string>) {
+    const name = dateJob
+    dateJob = null
+    if (!name) return
     try {
-      const r: any = await api.fetchMarketSignals(payload)
-      const ok = r?.rows?.length ?? 0
-      const bad = r?.failures?.length ?? 0
-      actionMsg = `市场信号完成：成功 ${ok} 天${bad ? `，失败 ${bad} 天` : ''}`
+      const r = await api.runJob(name, payload)
+      actionMsg = `${name} 已提交（${r.run_id}），结果见「运行记录」`
     } catch (e: any) {
-      actionMsg = `市场信号抓取失败：${e?.message ?? e}`
+      actionMsg = `${name} 提交失败：${e?.message ?? e}`
     }
   }
 
-  async function submitFilings(payload: Record<string, string>) {
-    filingsModalOpen = false
-    try {
-      const r = await api.runJob('filings', payload)
-      actionMsg = `filings 回补已提交（${r.run_id}），结果见「运行记录」`
-    } catch (e: any) {
-      actionMsg = `filings 回补提交失败：${e?.message ?? e}`
-    }
+  function fmtTargetDates(r: any): string {
+    if (!r.target_start_date) return '—'
+    if (!r.target_end_date || r.target_end_date === r.target_start_date) return r.target_start_date
+    return `${r.target_start_date} ~ ${r.target_end_date}`
   }
 
-  $effect(() => { sub; load() })
+  function fmtDuration(r: any): string {
+    if (!r.started_at || !r.finished_at) return '—'
+    const s = (new Date(r.finished_at).getTime() - new Date(r.started_at).getTime()) / 1000
+    return `${s.toFixed(1)}s`
+  }
+
+  $effect(() => { view; load() })
 </script>
 
 {#if loading}
   <Skeleton />
-{:else if sub === 'tasks'}
+{:else if view === 'tasks'}
   <div class="space-y-4">
-    <div class="flex flex-wrap items-center gap-3">
-      <button class="px-3 py-1.5 rounded bg-accent/10 text-accent text-sm" onclick={() => mktModalOpen = true}>手动抓取市场信号</button>
-      {#if actionMsg}<span class="text-xs text-muted">{actionMsg}</span>{/if}
-    </div>
+    {#if actionMsg}<p class="text-xs text-muted">{actionMsg}</p>{/if}
     <table class="w-full text-sm">
       <thead><tr class="text-muted text-left"><th>任务</th><th>计划</th><th>下次</th><th>上次</th><th>状态</th><th></th></tr></thead>
       <tbody>
@@ -134,9 +128,7 @@
             <td>{fmtTime(j.last_run_at)}</td>
             <td>{j.enabled ? '启用' : '停用'}</td>
             <td class="whitespace-nowrap text-right space-x-3">
-              {#if j.name === 'filings'}
-                <button class="text-accent text-xs" onclick={() => filingsModalOpen = true}>按日期拉取</button>
-              {/if}
+              <button class="text-accent text-xs" onclick={() => dateJob = j.name}>按日期运行</button>
               <button class="text-accent text-xs" disabled={runningName === j.name} onclick={() => runNow(j.name)}>立即运行</button>
             </td>
           </tr>
@@ -145,25 +137,14 @@
     </table>
 
     <FetchDateModal
-      open={mktModalOpen}
-      title="手动抓取市场信号"
-      description="按日期计算并保存市场红绿灯信号（SPY / VIX）。"
-      defaultLabel="今日"
-      defaultPayload={{ date: todayLocalISO() }}
-      maxRangeDays={30}
-      onConfirm={fetchMarket}
-      onclose={() => mktModalOpen = false}
-    />
-
-    <FetchDateModal
-      open={filingsModalOpen}
-      title="filings · 按日期拉取"
-      description="从 SEC EDGAR 回补财报文件，按披露日匹配。"
-      defaultLabel="昨日（T-1）"
+      open={dateJob !== null}
+      title={`${dateJob ?? ''} · 按日期运行`}
+      description={dateJob ? (DATE_FETCH[dateJob]?.description ?? '') : ''}
+      defaultLabel={dateJob ? (DATE_FETCH[dateJob]?.defaultLabel ?? '默认') : '默认'}
       defaultPayload={{}}
       maxRangeDays={92}
-      onConfirm={submitFilings}
-      onclose={() => filingsModalOpen = false}
+      onConfirm={submitDated}
+      onclose={() => dateJob = null}
     />
 
     <Modal open={helpJob !== null} title={`${helpJob} · 任务说明`} onclose={() => helpJob = null}>
@@ -178,40 +159,45 @@
     </Modal>
     <p class="text-xs text-muted">改运行时间 / 开关请到「设置 · 定时任务」。</p>
   </div>
-{:else if sub === 'runs'}
+{:else}
   <div class="space-y-3">
     <select bind:value={filterTask} onchange={loadRuns} class="text-sm border border-border rounded px-2 py-1 bg-surface">
       <option value="">全部</option><option value="metrics">metrics</option>
       <option value="filings">filings</option><option value="scores">scores</option>
+      <option value="event_study">event_study</option>
     </select>
-    {#each reports as r}
-      <details class="border border-border rounded">
-        <summary class="px-3 py-2 flex gap-3 cursor-pointer text-sm">
-          <span class="font-medium">{r.task}</span>
-          <StatusPill status={r.status} />
-          <span class="text-muted">{fmtTime(r.started_at)} → {fmtTime(r.finished_at)}</span>
-        </summary>
-        <pre class="px-3 py-2 text-xs overflow-x-auto bg-surface-2">{JSON.stringify(r.summary, null, 2)}</pre>
-      </details>
-    {/each}
-  </div>
-{:else if sub === 'ops'}
-  <div class="grid gap-4 md:grid-cols-3">
-    {#each metrics as m}
-      <div class="border border-border rounded p-3">
-        <div class="font-medium">{m.task}</div>
-        <div class="text-sm text-muted">成功率 {m.total ? Math.round((m.success / m.total) * 100) : 0}% · 均耗时 {m.avg_seconds?.toFixed?.(1) ?? '—'}s</div>
-        <LineChart data={(m.error_days ?? []).map((d: any) => ({ time: d.day, value: d.count }))} />
-      </div>
-    {/each}
-  </div>
-{:else}
-  <div class="grid gap-4 md:grid-cols-3">
-    {#each results as r}
-      <div class="border border-border rounded p-3">
-        <div class="font-medium mb-1">{r.task}</div>
-        <pre class="text-xs overflow-x-auto">{r.summary ? JSON.stringify(r.summary, null, 2) : '暂无数据'}</pre>
-      </div>
-    {/each}
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-muted text-left">
+          <th>任务</th><th>状态</th><th>触发</th><th>运行时间</th><th>耗时</th><th>指定日期</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each reports as r}
+          <tr class="border-t border-border">
+            <td class="py-2 font-medium">{r.task}</td>
+            <td><StatusPill status={r.status} /></td>
+            <td>{r.trigger_source === 'manual' ? '手动' : '定时'}</td>
+            <td>{fmtTime(r.started_at)}</td>
+            <td>{fmtDuration(r)}</td>
+            <td>{fmtTargetDates(r)}</td>
+            <td class="text-right"><button class="text-accent text-xs" onclick={() => detailReport = r}>详情</button></td>
+          </tr>
+        {:else}
+          <tr><td colspan="7" class="py-4 text-muted text-sm">暂无运行记录</td></tr>
+        {/each}
+      </tbody>
+    </table>
+
+    <Modal open={detailReport !== null} title={`${detailReport?.task ?? ''} · 运行详情`} onclose={() => detailReport = null}>
+      {#if detailReport}
+        <div class="text-xs text-muted mb-2 space-y-1">
+          <div>run_id：{detailReport.run_id}</div>
+          <div>开始：{fmtTime(detailReport.started_at)} · 结束：{fmtTime(detailReport.finished_at)}</div>
+          <div>指定日期：{fmtTargetDates(detailReport)} · 触发：{detailReport.trigger_source === 'manual' ? '手动' : '定时'}</div>
+        </div>
+        <pre class="text-xs overflow-auto max-h-96 bg-surface-2 rounded p-2">{JSON.stringify(detailReport.summary, null, 2)}</pre>
+      {/if}
+    </Modal>
   </div>
 {/if}
