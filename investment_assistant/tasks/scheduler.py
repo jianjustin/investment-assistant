@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import logging
-import os
-import time
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from investment_assistant.config import AssistantConfig, load_config
+from investment_assistant.config import AssistantConfig
 from investment_assistant.db import connect, due_scheduled_jobs, reschedule_job
 from investment_assistant.tasks import event_study as event_study_task
 from investment_assistant.tasks import filings as filings_task
@@ -73,20 +72,24 @@ def run_due_jobs(conn, config: AssistantConfig, *, now: datetime, registry=REGIS
     return results
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO)
-    config = load_config(None)
-    database_url = os.environ["INVESTMENT_ASSISTANT_DATABASE_URL"]
-    tick_seconds = int(os.environ.get("SCHEDULER_TICK_SECONDS", "60"))
-    logger.info("scheduler started; tick=%ss", tick_seconds)
-    while True:
+_last_tick_at: datetime | None = None
+
+
+def last_tick_at() -> datetime | None:
+    """最近一次调度 tick 完成时间（UTC）；线程尚未跑过则为 None，供 health 心跳用。"""
+    return _last_tick_at
+
+
+def run_forever(stop_event, *, database_url: str, config: AssistantConfig,
+                tick_seconds: float = 60) -> None:
+    """调度循环：驻留 API 进程的守护线程入口，stop_event 置位后在一个 tick 内退出。"""
+    global _last_tick_at
+    logger.info("scheduler thread started; tick=%ss", tick_seconds)
+    while not stop_event.is_set():
         try:
             with connect(database_url) as conn:
                 run_due_jobs(conn, config, now=datetime.now(UTC))
         except Exception:  # 主循环兜底，记录后继续
             logger.exception("scheduler tick failed")
-        time.sleep(tick_seconds)
-
-
-if __name__ == "__main__":
-    main()
+        _last_tick_at = datetime.now(UTC)
+        stop_event.wait(tick_seconds)

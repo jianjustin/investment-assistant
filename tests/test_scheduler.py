@@ -1,3 +1,5 @@
+import threading
+import time
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -45,3 +47,65 @@ def test_run_due_jobs_unknown_name_records_error(monkeypatch):
     now = datetime(2026, 6, 29, 12, 0, tzinfo=UTC)
     out = scheduler.run_due_jobs(object(), AssistantConfig(), now=now, registry={})
     assert out[0]["status"] == "error" and "unregistered" in out[0]["error"]
+
+
+class _FakeConn:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def test_run_forever_ticks_and_stops_via_stop_event(monkeypatch):
+    ticks = []
+    monkeypatch.setattr(scheduler, "connect", lambda url: _FakeConn())
+    monkeypatch.setattr(scheduler, "run_due_jobs",
+                        lambda conn, config, *, now: ticks.append(now) or [])
+    stop = threading.Event()
+    t = threading.Thread(
+        target=scheduler.run_forever,
+        kwargs={"stop_event": stop, "database_url": "postgresql://fake",
+                "config": AssistantConfig(), "tick_seconds": 0.01},
+        daemon=True,
+    )
+    t.start()
+    for _ in range(200):  # 最多等 1s，等到第一个 tick
+        if ticks:
+            break
+        time.sleep(0.005)
+    stop.set()
+    t.join(timeout=1)
+    assert not t.is_alive()
+    assert ticks
+    assert scheduler.last_tick_at() is not None
+
+
+def test_run_forever_survives_tick_exception(monkeypatch):
+    calls = []
+
+    def _boom(url):
+        calls.append(1)
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(scheduler, "connect", _boom)
+    stop = threading.Event()
+    t = threading.Thread(
+        target=scheduler.run_forever,
+        kwargs={"stop_event": stop, "database_url": "postgresql://fake",
+                "config": AssistantConfig(), "tick_seconds": 0.01},
+        daemon=True,
+    )
+    t.start()
+    for _ in range(200):  # 等到第 2 次调用，证明首次异常没有终止循环
+        if len(calls) >= 2:
+            break
+        time.sleep(0.005)
+    stop.set()
+    t.join(timeout=1)
+    assert len(calls) >= 2
+    assert not t.is_alive()
+
+
+def test_scheduler_module_has_no_cli_main():
+    assert not hasattr(scheduler, "main")  # 独立调度进程入口已删除，防双跑
