@@ -26,3 +26,35 @@ def test_run_task_captures_exception(monkeypatch):
     assert out["status"] == "error"
     assert "kaboom" in out["summary"]["error"]
     assert recorded[0]["status"] == "error"
+
+
+def test_run_task_records_target_dates_and_trigger(monkeypatch):
+    from datetime import date
+
+    recorded = []
+    monkeypatch.setattr(_harness, "_record", lambda **kw: recorded.append(kw))
+    monkeypatch.setattr(_harness, "dispatch", lambda *a, **k: None)
+    _harness.run_task(
+        "filings", lambda: {}, config=AssistantConfig(),
+        target_start_date=date(2026, 6, 1), target_end_date=date(2026, 6, 30),
+        trigger_source="manual",
+    )
+    assert recorded[0]["target_start_date"] == date(2026, 6, 1)
+    assert recorded[0]["target_end_date"] == date(2026, 6, 30)
+    assert recorded[0]["trigger_source"] == "manual"
+
+
+def test_run_task_passes_dates_to_dispatch(monkeypatch):
+    from datetime import date
+
+    sent = {}
+    monkeypatch.setattr(_harness, "_record", lambda **kw: None)
+    monkeypatch.setattr(
+        _harness, "dispatch",
+        lambda task, status, summary, cfg, **kw: sent.update(kw),
+    )
+    _harness.run_task(
+        "metrics", lambda: {}, config=AssistantConfig(),
+        target_start_date=date(2026, 7, 3), target_end_date=date(2026, 7, 3),
+    )
+    assert sent == {"target_start_date": date(2026, 7, 3), "target_end_date": date(2026, 7, 3)}
