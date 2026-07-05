@@ -77,10 +77,15 @@ def main() -> None:
         summary = _core(config, asof=asof, since=since, kinds=args.kinds)
         out = {"task": "event_study", "status": "manual", "summary": summary}
     else:
+        target_start = since or date.today()
+        target_end = asof or target_start
         out = run_task(
             "event_study",
             lambda: _core(config, asof=asof, since=since, kinds=args.kinds),
             config=config,
+            target_start_date=target_start,
+            target_end_date=target_end,
+            trigger_source="manual",
         )
     print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
 

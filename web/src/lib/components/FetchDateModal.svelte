@@ -40,7 +40,7 @@
       if (!from || !to) return '请选择起止日期'
       const days = (new Date(to).getTime() - new Date(from).getTime()) / 86_400_000
       if (days < 0) return '结束日期不能早于开始日期'
-      if (days + 1 > maxRangeDays) return `超出上限：一次最多拉取 ${maxRangeDays} 天`
+      if (days > maxRangeDays) return `超出上限：一次最多拉取 ${maxRangeDays} 天`
     }
     return ''
   })
