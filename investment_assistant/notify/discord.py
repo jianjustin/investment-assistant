@@ -1,6 +1,8 @@
 from enum import Enum
 import requests
 
+from investment_assistant.notify.message import Notification
+
 
 class DiscordChannel(Enum):
     EARNINGS = "earnings"
@@ -47,6 +49,20 @@ class DiscordClient:
             signals_url=url("signals", "DISCORD_WEBHOOK_SIGNALS"),
             daily_url=url("daily", "DISCORD_WEBHOOK_DAILY"),
         )
+
+
+def render_discord(notification: Notification) -> dict:
+    return {
+        "embeds": [{
+            "title": notification.title,
+            "color": notification.color,
+            "fields": [
+                {"name": f.name, "value": f.value, "inline": f.inline}
+                for f in notification.fields
+            ],
+            "footer": {"text": notification.footer},
+        }]
+    }
 
 
 if __name__ == "__main__":

@@ -40,3 +40,21 @@ def test_send_signals_calls_signals_webhook():
         client.send(DiscordChannel.SIGNALS, {"content": "test"})
         call_url = mock_post.call_args[0][0]
         assert "signals" in call_url
+
+
+def test_render_discord_matches_embed_shape():
+    from investment_assistant.notify.discord import render_discord
+    from investment_assistant.notify.message import Notification, NotifyField
+
+    n = Notification(
+        title="📄 财报 · 2026-07-03",
+        color=15844367,
+        fields=[NotifyField("新提交 (1)", "• **TEST** 10-Q — 2026-07-03")],
+        footer="earning-agent • 2026-07-03",
+    )
+    payload = render_discord(n)
+    embed = payload["embeds"][0]
+    assert embed["title"] == "📄 财报 · 2026-07-03"
+    assert embed["color"] == 15844367
+    assert embed["fields"] == [{"name": "新提交 (1)", "value": "• **TEST** 10-Q — 2026-07-03", "inline": False}]
+    assert embed["footer"] == {"text": "earning-agent • 2026-07-03"}
