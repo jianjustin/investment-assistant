@@ -3,8 +3,16 @@
   import StatusPill from '../lib/components/StatusPill.svelte'
   import Skeleton from '../lib/components/Skeleton.svelte'
   import LineChart from '../lib/charts/LineChart.svelte'
+  import { fmtTime, todayLocalISO } from '../lib/format'
 
   let { sub = 'tasks' }: { sub?: string } = $props()
+
+  const JOB_HELP: Record<string, string> = {
+    metrics: '每日早间拉取 SPY/VIX 计算市场信号，并扫描关注列表标的的趋势状态，写入数据库',
+    filings: '从 SEC EDGAR 下载关注列表标的的财报文件（默认拉取昨日披露，可选日期回补历史）',
+    scores: '收盘后按策略规则对关注列表标的计算评分快照',
+    event_study: '重算事件研究（信号后收益分布统计）并缓存结果',
+  }
 
   let jobs = $state<any[]>([])
   let reports = $state<any[]>([])
@@ -33,12 +41,37 @@
     } finally { loading = false }
   }
 
+  // filings 回补：留空 = 默认昨日；只填「从」= 单日；两个都填 = 范围
+  let filingsFrom = $state('')
+  let filingsTo = $state('')
+
   async function runNow(name: string) {
     runningName = name
-    try { await api.runJob(name) } finally { runningName = null; await loadTasks() }
+    try {
+      let body: Record<string, string> = {}
+      if (name === 'filings' && filingsFrom) {
+        body = filingsTo ? { from: filingsFrom, to: filingsTo } : { date: filingsFrom }
+      }
+      await api.runJob(name, body)
+    } finally { runningName = null; await loadTasks() }
   }
 
-  async function fetchMarket() { await api.fetchMarketSignals({ mode: 'single' }) }
+  // 手动抓取市场信号：后端要求 date 或 from/to，默认今天
+  let mktFrom = $state(todayLocalISO())
+  let mktTo = $state(todayLocalISO())
+  let mktMsg = $state('')
+
+  async function fetchMarket() {
+    mktMsg = '抓取中…'
+    try {
+      const r: any = await api.fetchMarketSignals({ from: mktFrom, to: mktTo })
+      const ok = r?.rows?.length ?? 0
+      const bad = r?.failures?.length ?? 0
+      mktMsg = `完成：成功 ${ok} 天${bad ? `，失败 ${bad} 天` : ''}`
+    } catch (e: any) {
+      mktMsg = `失败：${e?.message ?? e}`
+    }
+  }
 
   $effect(() => { sub; load() })
 </script>
@@ -47,20 +80,40 @@
   <Skeleton />
 {:else if sub === 'tasks'}
   <div class="space-y-4">
-    <div class="flex gap-2">
+    <div class="flex flex-wrap items-center gap-2">
+      <input type="date" bind:value={mktFrom} class="border border-border rounded px-2 py-1 text-sm bg-surface" />
+      <span class="text-muted text-xs">至</span>
+      <input type="date" bind:value={mktTo} class="border border-border rounded px-2 py-1 text-sm bg-surface" />
       <button class="px-3 py-1.5 rounded bg-accent/10 text-accent text-sm" onclick={fetchMarket}>手动抓取市场信号</button>
+      {#if mktMsg}<span class="text-xs text-muted">{mktMsg}</span>{/if}
     </div>
     <table class="w-full text-sm">
       <thead><tr class="text-muted text-left"><th>任务</th><th>计划</th><th>下次</th><th>上次</th><th>状态</th><th></th></tr></thead>
       <tbody>
         {#each jobs as j}
           <tr class="border-t border-border">
-            <td class="py-2">{j.name}</td>
+            <td class="py-2">
+              {j.name}
+              {#if JOB_HELP[j.name]}
+                <span
+                  class="inline-flex items-center justify-center w-4 h-4 ml-1 rounded-full border border-border text-muted text-[10px] cursor-help align-middle"
+                  title={JOB_HELP[j.name]}
+                >?</span>
+              {/if}
+            </td>
             <td>{j.time_local} · {j.weekday_mask}</td>
-            <td>{j.next_run_at ?? '—'}</td>
-            <td>{j.last_run_at ?? '—'}</td>
+            <td>{fmtTime(j.next_run_at)}</td>
+            <td>{fmtTime(j.last_run_at)}</td>
             <td>{j.enabled ? '启用' : '停用'}</td>
-            <td><button class="text-accent text-xs" disabled={runningName === j.name} onclick={() => runNow(j.name)}>立即运行</button></td>
+            <td class="whitespace-nowrap text-right">
+              {#if j.name === 'filings'}
+                <input type="date" bind:value={filingsFrom} title="回补起始日（留空默认昨日）"
+                  class="border border-border rounded px-1 py-0.5 text-xs bg-surface" />
+                <input type="date" bind:value={filingsTo} title="回补结束日（留空则只拉单日）"
+                  class="border border-border rounded px-1 py-0.5 text-xs bg-surface" />
+              {/if}
+              <button class="text-accent text-xs" disabled={runningName === j.name} onclick={() => runNow(j.name)}>立即运行</button>
+            </td>
           </tr>
         {/each}
       </tbody>
@@ -78,7 +131,7 @@
         <summary class="px-3 py-2 flex gap-3 cursor-pointer text-sm">
           <span class="font-medium">{r.task}</span>
           <StatusPill status={r.status} />
-          <span class="text-muted">{r.started_at} → {r.finished_at ?? '—'}</span>
+          <span class="text-muted">{fmtTime(r.started_at)} → {fmtTime(r.finished_at)}</span>
         </summary>
         <pre class="px-3 py-2 text-xs overflow-x-auto bg-surface-2">{JSON.stringify(r.summary, null, 2)}</pre>
       </details>

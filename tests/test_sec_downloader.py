@@ -29,14 +29,39 @@ def test_download_filters_by_form_and_yesterday(tmp_path, monkeypatch):
                         lambda url, dest, *, headers: (written.append((url, dest)) or dest))
 
     dl = SecEdgarDownloader(getter=getter, cache_dir=tmp_path)
-    out = dl.download_filings_batch("AAPL", ["10-Q", "10-K"], date(2026, 6, 28), tmp_path / "filings")
+    out = dl.download_filings_batch(
+        "AAPL", ["10-Q", "10-K"], date(2026, 6, 28), date(2026, 6, 28), tmp_path / "filings"
+    )
     # 仅 2026-06-28 的 10-Q 命中（10-K 日期不符、8-K 表单不符）
     assert len(out) == 1
     assert "10-Q" in str(out[0])
 
 
+def test_download_date_range_hits_multiple_days(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEC_USER_AGENT", "test test@example.com")
+    tickers_json = {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple"}}
+    submissions_json = {"filings": {"recent": {
+        "form": ["10-Q", "8-K", "10-K"],
+        "filingDate": ["2026-06-28", "2026-06-28", "2026-06-01"],
+        "accessionNumber": ["acc-q", "acc-8k", "acc-k"],
+        "primaryDocument": ["q.htm", "8k.htm", "k.htm"],
+    }}}
+    getter = make_getter(tickers_json, submissions_json)
+    monkeypatch.setattr(sec_downloader, "_download_document",
+                        lambda url, dest, *, headers: dest)
+
+    dl = SecEdgarDownloader(getter=getter, cache_dir=tmp_path)
+    out = dl.download_filings_batch(
+        "AAPL", ["10-Q", "10-K"], date(2026, 6, 1), date(2026, 6, 28), tmp_path / "filings"
+    )
+    # 范围覆盖 06-01 与 06-28：10-K 与 10-Q 均命中
+    assert len(out) == 2
+
+
 def test_download_degrades_without_user_agent(tmp_path, monkeypatch):
     monkeypatch.delenv("SEC_USER_AGENT", raising=False)
     dl = SecEdgarDownloader(getter=lambda *a, **k: (None, {"ok": False}), cache_dir=tmp_path)
-    out = dl.download_filings_batch("AAPL", ["10-Q"], date(2026, 6, 28), tmp_path / "filings")
+    out = dl.download_filings_batch(
+        "AAPL", ["10-Q"], date(2026, 6, 28), date(2026, 6, 28), tmp_path / "filings"
+    )
     assert out == []

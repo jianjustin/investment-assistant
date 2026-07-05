@@ -3,6 +3,27 @@ import { render, screen, fireEvent } from '@testing-library/svelte'
 import Settings from './Settings.svelte'
 import * as api from '../lib/api'
 
+describe('Settings · Watchlist', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('renders a single table with delete action column', async () => {
+    vi.spyOn(api, 'getWatchlist').mockResolvedValue({
+      rows: [{ ticker: 'NVDA', status: 'active', thesis: null }],
+    } as any)
+
+    render(Settings, { props: { sub: 'watchlist' } })
+
+    await screen.findByText('NVDA')
+    // 只应有一个表格，删除按钮在表格行内（不再有独立裸列表）
+    expect(document.querySelectorAll('table').length).toBe(1)
+    const del = await screen.findByText('删除')
+    expect(del.closest('table')).toBeTruthy()
+    expect(document.querySelectorAll('ul li').length).toBe(0)
+  })
+})
+
 describe('Settings · Discord', () => {
   beforeEach(() => {
     vi.restoreAllMocks()

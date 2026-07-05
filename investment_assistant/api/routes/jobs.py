@@ -26,9 +26,11 @@ def metrics(task: str | None = None, window: str | None = None):
 @router.post("/api/jobs/{name}/run")
 def run_job(name: str, payload: dict[str, Any] = Body(default_factory=dict)):
     try:
-        return jobs.trigger_job(name)
-    except ValueError as exc:
+        return jobs.trigger_job(name, payload)
+    except jobs.UnknownJobError as exc:
         raise HTTPException(status_code=404, detail=str(exc))  # 旧契约：未知任务 404
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))  # 参数非法（如日期范围）
 
 
 @router.patch("/api/jobs/scheduled/{name}")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Callable
 
 from investment_assistant import db
@@ -42,11 +42,39 @@ def job_metrics(task: str | None = None, days: int = 7) -> dict[str, Any]:
     return {"metrics": metrics, "degraded": False}
 
 
-def trigger_job(name: str) -> dict[str, Any]:
+class UnknownJobError(ValueError):
+    """Requested job name is not registered."""
+
+
+MAX_FILINGS_RANGE_DAYS = 92  # 约一个季度，避免误触发海量 SEC 下载
+
+
+def _filings_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
+    raw_date = payload.get("date")
+    raw_from = payload.get("from") or payload.get("start_date")
+    raw_to = payload.get("to") or payload.get("end_date")
+    if raw_date:
+        start = end = date.fromisoformat(str(raw_date))
+    elif raw_from or raw_to:
+        if not raw_from or not raw_to:
+            raise ValueError("from and to are both required for a range")
+        start = date.fromisoformat(str(raw_from))
+        end = date.fromisoformat(str(raw_to))
+    else:
+        return {}
+    if end < start:
+        raise ValueError("to must be greater than or equal to from")
+    if (end - start).days > MAX_FILINGS_RANGE_DAYS:
+        raise ValueError(f"filings fetch range is limited to {MAX_FILINGS_RANGE_DAYS} days")
+    return {"start_date": start, "end_date": end}
+
+
+def trigger_job(name: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     if name not in REGISTRY:
-        raise ValueError(f"unknown job: {name}")
+        raise UnknownJobError(f"unknown job: {name}")
     config = load_config()
-    run_id = runner.submit(name, lambda: REGISTRY[name](config))
+    kwargs = _filings_kwargs(payload or {}) if name == "filings" else {}
+    run_id = runner.submit(name, lambda: REGISTRY[name](config, **kwargs))
     return {"run_id": run_id, "status": "pending"}
 
 

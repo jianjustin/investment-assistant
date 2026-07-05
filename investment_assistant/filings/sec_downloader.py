@@ -53,7 +53,7 @@ class SecEdgarDownloader:
         return None
 
     def download_filings_batch(
-        self, ticker: str, form_types: list[str], since_date: date, output_base: Path
+        self, ticker: str, form_types: list[str], start_date: date, end_date: date, output_base: Path
     ) -> list[Path]:
         ua = os.environ.get("SEC_USER_AGENT")
         if not ua:
@@ -69,10 +69,11 @@ class SecEdgarDownloader:
         dates = recent.get("filingDate", [])
         accns = recent.get("accessionNumber", [])
         docs = recent.get("primaryDocument", [])
-        target_day = since_date.isoformat()
+        first_day = start_date.isoformat()
+        last_day = end_date.isoformat()
         out: list[Path] = []
         for i, form in enumerate(forms):
-            if form not in form_types or str(dates[i]) != target_day:
+            if form not in form_types or not (first_day <= str(dates[i]) <= last_day):
                 continue
             accession = accns[i]
             doc = docs[i] if i < len(docs) and docs[i] else f"{accession}.txt"

@@ -89,8 +89,8 @@ export const getJobMetrics = (task?: string, window = 7) =>
   get<{ metrics: any[]; degraded: boolean }>(
     `/api/jobs/metrics?window=${window}${task ? `&task=${task}` : ''}`,
   )
-export const runJob = (name: string) =>
-  post<{ run_id: string; status: string }>(`/api/jobs/${name}/run`, {})
+export const runJob = (name: string, body: object = {}) =>
+  post<{ run_id: string; status: string }>(`/api/jobs/${name}/run`, body)
 export const patchScheduledJob = (name: string, body: object) =>
   patch<unknown>(`/api/jobs/scheduled/${name}`, body)
 

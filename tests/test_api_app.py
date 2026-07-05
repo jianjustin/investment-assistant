@@ -84,7 +84,7 @@ def test_get_unknown_run_returns_404(client):
 
 def test_jobs_run_requires_run_suffix_contract(client, monkeypatch):
     from investment_assistant.services import jobs as jobs_svc
-    monkeypatch.setattr(jobs_svc, "trigger_job", lambda name: {"run_id": f"{name}-1", "status": "pending"})
+    monkeypatch.setattr(jobs_svc, "trigger_job", lambda name, payload=None: {"run_id": f"{name}-1", "status": "pending"})
     resp = client.post("/api/jobs/metrics/run", json={})
     assert resp.status_code == 200
     assert resp.json()["run_id"] == "metrics-1"

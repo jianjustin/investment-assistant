@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +11,15 @@ from investment_assistant.filings.service import download_configured_filings
 from investment_assistant.tasks._harness import run_task
 
 
-def _core(config: AssistantConfig) -> dict[str, Any]:
-    result = download_configured_filings(config.watchlist, config.filings)
+def _core(
+    config: AssistantConfig,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict[str, Any]:
+    result = download_configured_filings(
+        config.watchlist, config.filings, start_date=start_date, end_date=end_date
+    )
     filings_meta: list[dict[str, Any]] = []
     for path in result.get("files", []):
         parts = Path(path).parts
@@ -25,15 +33,35 @@ def _core(config: AssistantConfig) -> dict[str, Any]:
     }
 
 
-def run(config: AssistantConfig) -> dict[str, Any]:
-    return run_task("filings", lambda: _core(config), config=config)
+def run(
+    config: AssistantConfig,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict[str, Any]:
+    return run_task(
+        "filings",
+        lambda: _core(config, start_date=start_date, end_date=end_date),
+        config=config,
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Daily 09:00 filings task")
     parser.add_argument("--config", default=None)
+    parser.add_argument("--date", default=None, help="拉取指定单日（YYYY-MM-DD），默认 T-1")
+    parser.add_argument("--from", dest="from_date", default=None, help="范围起始日（YYYY-MM-DD）")
+    parser.add_argument("--to", dest="to_date", default=None, help="范围结束日（YYYY-MM-DD）")
     args = parser.parse_args()
-    print(json.dumps(run(load_config(args.config)), ensure_ascii=False, indent=2, default=str))
+    if args.date:
+        start = end = date.fromisoformat(args.date)
+    else:
+        start = date.fromisoformat(args.from_date) if args.from_date else None
+        end = date.fromisoformat(args.to_date) if args.to_date else None
+    print(json.dumps(
+        run(load_config(args.config), start_date=start, end_date=end),
+        ensure_ascii=False, indent=2, default=str,
+    ))
 
 
 if __name__ == "__main__":

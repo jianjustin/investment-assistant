@@ -156,16 +156,12 @@
       <button onclick={() => drawerOpen = true} class="px-3 py-1 bg-accent text-white rounded text-sm">+ 添加</button>
     </div>
     <div class="bg-surface rounded-lg shadow-elev-1 overflow-hidden mb-4">
-      <DataTable rows={watchlist} columns={wlCols} />
+      <DataTable rows={watchlist} columns={wlCols}>
+        {#snippet actions(row)}
+          <button class="text-red-500 text-xs" onclick={() => removeItem(row.ticker as string)}>删除</button>
+        {/snippet}
+      </DataTable>
     </div>
-    <ul class="divide-y divide-border text-sm">
-      {#each watchlist as row}
-        <li class="flex justify-between items-center py-2 px-1">
-          <span class="font-mono text-xs">{row.ticker}</span>
-          <button class="text-red-500 text-xs" onclick={() => removeItem(row.ticker)}>删除</button>
-        </li>
-      {/each}
-    </ul>
   </div>
 
   <Drawer open={drawerOpen} onclose={() => drawerOpen = false}>
