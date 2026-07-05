@@ -27,7 +27,7 @@ def test_dispatch_routes_to_channel():
     client = FakeClient()
     summary = {"market_status": "green", "vix": 15.0, "tickers": [{"ticker": "NVDA", "trend_state": "uptrend"}]}
     out = notifier.dispatch("metrics", "success", summary, NotifyConfig(), client=client)
-    assert out["sent"] is True and out["channel"] == "daily"
+    assert out["sent"] is True and out["channel"] == "discord" and out["discord_channel"] == "daily"
     assert client.sent and "embeds" in client.sent[0][1]
 
 
@@ -87,3 +87,50 @@ def test_dispatch_passes_date_label_into_embed():
         client=client, target_start_date=date(2026, 7, 3), target_end_date=date(2026, 7, 3),
     )
     assert client.sent[0][1]["embeds"][0]["title"] == "📄 财报 · 2026-07-03"
+
+
+class FakeEmailClient:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, subject, html_body):
+        self.sent.append((subject, html_body))
+
+
+def test_dispatch_email_channel_sends_with_subject():
+    client = FakeEmailClient()
+    cfg = NotifyConfig(channel="email", email={"from_addr": "a@gmail.com", "to_addr": "b@outlook.com"})
+    out = notifier.dispatch("filings", "success", {"downloaded_count": 0, "filings": []}, cfg,
+                            client=client, target_start_date=date(2026, 7, 3), target_end_date=date(2026, 7, 3))
+    assert out == {"sent": True, "channel": "email"}
+    assert client.sent and client.sent[0][0] == "[Hermes] 📄 财报 · 2026-07-03"
+
+
+def test_dispatch_email_requires_password(monkeypatch):
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+    cfg = NotifyConfig(channel="email", email={"from_addr": "a@gmail.com", "to_addr": "b@outlook.com"})
+    out = notifier.dispatch("metrics", "success", {}, cfg)
+    assert out == {"sent": False, "reason": "email_no_password"}
+
+
+def test_dispatch_email_requires_recipient(monkeypatch):
+    monkeypatch.setenv("SMTP_PASSWORD", "x")
+    cfg = NotifyConfig(channel="email", email={"from_addr": "a@gmail.com", "to_addr": ""})
+    out = notifier.dispatch("metrics", "success", {}, cfg)
+    assert out == {"sent": False, "reason": "email_no_recipient"}
+
+
+def test_dispatch_email_send_failure_is_structured():
+    class Boom(FakeEmailClient):
+        def send(self, subject, html_body):
+            raise RuntimeError("smtp down")
+
+    cfg = NotifyConfig(channel="email", email={"from_addr": "a@gmail.com", "to_addr": "b@outlook.com"})
+    out = notifier.dispatch("metrics", "success", {}, cfg, client=Boom())
+    assert out["sent"] is False and "send_failed" in out["reason"]
+
+
+def test_dispatch_task_disabled_wins_over_channel():
+    cfg = NotifyConfig(channel="email", task_enabled={"metrics": False})
+    out = notifier.dispatch("metrics", "success", {}, cfg, client=FakeEmailClient())
+    assert out == {"sent": False, "reason": "task_disabled"}
