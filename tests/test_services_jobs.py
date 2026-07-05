@@ -26,7 +26,7 @@ def test_trigger_job_unknown_raises(monkeypatch):
 
 def test_trigger_job_submits(monkeypatch):
     captured = {}
-    monkeypatch.setattr(jobs, "REGISTRY", {"metrics": lambda config: {"ok": True}})
+    monkeypatch.setattr(jobs, "REGISTRY", {"metrics": lambda config, **kw: {"ok": True}})
     monkeypatch.setattr(jobs, "load_config", lambda: object())
     monkeypatch.setattr(jobs.runner, "submit", lambda kind, fn: captured.update({"kind": kind}) or "run-1")
     out = jobs.trigger_job("metrics")
@@ -45,7 +45,8 @@ def test_trigger_job_filings_passes_date_range(monkeypatch):
     out = jobs.trigger_job("filings", {"from": "2026-06-01", "to": "2026-06-30"})
     submitted["fn"]()  # 同步执行以观察参数
     assert out["run_id"] == "run-2"
-    assert seen == {"start_date": date(2026, 6, 1), "end_date": date(2026, 6, 30)}
+    assert seen == {"start_date": date(2026, 6, 1), "end_date": date(2026, 6, 30),
+                    "trigger_source": "manual"}
 
 
 def test_trigger_job_filings_single_date(monkeypatch):
@@ -59,7 +60,8 @@ def test_trigger_job_filings_single_date(monkeypatch):
 
     jobs.trigger_job("filings", {"date": "2026-06-15"})
     submitted["fn"]()
-    assert seen == {"start_date": date(2026, 6, 15), "end_date": date(2026, 6, 15)}
+    assert seen == {"start_date": date(2026, 6, 15), "end_date": date(2026, 6, 15),
+                    "trigger_source": "manual"}
 
 
 def test_trigger_job_filings_rejects_bad_range(monkeypatch):
@@ -85,3 +87,27 @@ def test_patch_scheduled_job_passthrough(monkeypatch):
                         lambda conn, name, **kw: seen.update({"name": name, **kw}))
     out = jobs.patch_scheduled_job("metrics", time_local="09:30")
     assert out["updated"] is True and seen == {"name": "metrics", "enabled": None, "time_local": "09:30"}
+
+
+def test_trigger_job_metrics_accepts_dates(monkeypatch):
+    from datetime import date
+
+    seen = {}
+    monkeypatch.setattr(jobs, "REGISTRY", {"metrics": lambda config, **kw: seen.update(kw) or {}})
+    monkeypatch.setattr(jobs, "load_config", lambda: object())
+    submitted = {}
+    monkeypatch.setattr(jobs.runner, "submit", lambda kind, fn: submitted.update({"fn": fn}) or "run-9")
+    jobs.trigger_job("metrics", {"date": "2026-06-15"})
+    submitted["fn"]()
+    assert seen == {"start_date": date(2026, 6, 15), "end_date": date(2026, 6, 15),
+                    "trigger_source": "manual"}
+
+
+def test_trigger_job_rejects_future_date(monkeypatch):
+    from datetime import date, timedelta
+
+    monkeypatch.setattr(jobs, "REGISTRY", {"metrics": lambda config, **kw: {}})
+    monkeypatch.setattr(jobs, "load_config", lambda: object())
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    with pytest.raises(ValueError):
+        jobs.trigger_job("metrics", {"date": tomorrow})

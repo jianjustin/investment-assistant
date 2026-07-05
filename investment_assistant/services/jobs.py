@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, date, datetime, timedelta
+from datetime import date
 from typing import Any, Callable
 
 from investment_assistant import db
@@ -34,22 +34,14 @@ def job_reports(task: str | None = None, limit: int = 50) -> dict[str, Any]:
     return {"reports": reports, "degraded": False}
 
 
-def job_metrics(task: str | None = None, days: int = 7) -> dict[str, Any]:
-    if not _has_db():
-        return {"metrics": [], "degraded": True}
-    since = datetime.now(UTC) - timedelta(days=days)
-    metrics = _with_conn(lambda conn: db.job_report_metrics(conn, task=task, since=since))
-    return {"metrics": metrics, "degraded": False}
-
-
 class UnknownJobError(ValueError):
     """Requested job name is not registered."""
 
 
-MAX_FILINGS_RANGE_DAYS = 92  # 约一个季度，避免误触发海量 SEC 下载
+MAX_RANGE_DAYS = 92  # 所有任务共用：一次最多回补约一个季度
 
 
-def _filings_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
+def _date_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
     raw_date = payload.get("date")
     raw_from = payload.get("from") or payload.get("start_date")
     raw_to = payload.get("to") or payload.get("end_date")
@@ -64,8 +56,10 @@ def _filings_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
         return {}
     if end < start:
         raise ValueError("to must be greater than or equal to from")
-    if (end - start).days > MAX_FILINGS_RANGE_DAYS:
-        raise ValueError(f"filings fetch range is limited to {MAX_FILINGS_RANGE_DAYS} days")
+    if (end - start).days > MAX_RANGE_DAYS:
+        raise ValueError(f"date range is limited to {MAX_RANGE_DAYS} days")
+    if end > date.today():
+        raise ValueError("date must not be in the future")
     return {"start_date": start, "end_date": end}
 
 
@@ -73,8 +67,8 @@ def trigger_job(name: str, payload: dict[str, Any] | None = None) -> dict[str, A
     if name not in REGISTRY:
         raise UnknownJobError(f"unknown job: {name}")
     config = load_config()
-    kwargs = _filings_kwargs(payload or {}) if name == "filings" else {}
-    run_id = runner.submit(name, lambda: REGISTRY[name](config, **kwargs))
+    kwargs = _date_kwargs(payload or {})
+    run_id = runner.submit(name, lambda: REGISTRY[name](config, trigger_source="manual", **kwargs))
     return {"run_id": run_id, "status": "pending"}
 
 

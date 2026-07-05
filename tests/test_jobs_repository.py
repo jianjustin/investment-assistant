@@ -1,5 +1,3 @@
-from datetime import UTC, datetime
-
 from investment_assistant import db
 
 
@@ -56,12 +54,6 @@ def test_list_job_reports_no_task_omits_where():
     db.list_job_reports(conn)
     assert "WHERE task" not in conn.store[0][0]
 
-
-def test_job_report_metrics_aggregates():
-    rows = [("metrics", 5, 4, 12.5, [{"day": "2026-06-28", "count": 1}])]
-    conn = FakeConn(rows=rows)
-    out = db.job_report_metrics(conn, since=datetime(2026, 6, 22, tzinfo=UTC))
-    assert out[0]["task"] == "metrics" and out[0]["success"] == 4 and out[0]["avg_seconds"] == 12.5
 
 
 def test_update_scheduled_job_partial_and_clears_next_run_on_time_change():

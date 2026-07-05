@@ -378,32 +378,6 @@ def list_job_reports(conn, *, task: str | None = None, limit: int = 50) -> list[
     return [dict(zip(keys, row)) for row in rows]
 
 
-def job_report_metrics(conn, *, task: str | None = None, since) -> list[dict[str, Any]]:
-    where = "WHERE created_at >= %(since)s" + (" AND task = %(task)s" if task else "")
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT
-              task,
-              count(*) AS total,
-              count(*) FILTER (WHERE status = 'success') AS success,
-              avg(EXTRACT(EPOCH FROM (finished_at - started_at))) AS avg_seconds,
-              coalesce(
-                jsonb_agg(jsonb_build_object('day', to_char(created_at, 'YYYY-MM-DD'), 'count', 1))
-                  FILTER (WHERE status = 'error'),
-                '[]'::jsonb
-              ) AS error_days
-            FROM job_reports
-            {where}
-            GROUP BY task
-            ORDER BY task
-            """,
-            {"task": task, "since": since},
-        )
-        rows = cur.fetchall()
-    keys = ["task", "total", "success", "avg_seconds", "error_days"]
-    return [dict(zip(keys, row)) for row in rows]
-
 
 def update_scheduled_job(conn, name: str, *, enabled=None, time_local=None) -> None:
     sets = ["updated_at = now()"]

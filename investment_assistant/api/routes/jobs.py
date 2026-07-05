@@ -18,10 +18,6 @@ def reports(task: str | None = None, limit: str | None = None):
     return jobs.job_reports(task=task, limit=parse_int(limit, default=50, minimum=1, maximum=200))
 
 
-@router.get("/api/jobs/metrics")
-def metrics(task: str | None = None, window: str | None = None):
-    return jobs.job_metrics(task=task, days=parse_int(window, default=7, minimum=1, maximum=90))
-
 
 @router.post("/api/jobs/{name}/run")
 def run_job(name: str, payload: dict[str, Any] = Body(default_factory=dict)):
