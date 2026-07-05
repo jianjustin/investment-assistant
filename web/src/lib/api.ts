@@ -59,12 +59,10 @@ export const getStatus = () => get<unknown>('/api/status')
 export const getRawStatus = () => get<unknown>('/api/raw/status')
 export const getHealth = () => get<unknown>('/api/health')
 export const getServices = () => get<unknown>('/api/services')
-export const getFilings = () => get<unknown>('/api/filings')
 export const getOperations = () => get<unknown>('/api/operations')
 export const getMarketSignals = (limit = 90) => get<unknown>(`/api/market/signals?limit=${limit}`)
 export const getMarketSignalsLatest = () => get<unknown>('/api/market/signals/latest')
 export const getMarketSignalsTrend = (window = 30) => get<unknown>(`/api/market/signals/trend?window=${window}`)
-export const fetchMarketSignals = (body: object) => post<unknown>('/api/market/signals/fetch', body)
 export const getTickerTrends = () => get<unknown>('/api/tickers/trends')
 export const scanTickerTrends = (body: object) => post<unknown>('/api/tickers/trends/scan', body)
 export const getStrategyScores = () => get<unknown>('/api/strategies/scores')
@@ -85,10 +83,6 @@ export const getJobReports = (task?: string, limit = 50) =>
   get<{ reports: any[]; degraded: boolean }>(
     `/api/jobs/reports?limit=${limit}${task ? `&task=${task}` : ''}`,
   )
-export const getJobMetrics = (task?: string, window = 7) =>
-  get<{ metrics: any[]; degraded: boolean }>(
-    `/api/jobs/metrics?window=${window}${task ? `&task=${task}` : ''}`,
-  )
 export const runJob = (name: string, body: object = {}) =>
   post<{ run_id: string; status: string }>(`/api/jobs/${name}/run`, body)
 export const patchScheduledJob = (name: string, body: object) =>
@@ -107,3 +101,30 @@ export const getEventStudy = (kind: string, since?: string, asof?: string) =>
   get<{ result: any; degraded: boolean; source: string }>(
     `/api/research/event-study?kind=${kind}${since ? `&since=${since}` : ''}${asof ? `&asof=${asof}` : ''}`,
   )
+
+// filings
+export interface FilingRecord {
+  id: number
+  ticker: string
+  form: string
+  filing_date: string
+  accession_number: string
+  primary_document: string
+  file_path: string
+  downloaded_at: string
+  created_at: string
+}
+export const getFilingRecords = (
+  params: { ticker?: string; form?: string; from?: string; to?: string; limit?: number } = {},
+) => {
+  const q = new URLSearchParams()
+  if (params.ticker) q.set('ticker', params.ticker)
+  if (params.form) q.set('form', params.form)
+  if (params.from) q.set('from', params.from)
+  if (params.to) q.set('to', params.to)
+  q.set('limit', String(params.limit ?? 100))
+  return get<{ records: FilingRecord[]; tickers: string[]; degraded: boolean }>(
+    `/api/filings/records?${q.toString()}`,
+  )
+}
+export const filingDownloadUrl = (id: number) => `/api/filings/records/${id}/download`
