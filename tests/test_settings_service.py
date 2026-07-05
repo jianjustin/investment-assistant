@@ -163,6 +163,13 @@ def test_test_notify_channel_email_requires_recipient(monkeypatch):
     assert out["ok"] is False and "recipient" in out["error"]
 
 
+def test_test_notify_channel_email_requires_sender(monkeypatch):
+    monkeypatch.setenv("SMTP_PASSWORD", "x")
+    monkeypatch.delenv("INVESTMENT_ASSISTANT_DATABASE_URL", raising=False)
+    out = settings.test_notify_channel("email", email={"to_addr": "you@outlook.com", "from_addr": ""})
+    assert out["ok"] is False and "sender" in out["error"]
+
+
 def test_read_env_status_includes_smtp_password(monkeypatch):
     monkeypatch.delenv("SMTP_PASSWORD", raising=False)
     assert settings.read_env_status()["SMTP_PASSWORD"] is False

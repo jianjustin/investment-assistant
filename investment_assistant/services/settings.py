@@ -119,6 +119,8 @@ def _test_email(override: dict[str, Any], *, client=None) -> dict[str, Any]:
             return {"ok": False, "error": "SMTP_PASSWORD not set"}
         if not merged.get("to_addr"):
             return {"ok": False, "error": "no recipient configured"}
+        if not merged.get("from_addr"):
+            return {"ok": False, "error": "no sender configured"}
         client = EmailClient.from_config(replace(cfg, email=merged))
     try:
         client.send("[Hermes] ✅ 测试邮件", "<p>Hermes 测试邮件：SMTP 配置正常，可安全忽略。</p>")

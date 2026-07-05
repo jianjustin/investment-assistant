@@ -59,6 +59,8 @@ def _send_email(notification: Notification, notify_cfg, *, client=None) -> dict[
             return {"sent": False, "reason": "email_no_password"}
         if not (notify_cfg.email or {}).get("to_addr"):
             return {"sent": False, "reason": "email_no_recipient"}
+        if not (notify_cfg.email or {}).get("from_addr"):
+            return {"sent": False, "reason": "email_no_sender"}
         client = EmailClient.from_config(notify_cfg)
     subject, html_body = render_email(notification)
     try:

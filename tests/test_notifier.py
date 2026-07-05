@@ -120,6 +120,13 @@ def test_dispatch_email_requires_recipient(monkeypatch):
     assert out == {"sent": False, "reason": "email_no_recipient"}
 
 
+def test_dispatch_email_requires_sender(monkeypatch):
+    monkeypatch.setenv("SMTP_PASSWORD", "x")
+    cfg = NotifyConfig(channel="email", email={"from_addr": "", "to_addr": "b@outlook.com"})
+    out = notifier.dispatch("metrics", "success", {}, cfg)
+    assert out == {"sent": False, "reason": "email_no_sender"}
+
+
 def test_dispatch_email_send_failure_is_structured():
     class Boom(FakeEmailClient):
         def send(self, subject, html_body):
