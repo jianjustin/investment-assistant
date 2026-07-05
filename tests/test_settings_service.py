@@ -79,3 +79,76 @@ def test_read_env_status_booleans(monkeypatch):
     monkeypatch.delenv("INVESTMENT_ASSISTANT_DATABASE_URL", raising=False)
     out = settings.read_env_status()
     assert out["SEC_USER_AGENT"] is True and out["INVESTMENT_ASSISTANT_DATABASE_URL"] is False
+
+
+def test_effective_notify_config_overlays_channel_and_email(monkeypatch):
+    monkeypatch.setenv("INVESTMENT_ASSISTANT_DATABASE_URL", "postgres://x")
+    monkeypatch.setattr(settings, "_with_conn", lambda fn: fn("CONN"))
+    monkeypatch.setattr(settings.db, "get_notify_settings", lambda conn: {
+        "channel": "email", "email": {"to_addr": "you@outlook.com"},
+    })
+    out = settings.effective_notify_config(NotifyConfig())
+    assert out.channel == "email"
+    assert out.email["to_addr"] == "you@outlook.com"
+    assert out.email["host"] == "smtp.gmail.com"  # 与基础默认合并
+
+
+def test_read_notify_view_includes_channel_and_email(monkeypatch):
+    monkeypatch.setenv("INVESTMENT_ASSISTANT_DATABASE_URL", "postgres://x")
+    monkeypatch.setattr(settings, "_with_conn", lambda fn: fn("CONN"))
+    monkeypatch.setattr(settings.db, "get_notify_settings", lambda conn: {
+        "channel": "email", "email": {"from_addr": "me@gmail.com", "to_addr": "you@outlook.com"},
+    })
+    view = settings.read_notify_view()
+    assert view["channel"] == "email"
+    assert view["email"]["to_addr"] == "you@outlook.com"
+
+
+def test_update_notify_rejects_invalid_channel(monkeypatch):
+    monkeypatch.setenv("INVESTMENT_ASSISTANT_DATABASE_URL", "postgres://x")
+    out = settings.update_notify({"channel": "sms"})
+    assert out == {"updated": False, "error": "invalid channel"}
+
+
+def test_update_notify_passes_channel_and_email(monkeypatch):
+    monkeypatch.setenv("INVESTMENT_ASSISTANT_DATABASE_URL", "postgres://x")
+    monkeypatch.setattr(settings, "_with_conn", lambda fn: fn("CONN"))
+    captured = {}
+
+    def fake_update(conn, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(settings.db, "update_notify_settings", fake_update)
+    settings.update_notify({"channel": "email", "email": {"to_addr": "you@outlook.com", "from_addr": "  "}})
+    assert captured["channel"] == "email"
+    assert captured["email"] == {"to_addr": "you@outlook.com"}  # 空白值不覆盖
+
+
+def test_test_notify_channel_email_uses_client():
+    sent = []
+
+    class FakeEmail:
+        def send(self, subject, html_body):
+            sent.append((subject, html_body))
+
+    out = settings.test_notify_channel("email", client=FakeEmail())
+    assert out["ok"] is True and sent and sent[0][0].startswith("[Hermes]")
+
+
+def test_test_notify_channel_email_requires_password(monkeypatch):
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+    monkeypatch.delenv("INVESTMENT_ASSISTANT_DATABASE_URL", raising=False)
+    out = settings.test_notify_channel("email", email={"to_addr": "you@outlook.com"})
+    assert out["ok"] is False and "SMTP_PASSWORD" in out["error"]
+
+
+def test_test_notify_channel_email_requires_recipient(monkeypatch):
+    monkeypatch.setenv("SMTP_PASSWORD", "x")
+    monkeypatch.delenv("INVESTMENT_ASSISTANT_DATABASE_URL", raising=False)
+    out = settings.test_notify_channel("email")
+    assert out["ok"] is False and "recipient" in out["error"]
+
+
+def test_read_env_status_includes_smtp_password(monkeypatch):
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+    assert settings.read_env_status()["SMTP_PASSWORD"] is False

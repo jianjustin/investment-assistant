@@ -22,7 +22,7 @@ def test_notify(payload: dict[str, Any] = Body(default_factory=dict)):
     channel = payload.get("channel")
     if not channel:
         raise HTTPException(status_code=400, detail="channel required")
-    return settings.test_notify_channel(channel, url=payload.get("url"))
+    return settings.test_notify_channel(channel, url=payload.get("url"), email=payload.get("email"))
 
 
 @router.get("/api/settings/env")
