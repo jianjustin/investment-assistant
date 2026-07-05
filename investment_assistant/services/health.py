@@ -161,6 +161,33 @@ def check_filings_storage() -> dict[str, Any]:
     )
 
 
+def check_scheduler() -> dict[str, Any]:
+    """调度线程心跳：驻留 API 进程的守护线程，超过 3 个 tick 无心跳视为 down。"""
+    from investment_assistant.tasks import scheduler as _scheduler
+
+    enabled = (
+        os.environ.get("SCHEDULER_ENABLED", "1") != "0"
+        and bool(os.environ.get("INVESTMENT_ASSISTANT_DATABASE_URL"))
+    )
+    if not enabled:
+        return _check("scheduler", "调度线程", "infrastructure", "degraded",
+                      "未启用（SCHEDULER_ENABLED=0 或未配置数据库）",
+                      meta={"enabled": False, "last_tick_at": None})
+    last = _scheduler.last_tick_at()
+    if last is None:
+        return _check("scheduler", "调度线程", "infrastructure", "degraded",
+                      "已启用但尚未完成首个 tick",
+                      meta={"enabled": True, "last_tick_at": None})
+    tick = int(os.environ.get("SCHEDULER_TICK_SECONDS", "60"))
+    age = (datetime.now(UTC) - last).total_seconds()
+    meta = {"enabled": True, "last_tick_at": last.isoformat()}
+    if age > tick * 3:
+        return _check("scheduler", "调度线程", "infrastructure", "down",
+                      f"心跳超时：上次 tick 在 {int(age)} 秒前", meta=meta)
+    return _check("scheduler", "调度线程", "infrastructure", "up",
+                  f"运行中，上次 tick 在 {int(age)} 秒前", meta=meta)
+
+
 # --- online services ------------------------------------------------------
 
 
@@ -227,6 +254,7 @@ CHECKS: list[Callable[[], dict[str, Any]]] = [
     lambda: check_systemd_service("dashboard_service", DASHBOARD_SERVICE, "Dashboard 服务"),
     lambda: check_systemd_service("postgres_service", POSTGRES_SERVICE, "Postgres 服务单元"),
     check_daily_timer,
+    check_scheduler,
     check_filings_storage,
     check_deepseek,
     check_sec_edgar,
