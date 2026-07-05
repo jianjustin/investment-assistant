@@ -46,30 +46,38 @@ def test_date_label_single_range_and_default():
     assert templates.date_label_for(None, None) == date.today().isoformat()
 
 
-def test_filings_embed_uses_actual_date_label():
-    payload = templates.filings_digest_embed(
+def test_filings_digest_uses_actual_date_label():
+    n = templates.filings_digest(
         {"downloaded_count": 0, "filings": []}, date_label="2026-06-01 ~ 2026-06-30")
-    assert payload["embeds"][0]["title"] == "📄 财报 · 2026-06-01 ~ 2026-06-30"
-    assert "昨日" not in payload["embeds"][0]["title"]
+    assert n.title == "📄 财报 · 2026-06-01 ~ 2026-06-30"
+    assert n.fields[0].name == "新提交 (0)"
+    assert n.fields[0].value == "该日期无新财报"
 
 
-def test_metrics_embed_renders_backfill_days():
+def test_metrics_summary_renders_backfill_days():
     summary = {"days": [
         {"date": "2026-06-01", "market_status": "green"},
         {"date": "2026-06-02", "error": "no data"},
     ]}
-    payload = templates.metrics_summary_embed(summary, date_label="2026-06-01 ~ 2026-06-02")
-    field = payload["embeds"][0]["fields"][0]
-    assert "回补" in field["name"]
-    assert "2026-06-01" in field["value"] and "GREEN" in field["value"]
-    assert "no data" in field["value"]
+    n = templates.metrics_summary(summary, date_label="2026-06-01 ~ 2026-06-02")
+    assert "回补" in n.fields[0].name
+    assert "2026-06-01" in n.fields[0].value and "GREEN" in n.fields[0].value
+    assert "no data" in n.fields[0].value
 
 
-def test_scores_embed_renders_backfill_days():
+def test_metrics_summary_renders_watchlist():
+    summary = {"market_status": "green", "vix": 15.0, "tickers": [{"ticker": "NVDA", "trend_state": "uptrend"}]}
+    n = templates.metrics_summary(summary, date_label="2026-07-03")
+    assert n.title == "🗓 每日指标 · 2026-07-03"
+    assert n.fields[0].name == "市场环境" and "GREEN | VIX 15.0" == n.fields[0].value
+    assert "**NVDA** — uptrend" in n.fields[1].value
+
+
+def test_scores_summary_renders_backfill_days():
     summary = {"days": [{"date": "2026-06-01", "count": 4, "failures": 0}]}
-    payload = templates.scores_summary_embed(summary, date_label="2026-06-01")
-    assert payload["embeds"][0]["title"] == "📈 策略评分 · 2026-06-01"
-    assert "4" in payload["embeds"][0]["fields"][0]["value"]
+    n = templates.scores_summary(summary, date_label="2026-06-01")
+    assert n.title == "📈 策略评分 · 2026-06-01"
+    assert "4" in n.fields[0].value
 
 
 def test_dispatch_passes_date_label_into_embed():

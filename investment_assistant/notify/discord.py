@@ -67,7 +67,8 @@ def render_discord(notification: Notification) -> dict:
 
 if __name__ == "__main__":
     import argparse
-    from investment_assistant.notify.templates import earnings_alert_embed, signal_alert_embed, daily_summary_embed
+
+    from investment_assistant.notify.templates import filings_digest, metrics_summary, scores_summary
 
     parser = argparse.ArgumentParser(description="发送测试消息到指定 Discord 频道")
     parser.add_argument(
@@ -82,20 +83,12 @@ if __name__ == "__main__":
     ch = DiscordChannel(args.channel)
 
     if ch == DiscordChannel.EARNINGS:
-        payload = earnings_alert_embed(
-            ticker="TEST",
-            earnings_date="2026-05-20",
-            direction="Watch",
-            eps_beat="$1.00 vs $0.95E (+5.3%)",
-            revenue_beat="$10.0B vs $9.8BE (+2.0%)",
-            guidance="上调",
-            confidence=3,
-            highlights=["这是测试消息", "验证 Discord webhook 连接", "可以安全忽略"],
-        )
+        n = filings_digest({"downloaded_count": 1, "filings": [
+            {"ticker": "TEST", "form": "10-Q", "filing_date": "2026-07-05"}]})
     elif ch == DiscordChannel.SIGNALS:
-        payload = signal_alert_embed("TEST", 1.5, True, False, "green")
+        n = scores_summary({"rows": [{"ticker": "TEST", "score": 88}]})
     else:
-        payload = daily_summary_embed("green", 15.0, [])
-
-    client.send(ch, payload)
+        n = metrics_summary({"market_status": "green", "vix": 15.0,
+                             "tickers": [{"ticker": "TEST", "trend_state": "uptrend"}]})
+    client.send(ch, render_discord(n))
     print(f"✅ 测试消息已发送至 #{args.channel}")
