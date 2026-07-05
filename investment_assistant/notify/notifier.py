@@ -4,6 +4,7 @@ from typing import Any
 
 from investment_assistant.notify.discord import DiscordChannel, DiscordClient
 from investment_assistant.notify.templates import (
+    date_label_for,
     filings_digest_embed,
     metrics_summary_embed,
     scores_summary_embed,
@@ -16,7 +17,8 @@ _EMBED_BUILDERS = {
 }
 
 
-def dispatch(task: str, status: str, summary: dict[str, Any], notify_cfg, *, client=None) -> dict[str, Any]:
+def dispatch(task: str, status: str, summary: dict[str, Any], notify_cfg, *,
+             client=None, target_start_date=None, target_end_date=None) -> dict[str, Any]:
     if not notify_cfg.discord_enabled:
         return {"sent": False, "reason": "discord_disabled"}
     if notify_cfg.task_enabled.get(task) is False:
@@ -26,7 +28,10 @@ def dispatch(task: str, status: str, summary: dict[str, Any], notify_cfg, *, cli
         return {"sent": False, "reason": "no_channel"}
 
     builder = _EMBED_BUILDERS.get(task)
-    payload = builder(summary) if builder else {"content": f"[{task}] {status}"}
+    if builder:
+        payload = builder(summary, date_label=date_label_for(target_start_date, target_end_date))
+    else:
+        payload = {"content": f"[{task}] {status}"}
     try:
         cli = client or DiscordClient.from_config(notify_cfg)
         cli.send(DiscordChannel(channel_name), payload)

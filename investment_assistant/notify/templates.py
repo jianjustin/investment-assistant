@@ -1,6 +1,14 @@
 from datetime import date
 
 
+def date_label_for(start: date | None, end: date | None) -> str:
+    if start is None:
+        return date.today().isoformat()
+    if end is None or end == start:
+        return start.isoformat()
+    return f"{start.isoformat()} ~ {end.isoformat()}"
+
+
 def _footer() -> dict:
     return {"text": f"earning-agent • {date.today().isoformat()}"}
 
@@ -92,32 +100,45 @@ def daily_summary_embed(
     }
 
 
-def metrics_summary_embed(summary: dict) -> dict:
-    status = str(summary.get("market_status", "?")).upper()
-    vix = summary.get("vix")
-    tickers = summary.get("tickers", [])
-    rows = "\n".join(f"• **{t.get('ticker')}** — {t.get('trend_state', '?')}" for t in tickers[:10]) or "无"
+def metrics_summary_embed(summary: dict, *, date_label: str | None = None) -> dict:
+    label = date_label or date.today().isoformat()
+    days = summary.get("days")
+    if days:
+        rows = "\n".join(
+            f"• {d.get('date')} — " + (f"❌ {d.get('error')}" if d.get("error")
+                                       else str(d.get("market_status", "?")).upper())
+            for d in days[:15]
+        ) or "无"
+        fields = [{"name": f"回补 ({len(days)} 天)", "value": rows, "inline": False}]
+    else:
+        status = str(summary.get("market_status", "?")).upper()
+        vix = summary.get("vix")
+        tickers = summary.get("tickers", [])
+        rows = "\n".join(f"• **{t.get('ticker')}** — {t.get('trend_state', '?')}" for t in tickers[:10]) or "无"
+        fields = [
+            {"name": "市场环境", "value": f"{status} | VIX {vix}", "inline": False},
+            {"name": f"关注列表 ({len(tickers)})", "value": rows, "inline": False},
+        ]
     return {
         "embeds": [{
-            "title": "🗓 每日指标 · 08:00",
+            "title": f"🗓 每日指标 · {label}",
             "color": 3447003,
-            "fields": [
-                {"name": "市场环境", "value": f"{status} | VIX {vix}", "inline": False},
-                {"name": f"关注列表 ({len(tickers)})", "value": rows, "inline": False},
-            ],
+            "fields": fields,
             "footer": _footer(),
         }]
     }
 
 
-def filings_digest_embed(summary: dict) -> dict:
+def filings_digest_embed(summary: dict, *, date_label: str | None = None) -> dict:
+    label = date_label or date.today().isoformat()
     filings = summary.get("filings", [])
     rows = "\n".join(
-        f"• **{f.get('ticker')}** {f.get('form')} — {f.get('filed_at', '')}" for f in filings[:15]
-    ) or "昨日无新财报"
+        f"• **{f.get('ticker')}** {f.get('form')} — {f.get('filing_date') or f.get('filed_at', '')}"
+        for f in filings[:15]
+    ) or "该日期无新财报"
     return {
         "embeds": [{
-            "title": "📄 昨日财报 · 09:00",
+            "title": f"📄 财报 · {label}",
             "color": 15844367,
             "fields": [
                 {"name": f"新提交 ({summary.get('downloaded_count', 0)})", "value": rows, "inline": False},
@@ -127,18 +148,25 @@ def filings_digest_embed(summary: dict) -> dict:
     }
 
 
-def scores_summary_embed(summary: dict) -> dict:
-    rows = summary.get("rows", [])
-    listing = "\n".join(
-        f"• **{r.get('ticker')}** — {r.get('score')}" for r in rows[:10]
-    ) or "无评分"
+def scores_summary_embed(summary: dict, *, date_label: str | None = None) -> dict:
+    label = date_label or date.today().isoformat()
+    days = summary.get("days")
+    if days:
+        listing = "\n".join(
+            f"• {d.get('date')} — " + (f"❌ {d.get('error')}" if d.get("error")
+                                       else f"{d.get('count', 0)} 条评分")
+            for d in days[:15]
+        ) or "无"
+        fields = [{"name": f"回补 ({len(days)} 天)", "value": listing, "inline": False}]
+    else:
+        rows = summary.get("rows", [])
+        listing = "\n".join(f"• **{r.get('ticker')}** — {r.get('score')}" for r in rows[:10]) or "无评分"
+        fields = [{"name": f"评分 ({len(rows)})", "value": listing, "inline": False}]
     return {
         "embeds": [{
-            "title": "📈 策略评分 · 18:00",
+            "title": f"📈 策略评分 · {label}",
             "color": 10070709,
-            "fields": [
-                {"name": f"评分 ({len(rows)})", "value": listing, "inline": False},
-            ],
+            "fields": fields,
             "footer": _footer(),
         }]
     }
