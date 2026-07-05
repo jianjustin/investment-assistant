@@ -110,3 +110,10 @@ def test_filings_migration_defines_index_table():
     assert "accession_number TEXT NOT NULL" in sql
     assert "UNIQUE (accession_number, primary_document)" in sql
     assert "idx_filings_ticker_date" in sql
+
+
+def test_notify_channel_migration():
+    sql = Path("migrations/012_notify_channel.sql").read_text()
+    assert "ALTER TABLE notify_settings" in sql
+    assert "channel TEXT NOT NULL DEFAULT 'discord'" in sql
+    assert "email" in sql and "JSONB" in sql and "'{}'::jsonb" in sql
