@@ -42,9 +42,12 @@ class LLMConfig:
 class NotifyConfig:
     """Notification channel toggles for the Hermes capability layer."""
 
+    channel: str = "discord"  # "discord" | "email"（全局单选）
     discord_enabled: bool = True
-    email_enabled: bool = True
     webhooks: dict[str, str] = field(default_factory=dict)
+    email: dict[str, Any] = field(default_factory=lambda: {
+        "from_addr": "", "to_addr": "", "host": "smtp.gmail.com", "port": 465,
+    })
     task_channels: dict[str, str] = field(
         default_factory=lambda: {"metrics": "daily", "filings": "earnings", "scores": "signals"}
     )

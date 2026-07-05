@@ -19,13 +19,13 @@ def test_config_has_real_default_model():
 def test_config_parses_nested_overrides(tmp_path):
     path = tmp_path / "cfg.json"
     path.write_text(
-        '{"llm": {"max_retries": 5}, "notify": {"email_enabled": false},'
+        '{"llm": {"max_retries": 5}, "notify": {"channel": "email"},'
         ' "prices": {"max_retries": 7}}',
         encoding="utf-8",
     )
     cfg = load_config(path)
     assert cfg.llm.max_retries == 5
-    assert cfg.notify.email_enabled is False
+    assert cfg.notify.channel == "email"
     assert cfg.prices.max_retries == 7
 
 
