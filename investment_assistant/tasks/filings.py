@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -38,11 +38,17 @@ def run(
     *,
     start_date: date | None = None,
     end_date: date | None = None,
+    trigger_source: str = "scheduled",
 ) -> dict[str, Any]:
+    target_start = start_date or (date.today() - timedelta(days=1))  # 自然目标日 T-1
+    target_end = end_date or target_start
     return run_task(
         "filings",
         lambda: _core(config, start_date=start_date, end_date=end_date),
         config=config,
+        target_start_date=target_start,
+        target_end_date=target_end,
+        trigger_source=trigger_source,
     )
 
 
@@ -59,7 +65,7 @@ def main() -> None:
         start = date.fromisoformat(args.from_date) if args.from_date else None
         end = date.fromisoformat(args.to_date) if args.to_date else None
     print(json.dumps(
-        run(load_config(args.config), start_date=start, end_date=end),
+        run(load_config(args.config), start_date=start, end_date=end, trigger_source="manual"),
         ensure_ascii=False, indent=2, default=str,
     ))
 

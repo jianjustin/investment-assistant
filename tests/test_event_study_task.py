@@ -45,7 +45,7 @@ def test_run_goes_through_harness(monkeypatch):
     monkeypatch.setattr(event_study, "_core", lambda config, **kw: {"results": {}})
     captured = {}
 
-    def fake_run_task(task, fn, *, config):
+    def fake_run_task(task, fn, *, config, **kw):
         captured["task"] = task
         return {"task": task, "status": "success", "summary": fn()}
 
@@ -58,3 +58,26 @@ def test_run_goes_through_harness(monkeypatch):
 def test_registered_in_scheduler():
     from investment_assistant.tasks.scheduler import REGISTRY
     assert "event_study" in REGISTRY
+
+
+def test_run_maps_start_end_to_since_asof(monkeypatch):
+    from datetime import date
+
+    from investment_assistant.config import AssistantConfig
+    from investment_assistant.tasks import event_study
+
+    captured = {}
+    core_args = {}
+
+    def fake_run_task(task, fn, *, config, **kw):
+        captured.update(kw)
+        fn()
+        return {"status": "success"}
+
+    monkeypatch.setattr(event_study, "run_task", fake_run_task)
+    monkeypatch.setattr(event_study, "_core",
+                        lambda config, **kw: core_args.update(kw) or {})
+    event_study.run(AssistantConfig(), start_date=date(2026, 1, 1),
+                    end_date=date(2026, 6, 30), trigger_source="manual")
+    assert core_args == {"asof": date(2026, 6, 30), "since": date(2026, 1, 1)}
+    assert captured["trigger_source"] == "manual"

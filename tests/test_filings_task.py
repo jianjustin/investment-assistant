@@ -33,10 +33,32 @@ def test_run_goes_through_harness(monkeypatch):
     monkeypatch.setattr(filings, "_core", lambda config, **kw: {"downloaded_count": 0, "filings": []})
     captured = {}
 
-    def fake_run_task(task, fn, *, config):
+    def fake_run_task(task, fn, *, config, **kw):
         captured["task"] = task
         return {"task": task, "status": "success", "summary": fn()}
 
     monkeypatch.setattr(filings, "run_task", fake_run_task)
     out = filings.run(AssistantConfig())
     assert captured["task"] == "filings" and out["summary"]["downloaded_count"] == 0
+
+
+def test_run_passes_natural_target_dates(monkeypatch):
+    from datetime import date, timedelta
+
+    from investment_assistant.config import AssistantConfig
+    from investment_assistant.tasks import filings
+
+    captured = {}
+
+    def fake_run_task(task, fn, *, config, **kw):
+        captured.update(kw)
+        return {"status": "success"}
+
+    monkeypatch.setattr(filings, "run_task", fake_run_task)
+    filings.run(AssistantConfig())
+    yesterday = date.today() - timedelta(days=1)
+    assert captured == {
+        "target_start_date": yesterday,
+        "target_end_date": yesterday,
+        "trigger_source": "scheduled",
+    }

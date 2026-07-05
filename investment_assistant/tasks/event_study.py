@@ -41,8 +41,23 @@ def _core(
     }
 
 
-def run(config: AssistantConfig) -> dict[str, Any]:
-    return run_task("event_study", lambda: _core(config), config=config)
+def run(
+    config: AssistantConfig,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    trigger_source: str = "scheduled",
+) -> dict[str, Any]:
+    target_start = start_date or date.today()
+    target_end = end_date or target_start
+    return run_task(
+        "event_study",
+        lambda: _core(config, asof=end_date, since=start_date),
+        config=config,
+        target_start_date=target_start,
+        target_end_date=target_end,
+        trigger_source=trigger_source,
+    )
 
 
 def main() -> None:
