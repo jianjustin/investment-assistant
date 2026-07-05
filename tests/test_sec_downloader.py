@@ -34,7 +34,12 @@ def test_download_filters_by_form_and_yesterday(tmp_path, monkeypatch):
     )
     # 仅 2026-06-28 的 10-Q 命中（10-K 日期不符、8-K 表单不符）
     assert len(out) == 1
-    assert "10-Q" in str(out[0])
+    assert out[0]["form"] == "10-Q"
+    assert out[0]["ticker"] == "AAPL"
+    assert out[0]["filing_date"] == "2026-06-28"
+    assert out[0]["accession_number"] == "acc-q"
+    assert out[0]["primary_document"] == "q.htm"
+    assert out[0]["downloaded"] is True
 
 
 def test_download_date_range_hits_multiple_days(tmp_path, monkeypatch):
@@ -65,3 +70,27 @@ def test_download_degrades_without_user_agent(tmp_path, monkeypatch):
         "AAPL", ["10-Q"], date(2026, 6, 28), date(2026, 6, 28), tmp_path / "filings"
     )
     assert out == []
+
+
+def test_download_skips_existing_file_but_returns_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEC_USER_AGENT", "test test@example.com")
+    tickers_json = {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple"}}
+    submissions_json = {"filings": {"recent": {
+        "form": ["10-Q"],
+        "filingDate": ["2026-06-28"],
+        "accessionNumber": ["acc-q"],
+        "primaryDocument": ["q.htm"],
+    }}}
+    dest = tmp_path / "filings" / "AAPL" / "10-Q" / "acc-q-q.htm"
+    dest.parent.mkdir(parents=True)
+    dest.write_text("<html>cached</html>")
+    called = []
+    monkeypatch.setattr(sec_downloader, "_download_document",
+                        lambda url, d, *, headers: called.append(url))
+
+    dl = SecEdgarDownloader(getter=make_getter(tickers_json, submissions_json), cache_dir=tmp_path)
+    out = dl.download_filings_batch(
+        "AAPL", ["10-Q"], date(2026, 6, 28), date(2026, 6, 28), tmp_path / "filings")
+    assert called == []  # 未重复下载
+    assert out[0]["downloaded"] is False
+    assert out[0]["path"] == str(dest)

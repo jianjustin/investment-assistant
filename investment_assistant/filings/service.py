@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import os
 from datetime import date, timedelta
-from pathlib import Path
 from typing import Any, Protocol
 
 from investment_assistant.config import FilingsConfig
@@ -9,8 +9,8 @@ from investment_assistant.config import FilingsConfig
 
 class FilingDownloader(Protocol):
     def download_filings_batch(
-        self, ticker: str, form_types: list[str], start_date: date, end_date: date, output_base: Path
-    ) -> list[Path]:
+        self, ticker: str, form_types: list[str], start_date: date, end_date: date, output_base
+    ) -> list[dict[str, Any]]:
         ...
 
 
@@ -31,14 +31,40 @@ def download_configured_filings(
     dl = downloader or _default_downloader()
     first = start_date or (date.today() - timedelta(days=1))  # 默认昨日 T-1
     last = end_date or first
-    files: list[Path] = []
+    filings_meta: list[dict[str, Any]] = []
     errors: dict[str, str] = {}
     for raw in tickers:
         ticker = str(raw or "").strip().upper()
         if not ticker:
             continue
         try:
-            files.extend(dl.download_filings_batch(ticker, list(cfg.forms), first, last, cfg.output_dir))
+            filings_meta.extend(dl.download_filings_batch(ticker, list(cfg.forms), first, last, cfg.output_dir))
         except Exception as exc:  # 单标的失败不影响其余
             errors[ticker] = str(exc)
-    return {"downloaded_count": len(files), "files": files, "errors": errors}
+    _persist_filing_index(filings_meta)
+    return {
+        "downloaded_count": sum(1 for m in filings_meta if m.get("downloaded")),
+        "filings": filings_meta,
+        "errors": errors,
+    }
+
+
+def _persist_filing_index(filings_meta: list[dict[str, Any]]) -> None:
+    if not filings_meta:
+        return
+    database_url = os.environ.get("INVESTMENT_ASSISTANT_DATABASE_URL")
+    if not database_url:
+        return
+    from investment_assistant.db import connect, upsert_filing
+
+    with connect(database_url) as conn:
+        for meta in filings_meta:
+            upsert_filing(
+                conn,
+                ticker=meta["ticker"],
+                form=meta["form"],
+                filing_date=date.fromisoformat(meta["filing_date"]),
+                accession_number=meta["accession_number"],
+                primary_document=meta["primary_document"],
+                file_path=meta["path"],
+            )

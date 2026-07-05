@@ -54,7 +54,7 @@ class SecEdgarDownloader:
 
     def download_filings_batch(
         self, ticker: str, form_types: list[str], start_date: date, end_date: date, output_base: Path
-    ) -> list[Path]:
+    ) -> list[dict[str, Any]]:
         ua = os.environ.get("SEC_USER_AGENT")
         if not ua:
             return []  # 优雅降级：无 UA 不下载
@@ -71,15 +71,28 @@ class SecEdgarDownloader:
         docs = recent.get("primaryDocument", [])
         first_day = start_date.isoformat()
         last_day = end_date.isoformat()
-        out: list[Path] = []
+        out: list[dict[str, Any]] = []
         for i, form in enumerate(forms):
             if form not in form_types or not (first_day <= str(dates[i]) <= last_day):
                 continue
             accession = accns[i]
             doc = docs[i] if i < len(docs) and docs[i] else f"{accession}.txt"
-            dest = Path(output_base) / ticker.upper() / form / f"{accession}-{Path(doc).name}"
-            url = ARCHIVE_DOC_URL.format(
-                cik_int=int(cik), accession_nodash=accession.replace("-", ""), doc=doc
-            )
-            out.append(_download_document(url, dest, headers=self._headers(ua)))
+            doc_name = Path(doc).name
+            dest = Path(output_base) / ticker.upper() / form / f"{accession}-{doc_name}"
+            downloaded = False
+            if not dest.exists():  # 已存在则跳过下载，但仍返回元数据供索引回补
+                url = ARCHIVE_DOC_URL.format(
+                    cik_int=int(cik), accession_nodash=accession.replace("-", ""), doc=doc
+                )
+                _download_document(url, dest, headers=self._headers(ua))
+                downloaded = True
+            out.append({
+                "ticker": ticker.upper(),
+                "form": form,
+                "filing_date": str(dates[i]),
+                "accession_number": accession,
+                "primary_document": doc_name,
+                "path": str(dest),
+                "downloaded": downloaded,
+            })
         return out

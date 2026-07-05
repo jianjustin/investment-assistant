@@ -7,13 +7,14 @@ from investment_assistant.tasks import filings
 
 def test_core_summarizes_downloads(monkeypatch, tmp_path):
     def fake_download(tickers, cfg, *, downloader=None, start_date=None, end_date=None):
-        return {"downloaded_count": 1, "files": [tmp_path / "NVDA/10-Q/acc.htm"], "errors": {}}
+        return {"downloaded_count": 1, "filings": [{"ticker": "NVDA", "form": "10-Q", "filing_date": "2026-06-28", "path": "/x/NVDA/10-Q/a.htm", "downloaded": True}], "errors": {}}
 
     monkeypatch.setattr(filings, "download_configured_filings", fake_download)
     cfg = AssistantConfig(filings=FilingsConfig(output_dir=tmp_path))
     summary = filings._core(cfg)
     assert summary["downloaded_count"] == 1
     assert summary["filings"][0]["ticker"] == "NVDA"
+    assert summary["filings"][0]["filing_date"] == "2026-06-28"
 
 
 def test_core_passes_date_range(monkeypatch, tmp_path):
@@ -21,7 +22,7 @@ def test_core_passes_date_range(monkeypatch, tmp_path):
 
     def fake_download(tickers, cfg, *, downloader=None, start_date=None, end_date=None):
         seen.update({"start_date": start_date, "end_date": end_date})
-        return {"downloaded_count": 0, "files": [], "errors": {}}
+        return {"downloaded_count": 0, "filings": [], "errors": {}}
 
     monkeypatch.setattr(filings, "download_configured_filings", fake_download)
     cfg = AssistantConfig(filings=FilingsConfig(output_dir=tmp_path))
