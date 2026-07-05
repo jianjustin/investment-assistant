@@ -1,4 +1,10 @@
+import time
+
+from fastapi.testclient import TestClient
+
+from investment_assistant.api.app import create_app
 from investment_assistant.api import auth
+from investment_assistant.tasks import scheduler
 
 
 def test_unknown_api_path_returns_legacy_404_shape(client):
@@ -101,3 +107,47 @@ def test_openapi_schema_builds_clean_without_catchall_pollution(client):
     assert "/{full_path}" not in paths          # catch-all 不进公开 API 面
     assert "/api/events" in paths               # 真实端点保留
     assert "/api/status" in paths
+
+
+def test_lifespan_starts_and_stops_scheduler_thread(monkeypatch):
+    started = {}
+
+    def _fake_run_forever(*, stop_event, database_url, config, tick_seconds):
+        started["url"] = database_url
+        started["tick"] = tick_seconds
+        started["stop_event"] = stop_event
+        stop_event.wait(5)
+
+    monkeypatch.setenv("INVESTMENT_ASSISTANT_DATABASE_URL", "postgresql://fake")
+    monkeypatch.setenv("SCHEDULER_TICK_SECONDS", "1")
+    monkeypatch.delenv("SCHEDULER_ENABLED", raising=False)  # 默认即启用
+    monkeypatch.setattr(scheduler, "run_forever", _fake_run_forever)
+    with TestClient(create_app()):
+        for _ in range(200):  # 线程启动是异步的，最多等 1s
+            if "stop_event" in started:
+                break
+            time.sleep(0.005)
+        assert started["url"] == "postgresql://fake"
+        assert started["tick"] == 1
+        assert not started["stop_event"].is_set()
+    assert started["stop_event"].is_set()  # lifespan 退出时优雅停止
+
+
+def test_lifespan_scheduler_disabled_by_env(monkeypatch):
+    called = []
+    monkeypatch.setenv("INVESTMENT_ASSISTANT_DATABASE_URL", "postgresql://fake")
+    monkeypatch.setenv("SCHEDULER_ENABLED", "0")
+    monkeypatch.setattr(scheduler, "run_forever", lambda **kw: called.append(1))
+    with TestClient(create_app()):
+        pass
+    assert not called
+
+
+def test_lifespan_scheduler_skipped_without_database(monkeypatch):
+    called = []
+    monkeypatch.delenv("INVESTMENT_ASSISTANT_DATABASE_URL", raising=False)
+    monkeypatch.delenv("SCHEDULER_ENABLED", raising=False)
+    monkeypatch.setattr(scheduler, "run_forever", lambda **kw: called.append(1))
+    with TestClient(create_app()):
+        pass
+    assert not called
