@@ -37,7 +37,7 @@
       id: 'settings', label: '设置', icon: '⚙️', children: [
         { id: 'system',    label: '系统' },
         { id: 'watchlist', label: '关注列表' },
-        { id: 'discord',   label: 'Discord 推送' },
+        { id: 'discord',   label: '推送配置' },
         { id: 'jobs',      label: '定时任务' },
         { id: 'env',       label: '环境变量' },
       ],
