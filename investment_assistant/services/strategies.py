@@ -36,23 +36,29 @@ def strategy_score_rows() -> list[dict[str, Any]]:
     return [dict(zip(keys, row)) for row in rows]
 
 
-def strategy_input_snapshots() -> list[dict[str, Any]]:
+def strategy_input_snapshots(signal_date: date | None = None) -> list[dict[str, Any]]:
     database_url = os.environ.get("INVESTMENT_ASSISTANT_DATABASE_URL")
     if not database_url:
         return []
+    where = "WHERE error IS NULL"
+    params: dict[str, Any] = {}
+    if signal_date is not None:
+        where += " AND signal_date = %(signal_date)s"
+        params["signal_date"] = signal_date
     try:
         with connect(database_url) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT DISTINCT ON (ticker)
                            id, ticker, signal_date, trend_state, attention_level,
                            trigger_reason, relative_strength_spy, relative_strength_qqq,
                            volume_ratio, run_id, created_at, updated_at
                     FROM ticker_signal_snapshots
-                    WHERE error IS NULL
+                    {where}
                     ORDER BY ticker ASC, signal_date DESC, updated_at DESC
-                    """
+                    """,
+                    params,
                 )
                 rows = cur.fetchall()
     except Exception:
@@ -76,7 +82,9 @@ def latest_strategy_market_context() -> dict[str, Any]:
 
 
 def run_strategy_score_scan(payload: dict[str, Any]) -> dict[str, Any]:
-    snapshots = strategy_input_snapshots()
+    raw_date = payload.get("date")
+    target_date = date.fromisoformat(str(raw_date)) if raw_date else None
+    snapshots = strategy_input_snapshots(signal_date=target_date)
     market = latest_strategy_market_context()
     now = datetime.now(UTC)
     run_id = f"manual-strategy-scores-{now.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
