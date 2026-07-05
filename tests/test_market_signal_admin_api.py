@@ -171,7 +171,7 @@ def test_strategy_score_run_post_scores_latest_snapshots_and_persists(monkeypatc
         "trigger_reason": ["above_ma_stack", "outperform_spy", "volume_expansion"],
     }]
 
-    monkeypatch.setattr(strategies_svc, "strategy_input_snapshots", lambda: snapshots)
+    monkeypatch.setattr(strategies_svc, "strategy_input_snapshots", lambda signal_date=None: snapshots)
     monkeypatch.setattr(strategies_svc, "latest_strategy_market_context", lambda: {"macro_state": "offense"})
     monkeypatch.setattr(strategies_svc, "_persist_strategy_scores", lambda rows: persisted.extend(rows))
     monkeypatch.setattr(strategies_svc, "uuid", type("FakeUuid", (), {"uuid4": staticmethod(lambda: type("U", (), {"hex": "abcdef123456"})())})())
