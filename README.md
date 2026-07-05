@@ -86,6 +86,7 @@ INVESTMENT_ASSISTANT_DATABASE_URL=postgresql://user:pass@localhost:5432/investme
 DISCORD_WEBHOOK_EARNINGS=https://discord.com/api/webhooks/...
 DISCORD_WEBHOOK_SIGNALS=https://discord.com/api/webhooks/...
 DISCORD_WEBHOOK_DAILY=https://discord.com/api/webhooks/...
+SMTP_PASSWORD=<Gmail 应用专用密码；邮件渠道启用时必需>
 ```
 
 `.env` 已在 `.gitignore` 中。Discord 配置缺失时只会记录警告，不会中断主流程。
@@ -171,6 +172,7 @@ curl -u "$HERMES_DASHBOARD_USER:$SERVER_PWD" http://localhost:8787/api/status
 | `DISCORD_WEBHOOK_EARNINGS` | ⚠️ | 缺失时跳过通知，不中断 |
 | `DISCORD_WEBHOOK_SIGNALS`  | ⚠️ | 同上 |
 | `DISCORD_WEBHOOK_DAILY`    | ⚠️ | 同上 |
+| `SMTP_PASSWORD`            | ⚠️ | 邮件渠道启用时必需；缺失时跳过邮件通知，不中断 |
 
 ---
 
