@@ -99,3 +99,14 @@ def test_job_reports_target_dates_migration():
     assert "target_start_date DATE" in sql
     assert "target_end_date DATE" in sql
     assert "trigger_source TEXT NOT NULL DEFAULT 'scheduled'" in sql
+
+
+def test_filings_migration_defines_index_table():
+    sql = Path("migrations/011_filings.sql").read_text()
+    assert "CREATE TABLE IF NOT EXISTS filings" in sql
+    assert "ticker TEXT NOT NULL" in sql
+    assert "form TEXT NOT NULL" in sql
+    assert "filing_date DATE NOT NULL" in sql
+    assert "accession_number TEXT NOT NULL" in sql
+    assert "UNIQUE (accession_number, primary_document)" in sql
+    assert "idx_filings_ticker_date" in sql

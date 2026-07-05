@@ -458,3 +458,88 @@ def get_event_study(conn, *, kind: str, params_hash: str) -> dict[str, Any] | No
         return None
     keys = ["kind", "params_hash", "result", "generated_at"]
     return dict(zip(keys, rows[0]))
+
+
+_FILING_KEYS = ["id", "ticker", "form", "filing_date", "accession_number",
+                "primary_document", "file_path", "downloaded_at", "created_at"]
+
+
+def upsert_filing(
+    conn, *, ticker: str, form: str, filing_date, accession_number: str,
+    primary_document: str, file_path: str, run_id: str | None = None,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO filings (
+              ticker, form, filing_date, accession_number, primary_document, file_path, run_id
+            ) VALUES (
+              %(ticker)s, %(form)s, %(filing_date)s, %(accession_number)s,
+              %(primary_document)s, %(file_path)s, %(run_id)s
+            )
+            ON CONFLICT (accession_number, primary_document) DO UPDATE SET
+              file_path = EXCLUDED.file_path,
+              run_id = COALESCE(EXCLUDED.run_id, filings.run_id)
+            """,
+            {
+                "ticker": ticker, "form": form, "filing_date": filing_date,
+                "accession_number": accession_number, "primary_document": primary_document,
+                "file_path": file_path, "run_id": run_id,
+            },
+        )
+    conn.commit()
+
+
+def list_filings(conn, *, ticker: str | None = None, form: str | None = None,
+                 start_date=None, end_date=None, limit: int = 50) -> list[dict[str, Any]]:
+    clauses = []
+    params: dict[str, Any] = {"limit": limit}
+    if ticker:
+        clauses.append("ticker = %(ticker)s")
+        params["ticker"] = ticker
+    if form:
+        clauses.append("form = %(form)s")
+        params["form"] = form
+    if start_date is not None:
+        clauses.append("filing_date >= %(start_date)s")
+        params["start_date"] = start_date
+    if end_date is not None:
+        clauses.append("filing_date <= %(end_date)s")
+        params["end_date"] = end_date
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT id, ticker, form, filing_date, accession_number,
+                   primary_document, file_path, downloaded_at, created_at
+            FROM filings
+            {where}
+            ORDER BY filing_date DESC, ticker ASC
+            LIMIT %(limit)s
+            """,
+            params,
+        )
+        rows = cur.fetchall()
+    return [dict(zip(_FILING_KEYS, row)) for row in rows]
+
+
+def get_filing(conn, filing_id: int) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, ticker, form, filing_date, accession_number,
+                   primary_document, file_path, downloaded_at, created_at
+            FROM filings
+            WHERE id = %(id)s
+            """,
+            {"id": filing_id},
+        )
+        row = cur.fetchone()
+    return dict(zip(_FILING_KEYS, row)) if row else None
+
+
+def list_filing_tickers(conn) -> list[str]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT ticker FROM filings ORDER BY ticker")
+        rows = cur.fetchall()
+    return [row[0] for row in rows]
