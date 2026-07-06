@@ -5,6 +5,11 @@
   import DataTable from '../lib/components/DataTable.svelte'
   import StatusPill from '../lib/components/StatusPill.svelte'
   import { fmtTime } from '../lib/format'
+  import StatusRibbon from '../lib/components/StatusRibbon.svelte'
+  import DotMatrix from '../lib/components/DotMatrix.svelte'
+  import RatioBar from '../lib/components/RatioBar.svelte'
+  import Gauge from '../lib/components/Gauge.svelte'
+  import { buildDayCells, countStatuses } from '../lib/signals'
 
   let { sub }: { sub?: string } = $props()
 
@@ -58,7 +63,7 @@
     loading = true
     try {
       ;[signals, trend, tickers] = await Promise.all([
-        api.getMarketSignals(60).then((r: any) => r.rows ?? []),
+        api.getMarketSignals(30).then((r: any) => r.rows ?? []),
         api.getMarketSignalsTrend(),
         api.getTickerTrends().then((r: any) => r.rows ?? []),
       ])
@@ -67,6 +72,15 @@
   }
 
   onMount(load)
+
+  let cells = $derived(buildDayCells(signals as any, 30))
+  let counts = $derived(countStatuses(signals as any))
+  const judgeLabel: Record<string, string> = { risk_on: '偏积极', neutral: '中性', risk_off: '偏空' }
+  let vixHigh = $derived(((signals as any)[0]?.vix_close ?? 0) >= 20)
+  let spyAbove200 = $derived(!!(signals as any)[0]?.spy_above_200ma)
+  let recentYellowRed = $derived(
+    (signals as any).slice(0, 5).filter((r: any) => ['yellow', 'red'].includes(String(r.market_status).toLowerCase())).length
+  )
 </script>
 
 <div>
@@ -129,25 +143,43 @@
     </div>
   {:else if tab === 'trend'}
     {#if trend}
-      <div class="bg-surface rounded-lg p-4 shadow-elev-1">
-        <div class="flex gap-4 mb-3">
-          <StatusPill status={(trend as any).latest_status ?? 'unknown'} />
-          <span class="text-sm text-muted">近{(trend as any).window}日 · 判断: {(trend as any).judgement ?? '—'}</span>
+      <div class="bg-surface rounded-lg p-5 shadow-elev-1 space-y-4">
+        <div class="flex items-center gap-5">
+          <Gauge judgement={(trend as any).judgement ?? 'neutral'} />
+          <div>
+            <div class="text-2xl font-bold" style="color:#4ade80">{(trend as any).judgement ?? '—'}</div>
+            <div class="mt-2"><RatioBar counts={(trend as any).status_counts ?? counts} /></div>
+          </div>
         </div>
-        <pre class="text-xs text-muted overflow-auto">{JSON.stringify(trend, null, 2)}</pre>
+        <p class="text-sm text-muted">{(trend as any).summary ?? ''}</p>
+        <div class="flex flex-wrap gap-2">
+          <span class="text-xs px-2.5 py-1 rounded-full border {spyAbove200 ? 'border-green-500/40 text-green-400' : 'border-red-500/40 text-red-400'}">
+            {spyAbove200 ? '✓ SPY 站上 200 日线' : '✗ SPY 跌破 200 日线'}
+          </span>
+          <span class="text-xs px-2.5 py-1 rounded-full border {vixHigh ? 'border-red-500/40 text-red-400' : 'border-green-500/40 text-green-400'}">
+            VIX {(signals as any)[0]?.vix_close ?? '—'} {vixHigh ? '高波动' : '低波动'}
+          </span>
+          <span class="text-xs px-2.5 py-1 rounded-full border border-border text-muted">近 5 日 {recentYellowRed} 个 yellow/red</span>
+        </div>
       </div>
     {:else}
       <p class="text-sm text-muted">暂无趋势数据</p>
     {/if}
   {:else}
-    {#if trend}
-      <div class="flex gap-4 mb-4">
-        <StatusPill status={(trend as any).latest_status ?? 'unknown'} />
-        <span class="text-sm text-muted">近{(trend as any).window}日 · 判断: {(trend as any).judgement ?? '—'}</span>
+    <div class="space-y-4">
+      <div>
+        <div class="text-xs text-muted mb-1">近 30 天状态演变</div>
+        <StatusRibbon cells={cells} />
       </div>
-    {/if}
-    <div class="bg-surface rounded-lg shadow-elev-1 overflow-hidden">
-      <DataTable rows={signals} columns={cols} />
+      <div class="flex gap-4 text-sm">
+        <span style="color:#22c55e"><b class="text-lg">{counts.green}</b> 天 green</span>
+        <span style="color:#eab308"><b class="text-lg">{counts.yellow}</b> 天 yellow</span>
+        <span style="color:#ef4444"><b class="text-lg">{counts.red}</b> 天 red</span>
+      </div>
+      <DotMatrix cells={cells} />
+      <div class="bg-surface rounded-lg shadow-elev-1 overflow-hidden">
+        <DataTable rows={signals} columns={cols} />
+      </div>
     </div>
   {/if}
 </div>
