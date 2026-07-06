@@ -7,15 +7,7 @@
   import Strategy from './routes/Strategy.svelte'
   import Trade from './routes/Trade.svelte'
   import Settings from './routes/Settings.svelte'
-
-  type Zone = 'tools' | 'data' | 'strategy' | 'trade' | 'settings'
-  const zones: Zone[] = ['tools', 'data', 'strategy', 'trade', 'settings']
-
-  function parseHash(hash: string): { zone: Zone; sub: string | undefined } {
-    const [rawZone, rawSub] = hash.replace(/^#/, '').split('/')
-    const zone = zones.includes(rawZone as Zone) ? (rawZone as Zone) : 'tools'
-    return { zone, sub: rawSub || undefined }
-  }
+  import { parseHash, type Zone } from './lib/router'
 
   let { zone, sub } = $state(parseHash(location.hash))
 
