@@ -2,13 +2,70 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from datetime import date
-from typing import Any
+from typing import Any, Callable
+
+import pandas as pd
 
 from investment_assistant.api.http import parse_payload_watchlist
+from investment_assistant.data.price import get_price_history
 from investment_assistant.db import connect
 from investment_assistant.tickers.trend import scan_ticker_trends
+
+_OHLCV_TTL_SECONDS = 300.0
+_ohlcv_cache: dict[tuple[str, int], tuple[float, dict]] = {}
+
+
+def clear_ohlcv_cache() -> None:
+    _ohlcv_cache.clear()
+
+
+def _ma_series(closes: pd.Series, window: int) -> list:
+    ma = closes.rolling(window).mean()
+    return [None if pd.isna(v) else round(float(v), 4) for v in ma]
+
+
+def ohlcv_series(
+    ticker: str,
+    days: int = 250,
+    *,
+    fetcher: Callable[[str, int], pd.DataFrame] | None = None,
+    clock: Callable[[], float] | None = None,
+) -> dict:
+    now = (clock or time.monotonic)()
+    key = (ticker.upper(), days)
+    cached = _ohlcv_cache.get(key)
+    if cached and now - cached[0] < _OHLCV_TTL_SECONDS:
+        return cached[1]
+
+    fetch = fetcher or get_price_history
+    frame = fetch(ticker.upper(), days)
+    if frame is None or frame.empty:
+        raise ValueError(f"No price data returned for {ticker}")
+
+    closes = frame["Close"].astype(float)
+    bars = [
+        {
+            "date": (idx.date().isoformat() if hasattr(idx, "date") else str(idx)),
+            "open": round(float(row["Open"]), 4),
+            "high": round(float(row["High"]), 4),
+            "low": round(float(row["Low"]), 4),
+            "close": round(float(row["Close"]), 4),
+            "volume": int(row["Volume"]),
+        }
+        for idx, row in frame.iterrows()
+    ]
+    result = {
+        "ticker": ticker.upper(),
+        "bars": bars,
+        "ma20": _ma_series(closes, 20),
+        "ma50": _ma_series(closes, 50),
+        "ma200": _ma_series(closes, 200),
+    }
+    _ohlcv_cache[key] = (now, result)
+    return result
 
 
 def ticker_trend_rows() -> list[dict[str, Any]]:
