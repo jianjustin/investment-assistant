@@ -31,3 +31,6 @@ web/dist/
 
 # git worktrees for parallel agent work
 .worktrees/
+
+# superpowers brainstorm scratch
+.superpowers/
