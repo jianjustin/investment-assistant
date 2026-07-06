@@ -128,3 +128,22 @@ export const getFilingRecords = (
   )
 }
 export const filingDownloadUrl = (id: number) => `/api/filings/records/${id}/download`
+
+// ticker ohlcv
+export interface Bar {
+  date: string
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+}
+export interface OhlcvResponse {
+  ticker: string
+  bars: Bar[]
+  ma20: (number | null)[]
+  ma50: (number | null)[]
+  ma200: (number | null)[]
+}
+export const getTickerOhlcv = (ticker: string, days = 250) =>
+  get<OhlcvResponse>(`/api/tickers/${ticker}/ohlcv?days=${days}`)
