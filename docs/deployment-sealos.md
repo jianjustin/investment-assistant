@@ -67,6 +67,7 @@ Sealos 控制台 →「应用管理」（App Launchpad）→ 新建应用：
 | `DEEPSEEK_API_KEY` | 可选 | 不设则 LLM 宏观分析/决策证据降级返回错误（不崩） |
 | `DISCORD_WEBHOOK_EARNINGS` / `_SIGNALS` / `_DAILY` | 可选 | 也可部署后在「设置 → Discord 推送」页面配置（存数据库，优先级高于 env） |
 | `SCHEDULER_TICK_SECONDS` | 可选 | 调度轮询间隔秒数，默认 60 |
+| `SCHEDULER_ENABLED` | 可选 | `0` 关闭内嵌调度线程（调试用），默认 `1` |
 
 > `HERMES_DASHBOARD_HOST=0.0.0.0`、`HERMES_DASHBOARD_PORT=8787`、`HERMES_DASHBOARD_ALLOW_PUBLIC=1` 已内置在镜像中，无需再设。
 
@@ -108,7 +109,7 @@ scripts/build-push.sh             # 推 latest + 新 git-sha tag
 scripts/build-push.sh v2          # 或显式版本 tag
 ```
 
-在两个应用的设置里改镜像 tag 即可滚动更新；回滚 = 改回旧 git-sha tag。migrate 幂等（内部 ledger 记录已应用版本），升级自动补增量 schema；**不支持自动降级 schema**，回滚跨 migration 版本时需人工处理。
+在 API 应用的设置里改镜像 tag 即可滚动更新；回滚 = 改回旧 git-sha tag。migrate 幂等（内部 ledger 记录已应用版本），升级自动补增量 schema；**不支持自动降级 schema**，回滚跨 migration 版本时需人工处理。
 
 ## 已知限制
 
