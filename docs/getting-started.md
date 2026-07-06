@@ -100,16 +100,12 @@ python -m investment_assistant.tasks.nightly_scores
 
 ---
 
-## 常驻调度守护进程
+## 调度线程
 
-自研 pg 调度器按 `scheduled_jobs` 表定时触发已注册任务，取代了逐任务 systemd timer：
-
-```bash
-python -m investment_assistant.tasks.scheduler
-```
+自研 pg 调度器按 `scheduled_jobs` 表定时触发已注册任务。调度线程随 API 服务启动（`SCHEDULER_ENABLED=0` 可关），无需单独启动进程。
 
 - 改运行时间 / 启停某任务：在面板「设置 · 定时任务」页操作（写 `scheduled_jobs`），或直接 `UPDATE scheduled_jobs ...`。
-- 生产部署见 `deploy/systemd/hermes-investment-scheduler.service`（`Restart=always`，单一常驻 service）。
+- 无 `INVESTMENT_ASSISTANT_DATABASE_URL` 时调度线程不启动。
 - 调度、报告（`job_reports` 30 天 TTL）与通知机制详见 [scheduling-and-notifications.md](scheduling-and-notifications.md)。
 
 ---

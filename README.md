@@ -104,8 +104,9 @@ python -m investment_assistant.api.server             # API server（FastAPI + u
 python -m investment_assistant.tasks.metrics          # 08:00 指标采集
 python -m investment_assistant.tasks.filings          # 09:00 SEC 财报下载
 python -m investment_assistant.tasks.nightly_scores   # 18:00 策略评分
-python -m investment_assistant.tasks.scheduler        # 常驻调度守护进程
 ```
+
+调度线程随 API 服务启动（`SCHEDULER_ENABLED=0` 可关）。
 
 API server 启动后可访问 `http://localhost:8787/docs` 查看全部端点的 OpenAPI 文档。
 
@@ -122,7 +123,7 @@ API server 启动后可访问 `http://localhost:8787/docs` 查看全部端点的
 | `scores` | 18:00 | 策略评分扫描（模块：tasks.nightly_scores） |
 | `event_study` | 无默认调度行 | 事件研究（需手动 INSERT 或经「设置 → 定时任务」启用） |
 
-调度守护进程读取 `scheduled_jobs` 表（迁移 007），支持通过设置层界面启用/禁用单个任务。详见 [docs/scheduling-and-notifications.md](docs/scheduling-and-notifications.md)。
+调度线程内嵌于 API 进程，读取 `scheduled_jobs` 表（迁移 007），支持通过设置层界面启用/禁用单个任务。详见 [docs/scheduling-and-notifications.md](docs/scheduling-and-notifications.md)。
 
 ---
 
@@ -165,7 +166,7 @@ curl -u "$HERMES_DASHBOARD_USER:$SERVER_PWD" http://localhost:8787/api/status
 | 变量 | 必需 | 说明 |
 |------|------|------|
 | `SEC_USER_AGENT` | ✅ | 格式 `Name email@example.com`；缺失时 filings 下载静默返回空列表 |
-| `INVESTMENT_ASSISTANT_DATABASE_URL` | ✅（生产） | PostgreSQL 连接 URL；缺失时大多数端点降级（`degraded:true`），调度器崩溃 |
+| `INVESTMENT_ASSISTANT_DATABASE_URL` | ✅（生产） | PostgreSQL 连接 URL；缺失时大多数端点降级（`degraded:true`），内嵌调度线程不启动 |
 | `HERMES_DASHBOARD_USER` | ⚠️ | HTTP Basic 认证用户名，默认 `jianjustin` |
 | `SERVER_PWD` | ⚠️ | HTTP Basic 认证密码（高优先级）；空字符串 = 无认证 |
 | `DEEPSEEK_API_KEY` | ⚠️ | DeepSeek LLM；缺失时 macro-analysis/run 等 LLM 功能降级 |

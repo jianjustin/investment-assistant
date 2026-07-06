@@ -2,22 +2,20 @@
 
 目标平台：[Sealos Cloud](https://sealos.io)，Starter Plan（$7/月）：**2 vCPU / 2Gi 内存 / 10Gi 磁盘 / 10GB 流量/月 / 4 个 NodePort / 100 AI Credits**。
 
-本项目部署形态为「一库两进程」，共用同一个容器镜像：
+本项目部署形态为「一库一进程」：
 
 | 组件 | 启动命令 | 说明 |
 |------|---------|------|
 | PostgreSQL | —（Sealos 数据库应用托管） | 唯一持久状态源 |
-| API 服务 | 镜像默认 CMD（migrate → uvicorn :8787） | 同时服务前端静态页与 `/api/*` |
-| 调度器 | `python -m investment_assistant.tasks.scheduler` | 常驻循环，按 `scheduled_jobs` 表触发任务 |
+| API 服务 | 镜像默认 CMD（migrate → uvicorn :8787） | 前端静态页 + `/api/*` + 内嵌调度线程（按 `scheduled_jobs` 表触发任务） |
 
 ## 资源规划（总额 2C / 2Gi / 10Gi）
 
 | 组件 | CPU | 内存 | 磁盘 |
 |------|-----|------|------|
 | PostgreSQL（Sealos 数据库） | 0.5C | 512Mi | 3Gi |
-| API 应用 | 0.5C | 512Mi | 挂 1–2Gi 持久卷（filings） |
-| 调度器应用 | 0.3C | 256Mi | 无 |
-| 余量 | 0.7C | ~768Mi | ~5Gi |
+| API 应用 | 0.5C | 768Mi | 挂 1–2Gi 持久卷（filings） |
+| 余量 | 1.0C | ~512Mi | ~5Gi |
 
 > 流量注意：前端页面 + JSON API 很轻，但 `/api/events` 是 SSE 常连接（15 秒一次心跳，流量可忽略）。10GB/月对单人使用足够。
 > NodePort 不需要：App Launchpad 的公网访问走平台 Ingress（自带 HTTPS 域名）。
@@ -54,9 +52,9 @@ Sealos 控制台 →「应用管理」（App Launchpad）→ 新建应用：
 
 - **镜像**：`docker.io/jianjustin/investment-assistant:latest`
 - **启动命令**：留空（镜像 CMD 自带：先幂等 migrate，再起 uvicorn）
-- **CPU/内存**：0.5C / 512Mi
+- **CPU/内存**：0.5C / 768Mi
 - **端口**：容器端口 `8787`，开启「公网访问」（平台分配 HTTPS 域名）
-- **持久卷**：挂载 `/srv/investment-assistant/filings`，1–2Gi（SEC filings 下载目录；不挂也能跑，但重启丢文件）
+- **持久卷**：挂载 `/srv/investment-assistant/filings`，1–2Gi（SEC filings 下载目录；定时与手动下载都由本进程执行，文件统一落此卷）
 
 **环境变量（API 应用）**：
 
@@ -68,20 +66,11 @@ Sealos 控制台 →「应用管理」（App Launchpad）→ 新建应用：
 | `SEC_USER_AGENT` | 建议 | SEC EDGAR 要求格式：`名字 邮箱`，缺失则 filings 下载会被限流 |
 | `DEEPSEEK_API_KEY` | 可选 | 不设则 LLM 宏观分析/决策证据降级返回错误（不崩） |
 | `DISCORD_WEBHOOK_EARNINGS` / `_SIGNALS` / `_DAILY` | 可选 | 也可部署后在「设置 → Discord 推送」页面配置（存数据库，优先级高于 env） |
+| `SCHEDULER_TICK_SECONDS` | 可选 | 调度轮询间隔秒数，默认 60 |
 
 > `HERMES_DASHBOARD_HOST=0.0.0.0`、`HERMES_DASHBOARD_PORT=8787`、`HERMES_DASHBOARD_ALLOW_PUBLIC=1` 已内置在镜像中，无需再设。
 
-## 第 3 步：部署调度器应用
-
-再建一个应用，**同一镜像**，差异：
-
-- **启动命令**：`python -m investment_assistant.tasks.scheduler`
-- **CPU/内存**：0.3C / 256Mi
-- **端口**：不开（无 HTTP 面）
-- **持久卷**：同样挂 `/srv/investment-assistant/filings`（filings 任务由调度器进程执行）
-- **环境变量**：`INVESTMENT_ASSISTANT_DATABASE_URL`（✅ 必填，缺失直接崩）、`SEC_USER_AGENT`、`DISCORD_WEBHOOK_*`、`DEEPSEEK_API_KEY`、`SCHEDULER_TICK_SECONDS`（可选，默认 60 秒轮询）。不需要 `SERVER_PWD`。
-
-默认调度（migration 007 内置，America/New_York 时区，周一至五）：`metrics` 08:00、`filings` 09:00、`scores` 18:00。
+默认调度（migration 007 内置，America/New_York 时区，周一至五）：`metrics` 08:00、`filings` 09:00、`scores` 18:00。调度线程随 API 进程启动（`SCHEDULER_ENABLED=0` 可关闭，调试用）。
 
 > ⚠️ `event_study` 任务已在调度器注册表中，但 **没有默认调度行**。要让它每日自动跑，在数据库里补一行（Sealos 数据库详情页有 SQL 终端）：
 >
@@ -93,7 +82,7 @@ Sealos 控制台 →「应用管理」（App Launchpad）→ 新建应用：
 >
 > 之后可在前端「设置 → 定时任务」里启停/改时间。
 
-## 第 4 步：部署后验证清单
+## 第 3 步：部署后验证清单
 
 ```bash
 BASE=https://<平台分配的域名>
@@ -123,6 +112,15 @@ scripts/build-push.sh v2          # 或显式版本 tag
 
 ## 已知限制
 
-- 单副本部署：任务运行状态（`/api/runs/{id}`）存于 API 进程内存，重启后丢失（`job_reports` 表里的历史不受影响）。API 应用副本数保持 1。
+- 单副本部署：任务运行状态（`/api/runs/{id}`）存于 API 进程内存，重启后丢失（`job_reports` 表里的历史不受影响）。API 应用副本数保持 1（防止调度线程双跑）。
 - `hermes/run_log` JSONL 写在容器 `/opt/hermes-investment-assistant/logs`，未挂卷时重启即清（只是本地冗余日志，权威记录在 `job_reports`）。
 - Obsidian vault 相关路径（`/srv/vault-*`）是本机工作流遗留，容器内不存在也不影响核心功能。
+- 调度线程随 API 重启中断，恢复后 `next_run_at <= now` 的过期任务在首个 tick 自动补跑。
+
+## 从两进程形态迁移
+
+1. `scripts/build-push.sh` 构建推送新镜像。
+2. **先删除调度器应用**（避免旧调度进程与新 API 调度线程双跑；删除到 API 更新完成之间错过的触发点由补跑覆盖）。
+3. API 应用更新镜像 tag；内存建议提到 768Mi；核对原调度器侧的 env（`SEC_USER_AGENT`、`DEEPSEEK_API_KEY`、`DISCORD_WEBHOOK_*`）在 API 侧已配置。
+4. 前端任务中心手动回补 filings（按日期范围重下，单次 ≤92 天），`file_path` 随 upsert 自动改指 API 卷。
+5. 确认列表页下载正常后，删除调度器应用遗留的 PVC。
