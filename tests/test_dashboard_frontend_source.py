@@ -63,11 +63,14 @@ def test_api_client_exports_core_functions():
         assert fn in api, f"missing: {fn}"
 
 
-def test_app_svelte_has_five_zone_hash_router():
+def test_app_hash_router_covers_all_zones():
+    # Zone 联合与 parseHash 已抽到 lib/router.ts（technicals 页升为一级 zone）。
+    router = Path("web/src/lib/router.ts").read_text(encoding="utf-8")
+    for zone in ["tools", "data", "strategy", "trade", "settings", "technicals"]:
+        assert zone in router, f"missing zone: {zone}"
     app = Path("web/src/app.svelte").read_text(encoding="utf-8")
-    for zone in ["tools", "data", "strategy", "trade", "settings"]:
-        assert zone in app, f"missing zone: {zone}"
     assert "hashchange" in app
+    assert "parseHash" in app
 
 
 def test_design_tokens_css_exists():
