@@ -14,7 +14,6 @@ describe('Data signals Tab', () => {
     vi.spyOn(api, 'getMarketSignalsTrend').mockResolvedValue({
       window: 30, judgement: 'risk_on', summary: '偏积极', status_counts: { green: 1, yellow: 0, red: 1 },
     } as any)
-    vi.spyOn(api, 'getTickerTrends').mockResolvedValue({ rows: [] } as any)
     vi.spyOn(api, 'getFilingRecords').mockResolvedValue({ records: [], tickers: [], degraded: false } as any)
     render(Data, { props: { sub: 'signals' } })
     const dots = await screen.findAllByTestId('dot')
@@ -26,7 +25,6 @@ describe('Data 财报 Tab', () => {
   it('renders filing records with download link', async () => {
     vi.spyOn(api, 'getMarketSignals').mockResolvedValue({ rows: [] } as any)
     vi.spyOn(api, 'getMarketSignalsTrend').mockResolvedValue(null as any)
-    vi.spyOn(api, 'getTickerTrends').mockResolvedValue({ rows: [] } as any)
     vi.spyOn(api, 'getFilingRecords').mockResolvedValue({
       records: [{
         id: 7, ticker: 'AAPL', form: '10-Q', filing_date: '2026-06-28',

@@ -3,7 +3,6 @@
   import * as api from '../lib/api'
   import Skeleton from '../lib/components/Skeleton.svelte'
   import DataTable from '../lib/components/DataTable.svelte'
-  import StatusPill from '../lib/components/StatusPill.svelte'
   import { fmtTime } from '../lib/format'
   import StatusRibbon from '../lib/components/StatusRibbon.svelte'
   import DotMatrix from '../lib/components/DotMatrix.svelte'
@@ -14,17 +13,15 @@
   let { sub }: { sub?: string } = $props()
 
   // Map legacy 'overview' → 'signals'; unknown subs default to 'signals'
-  type Tab = 'signals' | 'trend' | 'tickers' | 'filings'
+  type Tab = 'signals' | 'trend' | 'filings'
   let tab = $derived<Tab>(
     sub === 'trend' ? 'trend'
-    : sub === 'tickers' ? 'tickers'
     : sub === 'filings' ? 'filings'
     : 'signals'
   )
 
   let signals = $state<any[]>([])
   let trend = $state<any>(null)
-  let tickers = $state<any[]>([])
   let loading = $state(true)
 
   // 财报 Tab 状态
@@ -42,12 +39,6 @@
     { key: 'vix_close', label: 'VIX' },
   ]
 
-  const tkCols = [
-    { key: 'ticker', label: 'Ticker' },
-    { key: 'trend_state', label: '趋势' },
-    { key: 'attention_level', label: '关注度' },
-  ]
-
   async function loadFilings() {
     const r = await api.getFilingRecords({
       ticker: fTicker || undefined,
@@ -62,10 +53,9 @@
   async function load() {
     loading = true
     try {
-      ;[signals, trend, tickers] = await Promise.all([
+      ;[signals, trend] = await Promise.all([
         api.getMarketSignals(30).then((r: any) => r.rows ?? []),
         api.getMarketSignalsTrend(),
-        api.getTickerTrends().then((r: any) => r.rows ?? []),
       ])
       await loadFilings()
     } finally { loading = false }
@@ -87,11 +77,11 @@
   <div class="flex items-center gap-4 mb-4">
     <h2 class="text-lg font-semibold">数据</h2>
     <div class="flex gap-1">
-      {#each (['signals', 'trend', 'tickers', 'filings'] as const) as k}
+      {#each (['signals', 'trend', 'filings'] as const) as k}
         <a
           href="#data/{k}"
           class="px-3 py-1 text-sm rounded {tab === k ? 'bg-accent text-white' : 'bg-surface-2 text-muted hover:bg-surface'}"
-        >{{ signals: '信号总览', trend: '趋势分析', tickers: '技术面趋势', filings: '财报' }[k]}</a>
+        >{{ signals: '信号总览', trend: '趋势分析', filings: '财报' }[k]}</a>
       {/each}
     </div>
   </div>
@@ -137,17 +127,13 @@
         </table>
       </div>
     </div>
-  {:else if tab === 'tickers'}
-    <div class="bg-surface rounded-lg shadow-elev-1 overflow-hidden">
-      <DataTable rows={tickers} columns={tkCols} />
-    </div>
   {:else if tab === 'trend'}
     {#if trend}
       <div class="bg-surface rounded-lg p-5 shadow-elev-1 space-y-4">
         <div class="flex items-center gap-5">
           <Gauge judgement={(trend as any).judgement ?? 'neutral'} />
           <div>
-            <div class="text-2xl font-bold" style="color:#4ade80">{(trend as any).judgement ?? '—'}</div>
+            <div class="text-2xl font-bold" style="color:#4ade80">{judgeLabel[(trend as any).judgement] ?? (trend as any).judgement ?? '—'}</div>
             <div class="mt-2"><RatioBar counts={(trend as any).status_counts ?? counts} /></div>
           </div>
         </div>

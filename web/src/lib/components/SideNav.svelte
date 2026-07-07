@@ -15,10 +15,10 @@
       id: 'data', label: '数据', icon: '📊', children: [
         { id: 'signals', label: '信号总览' },
         { id: 'trend',   label: '趋势分析' },
-        { id: 'tickers', label: '技术面趋势' },
         { id: 'filings', label: '财报' },
       ],
     },
+    { id: 'technicals', label: '技术面趋势', icon: '📈' },
     {
       id: 'strategy', label: '策略', icon: '🎯', children: [
         { id: 'scores',   label: '策略评分' },

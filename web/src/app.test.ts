@@ -13,6 +13,7 @@ vi.mock('./lib/api', () => ({
   getHermes: vi.fn(async () => ({})),
   getHermesAgents: vi.fn(async () => ({ agents: [] })),
   getTickerTrends: vi.fn(async () => ({ rows: [] })),
+  getTickerOhlcv: vi.fn(async () => ({ ticker: '', bars: [], ma20: [], ma50: [], ma200: [] })),
   getStrategyScores: vi.fn(async () => ({ rows: [] })),
   getWatchlist: vi.fn(async () => ({ rows: [] })),
   getOperations: vi.fn(async () => ({ operations: [] })),
