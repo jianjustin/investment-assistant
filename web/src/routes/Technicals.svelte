@@ -10,9 +10,23 @@
 
   let { sub }: { sub?: string } = $props()
 
+  const trendLabel: Record<string, string> = {
+    uptrend: '上升',
+    downtrend: '下降',
+    volatile: '震荡',
+    base: '筑底',
+    unknown: '未知',
+  }
+  const levelLabel: Record<string, string> = {
+    high: '高关注',
+    medium: '中关注',
+    low: '低关注',
+  }
+
   let snapshots = $state<any[]>([])
   let ohlcv = $state<OhlcvResponse | null>(null)
   let loading = $state(true)
+  let loadError = $state(false)
   let active = $derived(sub || snapshots[0]?.ticker || '')
 
   async function loadList() {
@@ -23,10 +37,12 @@
   async function loadOhlcv(ticker: string) {
     if (!ticker) return
     ohlcv = null
+    loadError = false
     try {
       ohlcv = await api.getTickerOhlcv(ticker, 250)
     } catch {
       ohlcv = null
+      loadError = true
     }
   }
 
@@ -85,7 +101,7 @@
       <span class="text-xl font-bold">{active}</span>
       {#if snapshot}
         <span class="text-xs px-2 py-0.5 rounded-full border border-green-500/40 text-green-400">
-          {snapshot.trend_state} · {snapshot.attention_level}
+          {trendLabel[snapshot.trend_state] ?? snapshot.trend_state} · {levelLabel[snapshot.attention_level] ?? snapshot.attention_level}
         </span>
       {/if}
     </div>
@@ -106,6 +122,8 @@
         <div class="text-xs text-muted mt-3 mb-1">量价（放量高亮）</div>
         <VolumeBars bars={ohlcv.bars} />
       </div>
+    {:else if loadError}
+      <p class="text-sm text-red-400">行情加载失败，请稍后重试。</p>
     {:else}
       <Skeleton rows={3} />
     {/if}

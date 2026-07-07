@@ -34,19 +34,37 @@ def ohlcv_series(
     fetcher: Callable[[str, int], pd.DataFrame] | None = None,
     clock: Callable[[], float] | None = None,
 ) -> dict:
+    """Return OHLCV + MA series for *days* trading candles.
+
+    Strategy: over-fetch a calendar-day buffer large enough to cover
+    ``days`` trading candles PLUS the 200-trading-day warmup that
+    ``Close.rolling(200).mean()`` needs.  After computing MAs on the
+    FULL fetched frame (so warmup rows are included), we tail each
+    series to the last ``days`` entries before assembling the result.
+
+    Calendar-day buffer formula:
+        calendar_days = int((days + 200) * 7 / 5) + 15
+    (trading→calendar ≈ ×7/5; +200 warmup; +15 slack for holidays)
+
+    Cache is keyed by (ticker, days) — identical to before.
+    The ``fetcher`` and ``clock`` injection points are unchanged.
+    """
     now = (clock or time.monotonic)()
     key = (ticker.upper(), days)
     cached = _ohlcv_cache.get(key)
     if cached and now - cached[0] < _OHLCV_TTL_SECONDS:
         return cached[1]
 
+    # Over-fetch: request enough calendar days to guarantee 200 warmup rows.
+    calendar_days = int((days + 200) * 7 / 5) + 15
     fetch = fetcher or get_price_history
-    frame = fetch(ticker.upper(), days)
+    frame = fetch(ticker.upper(), calendar_days)
     if frame is None or frame.empty:
         raise ValueError(f"No price data returned for {ticker}")
 
+    # Compute MAs over the FULL frame (preserves warmup).
     closes = frame["Close"].astype(float)
-    bars = [
+    all_bars = [
         {
             "date": (idx.date().isoformat() if hasattr(idx, "date") else str(idx)),
             "open": round(float(row["Open"]), 4),
@@ -57,12 +75,17 @@ def ohlcv_series(
         }
         for idx, row in frame.iterrows()
     ]
+    all_ma20 = _ma_series(closes, 20)
+    all_ma50 = _ma_series(closes, 50)
+    all_ma200 = _ma_series(closes, 200)
+
+    # Tail to the requested number of trading candles.
     result = {
         "ticker": ticker.upper(),
-        "bars": bars,
-        "ma20": _ma_series(closes, 20),
-        "ma50": _ma_series(closes, 50),
-        "ma200": _ma_series(closes, 200),
+        "bars": all_bars[-days:],
+        "ma20": all_ma20[-days:],
+        "ma50": all_ma50[-days:],
+        "ma200": all_ma200[-days:],
     }
     _ohlcv_cache[key] = (now, result)
     return result
