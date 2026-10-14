@@ -50,6 +50,8 @@ def run(
 
 
 def main() -> None:
+    from dotenv import load_dotenv
+    load_dotenv()
     parser = argparse.ArgumentParser(description="Daily 09:00 filings task")
     parser.add_argument("--config", default=None)
     parser.add_argument("--date", default=None, help="拉取指定单日（YYYY-MM-DD），默认 T-1")

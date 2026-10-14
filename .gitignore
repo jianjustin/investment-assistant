@@ -34,3 +34,5 @@ web/dist/
 
 # superpowers brainstorm scratch
 .superpowers/
+
+config/local.json

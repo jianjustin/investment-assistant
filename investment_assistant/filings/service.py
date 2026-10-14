@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from datetime import date, timedelta
 from typing import Any, Protocol
 
@@ -57,7 +58,29 @@ def download_configured_filings(
     }
     if index_error is not None:
         result["index_error"] = index_error
+    result["reports"] = _write_reports(filings_meta)
     return result
+
+
+def _write_reports(filings_meta: list[dict[str, Any]]) -> list[str]:
+    report_dir = os.environ.get("FILINGS_REPORT_DIR")
+    if not report_dir or not filings_meta:
+        return []
+    from investment_assistant.filings.report import write_filing_report
+
+    written: list[str] = []
+    for meta in filings_meta:
+        raw = ""
+        path = meta.get("path")
+        if path:
+            try:
+                raw = Path(path).read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                logger.warning("filing report source unreadable %s: %s", path, exc)
+        dest = write_filing_report(Path(report_dir), meta, raw)
+        if dest is not None:
+            written.append(str(dest))
+    return written
 
 
 def _persist_filing_index(filings_meta: list[dict[str, Any]]) -> None:
