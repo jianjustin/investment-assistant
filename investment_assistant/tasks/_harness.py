@@ -41,7 +41,10 @@ def run_task(
 def _record(*, task: str, run_id: str, status: str, started_at, finished_at,
             summary: dict[str, Any], target_start_date=None, target_end_date=None,
             trigger_source: str = "scheduled") -> None:
-    append_run({"type": task, "run_id": run_id, "status": status, "summary": summary})
+    try:
+        append_run({"type": task, "run_id": run_id, "status": status, "summary": summary})
+    except OSError as exc:
+        summary = {**summary, "run_log_error": str(exc)}
     database_url = os.environ.get("INVESTMENT_ASSISTANT_DATABASE_URL")
     if not database_url:
         return

@@ -150,7 +150,8 @@ def check_daily_timer() -> dict[str, Any]:
 
 
 def check_filings_storage() -> dict[str, Any]:
-    root = DEFAULT_FILINGS_DIR
+    from investment_assistant.config import load_config
+    root = load_config().filings.output_dir
     if not root.exists():
         return _check("filings", "Filings 存储", "storage", "degraded", f"目录不存在：{root}", meta={"path": str(root), "file_count": 0})
     files = [p for p in root.rglob("*") if p.is_file()]

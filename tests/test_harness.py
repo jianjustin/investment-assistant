@@ -58,3 +58,34 @@ def test_run_task_passes_dates_to_dispatch(monkeypatch):
         target_start_date=date(2026, 7, 3), target_end_date=date(2026, 7, 3),
     )
     assert sent == {"target_start_date": date(2026, 7, 3), "target_end_date": date(2026, 7, 3)}
+
+
+def test_record_keeps_db_row_when_run_log_is_not_writable(monkeypatch):
+    from datetime import datetime, UTC
+
+    saved = {}
+
+    def boom(record):
+        raise PermissionError("denied")
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(_harness, "append_run", boom)
+    monkeypatch.setenv("INVESTMENT_ASSISTANT_DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr("investment_assistant.db.connect", lambda url: Conn())
+    monkeypatch.setattr("investment_assistant.db.insert_job_report", lambda conn, **kw: saved.update(kw))
+
+    _harness._record(
+        task="filings", run_id="filings-test", status="success",
+        started_at=datetime.now(UTC), finished_at=datetime.now(UTC),
+        summary={"downloaded_count": 0}, trigger_source="manual",
+    )
+
+    assert saved["status"] == "success"
+    assert saved["summary"]["downloaded_count"] == 0
+    assert "denied" in saved["summary"]["run_log_error"]
