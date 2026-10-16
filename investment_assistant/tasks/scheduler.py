@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -72,23 +73,48 @@ def run_due_jobs(conn, config: AssistantConfig, *, now: datetime, registry=REGIS
 
 
 _last_tick_at: datetime | None = None
+_tick_started_at: datetime | None = None
+_tick_in_progress = False
+_last_tick_failed: bool | None = None
+_poll_state_lock = threading.Lock()
 
 
 def last_tick_at() -> datetime | None:
     """最近一次调度 tick 完成时间（UTC）；线程尚未跑过则为 None，供 health 心跳用。"""
-    return _last_tick_at
+    with _poll_state_lock:
+        return _last_tick_at
+
+
+def poll_state() -> dict[str, Any]:
+    """只读轮询快照；失败仅暴露标记，不返回可能含凭据的异常内容。"""
+    with _poll_state_lock:
+        return {
+            "started_at": _tick_started_at,
+            "in_progress": _tick_in_progress,
+            "last_tick_at": _last_tick_at,
+            "last_tick_failed": _last_tick_failed,
+        }
 
 
 def run_forever(stop_event, *, database_url: str, config: AssistantConfig,
                 tick_seconds: float = 60) -> None:
     """调度循环：驻留 API 进程的守护线程入口，stop_event 置位后在一个 tick 内退出。"""
-    global _last_tick_at
+    global _last_tick_at, _tick_started_at, _tick_in_progress, _last_tick_failed
     logger.info("scheduler thread started; tick=%ss", tick_seconds)
     while not stop_event.is_set():
+        with _poll_state_lock:
+            _tick_started_at = datetime.now(UTC)
+            _tick_in_progress = True
+        failed = True
         try:
             with connect(database_url) as conn:
                 run_due_jobs(conn, config, now=datetime.now(UTC))
+            failed = False
         except Exception:  # 主循环兜底，记录后继续
             logger.exception("scheduler tick failed")
-        _last_tick_at = datetime.now(UTC)
+        finally:
+            with _poll_state_lock:
+                _last_tick_at = datetime.now(UTC)
+                _tick_in_progress = False
+                _last_tick_failed = failed
         stop_event.wait(tick_seconds)

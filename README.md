@@ -108,6 +108,10 @@ python -m investment_assistant.tasks.nightly_scores   # 18:00 策略评分
 
 调度线程随 API 服务启动（`SCHEDULER_ENABLED=0` 可关）。
 
+macOS 本地使用仓库根目录的 `./start.command`：它先加载本地 `.env`，以文件中的 `SCHEDULER_ENABLED` 为准，避免继承旧值 `0`，并只监听 `127.0.0.1`。本机已配置的 `local.investment-assistant` 用户 LaunchAgent 在登录时启动此入口；日志位于 `~/Library/Application Support/investment-assistant/logs/service.stdout.log` 和 `service.stderr.log`。已有服务运行时不重复启动入口，修改 `.env` 后用 `launchctl kickstart -k gui/$(id -u)/local.investment-assistant` 重启。
+
+任务中心及运行记录显示服务级调度状态；“任务启用”仅表示该任务自己的开关。运行记录每 15 秒刷新，也可手动刷新。下次运行时间为空的任务会在开启调度后立即执行一次，不会自动逐日重放历史缺口。电脑需要保持运行和唤醒，用户退出登录后此用户服务也会退出。
+
 API server 启动后可访问 `http://localhost:8787/docs` 查看全部端点的 OpenAPI 文档。
 
 每个任务执行结果写入 `job_reports` 表，并按通知配置推送 Discord。
@@ -115,6 +119,8 @@ API server 启动后可访问 `http://localhost:8787/docs` 查看全部端点的
 ---
 
 ## 调度计划
+
+本机已迁移的 SEC 监控沿用美东工作日 **20:30**，直接通知 Discord `#investment`；下面是其他实例的默认种子计划。监控每轮重读正式 SEC 观察名单，从 2026-10-01 扫描到美东当日，保留 TSLA、8-K 筛选和历史去重。新报告提取正文财务事实和公司指引原文，保留期间、口径及来源；不支持的格式标记待核验。见 [SEC 监控接管说明](docs/sec-monitor-migration.md)。
 
 | 任务 | 时间（US/Eastern，周一~五） | 说明 |
 |------|-----------------------------|------|
@@ -165,7 +171,7 @@ curl -u "$HERMES_DASHBOARD_USER:$SERVER_PWD" http://localhost:8787/api/status
 
 | 变量 | 必需 | 说明 |
 |------|------|------|
-| `SEC_USER_AGENT` | ✅ | 格式 `Name email@example.com`；缺失时 filings 下载静默返回空列表 |
+| `SEC_USER_AGENT` | ✅ | 格式 `Name email@example.com`；本机 SEC 监控缺失时记录错误并告警 |
 | `INVESTMENT_ASSISTANT_DATABASE_URL` | ✅（生产） | PostgreSQL 连接 URL；缺失时大多数端点降级（`degraded:true`），内嵌调度线程不启动 |
 | `HERMES_DASHBOARD_USER` | ⚠️ | HTTP Basic 认证用户名，默认 `jianjustin` |
 | `SERVER_PWD` | ⚠️ | HTTP Basic 认证密码（高优先级）；空字符串 = 无认证 |

@@ -1,0 +1,274 @@
+import json
+from datetime import date
+from pathlib import Path
+
+import pytest
+import requests
+
+from investment_assistant.config import AssistantConfig, FilingsConfig, NotifyConfig, SecMonitorConfig, load_config
+from investment_assistant.filings.monitor import scan_and_notify
+from investment_assistant.filings.monitor_source import EdgarSource, read_watchlist
+from investment_assistant.notify.discord_bot import DeliveryError, DiscordBotClient
+
+
+DAY = date(2026, 10, 15)
+ACC = "0001045810-26-000001"
+
+
+@pytest.fixture
+def cfg(tmp_path):
+    watchlist = tmp_path / "watchlist.md"
+    watchlist.write_text("| Ticker | 采集 |\n|---|---|\n| NVDA | 是 |\n| PRIVATE | 否 |\n")
+    legacy = tmp_path / "legacy.jsonl"
+    legacy.write_text("")
+    return AssistantConfig(
+        filings=FilingsConfig(output_dir=tmp_path / "filings"),
+        sec_monitor=SecMonitorConfig(enabled=True, start_date="2026-10-01", watchlist_path=str(watchlist),
+            legacy_log_path=str(legacy), state_dir=str(tmp_path / "state"), discord_channel_id="123"),
+    )
+
+
+class Source:
+    evidence = [{"url": "https://data.sec.gov/submissions/CIK0001045810.json", "sha256": "hash"}]
+
+    def __init__(self, *, fail=False, selected=True):
+        self.fail, self.selected = fail, selected
+        self.downloads = 0
+
+    def discover(self, tickers, start, end):
+        assert tickers == ["NVDA"]
+        if self.fail:
+            raise RuntimeError("SEC HTTP 403")
+        return [{"ticker": "NVDA", "form": "8-K", "filing_date": "2026-10-15", "accession_number": ACC,
+                 "primary_document": "main.htm", "edgar_url": "https://www.sec.gov/main.htm"}]
+
+    def documents(self, meta):
+        self.downloads += 1
+        return self.selected, [("main.htm", b"<html>Item 2.02</html>"), ("ex99.htm", b"release")]
+
+
+class Client:
+    def __init__(self, failure=None):
+        self.sent = []
+        self.failure = failure
+
+    def send(self, content, nonce):
+        self.sent.append(content)
+        if self.failure:
+            raise self.failure
+        return {"message_id": str(len(self.sent)), "channel_id": "123"}
+
+
+def scan(cfg, source, client, **kwargs):
+    return scan_and_notify(cfg, DAY, DAY, source=source, client=client, notify_cfg=NotifyConfig(),
+                           persist=kwargs.pop("persist", lambda rows: None),
+                           reports=lambda rows: [], **kwargs)
+
+
+def test_source_failure_is_not_zero_and_duplicate_alert_is_suppressed(cfg):
+    client = Client()
+    first = scan(cfg, Source(fail=True), client)
+    second = scan(cfg, Source(fail=True), client)
+    assert first["coverage"] == "unavailable" and first["errors"]["collection"] == "SEC HTTP 403"
+    assert first["delivery"]["receipts"][0]["message_id"] == "1"
+    assert len(client.sent) == 1
+    assert "无新符合规则" not in client.sent[0]
+    assert "last_complete_scan" not in json.loads((Path(cfg.sec_monitor.state_dir) / 'state.json').read_text())
+
+
+def test_archive_and_receipts_resume_without_redownload_or_refiling(cfg):
+    source, client = Source(), Client()
+    first = scan(cfg, source, client)
+    second = scan(cfg, source, client)
+    assert first["coverage"] == "complete_for_declared_universe"
+    assert source.downloads == 1
+    assert len(list(cfg.filings.output_dir.rglob("*.htm"))) == 2
+    assert sum("】NVDA 8-K" in text for text in client.sent) == 1
+    assert len(client.sent) == 1
+    assert second["delivery"]["receipts"][0]["status"] == "sent"
+
+
+def test_unknown_delivery_is_not_automatically_retried(cfg):
+    client = Client(DeliveryError("timeout", uncertain=True))
+    first = scan(cfg, Source(), client)
+    second = scan(cfg, Source(), client)
+    assert len(client.sent) == 1
+    assert first["delivery"]["status"] == second["delivery"]["status"] == "needs_attention"
+    assert "delivery" in second["errors"]
+
+
+def test_definite_rejection_is_retried_without_reloading_source_documents(cfg):
+    source = Source()
+    client = Client(DeliveryError("HTTP 429", uncertain=False))
+    first = scan(cfg, source, client)
+    client.failure = None
+    second = scan(cfg, source, client)
+    assert first["delivery"]["status"] == "needs_attention"
+    assert second["delivery"]["status"] == "sent"
+    assert source.downloads == 1 and len(client.sent) == 2
+
+
+@pytest.mark.parametrize("sent", [True, False])
+def test_legacy_accession_is_not_redownloaded_or_pushed_even_if_unconfirmed(cfg, sent):
+    from pathlib import Path
+    Path(cfg.sec_monitor.legacy_log_path).write_text(json.dumps({"ticker": "NVDA", "accession": ACC, "discord_sent": sent}))
+    source, client = Source(), Client()
+    out = scan(cfg, source, client)
+    assert source.downloads == 0 and out["filings"] == []
+    assert out["legacy_pending_verification"] == int(not sent)
+    assert "无新符合规则" in client.sent[0]
+
+
+def test_corrupt_legacy_log_stops_scan_and_does_not_emit_zero(cfg):
+    from pathlib import Path
+    Path(cfg.sec_monitor.legacy_log_path).write_text("bad json")
+    client = Client()
+    out = scan(cfg, Source(), client)
+    assert out["coverage"] == "unavailable"
+    assert "无新符合规则" not in client.sent[0]
+
+
+def test_non_target_8k_has_link_but_no_formal_archive(cfg):
+    out = scan(cfg, Source(selected=False), Client())
+    assert len(out["other_8k"]) == 1
+    assert not cfg.filings.output_dir.exists()
+
+
+def test_index_failure_resumes_owned_files_without_becoming_legacy(cfg):
+    source, client = Source(), Client()
+    def broken(rows):
+        raise RuntimeError("index unavailable")
+    first = scan(cfg, source, client, persist=broken)
+    second = scan(cfg, source, client)
+    assert first["errors"] and not second["errors"]
+    assert source.downloads == 1
+    assert sum("】NVDA 8-K" in text for text in client.sent) == 1
+
+
+def test_watchlist_is_read_each_time_and_empty_table_fails(cfg):
+    from pathlib import Path
+    path = Path(cfg.sec_monitor.watchlist_path)
+    assert read_watchlist(path) == ["NVDA"]
+    path.write_text("| Ticker | 采集 |\n| MU | 是 |\n")
+    assert read_watchlist(path) == ["MU"]
+    path.write_text("| Ticker | 采集 |\n| MU | 否 |\n")
+    with pytest.raises(ValueError):
+        read_watchlist(path)
+
+
+def test_http_errors_are_not_retried_and_missing_agent_is_an_error(tmp_path, monkeypatch):
+    class Session:
+        calls = 0
+        def get(self, *args, **kwargs):
+            self.calls += 1
+            return type("Response", (), {"status_code": 429, "headers": {"Retry-After": "60"}})()
+    session = Session()
+    source = EdgarSource(tmp_path, session=session)
+    monkeypatch.setenv("SEC_USER_AGENT", "Research test@example.com")
+    with pytest.raises(RuntimeError, match="HTTP 429"):
+        source.get("https://data.sec.gov/test")
+    assert session.calls == 1
+    monkeypatch.delenv("SEC_USER_AGENT")
+    with pytest.raises(ValueError, match="SEC_USER_AGENT"):
+        source.get("https://data.sec.gov/test")
+
+
+@pytest.mark.parametrize("exception,reason", [
+    (requests.exceptions.SSLError("CERTIFICATE_VERIFY_FAILED secret"), "certificate_validation_failed"),
+    (requests.exceptions.SSLError("UNEXPECTED_EOF secret"), "tls_peer_closed"),
+    (requests.exceptions.ProxyError("secret"), "proxy_unavailable"),
+    (requests.Timeout("secret"), "request_timeout"),
+])
+def test_network_failures_are_classified_without_leaking_details(tmp_path, monkeypatch, exception, reason):
+    monkeypatch.setenv("SEC_USER_AGENT", "Research test@example.com")
+    class Session:
+        def get(self, *args, **kwargs):
+            raise exception
+    with pytest.raises(RuntimeError) as caught:
+        EdgarSource(tmp_path, session=Session()).get("https://data.sec.gov/test")
+    assert reason in str(caught.value) and "secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize("missing,expected", [
+    ("FILINGS_REPORT_DIR", "正文报告"), ("INVESTMENT_ASSISTANT_DATABASE_URL", "SEC 索引"),
+])
+def test_missing_report_or_database_config_cannot_claim_complete(cfg, monkeypatch, missing, expected):
+    monkeypatch.setenv("FILINGS_REPORT_DIR", str(cfg.filings.output_dir / 'reports'))
+    monkeypatch.setenv("INVESTMENT_ASSISTANT_DATABASE_URL", "test-not-connected")
+    monkeypatch.delenv(missing)
+    source, client = Source(), Client()
+    result = scan_and_notify(cfg, DAY, DAY, source=source, client=client, notify_cfg=NotifyConfig())
+    assert result['coverage'] == 'unavailable' and expected in result['errors']['collection']
+    assert source.downloads == 0 and '采集失败' in client.sent[0]
+
+
+def test_historical_pages_are_scanned_and_tsla_10k_is_excluded(tmp_path):
+    source = EdgarSource(tmp_path)
+    def rows(forms):
+        return {"form": forms, "filingDate": ["2026-10-15"] * len(forms),
+                "accessionNumber": [f"0001045810-26-{i:06d}" for i in range(len(forms))],
+                "primaryDocument": [f"main{i}.htm" for i in range(len(forms))]}
+    urls = []
+    def get(url):
+        urls.append(url)
+        if "company_tickers" in url:
+            return {"0": {"ticker": "TSLA", "cik_str": 1318605}}
+        if "-submissions-" in url:
+            return rows(["10-K", "10-Q", "8-K"])
+        return {"filings": {"recent": rows([]), "files": [{"name": "CIK0001318605-submissions-001.json",
+                    "filingFrom": "2026-10-01", "filingTo": "2026-10-15"}]}}
+    source.json = get
+    out = source.discover(["TSLA"], "2026-10-01", "2026-10-15")
+    assert [x["form"] for x in out] == ["10-Q", "8-K"]
+    assert any("-submissions-001" in url for url in urls)
+    with pytest.raises(ValueError):
+        source.rows({"form": ["10-Q"]})
+
+
+@pytest.mark.parametrize("primary,exhibit,selected", [(b"<p>Item 2.02 Results</p>", False, True),
+    (b"<p>Other update</p>", True, True), (b"<p>Item 5.02</p>", False, False)])
+def test_8k_filter_and_exhibit_download(tmp_path, primary, exhibit, selected):
+    source = EdgarSource(tmp_path)
+    base = "https://www.sec.gov/Archives/edgar/data/1/123/"
+    table = '<table summary="Document Format Files"><tr><th>Seq</th></tr>'
+    if exhibit:
+        table += '<tr><td>2</td><td>release</td><td><a href="ex99.htm">ex99</a></td><td>EX-99.1</td></tr>'
+    table += '</table>'
+    data = {base + 'main.htm': primary, base + 'index.html': table.encode(), base + 'ex99.htm': b'release'}
+    source.get = data.__getitem__
+    keep, docs = source.documents({"form": "8-K", "primary_document": "main.htm",
+                                  "edgar_url": base + 'main.htm', "index_url": base + 'index.html'})
+    assert keep == selected
+    assert len(docs) == 1 + int(exhibit)
+
+
+def test_bot_returns_receipt_and_does_not_leak_token_on_timeout(monkeypatch):
+    monkeypatch.setenv("SEC_DISCORD_BOT_TOKEN", "secret-test-token")
+    class Session:
+        def post(self, url, **kwargs):
+            assert kwargs['json']['allowed_mentions'] == {'parse': []}
+            assert kwargs['json']['enforce_nonce'] is True
+            raise requests.Timeout("secret-test-token")
+    with pytest.raises(DeliveryError) as caught:
+        DiscordBotClient("123", session=Session()).send("message", "nonce")
+    assert caught.value.uncertain
+    assert "secret-test-token" not in str(caught.value)
+
+
+def test_monitor_config_loads_and_routes_filings_task(tmp_path, monkeypatch):
+    from investment_assistant.filings import monitor
+    from investment_assistant.tasks import filings
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"sec_monitor": {"enabled": True, "start_date": "2026-10-01"}}))
+    cfg = load_config(path)
+    monkeypatch.setattr(monitor, "run_monitor", lambda *a, **kw: {"migrated": True})
+    assert filings.run(cfg) == {"migrated": True}
+
+
+def test_harness_reports_collector_error_without_duplicate_notification(monkeypatch):
+    from investment_assistant.tasks import _harness
+    recorded = []
+    monkeypatch.setattr(_harness, "_record", lambda **kw: recorded.append(kw))
+    monkeypatch.setattr(_harness, "dispatch", lambda *a, **kw: pytest.fail("must not dispatch twice"))
+    out = _harness.run_task("filings", lambda: {"errors": {"source": "403"}}, config=AssistantConfig(), notify=False)
+    assert out["status"] == recorded[0]["status"] == "error"

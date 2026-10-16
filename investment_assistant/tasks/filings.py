@@ -37,6 +37,10 @@ def run(
     end_date: date | None = None,
     trigger_source: str = "scheduled",
 ) -> dict[str, Any]:
+    if config.sec_monitor.enabled:
+        from investment_assistant.filings.monitor import run_monitor
+
+        return run_monitor(config, start_date=start_date, end_date=end_date, trigger_source=trigger_source)
     target_start = start_date or (date.today() - timedelta(days=1))  # 自然目标日 T-1
     target_end = end_date or target_start
     return run_task(

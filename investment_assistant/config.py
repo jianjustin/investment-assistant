@@ -27,6 +27,18 @@ class FilingsConfig:
 
 
 @dataclass(frozen=True)
+class SecMonitorConfig:
+    """Opt-in migration of the OpenClaw SEC monitor; secrets stay in the environment."""
+
+    enabled: bool = False
+    start_date: str = ""
+    watchlist_path: str = ""
+    legacy_log_path: str = ""
+    state_dir: str = ""
+    discord_channel_id: str = ""
+
+
+@dataclass(frozen=True)
 class LLMConfig:
     """DeepSeek / LLM tuning. Model ids are the real published DeepSeek ids."""
 
@@ -118,6 +130,7 @@ class AssistantConfig:
     watchlist: list[str] = field(default_factory=lambda: ["CRDO", "MU", "RKLB", "NVDA"])
     market: MarketConfig = field(default_factory=MarketConfig)
     filings: FilingsConfig = field(default_factory=FilingsConfig)
+    sec_monitor: SecMonitorConfig = field(default_factory=SecMonitorConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     macro: MacroConfig = field(default_factory=MacroConfig)
@@ -158,6 +171,8 @@ def _config_from_dict(data: dict[str, Any]) -> AssistantConfig:
         cfg = replace(cfg, market=_market_from_dict(data["market"], cfg.market))
     if "filings" in data:
         cfg = replace(cfg, filings=_filings_from_dict(data["filings"], cfg.filings))
+    if "sec_monitor" in data and isinstance(data["sec_monitor"], dict):
+        cfg = replace(cfg, sec_monitor=_dataclass_from_dict(data["sec_monitor"], cfg.sec_monitor))
     if "vault_ro" in data:
         cfg = replace(cfg, vault_ro=Path(data["vault_ro"]))
     if "draft_dir" in data:

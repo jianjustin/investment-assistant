@@ -3,8 +3,18 @@ import time
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from investment_assistant.config import AssistantConfig
 from investment_assistant.tasks import scheduler
+
+
+@pytest.fixture(autouse=True)
+def isolated_poll_state(monkeypatch):
+    monkeypatch.setattr(scheduler, "_last_tick_at", None)
+    monkeypatch.setattr(scheduler, "_tick_started_at", None)
+    monkeypatch.setattr(scheduler, "_tick_in_progress", False)
+    monkeypatch.setattr(scheduler, "_last_tick_failed", None)
 
 
 def test_compute_next_run_same_day_when_time_ahead():
@@ -105,6 +115,71 @@ def test_run_forever_survives_tick_exception(monkeypatch):
     t.join(timeout=1)
     assert len(calls) >= 2
     assert not t.is_alive()
+    state = scheduler.poll_state()
+    assert state["last_tick_at"] is not None
+    assert state["last_tick_failed"] is True
+    assert state["in_progress"] is False
+
+
+class _StopAfterTicks:
+    def __init__(self, count):
+        self.count = count
+        self.snapshots = []
+
+    def is_set(self):
+        return len(self.snapshots) >= self.count
+
+    def wait(self, timeout):
+        self.snapshots.append(scheduler.poll_state())
+
+
+def test_poll_state_tracks_first_tick_before_it_finishes(monkeypatch):
+    during = []
+    monkeypatch.setattr(scheduler, "connect", lambda url: _FakeConn())
+    monkeypatch.setattr(scheduler, "run_due_jobs",
+                        lambda conn, config, *, now: during.append(scheduler.poll_state()) or [])
+    stop = _StopAfterTicks(1)
+    scheduler.run_forever(stop, database_url="postgresql://fake", config=AssistantConfig())
+
+    assert during[0]["in_progress"] is True
+    assert during[0]["started_at"] is not None
+    assert during[0]["last_tick_at"] is None
+    assert during[0]["last_tick_failed"] is None
+    completed = stop.snapshots[0]
+    assert completed["in_progress"] is False
+    assert completed["last_tick_failed"] is False
+    assert completed["started_at"] <= completed["last_tick_at"]
+    assert scheduler.last_tick_at() == completed["last_tick_at"]
+
+    completed["in_progress"] = True
+    assert scheduler.poll_state()["in_progress"] is False
+
+
+def test_poll_state_retains_failure_until_retry_succeeds(monkeypatch):
+    attempts = []
+    during_retry = []
+
+    def connect(url):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("private connection details")
+        return _FakeConn()
+
+    monkeypatch.setattr(scheduler, "connect", connect)
+    monkeypatch.setattr(scheduler, "run_due_jobs",
+                        lambda conn, config, *, now: during_retry.append(scheduler.poll_state()) or [])
+    stop = _StopAfterTicks(2)
+    scheduler.run_forever(stop, database_url="postgresql://fake", config=AssistantConfig())
+
+    failed, recovered = stop.snapshots
+    assert failed["last_tick_at"] is not None
+    assert failed["last_tick_failed"] is True
+    assert failed["in_progress"] is False
+    assert "private connection details" not in repr(failed)
+    assert during_retry[0]["last_tick_failed"] is True
+    assert during_retry[0]["in_progress"] is True
+    assert recovered["last_tick_failed"] is False
+    assert recovered["in_progress"] is False
 
 
 def test_scheduler_module_has_no_cli_main():

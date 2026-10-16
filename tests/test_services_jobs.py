@@ -7,6 +7,22 @@ def test_scheduled_jobs_degraded_without_db(monkeypatch):
     monkeypatch.delenv("INVESTMENT_ASSISTANT_DATABASE_URL", raising=False)
     out = jobs.scheduled_jobs()
     assert out["degraded"] is True and out["jobs"] == []
+    assert out["scheduler"]["meta"]["enabled"] is False
+
+
+def test_scheduled_jobs_exposes_global_disable_despite_enabled_job(client, monkeypatch):
+    monkeypatch.setenv("INVESTMENT_ASSISTANT_DATABASE_URL", "postgres://x")
+    monkeypatch.setenv("SCHEDULER_ENABLED", "0")
+    monkeypatch.setattr(jobs, "_with_conn", lambda fn: fn("CONN"))
+    monkeypatch.setattr(jobs.db, "list_scheduled_jobs",
+                        lambda conn: [{"name": "metrics", "enabled": True}])
+    response = client.get("/api/jobs/scheduled")
+    assert response.status_code == 200
+    out = response.json()
+    assert out["jobs"][0]["enabled"] is True
+    assert out["degraded"] is False  # 数据库可用与调度开关独立
+    assert out["scheduler"]["meta"]["enabled"] is False
+    assert "SCHEDULER_ENABLED=0" in out["scheduler"]["detail"]
 
 
 def test_job_reports_reads_via_db(monkeypatch):

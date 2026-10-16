@@ -78,7 +78,20 @@ export const runDecisionEvidence = (body: object) => post<{ run_id: string; stat
 export const getRun = (runId: string) => get<RunRecord>(`/api/runs/${runId}`)
 
 // jobs
-export const getScheduledJobs = () => get<{ jobs: any[]; degraded: boolean }>('/api/jobs/scheduled')
+export interface SchedulerStatus {
+  status: 'up' | 'degraded' | 'down'
+  detail: string
+  meta: {
+    enabled: boolean
+    last_tick_at: string | null
+    tick_in_progress?: boolean
+    tick_started_at?: string | null
+    last_tick_failed?: boolean | null
+  }
+}
+
+export const getScheduledJobs = () =>
+  get<{ jobs: any[]; degraded: boolean; scheduler?: SchedulerStatus }>('/api/jobs/scheduled')
 export const getJobReports = (task?: string, limit = 50) =>
   get<{ reports: any[]; degraded: boolean }>(
     `/api/jobs/reports?limit=${limit}${task ? `&task=${task}` : ''}`,

@@ -163,30 +163,51 @@ def check_filings_storage() -> dict[str, Any]:
 
 
 def check_scheduler() -> dict[str, Any]:
-    """调度线程心跳：驻留 API 进程的守护线程，超过 3 个 tick 无心跳视为 down。"""
+    """区分调度关闭、轮询执行中、轮询失败和空闲时心跳过期。"""
     from investment_assistant.tasks import scheduler as _scheduler
 
-    enabled = (
-        os.environ.get("SCHEDULER_ENABLED", "1") != "0"
-        and bool(os.environ.get("INVESTMENT_ASSISTANT_DATABASE_URL"))
-    )
-    if not enabled:
+    if os.environ.get("SCHEDULER_ENABLED", "1") == "0":
         return _check("scheduler", "调度线程", "infrastructure", "degraded",
-                      "未启用（SCHEDULER_ENABLED=0 或未配置数据库）",
-                      meta={"enabled": False, "last_tick_at": None})
-    last = _scheduler.last_tick_at()
+                      "调度未启用：SCHEDULER_ENABLED=0",
+                      meta={"enabled": False, "last_tick_at": None, "reason": "env_disabled"})
+    if not os.environ.get("INVESTMENT_ASSISTANT_DATABASE_URL"):
+        return _check("scheduler", "调度线程", "infrastructure", "degraded",
+                      "调度未启用：未配置数据库 INVESTMENT_ASSISTANT_DATABASE_URL",
+                      meta={"enabled": False, "last_tick_at": None, "reason": "database_missing"})
+    state = _scheduler.poll_state()
+    last = state["last_tick_at"]
+    started = state["started_at"]
+    meta = {
+        "enabled": True,
+        "last_tick_at": last.isoformat() if last is not None else None,
+        "tick_started_at": started.isoformat() if started is not None else None,
+        "tick_in_progress": state["in_progress"],
+        "last_tick_failed": state["last_tick_failed"],
+    }
+    tick = int(os.environ.get("SCHEDULER_TICK_SECONDS", "60"))
+    now = datetime.now(UTC)
+    if state["in_progress"] and started is not None:
+        elapsed = int((now - started).total_seconds())
+        if state["last_tick_failed"]:
+            return _check("scheduler", "调度线程", "infrastructure", "degraded",
+                          f"上次调度轮询失败，本轮仍在执行重试（已持续 {elapsed} 秒）", meta=meta)
+        if elapsed > tick * 3:
+            return _check("scheduler", "调度线程", "infrastructure", "degraded",
+                          f"本轮调度仍在执行（已持续 {elapsed} 秒），任务耗时较长", meta=meta)
+        return _check("scheduler", "调度线程", "infrastructure", "up",
+                      f"本轮调度正在执行（已持续 {elapsed} 秒）", meta=meta)
     if last is None:
         return _check("scheduler", "调度线程", "infrastructure", "degraded",
-                      "已启用但尚未完成首个 tick",
-                      meta={"enabled": True, "last_tick_at": None})
-    tick = int(os.environ.get("SCHEDULER_TICK_SECONDS", "60"))
-    age = (datetime.now(UTC) - last).total_seconds()
-    meta = {"enabled": True, "last_tick_at": last.isoformat()}
+                      "已启用，等待首次调度轮询", meta=meta)
+    if state["last_tick_failed"]:
+        return _check("scheduler", "调度线程", "infrastructure", "down",
+                      "上次调度轮询失败，等待下一轮重试", meta=meta)
+    age = (now - last).total_seconds()
     if age > tick * 3:
         return _check("scheduler", "调度线程", "infrastructure", "down",
-                      f"心跳超时：上次 tick 在 {int(age)} 秒前", meta=meta)
+                      f"调度轮询心跳超时：上次完成在 {int(age)} 秒前", meta=meta)
     return _check("scheduler", "调度线程", "infrastructure", "up",
-                  f"运行中，上次 tick 在 {int(age)} 秒前", meta=meta)
+                  f"轮询运行中，上次调度轮询于 {int(age)} 秒前完成", meta=meta)
 
 
 # --- online services ------------------------------------------------------

@@ -66,20 +66,16 @@ def _write_reports(filings_meta: list[dict[str, Any]]) -> list[str]:
     report_dir = os.environ.get("FILINGS_REPORT_DIR")
     if not report_dir or not filings_meta:
         return []
-    from investment_assistant.filings.report import write_filing_report
+    from investment_assistant.filings.report import report_path, write_filing_report
+    from investment_assistant.filings.analysis import analyze_files
 
     written: list[str] = []
     for meta in filings_meta:
-        raw = ""
-        path = meta.get("path")
-        if path:
-            try:
-                raw = Path(path).read_text(encoding="utf-8", errors="replace")
-            except OSError as exc:
-                logger.warning("filing report source unreadable %s: %s", path, exc)
+        raw = Path(meta["path"]).read_text(encoding="utf-8", errors="replace")
+        meta["analysis"] = analyze_files(meta, raw)
         dest = write_filing_report(Path(report_dir), meta, raw)
-        if dest is not None:
-            written.append(str(dest))
+        # An interrupted run may already have published its report. Keep its link.
+        written.append(str(dest or report_path(Path(report_dir), meta)))
     return written
 
 

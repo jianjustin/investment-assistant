@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy, untrack } from 'svelte'
   import * as api from '../lib/api'
   import StatusPill from '../lib/components/StatusPill.svelte'
   import Skeleton from '../lib/components/Skeleton.svelte'
@@ -59,21 +60,77 @@
   let runningName = $state<string | null>(null)
   let filterTask = $state<string>('')
   let actionMsg = $state('')
+  let scheduler = $state<api.SchedulerStatus | null>(null)
+  let loadError = $state('')
+  let refreshing = $state(false)
+  let inFlight = false
+  let inFlightView = ''
+  let inFlightFilter = ''
+  let reloadAfterCurrent = false
+  let disposed = false
 
-  async function loadTasks() { jobs = (await api.getScheduledJobs()).jobs }
-  async function loadRuns() { reports = (await api.getJobReports(filterTask || undefined, 50)).reports }
+  const schedulerLabel = $derived.by(() => {
+    if (!scheduler) return '调度状态待确认'
+    if (!scheduler.meta.enabled) return '自动调度已关闭'
+    if (scheduler.meta.tick_in_progress) {
+      if (scheduler.meta.last_tick_failed) return '自动调度重试中'
+      return scheduler.status === 'degraded' ? '本轮调度仍在执行' : '自动调度正在执行'
+    }
+    if (scheduler.status === 'down' || scheduler.meta.last_tick_failed) return '自动调度异常'
+    if (!scheduler.meta.last_tick_at && !scheduler.meta.tick_started_at) return '自动调度等待首次检查'
+    return scheduler.status === 'up' ? '自动调度运行中' : '自动调度异常'
+  })
 
   async function load() {
-    loading = true
+    const requestedView = view
+    const requestedFilter = filterTask
+    if (inFlight) {
+      if (requestedView !== inFlightView || requestedFilter !== inFlightFilter) reloadAfterCurrent = true
+      return
+    }
+    inFlight = true
+    inFlightView = requestedView
+    inFlightFilter = requestedFilter
+    refreshing = true
     try {
-      if (view === 'tasks') await loadTasks()
-      else await loadRuns()
-    } finally { loading = false }
+      const [scheduledResult, reportsResult] = await Promise.allSettled([
+        api.getScheduledJobs(),
+        requestedView === 'runs' ? api.getJobReports(requestedFilter || undefined, 50) : Promise.resolve(null),
+      ])
+      if (disposed) return
+      const errors: string[] = []
+      if (scheduledResult.status === 'fulfilled') {
+        scheduler = scheduledResult.value.scheduler ?? null
+        if (scheduledResult.value.degraded) errors.push('定时任务数据暂不可用')
+        else jobs = scheduledResult.value.jobs
+      } else {
+        errors.push(`调度状态读取失败：${scheduledResult.reason?.message ?? scheduledResult.reason}`)
+      }
+      if (reportsResult.status === 'fulfilled') {
+        if (reportsResult.value && requestedView === view && requestedFilter === filterTask) {
+          if (reportsResult.value.degraded) errors.push('运行记录数据暂不可用')
+          else reports = reportsResult.value.reports
+        }
+      } else {
+        errors.push(`运行记录读取失败：${reportsResult.reason?.message ?? reportsResult.reason}`)
+      }
+      if (requestedView === view && requestedFilter === filterTask) loadError = errors.join('；')
+    } finally {
+      inFlight = false
+      if (!disposed) {
+        refreshing = false
+        loading = false
+        if (reloadAfterCurrent) {
+          reloadAfterCurrent = false
+          void load()
+        }
+      }
+    }
   }
 
   async function runNow(name: string) {
     runningName = name
-    try { await api.runJob(name) } finally { runningName = null; await loadTasks() }
+    try { await api.runJob(name) } finally { runningName = null; await load() }
   }
 
   async function submitDated(payload: Record<string, string>) {
@@ -100,8 +157,35 @@
     return `${s.toFixed(1)}s`
   }
 
-  $effect(() => { view; load() })
+  $effect(() => {
+    const activeView = view
+    untrack(() => { void load() })
+    if (activeView === 'runs') {
+      const timer = setInterval(() => { void load() }, 15_000)
+      return () => clearInterval(timer)
+    }
+  })
+
+  onDestroy(() => { disposed = true })
 </script>
+
+<div class="mb-4 space-y-2 rounded border border-border bg-surface p-3 text-sm" role="status">
+  <div class="flex items-center justify-between gap-3">
+    <p class:text-success={scheduler?.status === 'up'} class:text-warn={scheduler?.status !== 'up'} class="font-medium">{schedulerLabel}</p>
+    <button class="text-accent text-xs" disabled={refreshing} onclick={load}>{refreshing ? '刷新中…' : '刷新'}</button>
+  </div>
+  <p class="text-xs text-muted">{scheduler?.detail ?? (loading ? '正在读取调度状态…' : '服务未返回调度状态，请刷新后重试。')}</p>
+  {#if scheduler && !scheduler.meta.enabled}
+    <p class="text-xs text-muted">总开关关闭时，已启用的任务也不会自动运行。</p>
+  {/if}
+  {#if scheduler?.meta.last_tick_at}
+    <p class="text-xs text-muted">最近调度检查：{fmtTime(scheduler.meta.last_tick_at)}</p>
+  {/if}
+  {#if scheduler?.meta.tick_in_progress && scheduler.meta.tick_started_at}
+    <p class="text-xs text-muted">本轮开始：{fmtTime(scheduler.meta.tick_started_at)}</p>
+  {/if}
+</div>
+{#if loadError}<p role="alert" class="mb-3 text-sm text-danger">{loadError}。当前数据已保留，可刷新重试。</p>{/if}
 
 {#if loading}
   <Skeleton />
@@ -123,10 +207,10 @@
                 >?</button>
               {/if}
             </td>
-            <td>{j.time_local} · {j.weekday_mask}</td>
+            <td>{j.time_local} · {j.weekday_mask} · {j.timezone ?? '时区未配置'}</td>
             <td>{fmtTime(j.next_run_at)}</td>
             <td>{fmtTime(j.last_run_at)}</td>
-            <td>{j.enabled ? '启用' : '停用'}</td>
+            <td>{j.enabled ? '任务启用' : '任务停用'}</td>
             <td class="whitespace-nowrap text-right space-x-3">
               <button class="text-accent text-xs" onclick={() => dateJob = j.name}>按日期运行</button>
               <button class="text-accent text-xs" disabled={runningName === j.name} onclick={() => runNow(j.name)}>立即运行</button>
@@ -161,11 +245,14 @@
   </div>
 {:else}
   <div class="space-y-3">
-    <select bind:value={filterTask} onchange={loadRuns} class="text-sm border border-border rounded px-2 py-1 bg-surface">
-      <option value="">全部</option><option value="metrics">metrics</option>
-      <option value="filings">filings</option><option value="scores">scores</option>
-      <option value="event_study">event_study</option>
-    </select>
+    <div class="flex items-center gap-3">
+      <select aria-label="筛选任务" bind:value={filterTask} onchange={load} class="text-sm border border-border rounded px-2 py-1 bg-surface">
+        <option value="">全部</option><option value="metrics">metrics</option>
+        <option value="filings">filings</option><option value="scores">scores</option>
+        <option value="event_study">event_study</option>
+      </select>
+      <span class="text-xs text-muted">每 15 秒自动刷新</span>
+    </div>
     <table class="w-full text-sm">
       <thead>
         <tr class="text-muted text-left">

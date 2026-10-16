@@ -18,12 +18,13 @@ def run_task(
     target_start_date: date | None = None,
     target_end_date: date | None = None,
     trigger_source: str = "scheduled",
+    notify: bool = True,
 ) -> dict[str, Any]:
     run_id = f"{task}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
     started_at = datetime.now(UTC)
     try:
         summary = fn() or {}
-        status = "success"
+        status = "error" if summary.get("error") or summary.get("errors") else "success"
     except Exception as exc:  # 结构化记录，不静默
         summary = {"error": str(exc)}
         status = "error"
@@ -32,9 +33,10 @@ def run_task(
             finished_at=finished_at, summary=summary,
             target_start_date=target_start_date, target_end_date=target_end_date,
             trigger_source=trigger_source)
-    from investment_assistant.services.settings import effective_notify_config
-    dispatch(task, status, summary, effective_notify_config(config.notify),
-             target_start_date=target_start_date, target_end_date=target_end_date)
+    if notify:
+        from investment_assistant.services.settings import effective_notify_config
+        dispatch(task, status, summary, effective_notify_config(config.notify),
+                 target_start_date=target_start_date, target_end_date=target_end_date)
     return {"run_id": run_id, "task": task, "status": status, "summary": summary}
 
 
