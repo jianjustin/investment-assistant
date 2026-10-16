@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { untrack } from 'svelte'
   import * as api from '../lib/api'
   import Skeleton from '../lib/components/Skeleton.svelte'
   import DataTable from '../lib/components/DataTable.svelte'
@@ -9,6 +9,8 @@
   import RatioBar from '../lib/components/RatioBar.svelte'
   import Gauge from '../lib/components/Gauge.svelte'
   import { buildDayCells, countStatuses } from '../lib/signals'
+  import AShares from './AShares.svelte'
+  import USResearch from './USResearch.svelte'
 
   let { sub }: { sub?: string } = $props()
 
@@ -61,7 +63,7 @@
     } finally { loading = false }
   }
 
-  onMount(load)
+  $effect(() => { const page = sub; if (page !== 'ashares' && page !== 'us-research') untrack(() => { void load() }) })
 
   let cells = $derived(buildDayCells(signals as any, 30))
   let counts = $derived(countStatuses(signals as any))
@@ -74,6 +76,11 @@
 </script>
 
 <div>
+  {#if sub === 'us-research'}
+    <USResearch />
+  {:else if sub === 'ashares'}
+    <AShares />
+  {:else}
   <div class="flex items-center gap-4 mb-4">
     <h2 class="text-lg font-semibold">数据</h2>
     <div class="flex gap-1">
@@ -167,5 +174,6 @@
         <DataTable rows={signals} columns={cols} />
       </div>
     </div>
+  {/if}
   {/if}
 </div>

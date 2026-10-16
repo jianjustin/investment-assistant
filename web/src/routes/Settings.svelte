@@ -2,8 +2,7 @@
   import * as api from '../lib/api'
   import Skeleton from '../lib/components/Skeleton.svelte'
   import StatusPill from '../lib/components/StatusPill.svelte'
-  import DataTable from '../lib/components/DataTable.svelte'
-  import Drawer from '../lib/components/Drawer.svelte'
+  import Watchlist from '../lib/components/Watchlist.svelte'
 
   let { sub = 'system' }: { sub?: string } = $props()
   let loading = $state(true)
@@ -11,18 +10,6 @@
   // system
   let status = $state<any>(null)
   let ops = $state<any[]>([])
-
-  // watchlist
-  let watchlist = $state<any[]>([])
-  let drawerOpen = $state(false)
-  let addForm = $state({ ticker: '', status: 'active', thesis: '' })
-  let saving = $state(false)
-
-  const wlCols = [
-    { key: 'ticker', label: 'Ticker' },
-    { key: 'status', label: '状态' },
-    { key: 'thesis', label: '论点' },
-  ]
 
   // notify（Discord / 邮件）
   let notify = $state<any>({
@@ -51,7 +38,7 @@
           api.getOperations().then((r: any) => r.operations ?? []),
         ])
       } else if (sub === 'watchlist') {
-        watchlist = (await api.getWatchlist() as any).rows ?? []
+        // Shared editor owns its read-back lifecycle.
       } else if (sub === 'discord') {
         ;[notify, env] = await Promise.all([api.getNotifySettings(), api.getEnvStatus()])
         if (!notify.email) notify.email = { from_addr: '', to_addr: '' }
@@ -65,24 +52,6 @@
     } finally {
       loading = false
     }
-  }
-
-  // Watchlist actions
-  async function addItem() {
-    saving = true
-    try {
-      await api.addWatchlistItem(addForm)
-      addForm = { ticker: '', status: 'active', thesis: '' }
-      drawerOpen = false
-      await load()
-    } finally {
-      saving = false
-    }
-  }
-
-  async function removeItem(ticker: string) {
-    await api.deleteWatchlistItem(ticker)
-    await load()
   }
 
   // Discord actions
@@ -160,30 +129,7 @@
     {/if}
   </div>
 {:else if sub === 'watchlist'}
-  <div>
-    <div class="flex justify-between items-center mb-4">
-      <h2 class="text-lg font-semibold">关注列表</h2>
-      <button onclick={() => drawerOpen = true} class="px-3 py-1 bg-accent text-white rounded text-sm">+ 添加</button>
-    </div>
-    <div class="bg-surface rounded-lg shadow-elev-1 overflow-hidden mb-4">
-      <DataTable rows={watchlist} columns={wlCols}>
-        {#snippet actions(row)}
-          <button class="text-red-500 text-xs" onclick={() => removeItem(row.ticker as string)}>删除</button>
-        {/snippet}
-      </DataTable>
-    </div>
-  </div>
-
-  <Drawer open={drawerOpen} onclose={() => drawerOpen = false}>
-    <h3 class="font-semibold mb-3">添加关注</h3>
-    <div class="flex flex-col gap-2">
-      <input bind:value={addForm.ticker} placeholder="Ticker (如 NVDA)" class="border border-border rounded px-2 py-1 text-sm bg-bg" />
-      <input bind:value={addForm.thesis} placeholder="论点" class="border border-border rounded px-2 py-1 text-sm bg-bg" />
-      <button onclick={addItem} disabled={saving} class="px-3 py-1 bg-accent text-white rounded text-sm disabled:opacity-50">
-        {saving ? '保存中…' : '保存'}
-      </button>
-    </div>
-  </Drawer>
+  <Watchlist />
 {:else if sub === 'discord'}
   <div class="space-y-4 max-w-lg">
     <h2 class="text-lg font-semibold">通知</h2>
@@ -272,6 +218,7 @@
                   class="border border-border rounded px-2 py-1 w-24 bg-bg text-sm"
                   onchange={(e) => saveTime(j.name, (e.target as HTMLInputElement).value)}
                 />
+                <span class="text-xs text-muted ml-2">{j.timezone}</span>
               </td>
               <td class="px-4 py-2">
                 <input

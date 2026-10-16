@@ -33,6 +33,13 @@ export async function patch<T>(path: string, body: unknown): Promise<T> {
   return data as T
 }
 
+export async function put<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  const data = await r.json()
+  if (!r.ok) throw new Error(data?.error ?? `HTTP ${r.status}`)
+  return data as T
+}
+
 export interface RunRecord {
   run_id: string
   status: 'pending' | 'done' | 'error'
@@ -70,7 +77,12 @@ export const runStrategyScores = (body: object) => post<unknown>('/api/strategie
 export const getMacroAnalysis = (window = 30) => get<unknown>(`/api/hermes/macro-analysis?window=${window}`)
 export const getHermes = () => get<unknown>('/api/hermes')
 export const getHermesAgents = () => get<unknown>('/api/hermes/agents')
-export const getWatchlist = () => get<unknown>('/api/watchlist')
+export const getWatchlist = (market?: 'CN' | 'US', enriched = false) => {
+  const query = new URLSearchParams()
+  if (market) query.set('market', market)
+  if (enriched) query.set('enriched', 'true')
+  return get<unknown>(`/api/watchlist${query.size ? '?' + query : ''}`)
+}
 export const addWatchlistItem = (body: object) => post<unknown>('/api/watchlist', body)
 export const deleteWatchlistItem = (ticker: string) => del<unknown>(`/api/watchlist/${ticker}`)
 export const runMacroLlm = (body: object) => post<{ run_id: string; status: string }>('/api/hermes/macro-analysis/run', body)
@@ -160,3 +172,21 @@ export interface OhlcvResponse {
 }
 export const getTickerOhlcv = (ticker: string, days = 250) =>
   get<OhlcvResponse>(`/api/tickers/${ticker}/ohlcv?days=${days}`)
+
+// US research values preserve explicit null, source versions and accounting basis.
+export interface ResearchSource { source_url?:string; source_locator?:string; source_hash?:string; concept?:string; accession?:string; filed?:string; start?:string; end?:string; [key:string]:unknown }
+export interface ResearchMetric { value:number|null; unit:string|null; basis:string|null; method:string; input_ids:(number|string)[]; sources:ResearchSource[]; missing_reason:string|null; [key:string]:any }
+export interface FiscalRow { period:string; start:string; end:string; days:number; metrics:Record<string,ResearchMetric>; ttm:Record<string,ResearchMetric>; warnings:string[] }
+export interface GuidanceRecord { id:number; metric:string; target_start:string; target_end:string; basis:string; unit:string; low:number; high:number; issued_at:string; source_url:string; source_locator:string; note:string; supersedes_id?:number|null; revision?:number; first_seen_at?:string }
+export type GuidanceInput = Omit<GuidanceRecord,'id'|'revision'|'first_seen_at'>
+export interface GuidanceComparison { guidance_id:number; metric?:string; target_start?:string; target_end?:string; basis?:string; unit?:string; actual:number|null; status:string; reason:string|null; input_ids?:(number|string)[] }
+export interface USResearchView {
+ security_id:string; ticker:string; currency:string|null; financials:FiscalRow[];
+ market:{bars:any[]; benchmarks:Record<string,any[]>; quote:any; performance:{windows:Record<string,any>;basis?:string;limitations?:string[]};limitations:string[]};
+ valuation:Record<string,ResearchMetric>; statuses:any[]; template:{id?:string;question:string;value:null;status:string}[];
+ card:any; guidance:{records:GuidanceRecord[];comparisons:GuidanceComparison[];consensus:string;status?:string};filings:any[];
+ pit:{strict:boolean;as_of?:string|null;limitation?:string;metadata_scope?:string}
+}
+export const getUSResearch = (ticker:string,asOf?:string) => get<USResearchView>(`/api/us-research/${encodeURIComponent(ticker)}${asOf?'?'+new URLSearchParams({as_of:asOf}):''}`)
+export const syncUSResearch = (ticker:string,retry=false) => post<{run_id:string;status:string}>('/api/us-research/sync',{symbols:[ticker],retry_failed:retry})
+export const appendUSGuidance = (ticker:string,body:GuidanceInput) => post<{record:GuidanceRecord}>(`/api/us-research/${encodeURIComponent(ticker)}/guidance`,body)

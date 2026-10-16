@@ -12,3 +12,9 @@ describe('parseHash', () => {
     expect(parseHash('#nope')).toEqual({ zone: 'tools', sub: undefined })
   })
 })
+
+describe('research hash query', () => {
+  it('query parameters never become part of route sub', () => {
+    expect(parseHash('#data/ashares?market=CN&symbol=600519.SH')).toEqual({ zone: 'data', sub: 'ashares' })
+  })
+})

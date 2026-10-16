@@ -12,10 +12,12 @@ from investment_assistant.tasks import event_study as event_study_task
 from investment_assistant.tasks import filings as filings_task
 from investment_assistant.tasks import metrics as metrics_task
 from investment_assistant.tasks import nightly_scores as scores_task
+from investment_assistant.tasks import ashares as ashares_task
 
 logger = logging.getLogger(__name__)
 
 REGISTRY: dict[str, Callable[[AssistantConfig], dict[str, Any]]] = {
+    "ashares": ashares_task.run,
     "metrics": metrics_task.run,
     "filings": filings_task.run,
     "scores": scores_task.run,

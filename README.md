@@ -16,6 +16,10 @@
 
 当前系统基于 FastAPI + uvicorn，使用 PostgreSQL 存储调度状态、任务报告、市场信号和策略评分。详细架构与设计见 [docs/architecture.md](docs/architecture.md)；Roadmap 见 [docs/roadmap/](docs/roadmap/)。
 
+A 股研究现已接入“数据 → A 股研究数据”和“策略 → 研究观察卡”，首个真实样本为澜起科技 `688008.SH`。只在本地运行，A 股研究不发通知，定时开关沿用本机既有配置；使用独立上海交易日历。局部复用 CNEquity 0.16.0，严格历史 PIT、公告全文解析和产品分部提取尚未实现。详见 [A 股接入与验证报告](docs/ashare-research.md)。下述 SPY/VIX 信号流仅适用于既有美股流程。
+
+A 股多股票关注与美股研究数据已完成本地实现和 Agent 验证，支持现有 8 只美股的实际财季、来源追溯、跨市场观察卡及版本化指引。12 行财季不代表指标完整或连续；TSLA 有既有来源规则导致的缺口，无法核实的估值保持为空，仍保留一项旧值提示误报，用户手动验收待完成。详见 [跨市场研究与本地验证](docs/cross-market-research.md)。
+
 ---
 
 ## 核心信号流
@@ -51,8 +55,8 @@ investment-assistant/
 │   └── strategies/        # 策略评分
 ├── web/                   # Svelte 5 前端（5层 IA：工具/数据/策略/交易/设置）
 ├── deploy/                # systemd service 文件
-├── migrations/            # PostgreSQL schema 迁移（001-009）
-├── tests/                 # pytest 单元测试（全 mock，无网络）
+├── migrations/            # PostgreSQL schema 迁移（001-014）
+├── tests/                 # pytest 离线回归与显式临时表集成测试
 ├── docs/                  # 架构文档
 ├── .env                   # 环境变量（不入库）
 └── requirements.txt
@@ -136,8 +140,8 @@ API server 启动后可访问 `http://localhost:8787/docs` 查看全部端点的
 ## 验证
 
 ```bash
-# 单元测试（全 mock，离线可跑）
-.venv/bin/python -m pytest tests/ -q
+# 普通离线回归：移除数据库环境，数据库测试按条件跳过
+env -u INVESTMENT_ASSISTANT_DATABASE_URL -u INVESTMENT_ASSISTANT_TEST_DATABASE_URL -u TEST_DATABASE_URL .venv/bin/python -m pytest tests/ -q
 
 # 验证 API 可访问（需先启动服务）
 curl -u "$HERMES_DASHBOARD_USER:$SERVER_PWD" http://localhost:8787/api/status
@@ -150,10 +154,10 @@ curl -u "$HERMES_DASHBOARD_USER:$SERVER_PWD" http://localhost:8787/api/status
 ## 单元测试
 
 ```bash
-.venv/bin/python -m pytest tests/ -v
+env -u INVESTMENT_ASSISTANT_DATABASE_URL -u INVESTMENT_ASSISTANT_TEST_DATABASE_URL -u TEST_DATABASE_URL .venv/bin/python -m pytest tests/ -v
 ```
 
-全部使用 `unittest.mock` 隔离外部依赖（yfinance / SEC EDGAR / Discord / DB），无任何网络调用，可离线运行。
+普通回归隔离外部网络及数据库依赖，可离线运行；真实 SQL 行为由单独审查的 TEMP 表测试覆盖。不要给完整套件配置生产 `TEST_DATABASE_URL`，旧迁移集成测试会写业务表；安全边界与最终结果见 [跨市场验证报告](docs/cross-market-research.md)。
 
 ---
 

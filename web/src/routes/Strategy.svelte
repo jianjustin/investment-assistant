@@ -1,11 +1,26 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import * as api from '../lib/api'
   import Skeleton from '../lib/components/Skeleton.svelte'
   import DataTable from '../lib/components/DataTable.svelte'
   import Placeholder from './Placeholder.svelte'
   let { sub }: { sub?: string } = $props()
   import EChart from '../lib/charts/EChart.svelte'
+  import AShares from './AShares.svelte'
+  import USResearch from './USResearch.svelte'
+  import { readResearchSelection } from '../lib/research-navigation'
+  import { confirmResearchNavigation, guardHashNavigation } from '../lib/navigation-guard'
+  let market = $state<'CN'|'US'>(readResearchSelection(location.hash)?.market ?? (new URLSearchParams(location.hash.split('?')[1] ?? '').get('market') === 'US' ? 'US' : 'CN'))
+  let activeMarket = $derived.by(() => {
+    if (sub !== 'observation') return market
+    const requested = new URLSearchParams(location.hash.split('?')[1] ?? '').get('market')
+    return readResearchSelection(location.hash)?.market ?? (requested === 'CN' || requested === 'US' ? requested : market)
+  })
+  function switchMarket(next:'CN'|'US') {
+    if (next === activeMarket || !confirmResearchNavigation()) return
+    history.replaceState(null, '', '#strategy/observation?market=' + next)
+    market = next
+  }
 
   let scores = $state<any[]>([])
   let loading = $state(true)
@@ -75,11 +90,34 @@
     } finally { running = false }
   }
 
-  onMount(() => { load(); loadEventStudyKinds() })
+  $effect(() => { const page = sub; if (page !== 'observation') untrack(() => { void load(); void loadEventStudyKinds() }) })
+  $effect(() => {
+    if (sub === 'observation') untrack(() => {
+      const selected = readResearchSelection(location.hash)?.market
+      const requested = new URLSearchParams(location.hash.split('?')[1] ?? '').get('market')
+      if (selected) market = selected
+      else if (requested === 'CN' || requested === 'US') market = requested
+    })
+  })
+  onMount(() => {
+    const changed = (event:HashChangeEvent) => {
+      if (sub !== 'observation') return
+      const next = readResearchSelection(location.hash)?.market
+      if (next && next !== market && guardHashNavigation(event, '#strategy/observation?market=' + market)) market = next
+    }
+    window.addEventListener('hashchange', changed)
+    return () => window.removeEventListener('hashchange', changed)
+  })
 </script>
 
 <div>
-  {#if sub === 'event-study'}
+  {#if sub === 'observation'}
+    <div class="flex flex-wrap gap-2 mb-4" role="group" aria-label="研究市场">
+      <button aria-pressed={activeMarket==='CN'} onclick={()=>switchMarket('CN')} class="px-3 py-1 rounded border border-border">A 股</button>
+      <button aria-pressed={activeMarket==='US'} onclick={()=>switchMarket('US')} class="px-3 py-1 rounded border border-border">美股</button>
+    </div>
+    {#if activeMarket==='US'}<USResearch mode="card" />{:else}<AShares mode="card" />{/if}
+  {:else if sub === 'event-study'}
     <div class="flex justify-between items-center mb-4">
       <h2 class="text-lg font-semibold">事件研究</h2>
       <div class="flex gap-2 items-center">

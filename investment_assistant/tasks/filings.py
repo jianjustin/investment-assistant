@@ -16,8 +16,9 @@ def _core(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> dict[str, Any]:
+    from investment_assistant.ashare.domain import us_only
     result = download_configured_filings(
-        config.watchlist, config.filings, start_date=start_date, end_date=end_date
+        us_only(config.watchlist), config.filings, start_date=start_date, end_date=end_date
     )
     return {
         "downloaded_count": result.get("downloaded_count", 0),
@@ -40,10 +41,11 @@ def run(
     if config.sec_monitor.enabled:
         from investment_assistant.filings.monitor import run_monitor
 
-        return run_monitor(config, start_date=start_date, end_date=end_date, trigger_source=trigger_source)
+        result = run_monitor(config, start_date=start_date, end_date=end_date, trigger_source=trigger_source)
+        return _local_research_after_success(result, config)
     target_start = start_date or (date.today() - timedelta(days=1))  # 自然目标日 T-1
     target_end = end_date or target_start
-    return run_task(
+    result = run_task(
         "filings",
         lambda: _core(config, start_date=start_date, end_date=end_date),
         config=config,
@@ -51,6 +53,21 @@ def run(
         target_end_date=target_end,
         trigger_source=trigger_source,
     )
+    return _local_research_after_success(result, config)
+
+
+def _local_research_after_success(result, config):
+    """After original reporting/notifications, derive only indexed local files."""
+    summary = result.get("summary", {})
+    tickers = list(dict.fromkeys(m.get("ticker") for m in summary.get("filings", []) if m.get("ticker")))
+    if not tickers:
+        return result
+    try:
+        from investment_assistant.us_research.service import refresh_local_filings
+        research = refresh_local_filings(tickers, config=config)
+    except Exception:
+        research = {"errors": [{"error": "美股本地原文研究刷新失败；原SEC结果保留"}], "notifications": "disabled"}
+    return {**result, "research": research}
 
 
 def main() -> None:

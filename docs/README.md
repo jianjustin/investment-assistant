@@ -27,6 +27,8 @@
 | 文档 | 内容 |
 |------|------|
 | [research-event-study.md](research-event-study.md) | 事件研究：方法、字段、CLI/API/前端三条验证路径 |
+| [cross-market-research.md](cross-market-research.md) | A/美股关注、财季与来源、跨市场卡及指引、本地证据和待验收限制 |
+| [ashare-research.md](ashare-research.md) | A股接入、CNEquity审计、澜起真实验证、数据边界与本地运行 |
 | [scheduling-and-notifications.md](scheduling-and-notifications.md) | 调度器 daemon、job_reports、Discord 通知机制 |
 | [sec-downloader.md](sec-downloader.md) | SEC EDGAR filings 下载器 |
 | [sec-monitor-migration.md](sec-monitor-migration.md) | 本机接管 SEC 监控：正文事实、来源报告、历史去重、Discord 通知及回执 |

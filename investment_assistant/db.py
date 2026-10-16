@@ -227,33 +227,53 @@ def list_watchlist_items(conn, *, include_archived: bool = False) -> list[dict[s
     return [dict(zip(keys, row)) for row in rows]
 
 
-def upsert_watchlist_item(conn, *, ticker: str, status: str = "active", thesis: str | None = None, tags: list[str] | None = None) -> dict[str, Any]:
-    payload = {
-        "ticker": _normalize_ticker(ticker),
-        "status": status or "active",
-        "thesis": thesis or None,
-        "tags": tags or [],
-    }
+class WatchlistConflict(ValueError):
+    """The record was edited or removed since the client read it."""
+
+
+_WATCHLIST_UNSET = object()
+
+
+def upsert_watchlist_item(conn, *, ticker: str, status=_WATCHLIST_UNSET,
+                          thesis=_WATCHLIST_UNSET, tags=_WATCHLIST_UNSET,
+                          expected_updated_at=None) -> dict[str, Any]:
+    payload = {"ticker": _normalize_ticker(ticker)}
+    supplied = {"status": status, "thesis": thesis, "tags": tags}
+    defaults = {"status": "active", "thesis": None, "tags": []}
+    for field, value in supplied.items():
+        payload[field + "_supplied"] = value is not _WATCHLIST_UNSET
+        payload[field] = defaults[field] if value is _WATCHLIST_UNSET else value
     if payload["status"] not in {"active", "paused", "archived"}:
         raise ValueError("status must be active, paused, or archived")
+    if expected_updated_at is not None:
+        from datetime import datetime
+        try:
+            expected = (datetime.fromisoformat(expected_updated_at.replace('Z', '+00:00'))
+                        if isinstance(expected_updated_at, str) else expected_updated_at)
+            if not isinstance(expected, datetime) or expected.tzinfo is None:
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise ValueError('expected_updated_at must be a timezone-aware timestamp') from None
+        payload['expected_updated_at'] = expected
+    assignments = ', '.join(
+        f"{field} = CASE WHEN %({field}_supplied)s THEN %({field})s ELSE watchlist_items.{field} END"
+        for field in supplied)
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO watchlist_items (ticker, status, thesis, tags)
-            VALUES (%(ticker)s, %(status)s, %(thesis)s, %(tags)s)
-            ON CONFLICT (ticker) DO UPDATE SET
-              status = EXCLUDED.status,
-              thesis = EXCLUDED.thesis,
-              tags = EXCLUDED.tags,
-              updated_at = now()
-            RETURNING ticker, status, thesis, tags, created_at, updated_at
-            """,
-            payload,
-        )
+        if expected_updated_at is not None:
+            # A single compare-and-set UPDATE prevents lost edits and deleted-row resurrection.
+            cur.execute(f"""UPDATE watchlist_items SET {assignments}, updated_at=clock_timestamp()
+                WHERE ticker=%(ticker)s AND updated_at=%(expected_updated_at)s
+                RETURNING ticker,status,thesis,tags,created_at,updated_at""", payload)
+        else:
+            cur.execute(f"""INSERT INTO watchlist_items(ticker,status,thesis,tags)
+                VALUES (%(ticker)s,%(status)s,%(thesis)s,%(tags)s)
+                ON CONFLICT(ticker) DO UPDATE SET {assignments}, updated_at=clock_timestamp()
+                RETURNING ticker,status,thesis,tags,created_at,updated_at""", payload)
         row = cur.fetchone()
+    if row is None:
+        raise WatchlistConflict('关注记录已修改或删除，请重新读取后再编辑')
     conn.commit()
-    keys = ["ticker", "status", "thesis", "tags", "created_at", "updated_at"]
-    return dict(zip(keys, row))
+    return dict(zip(['ticker', 'status', 'thesis', 'tags', 'created_at', 'updated_at'], row))
 
 
 def delete_watchlist_item(conn, ticker: str) -> dict[str, Any]:

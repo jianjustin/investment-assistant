@@ -1,0 +1,14 @@
+{
+  "description": "Synthetic hand-computed SEC-shaped facts. LongTermDebt is 100 including 20 current; noncurrent is 80. Short borrowings are 10. Current debt including leases is 35 and noncurrent including leases is 85.",
+  "cik": 1,
+  "entityName": "Synthetic scope fixture",
+  "facts": {
+    "us-gaap": {
+      "Revenues": {"units": {"USD": [{"val": 20, "start": "2024-10-01", "end": "2024-12-31", "form": "10-K", "accn": "0000000001-25-000001", "filed": "2025-02-01"}]}},
+      "LongTermDebt": {"units": {"USD": [{"val": 100, "end": "2024-12-31", "form": "10-K", "accn": "0000000001-25-000001", "filed": "2025-02-01"}]}},
+      "LongTermDebtNoncurrent": {"units": {"USD": [{"val": 80, "end": "2024-12-31", "form": "10-K", "accn": "0000000001-25-000001", "filed": "2025-02-01"}]}},
+      "LongTermDebtCurrent": {"units": {"USD": [{"val": 20, "end": "2024-12-31", "form": "10-K", "accn": "0000000001-25-000001", "filed": "2025-02-01"}]}},
+      "ShortTermBorrowings": {"units": {"USD": [{"val": 10, "end": "2024-12-31", "form": "10-K", "accn": "0000000001-25-000001", "filed": "2025-02-01"}]}}
+    }
+  }
+}

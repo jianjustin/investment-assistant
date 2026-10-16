@@ -36,3 +36,4 @@ web/dist/
 .superpowers/
 
 config/local.json
+.local/

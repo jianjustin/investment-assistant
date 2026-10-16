@@ -8,13 +8,17 @@
   import Strategy from './routes/Strategy.svelte'
   import Trade from './routes/Trade.svelte'
   import Settings from './routes/Settings.svelte'
+  import { guardHashNavigation } from './lib/navigation-guard'
   import { parseHash, type Zone } from './lib/router'
 
   let { zone, sub } = $state(parseHash(location.hash))
 
   onMount(() => {
     applyTheme()
-    const onhashchange = () => {
+    let previousHash = location.hash
+    const onhashchange = (event: HashChangeEvent) => {
+      if (!guardHashNavigation(event, previousHash)) return
+      previousHash = location.hash
       const parsed = parseHash(location.hash)
       zone = parsed.zone
       sub = parsed.sub
