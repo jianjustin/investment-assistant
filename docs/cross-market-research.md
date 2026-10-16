@@ -90,7 +90,11 @@ cd /Users/chenjianrui/workspaces/investment-assistant
   --output /Users/chenjianrui/workspaces/investment-assistant/.local/cross-market/verification.json
 ```
 
-本地收尾已完成，保留 `codex/cross-market-research` 分支及附加工作树，供继续复核；没有合并、推送或云端操作。
+成果已按用户要求整理为 `main` 上的提交 `a0ab8ae`，包含本次功能所依赖的此前未提交 A 股基础模块，共 87 个变更文件。提交的完整源码树与已审查版本 `ec29eed` 一致，主目录是后续开发和运行入口。
+
+本次 `codex/cross-market-research` 分支已删除，附加工作树已通过应用归档并移除，支持恢复；其他工作树未改动。完整分支历史另存于 `.local/cross-market/main-integration/cross-market-research.bundle`，已通过 Git 校验。清理前后 200 份既有本地证据文件的摘要一致，原始来源、测试日志、截图及审查材料保留。没有推送远端或云端发布，用户功能验收仍待完成。
+
+提交前在 `main` 主目录重新运行后端与前端完整测试及构建：后端 526 通过、52 条按条件跳过，前端 129 通过，构建 0 错误。此次未重复连接数据库执行 TEMP 测试或采集来源，原 92 项 TEMP 测试及真实来源验证记录保留。最新日志和清理核对记录位于 `.local/cross-market/main-integration/`。
 
 ## 测试、浏览器与待验收范围
 
@@ -141,7 +145,7 @@ tests/test_us_guidance.py
 | --- | --- |
 | 以当前 A 股源码为隔离基线，逐摘要同步已审查差异 | 保留上一轮改动；判断错误会覆盖并发修改或混入无关代码，因此保留恢复备份 |
 | 文件系统只对指定工作树操作申请狭窄权限 | 不改全局权限；路径判断错误会导致写入被拒或越出任务范围 |
-| 已授权阶段连续执行，保留本地分支和工作树，不合并/推送 | 用户仍掌握验收与发布；误解授权会扩大操作范围，因此实际操作限定本机 |
+| 初次交付阶段连续执行，保留本地分支和工作树，不合并/推送 | 这是当时的实施裁定；随后用户明确要求提交 main 并清理，已按新授权完成。误解授权会扩大操作范围，因此操作始终限定本机 |
 | 提交显式路径，排除依赖链接、配置、运行数据和原文 | 避免泄露或把机器状态当源码；漏选会导致交付文件不全，故有最终差异核对 |
 | 真实采集在主运行目录完成，原始库只读 | 页面与快照指向同一运行实例；根目录错置会使可追溯来源在部署后失效 |
 | 研究适配器复用重试策略，并局部清洗来源错误 | 防止原通用日志输出代理凭据；代价是详细网络诊断需安全地单独核查 |
@@ -156,4 +160,4 @@ tests/test_us_guidance.py
 - [SEC 官方 EDGAR API 说明](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)：标准实体事实及实际财季对齐限制。
 - [A 股前一阶段验证](ashare-research.md)；[本轮设计](superpowers/specs/2026-10-16-cross-market-medium-term-research-design.md)；[本轮计划](superpowers/plans/2026-10-16-cross-market-medium-term-research.md)。当前交付状态以本报告为准，前一阶段的“只采集一只”等描述保留其历史语境。
 - 主目录 `/Users/chenjianrui/workspaces/investment-assistant/.local/cross-market/` 下的 `verification.json`、`live-coverage.json`、`nvda-hand-evidence.json`、`nvda-hand-arithmetic.json`、`live-run-result.json`、`preservation-before.json`、`preservation-after.json`、`browser-validation.json`、`ashare-window-readback.json`；均为本机忽略产物，不进 Git 或云端。
-- 交付时归档的过程与审查证据：`/Users/chenjianrui/workspaces/investment-assistant/.local/cross-market/sdd-audit/2026-10-16-cross-market-medium-term-research/`，其中 `task-6-report.md` 保留阶段测试和最终来源记录，`progress.md` 保留裁定。控制流程在最终审查后移入此处，工作树临时过程目录随后移除；本地分支和工作树仍保留。
+- 交付时归档的过程与审查证据：`/Users/chenjianrui/workspaces/investment-assistant/.local/cross-market/sdd-audit/2026-10-16-cross-market-medium-term-research/`，其中 `task-6-report.md` 保留阶段测试和最终来源记录，`progress.md` 保留当时的裁定。此次提交与清理的后续记录保存在 `.local/cross-market/main-integration/`，未改写原始审查记录；分支历史及工作树归档保留恢复能力。
