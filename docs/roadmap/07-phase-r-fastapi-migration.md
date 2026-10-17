@@ -1,12 +1,16 @@
 # 07 — Phase R：API 层迁移 FastAPI（重构地基）
 
-> 创建：2026-07-04 ｜ 位置：Phase 0 之后、Phase 1 之前 ｜ 阅读顺序排在 [01](01-phase0-data-quality-and-event-study.md) 之后
+> 创建：2026-07-04 ｜ 状态校准：2026-10-17 ｜ `engineering_done`
+
+FastAPI / uvicorn、`api/app.py`、分域 `APIRouter`、OpenAPI 及事件研究前端/说明文档均已落地，**不再是当前待开发阶段**。下文保留迁移时的历史设计；其中 36 路由、190 测试和“前端不动”描述只适用于当时的迁移范围，不是今天的数量或后续变更限制。
+
+本轮没有 HTTP/UI 运行验收，仍为 `runtime_unverified`。当前工作树修复的最终回归数字待 [实施状态](../implementation-status-2026-10-17.md)回填；FastAPI 已完成不代表 Phase 0 Gate 已通过，也不代表 Phase 2 已落地。
 
 ---
 
 ## 为什么插入 Phase R
 
-Phase 2 闭环（[03](03-phase2-plan-execution-loop.md)）是表单密集型 CRUD：计划录入、交易日志、偏离标注，全部需要请求体校验。当前自研 HTTP 层（stdlib `http.server` + 手写路由表 + 手写参数解析）没有校验设施，每个表单字段都要手写类型检查。与其在旧栈上写完 Phase 1/2 再迁移一遍，不如先迁移、后开发：
+Phase 2 闭环（[03](03-phase2-plan-execution-loop.md)）是表单密集型 CRUD：计划录入、交易日志、偏离标注，全部需要请求体校验。当时自研 HTTP 层（stdlib `http.server` + 手写路由表 + 手写参数解析）没有校验设施，每个表单字段都要手写类型检查。因此决定先迁移、后开发（现已实施）：
 
 - 迁移范围小：36 条路由全是薄封装（`api/routes/* → services/*`），services 层不动；
 - 契约已被钉住：190 个离线测试覆盖全部路由行为，迁移即「换壳跑同一套断言」；
@@ -41,7 +45,7 @@ Phase 2 闭环（[03](03-phase2-plan-execution-loop.md)）是表单密集型 CRU
 
 ## Phase R 收尾任务（DoD 存量欠账）
 
-Phase 0 事件研究欠 [00 §6 交付硬性标准](00-principles-and-direction.md#6-交付硬性标准dod) 两项，在本阶段补齐：
+以下两项原欠账已在工程上补齐。使用说明见 [事件研究](../research-event-study.md)；本轮真实 HTTP/UI 验收仍待完成，不等于入口缺失：
 
 1. 前端「策略」区加事件研究面板（调既有 `GET /api/research/event-study`），含手动触发入口。
 2. 文档补「事件研究：功能说明 + 如何验证示例」（CLI 与 API 两条路径）。

@@ -26,12 +26,13 @@ def test_scores_core_backfill_aggregates_days(monkeypatch):
         "investment_assistant.services.strategies.run_strategy_score_scan",
         lambda payload: calls.append(payload) or {"count": 3, "failures": [], "rows": []})
 
-    # 2026-07-03 周五 → 07-06 周一，周末跳过
+    # July 3 is the observed Independence Day holiday, not a trading session.
     summary = nightly_scores._core(
-        AssistantConfig(), start_date=date(2026, 7, 3), end_date=date(2026, 7, 6))
-    assert [d["date"] for d in summary["days"]] == ["2026-07-03", "2026-07-06"]
+        AssistantConfig(), start_date=date(2026, 7, 2), end_date=date(2026, 7, 6))
+    assert [d["date"] for d in summary["days"]] == ["2026-07-02", "2026-07-06"]
     assert summary["total"] == 6
-    assert calls[0]["date"] == "2026-07-03"
+    assert calls[0]["date"] == "2026-07-02"
+    assert [d["date"] for d in summary["skipped"]] == ["2026-07-03", "2026-07-04", "2026-07-05"]
     assert "宏观" in summary["note"]
 
 

@@ -21,7 +21,7 @@
 
 ## C2 — 可视化（兑现数据价值）
 
-**现状**：全站只有一条手搓 SVG 折线（`market.ts`），对投资工具而言可视化几乎为零。已有 `EChart.svelte` / `LineChart.svelte` / `CandleChart.svelte` 组件基础。
+**2026-10-17 现状**：已有市场/技术趋势和跨市场研究图表及事件研究面板，不能继续写“全站只有一条折线”。当前为工具、数据、技术面趋势、策略、交易、设置六入口。下表保留未来通用数据与闭环可视化候选；组件/页面存在不等于其真实运行或统计结论已验收。
 
 **按阶段补的图**（数据就绪即接，不单列阶段）：
 
@@ -35,20 +35,15 @@
 | LLM 校准曲线 | Phase 3.4 | Phase 3 |
 | 组合敞口饼/树图 + 相关性热力 | C1 | Phase 2+ |
 
-> 复用现有 `EChart` 封装与五层 IA 的「数据层 / 交易层」承载，不新增图表库（ECharts 已够；K 线若要专业级再评估 Lightweight Charts）。
+> 复用现有 `EChart` 封装和六入口 UI 的数据/策略/交易页面；图表不应掩盖 null、缺口、样本依赖或未验收状态。
 
 ---
 
 ## C3 — 文档对齐（立刻可做，零依赖）
 
-**问题**：`README.md` 和 `docs/architecture.md` 严重过时——仍在描述已删除的 `ops/earnings_monitor.py` / `daily_scan.py` 旧 earnings-agent 结构，会误导任何接手者（包括未来的你和我）。
+**2026-10-17 对齐范围**：README 已说明 FastAPI 与新任务入口，不再要求重写成另一份历史设计。本轮更新 roadmap、事件研究说明与实施状态，将 `engineering_done`、`gate_hold`、`runtime_unverified`、`user_acceptance_pending` 分开记录。原估算不是排期，基线测试不是最终变更测试。
 
-**做什么**（已在五层 IA plan 的 Task 9 规划，可并入或独立先做）：
-- 重写 `architecture.md`：删旧 earnings-agent 内容，改为「五层 IA + 后端分层（api/services/tasks/db）+ 调度通知 + 本 roadmap 的数据/闭环架构」。
-- 更新 `README.md`：目录结构 / 手动运行入口改为新任务（`tasks.metrics/filings/nightly_scores/scheduler`）。
-- 删除已被取代的过时文档（`audit-and-redesign` 完成历史使命后可归档，`test-report` 的「14 用例」早已失真）。
-
-> 优先级：**高且便宜**。建议在 Phase 0 期间穿插做掉，避免文档债继续误导。
+历史审计、[跨市场交付](../cross-market-research.md)与 [A 股交付](../ashare-research.md)保留原文，引用其时点上下文；不删除或重写历史数字来迎合当前状态。新增证据集中在 [实施状态](../implementation-status-2026-10-17.md)和 [Phase 0 评审](reports/2026-10-17-phase0-review.md)，凭据/DSN 不进入文档。
 
 ---
 
@@ -64,11 +59,11 @@
 
 ## C5 — CI（工程化收尾）
 
-- GitHub Actions：lint（ruff，已配 `pyproject.toml`）+ pytest + 前端 vitest。
-- 加 Postgres service 容器跑**真实 DB 迁移测试**（现有 `test_db_sql.py` 只断言 SQL 含子串，从不执行）——随着迁移增多（009–015），真实执行迁移的回归价值上升。
-- 依赖锁定（uv / pip-tools），`pytest` 移到 dev 依赖。
+后续 CI 可补 lint（ruff）、pytest、前端 vitest 与隔离数据库迁移验证。仓库已有显式 TEMP 表集成测试，不能继续写“只有 SQL 子串断言”；但它们也不代表所有迁移已经在本轮真实执行。
 
-> 优先级：随迁移数量增长而上升。建议 Phase 1（开始大量加表）时引入真实 DB 迁移测试。
+普通回归须移除数据库环境变量；**不得给完整测试套件配置生产数据库 URL**，旧迁移集成测试会写业务表。真实 SQL/迁移测试只在逐文件审查的临时表或可丢弃库中执行。本轮 DB 不可达，015 未执行；基线后端 526 passed / 52 skipped、前端 129 passed 不是当前变更最终结果，最终数见 [实施状态](../implementation-status-2026-10-17.md)待补项。
+
+依赖锁定与 dev 依赖整理仍是候选，不由本轮文档更新自动执行。
 
 ---
 

@@ -1,9 +1,43 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
+
+from investment_assistant.data.calendar import is_trading_day
+from investment_assistant.data.provenance import SIGNAL_CALCULATION_VERSION
+
+_HISTORY_TRADING_DAYS = 260
+_LEGACY_CALENDAR_DAYS = _HISTORY_TRADING_DAYS * 2
+_NEW_YORK = ZoneInfo("America/New_York")
+
+
+def latest_completed_signal_date(now: datetime | None = None) -> date:
+    """Last completed US session; wait until 16:15 ET even on early-close days.
+
+    This deliberately does not claim that an intraday/delayed daily bar is final.
+    An explicit historical request is never rolled back to another session.
+    """
+    now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    local = now.astimezone(_NEW_YORK)
+    target = local.date()
+    if local.time() < time(16, 15):
+        target -= timedelta(days=1)
+    while not is_trading_day(target):
+        target -= timedelta(days=1)
+    return target
+
+
+def validate_signal_date(signal_date: date, now: datetime | None = None) -> None:
+    if not is_trading_day(signal_date):
+        raise ValueError(f"{signal_date} is not a US trading session")
+    if signal_date > latest_completed_signal_date(now):
+        raise ValueError(f"{signal_date} is a future or not-yet-closed US session")
 
 
 def classify_ticker_trend(
@@ -40,7 +74,10 @@ def classify_ticker_trend(
     return {"ticker": ticker.upper(), "trend_state": trend_state, "attention_level": attention_level, "trigger_reason": reasons}
 
 
+# Legacy injection takes calendar days; the new injection takes a target date
+# and a trading-observation budget. Neither may bypass the as-of validation.
 PriceFetcher = Callable[[str, int], pd.DataFrame]
+AsofPriceFetcher = Callable[[str, date, int], pd.DataFrame]
 
 
 def scan_ticker_trends(
@@ -49,19 +86,25 @@ def scan_ticker_trends(
     signal_date: date,
     price_fetcher: PriceFetcher | None = None,
     run_id: str | None = None,
+    asof_price_fetcher: AsofPriceFetcher | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> list[dict[str, Any]]:
-    fetcher = price_fetcher or _default_price_fetcher
     rows: list[dict[str, Any]] = []
     for raw_ticker in tickers:
         ticker = str(raw_ticker or "").strip().upper()
         if not ticker:
             continue
         try:
-            rows.append(compute_ticker_trend_snapshot(ticker, signal_date=signal_date, price_fetcher=fetcher, run_id=run_id))
+            rows.append(compute_ticker_trend_snapshot(
+                ticker, signal_date=signal_date, price_fetcher=price_fetcher,
+                asof_price_fetcher=asof_price_fetcher, run_id=run_id, clock=clock,
+            ))
         except Exception as exc:
             rows.append({
                 "ticker": ticker,
                 "signal_date": signal_date,
+                "price_date": None,
+                "calculation_version": SIGNAL_CALCULATION_VERSION,
                 "close": None,
                 "ma20": None,
                 "ma50": None,
@@ -84,12 +127,27 @@ def compute_ticker_trend_snapshot(
     ticker: str,
     *,
     signal_date: date,
-    price_fetcher: PriceFetcher,
+    price_fetcher: PriceFetcher | None = None,
     run_id: str | None = None,
+    asof_price_fetcher: AsofPriceFetcher | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
-    price_frame = _validate_frame(price_fetcher(ticker, 260), ticker, min_rows=200)
-    spy_frame = _validate_frame(price_fetcher("SPY", 260), "SPY", min_rows=21)
-    qqq_frame = _validate_frame(price_fetcher("QQQ", 260), "QQQ", min_rows=21)
+    validate_signal_date(signal_date, (clock or (lambda: datetime.now(UTC)))())
+    if price_fetcher is not None and asof_price_fetcher is not None:
+        raise ValueError("Provide price_fetcher or asof_price_fetcher, not both")
+
+    def fetch(symbol: str, min_rows: int) -> pd.DataFrame:
+        if price_fetcher is not None:
+            frame = price_fetcher(symbol, _LEGACY_CALENDAR_DAYS)
+        else:
+            frame = (asof_price_fetcher or _default_asof_price_fetcher)(
+                symbol, signal_date, _HISTORY_TRADING_DAYS,
+            )
+        return _validate_frame(frame, symbol, signal_date=signal_date, min_rows=min_rows)
+
+    price_frame = fetch(ticker, 200)
+    spy_frame = fetch("SPY", 21)
+    qqq_frame = fetch("QQQ", 21)
 
     close = float(price_frame["Close"].iloc[-1])
     ma20 = float(price_frame["Close"].tail(20).mean())
@@ -114,6 +172,8 @@ def compute_ticker_trend_snapshot(
     return {
         **classified,
         "signal_date": signal_date,
+        "price_date": price_frame.index[-1].date(),
+        "calculation_version": SIGNAL_CALCULATION_VERSION,
         "close": close,
         "ma20": ma20,
         "ma50": ma50,
@@ -129,22 +189,46 @@ def compute_ticker_trend_snapshot(
 
 
 def _relative_strength(frame: pd.DataFrame, benchmark: pd.DataFrame, window: int = 20) -> float:
-    rows = min(window + 1, len(frame), len(benchmark))
-    if rows < 2:
-        return 0.0
-    ticker_return = float(frame["Close"].iloc[-1] / frame["Close"].iloc[-rows] - 1)
-    benchmark_return = float(benchmark["Close"].iloc[-1] / benchmark["Close"].iloc[-rows] - 1)
+    # Compare exactly the same observed sessions; never compare two independent
+    # positional tails, forward-fill missing bars, or silently shorten the window.
+    observations = frame.tail(window + 1)
+    aligned = benchmark.reindex(observations.index)
+    if len(observations) != window + 1 or aligned["Close"].isna().any():
+        raise ValueError("Relative strength requires matching ticker/benchmark observation dates")
+    ticker_return = float(observations["Close"].iloc[-1] / observations["Close"].iloc[0] - 1)
+    benchmark_return = float(aligned["Close"].iloc[-1] / aligned["Close"].iloc[0] - 1)
     return ticker_return - benchmark_return
 
 
-def _validate_frame(frame: pd.DataFrame, ticker: str, *, min_rows: int) -> pd.DataFrame:
+def _validate_frame(frame: pd.DataFrame, ticker: str, *, signal_date: date, min_rows: int) -> pd.DataFrame:
     required = {"Close", "Volume"}
-    if frame.empty or not required.issubset(frame.columns) or len(frame) < min_rows:
+    if frame is None or frame.empty or not required.issubset(frame.columns):
         raise ValueError(f"Insufficient price data for {ticker}: need {min_rows} rows")
+    if not isinstance(frame.index, pd.DatetimeIndex) or frame.index.hasnans:
+        raise ValueError(f"Dated daily price bars are required for {ticker}")
+    frame = frame.copy()
+    # A daily candle's provider-local date is its session label, not a UTC instant.
+    frame.index = frame.index.tz_localize(None).normalize()
+    frame = frame.loc[frame.index <= pd.Timestamp(signal_date)].sort_index()
+    if frame.index.has_duplicates:
+        raise ValueError(f"Duplicate daily price bars for {ticker}")
+    if frame.empty or frame.index[-1].date() != signal_date:
+        actual = frame.index[-1].date() if not frame.empty else None
+        raise ValueError(f"Missing {signal_date} price bar for {ticker}; latest available: {actual}")
+    if len(frame) < min_rows:
+        raise ValueError(f"Insufficient price data for {ticker}: need {min_rows} rows through {signal_date}")
+    frame = frame.tail(_HISTORY_TRADING_DAYS)
+    for column in ("Close", "Volume"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        if not np.isfinite(frame[column]).all():
+            raise ValueError(f"Invalid {column} data for {ticker}")
+    if (frame["Close"] <= 0).any() or (frame["Volume"] < 0).any():
+        raise ValueError(f"Invalid price/volume data for {ticker}")
     return frame
 
 
-def _default_price_fetcher(ticker: str, days: int) -> pd.DataFrame:
-    from investment_assistant.data.price import get_price_history
+def _default_asof_price_fetcher(ticker: str, signal_date: date, days: int) -> pd.DataFrame:
+    from investment_assistant.data.price import get_price_history_asof
 
-    return get_price_history(ticker, days=days)
+    # The shared helper converts trading observations to >= 2x calendar days.
+    return get_price_history_asof(ticker, signal_date, days=days)

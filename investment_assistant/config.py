@@ -113,15 +113,21 @@ class StrategyParams:
         }
     )
     volume_expansion_ratio: float = 1.5
+    # Legacy value retained for compatibility, NOT an approved research threshold.
+    # Snapshot RS is a 20-session return difference in decimal units; the research
+    # rs_strong event is suspended until its threshold/units are confirmed.
     rs_strong: float = 1.2
     vcp_contraction: float = 0.70
 
 
+DEFAULT_BACKTEST_HORIZONS: tuple[int, ...] = (5, 10, 20)
+
+
 @dataclass(frozen=True)
 class BacktestConfig:
-    """Forward-return horizons for the backtest engine (Phase 3)."""
+    """Forward-return horizons for the backtest and event-study engines."""
 
-    horizons: list[int] = field(default_factory=lambda: [5, 10, 20])
+    horizons: list[int] = field(default_factory=lambda: list(DEFAULT_BACKTEST_HORIZONS))
     score_buckets: list[int] = field(default_factory=lambda: [40, 70])
 
 

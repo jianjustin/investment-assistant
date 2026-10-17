@@ -1,15 +1,32 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 
-# Good Friday（复活节前周五）——浮动且依赖教会历，近年用已知日期表覆盖。
-_GOOD_FRIDAY: dict[int, date] = {
-    2020: date(2020, 4, 10), 2021: date(2021, 4, 2), 2022: date(2022, 4, 15),
-    2023: date(2023, 4, 7), 2024: date(2024, 3, 29), 2025: date(2025, 4, 18),
-    2026: date(2026, 4, 3), 2027: date(2027, 3, 26), 2028: date(2028, 4, 14),
-    2029: date(2029, 3, 30), 2030: date(2030, 4, 19),
-}
+# Modern NYSE full-day exceptional closures, not federal/bank holidays.
+# Earlier historical calendars (notably pre-1998) are not exhaustive.
+_SPECIAL_CLOSURES = frozenset({
+    date(2001, 9, 11), date(2001, 9, 12), date(2001, 9, 13), date(2001, 9, 14),
+    date(2004, 6, 11), date(2007, 1, 2),
+    date(2012, 10, 29), date(2012, 10, 30),
+    date(2018, 12, 5), date(2025, 1, 9),
+})
+
+
+def _good_friday(year: int) -> date:
+    """Gregorian computus: Good Friday is two days before Easter Sunday."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month, day0 = divmod(h + l - 7 * m + 114, 31)
+    return date(year, month, day0 + 1) - timedelta(days=2)
 
 
 def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
@@ -43,24 +60,39 @@ def _observed(d: date) -> date:
 @lru_cache(maxsize=64)
 def nyse_holidays(year: int) -> frozenset[date]:
     days: set[date] = set()
-    # 固定假日（逢周末顺延到相邻工作日）
-    days.add(_observed(date(year, 1, 1)))     # New Year's Day
-    # 跨年修正：若下一年 1 月 1 日是周六，其观察日为本年 12 月 31 日，需纳入本年假日
-    next_ny = date(year + 1, 1, 1)
-    if next_ny.isoweekday() == 6:
-        days.add(date(year, 12, 31))
-    days.add(_observed(date(year, 6, 19)))     # Juneteenth（2021 起，早年无害）
+    # NYSE does NOT observe a Saturday New Year on the preceding Friday.
+    # E.g. 2021-12-31 was open; Sunday New Year still closes the next Monday.
+    new_year = date(year, 1, 1)
+    if new_year.isoweekday() != 6:
+        days.add(_observed(new_year))
+    if year >= 2022:  # NYSE first observed Juneteenth in 2022, not 2021.
+        days.add(_observed(date(year, 6, 19)))
     days.add(_observed(date(year, 7, 4)))      # Independence Day
     days.add(_observed(date(year, 12, 25)))    # Christmas
     # 浮动假日
-    days.add(_nth_weekday(year, 1, 1, 3))      # MLK: 1月第3个周一
+    if year >= 1998:  # NYSE first observed MLK Day in 1998.
+        days.add(_nth_weekday(year, 1, 1, 3))
     days.add(_nth_weekday(year, 2, 1, 3))      # Presidents' Day: 2月第3个周一
     days.add(_last_weekday(year, 5, 1))         # Memorial Day: 5月最后一个周一
     days.add(_nth_weekday(year, 9, 1, 1))      # Labor Day: 9月第1个周一
     days.add(_nth_weekday(year, 11, 4, 4))     # Thanksgiving: 11月第4个周四
-    if year in _GOOD_FRIDAY:
-        days.add(_GOOD_FRIDAY[year])
+    days.add(_good_friday(year))
+    days.update(d for d in _SPECIAL_CLOSURES if d.year == year)
     return frozenset(days)
+
+
+def last_completed_trading_day(now: datetime | None = None) -> date:
+    """Conservative cutoff: the NYSE session strictly before today's NY date.
+
+    Deliberately excludes the entire current session, even after the close. This
+    needs no network/early-close schedule and never treats an intraday bar as a
+    completed daily close. Early-close dates themselves remain trading sessions.
+    """
+    current = now if now is not None else datetime.now(UTC)
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    today_ny = current.astimezone(ZoneInfo("America/New_York")).date()
+    return add_trading_days(today_ny, -1)
 
 
 def is_trading_day(d: date) -> bool:

@@ -120,11 +120,14 @@ def test_ticker_trend_endpoint_returns_rows(monkeypatch, client):
 
 def test_ticker_trend_scan_post_scans_active_watchlist_and_persists(monkeypatch, client):
     persisted = []
-    rows = [{"ticker": "TSLA", "signal_date": "2026-06-21", "trend_state": "uptrend", "attention_level": "high", "trigger_reason": ["above_ma_stack"], "error": None}]
+    rows = [{"ticker": "TSLA", "signal_date": "2026-06-21", "price_date": "2026-06-21",
+             "calculation_version": "signal-asof-v2", "trend_state": "uptrend", "attention_level": "high",
+             "trigger_reason": ["above_ma_stack"], "error": None}]
 
     import investment_assistant.services.tickers as tickers_svc
     monkeypatch.setattr(tickers_svc, "scan_ticker_trends", lambda tickers, signal_date, run_id: rows)
-    monkeypatch.setattr(tickers_svc, "_persist_ticker_trend_snapshots", lambda snapshots: persisted.extend(snapshots))
+    monkeypatch.setattr(tickers_svc, "_persist_ticker_trend_snapshots", lambda snapshots: persisted.extend(snapshots) or {
+        "inserted_count": len(snapshots), "skipped_count": 0, "skipped": []})
     monkeypatch.setattr(tickers_svc, "uuid", type("FakeUuid", (), {"uuid4": staticmethod(lambda: type("U", (), {"hex": "abcdef123456"})())})())
 
     response = client.post("/api/tickers/trends/scan", json={"date": "2026-06-21", "tickers": ["TSLA"]})
@@ -165,15 +168,19 @@ def test_strategy_score_run_post_scores_latest_snapshots_and_persists(monkeypatc
     snapshots = [{
         "id": 12,
         "ticker": "TSLA",
-        "signal_date": date(2026, 6, 21),
+        "signal_date": date(2024, 6, 14),
+        "price_date": date(2024, 6, 14),
+        "calculation_version": "signal-asof-v2",
         "trend_state": "uptrend",
         "attention_level": "high",
         "trigger_reason": ["above_ma_stack", "outperform_spy", "volume_expansion"],
     }]
 
     monkeypatch.setattr(strategies_svc, "strategy_input_snapshots", lambda signal_date=None: snapshots)
-    monkeypatch.setattr(strategies_svc, "latest_strategy_market_context", lambda: {"macro_state": "offense"})
-    monkeypatch.setattr(strategies_svc, "_persist_strategy_scores", lambda rows: persisted.extend(rows))
+    monkeypatch.setattr(strategies_svc, "historical_strategy_market_context",
+                        lambda day: {"macro_state": "offense", "signal_date": day})
+    monkeypatch.setattr(strategies_svc, "_persist_strategy_scores", lambda rows: persisted.extend(rows) or {
+        "inserted_count": len(rows), "skipped_count": 0, "skipped": []})
     monkeypatch.setattr(strategies_svc, "uuid", type("FakeUuid", (), {"uuid4": staticmethod(lambda: type("U", (), {"hex": "abcdef123456"})())})())
 
     response = client.post("/api/strategies/scores/run", json={})
@@ -183,7 +190,7 @@ def test_strategy_score_run_post_scores_latest_snapshots_and_persists(monkeypatc
     assert response.json()["count"] == 1
     assert response.json()["rows"][0]["ticker"] == "TSLA"
     assert response.json()["rows"][0]["score"] >= 70
-    assert response.json()["rows"][0]["score_date"] == "2026-06-21"
+    assert response.json()["rows"][0]["score_date"] == "2024-06-14"
     assert response.json()["rows"][0]["source_snapshot_id"] == 12
     assert persisted == response.json()["rows"]
 

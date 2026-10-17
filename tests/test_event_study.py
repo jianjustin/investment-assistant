@@ -1,6 +1,7 @@
 from datetime import date
 
 import pandas as pd
+import pytest
 
 from investment_assistant.research.event_study import (
     Event,
@@ -25,7 +26,7 @@ def _make_fetcher(price_map):
 
 
 def _add_td(d, n):
-    # 测试用确定性日历：+n 个自然日（避开真实假日逻辑，专注统计正确性）
+    # 统计测试用确定性偏移；所选事件和端点仍须落在真实 NYSE 交易日。
     from datetime import timedelta
     return d + timedelta(days=n)
 
@@ -71,11 +72,11 @@ def test_hit_rate_counts_positive_excess():
     price_map = {
         ("AAA", "2024-03-01"): 100.0, ("SPY", "2024-03-01"): 400.0,
         ("AAA", "2024-03-06"): 110.0, ("SPY", "2024-03-06"): 420.0,   # +10% vs +5% = +5%
-        ("BBB", "2024-04-01"): 100.0, ("SPY", "2024-04-01"): 400.0,
-        ("BBB", "2024-04-06"): 103.0, ("SPY", "2024-04-06"): 420.0,   # +3% vs +5% = -2%
+        ("BBB", "2024-04-03"): 100.0, ("SPY", "2024-04-03"): 400.0,
+        ("BBB", "2024-04-08"): 103.0, ("SPY", "2024-04-08"): 420.0,   # +3% vs +5% = -2%
     }
     events = [Event("AAA", date(2024, 3, 1), "rs_strong"),
-              Event("BBB", date(2024, 4, 1), "rs_strong")]
+              Event("BBB", date(2024, 4, 3), "rs_strong")]
     result = run_event_study(
         events, horizons=(5,), price_fetcher=_make_fetcher(price_map),
         regime_fn=lambda d: "green", add_trading_days_fn=_add_td,
@@ -94,11 +95,11 @@ def test_regime_partitioning_invokes_regime_fn():
     price_map = {
         ("AAA", "2024-03-01"): 100.0, ("SPY", "2024-03-01"): 400.0,
         ("AAA", "2024-03-06"): 110.0, ("SPY", "2024-03-06"): 420.0,
-        ("BBB", "2024-04-01"): 100.0, ("SPY", "2024-04-01"): 400.0,
-        ("BBB", "2024-04-06"): 103.0, ("SPY", "2024-04-06"): 420.0,
+        ("BBB", "2024-04-03"): 100.0, ("SPY", "2024-04-03"): 400.0,
+        ("BBB", "2024-04-08"): 103.0, ("SPY", "2024-04-08"): 420.0,
     }
     events = [Event("AAA", date(2024, 3, 1), "rs_strong"),
-              Event("BBB", date(2024, 4, 1), "rs_strong")]
+              Event("BBB", date(2024, 4, 3), "rs_strong")]
     result = run_event_study(
         events, horizons=(5,), price_fetcher=_make_fetcher(price_map),
         regime_fn=regime_fn, add_trading_days_fn=_add_td,
@@ -116,7 +117,7 @@ def test_skipped_events_recorded_not_raised():
         ("AAA", "2024-03-06"): 110.0, ("SPY", "2024-03-06"): 420.0,
     }
     events = [Event("AAA", date(2024, 3, 1), "rs_strong"),
-              Event("BBB", date(2024, 4, 1), "rs_strong")]
+              Event("BBB", date(2024, 4, 3), "rs_strong")]
     result = run_event_study(
         events, horizons=(5,), price_fetcher=_make_fetcher(price_map),
         regime_fn=lambda d: "green", add_trading_days_fn=_add_td,
@@ -172,3 +173,132 @@ def test_research_cli_delegates_to_task(monkeypatch):
                         lambda: called.setdefault("ran", True))
     rs._cli_main()
     assert called.get("ran") is True
+
+
+def test_unmatured_horizon_never_fetches_prices_or_counts_last_available_close():
+    calls = []
+
+    def stale_fetcher(ticker, end_date, **kw):
+        calls.append((ticker, end_date))
+        return pd.DataFrame({"Close": [100.0]}, index=pd.to_datetime(["2024-03-01"]))
+
+    result = run_event_study(
+        [Event("AAA", date(2024, 3, 1), "score_high")], horizons=(5,),
+        asof=date(2024, 3, 7), price_fetcher=stale_fetcher, regime_fn=lambda d: "green",
+    )
+    assert result.horizons[5].n == 0
+    assert calls == []
+    assert result.params["asof"] == "2024-03-07"
+    assert result.params["skipped"][0]["error"] == "horizon_not_mature"
+    assert result.params["skipped"][0]["forward_date"] == "2024-03-08"
+
+
+def test_asof_censors_each_horizon_even_when_future_prices_exist():
+    calls = []
+
+    def future_fetcher(ticker, end_date, **kw):
+        calls.append(end_date)
+        return pd.DataFrame({"Close": [100.0, 110.0, 120.0, 999.0]},
+                            index=pd.to_datetime(["2024-03-01", "2024-03-04", "2024-03-08", "2024-04-03"]))
+
+    result = run_event_study(
+        [Event("AAA", date(2024, 3, 1), "score_high")], horizons=(1, 5, 20),
+        asof=date(2024, 3, 8), price_fetcher=future_fetcher, regime_fn=lambda d: "green",
+    )
+    assert [result.horizons[h].n for h in (1, 5, 20)] == [1, 1, 0]
+    assert max(calls) == date(2024, 3, 8)
+    assert result.horizons[5].mean_excess == 0.0
+
+
+@pytest.mark.parametrize("bad_endpoint", [("AAA", "2024-03-01"), ("AAA", "2024-03-08"),
+                                         ("SPY", "2024-03-01"), ("SPY", "2024-03-08")])
+@pytest.mark.parametrize("mode", ["stale", "future", "nan", "inf", "zero", "negative", "duplicate", "undated"])
+def test_each_stock_and_benchmark_endpoint_must_be_exact_finite_positive(bad_endpoint, mode):
+    from datetime import timedelta
+    from investment_assistant.research.event_study import forward_excess_return
+    from investment_assistant.data.calendar import add_trading_days
+
+    def fetcher(ticker, end_date, **kw):
+        ds, values = [end_date], [100.0]
+        if (ticker, end_date.isoformat()) == bad_endpoint:
+            if mode == "stale":
+                ds = [end_date - timedelta(days=1)]
+            elif mode == "future":
+                ds = [end_date + timedelta(days=1)]
+            elif mode == "duplicate":
+                ds, values = [end_date, end_date], [100.0, 101.0]
+            elif mode == "undated":
+                return pd.DataFrame({"Close": values})
+            else:
+                values = [{"nan": float("nan"), "inf": float("inf"), "zero": 0, "negative": -1}[mode]]
+        return pd.DataFrame({"Close": values}, index=pd.to_datetime(ds))
+
+    assert forward_excess_return(
+        "AAA", date(2024, 3, 1), 5, benchmark="SPY", price_fetcher=fetcher,
+        add_trading_days_fn=add_trading_days,
+    ) is None
+
+
+def test_exact_endpoints_are_selected_from_unsorted_timezone_aware_frames():
+    from investment_assistant.research.event_study import forward_excess_return
+    from investment_assistant.data.calendar import add_trading_days
+
+    def fetcher(ticker, end_date, **kw):
+        values = [110.0, 100.0, 999.0] if ticker == "AAA" else [420.0, 400.0, 999.0]
+        return pd.DataFrame({"Close": values}, index=pd.to_datetime(
+            ["2024-03-08", "2024-03-01", "2024-04-03"]).tz_localize("America/New_York"))
+
+    assert forward_excess_return(
+        "AAA", date(2024, 3, 1), 5, benchmark="SPY", price_fetcher=fetcher,
+        add_trading_days_fn=add_trading_days,
+    ) == pytest.approx(0.05)
+
+
+@pytest.mark.parametrize("event_day,error", [(date(2024, 3, 11), "event_after_asof"),
+                                              (date(2024, 3, 2), "non_trading_event_date")])
+def test_invalid_event_date_never_reaches_price_or_regime(event_day, error):
+    def forbidden(*a, **kw):
+        pytest.fail("invalid event must be excluded before data lookup")
+
+    result = run_event_study([Event("AAA", event_day, "score_high")], asof=date(2024, 3, 8),
+                             price_fetcher=forbidden, regime_fn=forbidden)
+    assert result.n == 0
+    assert result.params["skipped"][0]["error"] == error
+
+
+def test_default_horizons_match_existing_config_not_one_five_twenty():
+    from investment_assistant.config import BacktestConfig
+    result = run_event_study([])
+    assert list(result.horizons) == BacktestConfig().horizons == [5, 10, 20]
+
+
+def test_default_and_future_cutoff_exclude_today_even_if_fetcher_has_its_close(monkeypatch):
+    import investment_assistant.research.event_study as study
+    monkeypatch.setattr(study, "last_completed_trading_day", lambda: date(2024, 3, 7))
+    for requested in (None, date(2024, 3, 8), date(2099, 1, 1)):
+        result = study.run_event_study([], asof=requested)
+        assert result.params["asof"] == "2024-03-07"
+        assert result.params["asof_policy"] == "previous_nyse_session"
+
+
+def test_ma_reclaim_result_is_not_labelled_ema():
+    result = run_event_study([Event("AAA", date(2024, 3, 1), "ma_reclaim")],
+                             asof=date(2024, 3, 1), regime_fn=lambda d: "green")
+    assert any("SMA20" in c and "21EMA" in c for c in result.caveats)
+
+
+@pytest.mark.parametrize("horizons", [(0,), (-1,), (1.5,), (True,), ()])
+def test_invalid_horizons_are_rejected(horizons):
+    with pytest.raises(ValueError, match="horizon"):
+        run_event_study([], horizons=horizons)
+
+
+def test_regime_failure_does_not_leak_database_details_into_result():
+    def fail(d):
+        raise RuntimeError("postgres://user:private-secret@host SELECT private_table")
+    result = run_event_study(
+        [Event("AAA", date(2024, 3, 1), "score_high")], horizons=(5,), asof=date(2024, 3, 8),
+        price_fetcher=lambda *a, **kw: pd.DataFrame(), regime_fn=fail,
+    ).to_dict()
+    assert "private-secret" not in str(result) and "private_table" not in str(result)
+    assert result["params"]["skipped"][0]["error"] == "regime_unavailable"

@@ -19,14 +19,25 @@ def run_task(
     target_end_date: date | None = None,
     trigger_source: str = "scheduled",
     notify: bool = True,
+    target_dates_from_summary: bool = False,
 ) -> dict[str, Any]:
     run_id = f"{task}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
     started_at = datetime.now(UTC)
     try:
         summary = fn() or {}
-        status = "error" if summary.get("error") or summary.get("errors") else "success"
+        if target_dates_from_summary:
+            actual_dates = sorted({date.fromisoformat(str(day)) for day in summary.get("actual_dates", [])})
+            summary["actual_dates"] = [day.isoformat() for day in actual_dates]
+            target_start_date = actual_dates[0] if actual_dates else None
+            target_end_date = actual_dates[-1] if actual_dates else None
+            if not actual_dates and not (summary.get("error") or summary.get("errors") or summary.get("failures")):
+                summary["error"] = "No actual input dates available; no dated completion can be reported"
+        status = "error" if summary.get("error") or summary.get("errors") or summary.get("failures") else "success"
     except Exception as exc:  # 结构化记录，不静默
         summary = {"error": str(exc)}
+        if target_dates_from_summary:
+            summary["actual_dates"] = []
+            target_start_date = target_end_date = None
         status = "error"
     finished_at = datetime.now(UTC)
     _record(task=task, run_id=run_id, status=status, started_at=started_at,

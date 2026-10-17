@@ -117,3 +117,18 @@ def test_notify_channel_migration():
     assert "ALTER TABLE notify_settings" in sql
     assert "channel TEXT NOT NULL DEFAULT 'discord'" in sql
     assert "email" in sql and "JSONB" in sql and "'{}'::jsonb" in sql
+
+
+def test_signal_provenance_migration_is_nullable_idempotent_and_never_relabels_old_rows():
+    import re
+
+    sql = Path("migrations/015_signal_provenance.sql").read_text()
+    statements = [s.strip() for s in re.sub(r"--[^\n]*", "", sql).split(";") if s.strip()]
+    normalized = [" ".join(s.split()).upper() for s in statements]
+    assert normalized == [
+        "ALTER TABLE TICKER_SIGNAL_SNAPSHOTS ADD COLUMN IF NOT EXISTS PRICE_DATE DATE",
+        "ALTER TABLE TICKER_SIGNAL_SNAPSHOTS ADD COLUMN IF NOT EXISTS CALCULATION_VERSION TEXT",
+        "ALTER TABLE STRATEGY_SCORES ADD COLUMN IF NOT EXISTS CALCULATION_VERSION TEXT",
+    ]
+    assert not re.search(r"\b(DEFAULT|UPDATE|DELETE|DROP|INSERT)\b", " ".join(normalized))
+

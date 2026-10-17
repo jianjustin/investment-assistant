@@ -3,7 +3,9 @@
 > 目标：把你目标②（交易计划）和目标③（复盘）接成**同一个闭环的两端**——`execution_plans` 与 `trade_journal` **共享主键**，从而量化「计划遵守度」和「实盘期望值」。
 > 这是整个系统的护城河所在（见 [00 §4](00-principles-and-direction.md)）：用你自己的真实交易数据做归因，无幸存者偏差、样本就是你关心的全部。
 > 依赖：Phase 0 的事件研究（计划的依据）、Phase 1 的价格/财报数据（计算实盘收益）。
-> 预计：2 周。
+> 历史估算：2 周，不是本轮新排期。
+
+**2026-10-17：本阶段未落地。** 以下 schema、API 与计算模块是长期设计，不是已有能力。研究观察卡/公司指引不等于计划和成交日志；当前六入口 UI 的“交易指令”也不构成闭环。013 已用于 A 股研究、014 已用于美股研究，plans/journal 的迁移编号需在未来实施时另分配。Phase 0 正式 Gate 全部 HOLD，尚不能把探索性均值写入可信的 `expected_edge`；本轮不录入真实交易或执行交易。
 
 ---
 
@@ -29,13 +31,13 @@
 
 ---
 
-## Task 2.1 — 交易计划落表（迁移 013）
+## Task 2.1 — 交易计划落表（规划，编号待定）
 
 **现状**：`research/execution_plan.py` 的 `create_execution_plan(ticker, direction, premise)` 是死代码，无调用方，且不含量化字段。
 
 **做什么**：扩展为含可执行量化字段，并真正接入决策流。
 
-**迁移 `013_execution_plans.sql`**：
+**未来 `execution_plans` 迁移草案（编号待定）**：
 
 ```sql
 CREATE TABLE IF NOT EXISTS execution_plans (
@@ -73,11 +75,11 @@ CREATE TABLE IF NOT EXISTS execution_plans (
 
 ---
 
-## Task 2.2 — 交易日志落表（迁移 014）
+## Task 2.2 — 交易日志落表（规划，编号待定）
 
 **设计要点**：日志不只是流水，要能**推导组合状态**（见 [05](05-cross-cutting.md) 组合敞口），并能**回连计划**。
 
-**迁移 `014_trade_journal.sql`**：
+**未来 `trade_journal` 迁移草案（编号待定）**：
 
 ```sql
 CREATE TABLE IF NOT EXISTS trade_journal (
@@ -98,12 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_journal_ticker ON trade_journal (ticker, exec_dat
 CREATE INDEX IF NOT EXISTS idx_journal_plan ON trade_journal (plan_id);
 ```
 
-**录入方式（待你确认，见 README §6）** —— 三种，按你的实际记录习惯选：
-1. **前端表单**：设置层/交易层新增录入页（最快可用）。
-2. **券商 CSV 导入**：写 parser 映射到 schema（若你有券商导出）。
-3. **Obsidian 笔记解析**：若你已在 vault 里记交易，写一个 markdown 解析器（贴合现有习惯，零迁移成本）。
-
-> 这是 Phase 2 唯一需要你先拍板的点。在确认前，先按「前端表单」实现最小可用版本。
+**录入方式（2026-07-04 已确认）**：前端表单从零录入。券商 CSV 和 Obsidian 解析按 YAGNI 不纳入当前设计；将来有实际需求再另行确认。这里不再列为“待你确认”。
 
 **仓位 / 持仓重建** `services/portfolio.py`：
 - 从 `trade_journal` 按 ticker 聚合 → 当前持仓（数量、均价、未实现盈亏）。
@@ -153,8 +150,8 @@ CREATE INDEX IF NOT EXISTS idx_journal_plan ON trade_journal (plan_id);
 
 对齐现有分层 `api/routes/* → services/*`：
 - `GET/POST /api/plans`、`GET/POST /api/journal`、`GET /api/portfolio`（当前持仓+敞口）、`GET /api/adherence`、`GET /api/trade-stats`
-- 前端「交易层」补：计划录入/列表、交易日志录入/导入、组合敞口面板、遵守度看板。
-- 占位的「交易指令」页（五层 IA 里的 `trade/orders`）在此填充为真实计划生成入口。
+- 前端「交易层」规划补：计划录入/列表、交易日志表单、组合敞口面板、遵守度看板。
+- 当前六入口 UI 的 `trade/orders` 占位页，在未来本阶段才填充为计划生成入口。
 
 ---
 

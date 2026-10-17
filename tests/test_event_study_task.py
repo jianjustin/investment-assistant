@@ -20,10 +20,10 @@ def test_core_aggregates_kinds(monkeypatch):
         )
 
     monkeypatch.setattr(event_study, "run_event_study", fake_run)
-    summary = event_study._core(AssistantConfig(), kinds=["rs_strong"])
-    assert "rs_strong" in summary["results"]
-    assert summary["results"]["rs_strong"]["n"] == 1
-    assert summary["params"]["kinds"] == ["rs_strong"]
+    summary = event_study._core(AssistantConfig(), kinds=["score_high"])
+    assert "score_high" in summary["results"]
+    assert summary["results"]["score_high"]["n"] == 1
+    assert summary["params"]["kinds"] == ["score_high"]
 
 
 def test_core_passes_asof_for_replay(monkeypatch):
@@ -35,10 +35,11 @@ def test_core_passes_asof_for_replay(monkeypatch):
         return []
 
     monkeypatch.setattr(event_study, "collect_events", fake_collect)
-    event_study._core(AssistantConfig(), asof=date(2024, 3, 1), since=date(2022, 1, 1),
-                      kinds=["rs_strong"])
+    summary = event_study._core(AssistantConfig(), asof=date(2024, 3, 1), since=date(2022, 1, 1),
+                                kinds=["score_high"])
     assert seen["asof"] == date(2024, 3, 1)
     assert seen["since"] == date(2022, 1, 1)
+    assert summary["results"]["score_high"]["params"]["asof"] == "2024-03-01"
 
 
 def test_run_goes_through_harness(monkeypatch):
@@ -81,3 +82,98 @@ def test_run_maps_start_end_to_since_asof(monkeypatch):
                     end_date=date(2026, 6, 30), trigger_source="manual")
     assert core_args == {"asof": date(2026, 6, 30), "since": date(2026, 1, 1)}
     assert captured["trigger_source"] == "manual"
+
+
+def test_task_run_accepts_explicit_asof_and_records_effective_cutoff(monkeypatch):
+    captured, core_args = {}, {}
+    monkeypatch.setattr(event_study, "run_task", lambda task, fn, **kw: captured.update(kw) or fn())
+    monkeypatch.setattr(event_study, "_core", lambda config, **kw: core_args.update(kw) or {})
+    event_study.run(AssistantConfig(), asof=date(2024, 3, 8))
+    assert core_args["asof"] == captured["target_end_date"] == date(2024, 3, 8)
+    assert captured["target_start_date"] == date(2024, 3, 8)
+
+
+def test_task_conflicting_end_date_and_asof_rejected():
+    import pytest
+    with pytest.raises(ValueError, match="asof.*end_date"):
+        event_study.run(AssistantConfig(), asof=date(2024, 3, 8), end_date=date(2024, 3, 7))
+
+
+def test_default_task_excludes_unavailable_definitions_and_resolves_cutoff(monkeypatch):
+    calls = []
+    monkeypatch.setattr(event_study, "resolve_asof", lambda asof: asof or date(2024, 3, 8))
+    monkeypatch.setattr(event_study, "collect_events", lambda kind, **kw: calls.append((kind, kw)) or [])
+    result = event_study._core(AssistantConfig())
+    assert result["params"]["asof"] == "2024-03-08"
+    assert result["params"]["horizons"] == [5, 10, 20]
+    assert {kind for kind, kw in calls} == {"ma_reclaim", "score_high"}
+    assert all(kw["asof"] == date(2024, 3, 8) for kind, kw in calls)
+
+
+def test_cli_asof_reaches_engine_in_no_record_mode(monkeypatch, capsys):
+    import json
+    monkeypatch.setattr("sys.argv", ["event-study", "--no-record", "--kind", "score_high",
+                                     "--asof", "2024-03-08", "--since", "2023-01-01"])
+    monkeypatch.setattr(event_study, "collect_events", lambda *a, **kw: [])
+    monkeypatch.setattr(event_study, "run_task", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("no record")))
+    event_study.main()
+    summary = json.loads(capsys.readouterr().out)["summary"]
+    assert summary["params"]["asof"] == "2024-03-08"
+    assert summary["results"]["score_high"]["params"]["asof"] == "2024-03-08"
+
+
+def test_explicit_unavailable_task_kind_raises_not_empty_success():
+    import pytest
+    with pytest.raises(ValueError, match="unavailable"):
+        event_study._core(AssistantConfig(), kinds=["eps_beat"])
+
+
+def test_actual_task_regime_uses_passed_market_config(monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    import pandas as pd
+    import pytest
+    from investment_assistant.research.event_study import Event
+    cfg = AssistantConfig()
+    cfg = replace(cfg, market=replace(cfg.market, red_vix=99.0))
+    seen = []
+    monkeypatch.setattr(event_study, "collect_events", lambda *a, **kw: [Event("AAA", date(2024, 3, 1), "score_high")])
+    monkeypatch.setattr("investment_assistant.market.service.compute_market_signal_for_date",
+                        lambda market, d: seen.append((market, d)) or SimpleNamespace(market_status="green"))
+    monkeypatch.setattr("investment_assistant.config.load_config", lambda: pytest.fail("must use passed config"))
+    monkeypatch.setattr("investment_assistant.data.price.get_price_history_asof",
+                        lambda ticker, on, **kw: pd.DataFrame({"Close": [100.]}, index=pd.to_datetime([on])))
+    summary = event_study._core(cfg, asof=date(2024, 3, 8), kinds=["score_high"])
+    assert seen == [(cfg.market, date(2024, 3, 1))]
+    assert summary["results"]["score_high"]["by_regime"]["green"]["5"]["n"] == 1
+
+
+def test_task_source_unavailable_has_errors_not_zero_results():
+    summary = event_study._core(AssistantConfig(), asof=date(2024, 3, 8))
+    assert summary["results"] == {}
+    assert summary["degraded"] is True
+    assert set(summary["errors"]) == {"ma_reclaim", "score_high"}
+    assert all(e["code"] == "database_unconfigured" for e in summary["errors"].values())
+
+
+def test_task_source_error_reaches_harness_error_status_without_real_record_or_notify(monkeypatch):
+    from investment_assistant.tasks import _harness
+    from investment_assistant.services import settings
+    monkeypatch.setattr(_harness, "_record", lambda **kw: None)
+    monkeypatch.setattr(_harness, "dispatch", lambda *a, **kw: None)
+    monkeypatch.setattr(settings, "effective_notify_config", lambda cfg: cfg)
+    out = event_study.run(AssistantConfig(), asof=date(2024, 3, 8))
+    assert out["status"] == "error"
+    assert out["summary"]["errors"]["ma_reclaim"]["code"] == "database_unconfigured"
+
+
+def test_task_legacy_only_source_reports_exclusion_not_signal_ineffectiveness(monkeypatch):
+    from investment_assistant.research import event_sources
+    monkeypatch.setattr(event_sources, "_default_snapshot_source", lambda: [
+        {"ticker": "AAA", "signal_date": date(2024, 3, 4), "close": 100, "ma20": 99,
+         "prev_close": 98, "prev_ma20": 99}
+    ])
+    summary = event_study._core(AssistantConfig(), asof=date(2024, 3, 8), kinds=["ma_reclaim"])
+    assert summary["degraded"] is True
+    assert summary["errors"]["ma_reclaim"]["code"] == "source_quality_excluded"
+    assert summary["results"]["ma_reclaim"]["params"]["source_quality"]["excluded_count"] == 1

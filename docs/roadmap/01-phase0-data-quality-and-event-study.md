@@ -2,14 +2,22 @@
 
 > 目标：用**最小成本**拿到「我关注的信号到底有没有边际信息」的诚实答案。这是「先证伪、再投入」原则的落地——如果信号没用，后面的交易计划和复盘就只是把噪声包装成叙事。
 > 依赖：现有 `data/price.py`、`market/service.py`（已支持 as-of 日期）、`tickers/trend.py`、`strategies/trend_relative_strength.py`。
-> 预计：1–1.5 周。
+> 历史估算：1–1.5 周，不是本轮新排期。
+
+## 2026-10-17 评审状态
+
+事件研究框架、FastAPI/CLI/UI 入口已存在；本轮 as-of 扫描、历史评分、成熟度、精确端点和缓存语义修复进入最终复核。默认研究窗口为 5/10/20 交易日，MA 是 SMA20，不是 21EMA。RS 旧阈值 1.2 的收益差单位/意图未确认，EPS/VCP 无可用事件源，不能把它们写成已测零事件。
+
+[只读归档评审](reports/2026-10-17-phase0-review.md)从八只股票重建 132 个 SMA20 事件，5/10/20 有效 n=131/129/122，均值为 2.3453/2.9158/5.8974 个百分点。**全部正式 Gate HOLD**：未校正 CI 不足以证明信号有效，可信历史信号、实际区制、样本依赖、选择偏差、PIT 和成本/入场模型仍有缺口。
+
+当前 DB 回环连接不可达（`OperationalError`，不记录 DSN），当前表数量 unknown 而非 0；未做 HTTP/UI 验收。只读原始 hash 与财务样例复算不等于全库验收。最终变更测试数字待 [实施状态](../implementation-status-2026-10-17.md)回填。下文保留原任务设计，现行使用以 [事件研究说明](../research-event-study.md)为准。
 
 ---
 
 ## 为什么 Phase 0 排第一
 
 - 工程量小，但回答的是**最贵的问题**：「值不值得在这套信号上继续投入」。
-- 事件研究能把分散事件**池化成足够样本**，绕开单标的小样本陷阱。
+- 事件研究可池化跨标的观测，但不自动解决小样本与相关性；有效独立样本设计仍是 Gate 前置。
 - 它强制你先解决**复权 / point-in-time** 这个隐形地基——否则后面所有回测和复盘都建在污染数据上。
 
 ---
@@ -44,7 +52,8 @@ investment_assistant/research/event_study.py
 def run_event_study(
     events: list[Event],            # Event(ticker, date, kind, meta)
     *,
-    horizons=(1, 5, 20),            # 前瞻交易日
+    horizons=(5, 10, 20),           # 前瞻交易日，现行默认
+    asof=None,                     # 同时约束事件与收益成熟度
     benchmark="SPY",                # 计算超额收益的基准
     price_fetcher=...,              # 注入，便于测试
 ) -> EventStudyResult
@@ -54,17 +63,17 @@ def run_event_study(
 
 | 事件类型 `kind` | 触发定义 | 来源 |
 |----------------|---------|------|
-| `eps_beat` / `eps_miss` | EPS 实际 vs 预期（Phase 1 结构化后接入；Phase 0 先用 yfinance earnings_dates 占位） | 目标② 财报 |
-| `rs_strong` | `rs_score ≥ rs_strong` 阈值 | `tickers/trend.py` |
-| `ma_reclaim` | 价格重新站上 21EMA | `tickers/trend.py` |
-| `vcp` | 波动收缩 | 现有技术信号 |
-| `score_high` | `trend_relative_strength` 分数进入高档 | `strategies/` |
+| `eps_beat` / `eps_miss` | 未来 EPS 实际 vs 可信历史一致预期 | 当前不可用，无占位事件可供正式评审 |
+| `rs_strong` | 20 日收益差小数；旧 1.2 单位/意图未确认 | 挂起，不改阈值寻优 |
+| `ma_reclaim` | 相邻交易日收盘价由不高于 SMA20 转为高于 SMA20 | `tickers/trend.py`；不是 21EMA，来源须核验 |
+| `vcp` | 波动收缩事件 | 当前事件源未实现 |
+| `score_high` | 可信 `trend_relative_strength` 评分达到阈值 | 定义已有；本次无可信历史评分/宏观输入，未计算 |
 
 **输出 `EventStudyResult`（统计诚实是重点）**：
 
 ```
 {
-  "kind": "eps_beat",
+  "kind": "ma_reclaim",             # 仅为结构示例，不是本轮实测结果
   "n": 37,                          # 样本量（必报，太小直接标注不可信）
   "horizons": {
     "5":  {"mean_excess": 0.018, "median": 0.012, "hit_rate": 0.62,

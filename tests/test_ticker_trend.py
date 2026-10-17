@@ -32,7 +32,7 @@ def test_scan_ticker_trends_keeps_failed_ticker_without_stopping_batch():
             "Low": [value - 1 for value in values],
             "Close": values,
             "Volume": [1000] * 219 + [2000],
-        })
+        }, index=pd.bdate_range(end="2024-06-14", periods=220))
 
     def fetcher(ticker: str, days: int) -> pd.DataFrame:
         if ticker == "FAIL":
@@ -43,7 +43,7 @@ def test_scan_ticker_trends_keeps_failed_ticker_without_stopping_batch():
             return frame(400)
         return frame(100)
 
-    rows = scan_ticker_trends(["TSLA", "FAIL"], signal_date=date(2026, 6, 21), price_fetcher=fetcher, run_id="manual-test")
+    rows = scan_ticker_trends(["TSLA", "FAIL"], signal_date=date(2024, 6, 14), price_fetcher=fetcher, run_id="manual-test")
 
     assert [row["ticker"] for row in rows] == ["TSLA", "FAIL"]
     assert rows[0]["trend_state"] == "uptrend"

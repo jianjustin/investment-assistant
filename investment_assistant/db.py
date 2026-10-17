@@ -108,19 +108,14 @@ def apply_pending_migrations(conn, migrations_dir: str | Path) -> list[str]:
     return applied
 
 
-def upsert_market_signal(conn, signal) -> None:
+def upsert_market_signal(conn, signal, *, preserve_existing: bool = False) -> bool | None:
+    """Legacy callers may update; dated metrics explicitly preserve existing rows.
+
+    In preserve mode return True only for an actual insert (False on conflict).
+    The default keeps the previous update semantics and None return value.
+    """
     payload = _signal_payload(signal)
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO market_signals (
-              signal_date, market_status, spy_ticker, spy_close, spy_ma200,
-              spy_above_200ma, vix_ticker, vix_close, source, details, run_id
-            ) VALUES (
-              %(signal_date)s, %(market_status)s, %(spy_ticker)s, %(spy_close)s, %(spy_ma200)s,
-              %(spy_above_200ma)s, %(vix_ticker)s, %(vix_close)s, %(source)s, %(details)s, %(run_id)s
-            )
-            ON CONFLICT (signal_date) DO UPDATE SET
+    conflict = "DO NOTHING" if preserve_existing else """DO UPDATE SET
               market_status = EXCLUDED.market_status,
               spy_ticker = EXCLUDED.spy_ticker,
               spy_close = EXCLUDED.spy_close,
@@ -132,10 +127,25 @@ def upsert_market_signal(conn, signal) -> None:
               details = EXCLUDED.details,
               run_id = EXCLUDED.run_id,
               updated_at = now()
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            INSERT INTO market_signals (
+              signal_date, market_status, spy_ticker, spy_close, spy_ma200,
+              spy_above_200ma, vix_ticker, vix_close, source, details, run_id
+            ) VALUES (
+              %(signal_date)s, %(market_status)s, %(spy_ticker)s, %(spy_close)s, %(spy_ma200)s,
+              %(spy_above_200ma)s, %(vix_ticker)s, %(vix_close)s, %(source)s, %(details)s, %(run_id)s
+            )
+            ON CONFLICT (signal_date) {conflict}
+            {"RETURNING signal_date" if preserve_existing else ""}
             """,
             payload,
         )
+        inserted = cur.fetchone() is not None if preserve_existing else None
     conn.commit()
+    return inserted
 
 
 def get_latest_market_signal(conn) -> dict[str, Any] | None:

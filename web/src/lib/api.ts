@@ -1,6 +1,17 @@
-export async function get<T>(path: string): Promise<T> {
+export async function get<T>(path: string, options: { errorDetails?: boolean } = {}): Promise<T> {
   const r = await fetch(path, { headers: { Accept: 'application/json' }, cache: 'no-store' })
-  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  if (!r.ok) {
+    let message = `HTTP ${r.status}`
+    // Opt in per endpoint so existing GET callers keep their error contract.
+    if (options.errorDetails) {
+      const data = await r.json().catch(() => null)
+      const detail = [data?.error, data?.message, data?.detail].find(
+        value => typeof value === 'string' && value.trim(),
+      )
+      if (detail) message = detail
+    }
+    throw new Error(message)
+  }
   return r.json() as Promise<T>
 }
 
@@ -121,10 +132,25 @@ export const testNotifyChannel = (body: object) =>
 export const getEnvStatus = () => get<Record<string, boolean>>('/api/settings/env')
 
 // research
-export const getEventStudyKinds = () => get<{ kinds: string[] }>('/api/research/event-study/kinds')
+export interface EventStudyDefinition {
+  definition: string
+  indicator?: string
+  period?: number
+  not_equivalent_to?: string
+  threshold?: number
+}
+export interface EventStudyKinds {
+  kinds: string[]
+  // Optional for compatibility with older kinds-only responses.
+  definitions?: Record<string, EventStudyDefinition>
+  unavailable?: Record<string, string>
+}
+export const getEventStudyKinds = () =>
+  get<EventStudyKinds>('/api/research/event-study/kinds', { errorDetails: true })
 export const getEventStudy = (kind: string, since?: string, asof?: string) =>
   get<{ result: any; degraded: boolean; source: string }>(
     `/api/research/event-study?kind=${kind}${since ? `&since=${since}` : ''}${asof ? `&asof=${asof}` : ''}`,
+    { errorDetails: true },
   )
 
 // filings

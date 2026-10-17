@@ -1,7 +1,9 @@
 # Roadmap — 投研 + 量化投资系统
 
-> 创建：2026-06-30 ｜ 视角：从「投研 + 量化」专业角度重排的落地路线图
-> 本目录是 `docs/audit-and-redesign-2026-06.md`（架构审计）之后的**方向修正版**：审计回答了「现状缺什么」，本 roadmap 回答「作为一个投研系统，应该往哪走、按什么顺序走、为什么」。
+> 创建：2026-06-30 ｜ 状态校准：2026-10-17（基线 `6fd63f8`）
+> 本目录保留长期方向与历史设计；**当前交付和验收状态**以 [实施状态](../implementation-status-2026-10-17.md)及 [Phase 0 评审](reports/2026-10-17-phase0-review.md)为准。历史周数是原估算，不是本轮新排期。
+
+本轮仅做代码实现与现有数据只读核验，不补采、不写真实数据库、不通知、不交易、不部署、不 commit/push。FastAPI、邮件 B10、六入口 UI 与 10 月跨市场研究支线已落地；本轮工程修复仍在最终复核，不能提前写成最终测试通过。全部正式信号 Gate 为 HOLD，当前 DB / HTTP / UI 未验收，跨市场用户验收仍待完成。
 
 ---
 
@@ -18,13 +20,13 @@
 | 文档 | 内容 | 给谁看 |
 |------|------|--------|
 | [00-principles-and-direction.md](00-principles-and-direction.md) | 方向判断、量化陷阱（过拟合/小样本/幸存者偏差）、护城河论证、系统定位 | **先读这篇**，它解释了后面所有优先级排序的依据 |
-| [01-phase0-data-quality-and-event-study.md](01-phase0-data-quality-and-event-study.md) | 第 0 步：复权/数据质量地基 + 事件研究框架（用最小成本拿到「信号有没有边际」的诚实答案） | ✅ 后端已完成（2026-07-03），决策门待走 |
-| [07-phase-r-fastapi-migration.md](07-phase-r-fastapi-migration.md) | 第 R 步：API 层迁移 FastAPI（Phase 2 表单密集，先迁地基后开发）+ Phase 0 的 DoD 欠账收尾 | **当前阶段** |
-| [02-phase1-data-foundation.md](02-phase1-data-foundation.md) | 第 1 步：OHLCV 落库 + 市场广度指标（替代大部分宏观）+ 财报结构化（精简版 XBRL） | |
-| [03-phase2-plan-execution-loop.md](03-phase2-plan-execution-loop.md) | 第 2 步：`execution_plans` + `trade_journal` 共享主键 → 计划遵守度 + 实盘期望值（**你三个目标真正的连接点**） | 系统价值核心 |
-| [04-phase3-review-and-regime.md](04-phase3-review-and-regime.md) | 第 3 步：跨笔行为模式识别（DeepSeek）+ 三方业绩对比 + 区制条件化 + LLM 校准追踪 | 复盘火力 |
-| [05-cross-cutting.md](05-cross-cutting.md) | 横切：组合敞口视角、可视化、文档对齐、安全、CI | 贯穿各阶段 |
-| [06-backlog-quick-wins.md](06-backlog-quick-wins.md) | 高性价比小项清单（前瞻财报日历、相关性矩阵、波动率分位、diff 视图…） | 随时可插 |
+| [01-phase0-data-quality-and-event-study.md](01-phase0-data-quality-and-event-study.md) | 数据质量与事件研究：框架已落地，本轮修复最终复核；归档探索已评审 | **全部正式 Gate HOLD** |
+| [07-phase-r-fastapi-migration.md](07-phase-r-fastapi-migration.md) | FastAPI 迁移的历史设计与完成边界 | `engineering_done`，不是当前待迁移阶段 |
+| [02-phase1-data-foundation.md](02-phase1-data-foundation.md) | 通用 OHLCV / 广度 / FRED / EPS surprise 长期设计；本轮仅输入可追溯性最小补强 | 长期项未完成；015 未执行到真实 DB |
+| [03-phase2-plan-execution-loop.md](03-phase2-plan-execution-loop.md) | 计划—执行—复盘闭环：`execution_plans` 与 `trade_journal` 关联 | 未落地，系统价值核心 |
+| [04-phase3-review-and-regime.md](04-phase3-review-and-regime.md) | 跨笔行为、三方业绩、区制条件化及 LLM 校准 | 未落地 |
+| [05-cross-cutting.md](05-cross-cutting.md) | 组合敞口、可视化、文档、安全、CI | 按实际依赖推进 |
+| [06-backlog-quick-wins.md](06-backlog-quick-wins.md) | 小项清单及依赖；B10 邮件已完成 | 不是自动授权的执行队列 |
 
 ---
 
@@ -46,45 +48,36 @@
 
 ## 3. 阶段总览与依赖
 
-```
-Phase 0  数据质量地基 + 事件研究          ✅ 后端完成 2026-07-03（决策门待走）
-   │      (复权正确性 / point-in-time 取价 / 事件收益分布)
-   ▼
-Phase R  API 层迁移 FastAPI               ← 当前阶段：重构地基 + Phase 0 前端/文档欠账收尾
-   │      (36 路由换壳，services/db/调度器不动，契约测试钉住)
-   ▼
-Phase 1  数据地基（精简）                  ← 只补被事件研究证明有用的数据
-   │      (OHLCV 落库 / 市场广度 / EPS surprise 结构化)
-   ▼
-Phase 2  计划-执行-复盘闭环 ★核心          ← 你三个目标的真正连接点
-   │      (execution_plans + trade_journal 共享主键 / 计划遵守度 / 实盘期望值)
-   ▼
-Phase 3  复盘引擎 + 区制条件化            ← 复盘火力 + 让结论可执行
-          (跨笔行为模式 / 三方对比 / regime 分层 / LLM 校准)
+阶段顺序表达依赖，不代表按周自动推进。状态允许并存：`engineering_done` 仅表示代码/入口已落地，`gate_hold` 表示研究证据未通过，`runtime_unverified` 表示本轮真实运行未验收，`user_acceptance_pending` 表示仍待用户使用验收。
 
-横切贯穿: 组合敞口视角 · 可视化 · 文档对齐 · 安全 · CI   （见 05）
-随时可插: quick-wins backlog                              （见 06）
-```
+| 阶段 / 支线 | 2026-10-17 状态 | 下一步前置证据 |
+| --- | --- | --- |
+| Phase 0 | 框架已有；本轮修复已通过离线回归；归档探索完成，`gate_hold` | 可信历史输入、实际区制、独立样本设计及成本/入场模型，而非只看 CI |
+| Phase R | `engineering_done` | 不重做迁移；当前环境 HTTP/UI 为 `runtime_unverified` |
+| 10 月跨市场研究支线 | `engineering_done` + `user_acceptance_pending` | 保留来源/缺口说明，用户手动检查工作流；不冒充通用 Phase 1 |
+| Phase 1 最小补强 | 015 来源日期/版本隔离已通过离线测试；真实迁移 `runtime_unverified` | 老行 null、不回填、冲突保留；真实执行另授权，先在可丢弃 DB 验证 |
+| 长期 Phase 1 | 通用 OHLCV / 广度 / FRED / EPS surprise 未完成 | Gate 证据与明确范围授权；当前不扩采 |
+| Phase 2 / 3 | 未落地 | 计划/日志、可信价格/信号及真实使用记录；不以研究卡代替闭环 |
 
-**为什么是这个顺序**：Phase 0 用最低成本回答「我关注的信号到底有没有边际信息」——如果没有，后面的交易计划和复盘就只是把噪声包装成叙事。先证伪，再投入。Phase 2 之所以排在全组合回测之前，是因为「计划-执行-复盘闭环」用的是**你自己的真实交易数据**（无幸存者偏差、样本就是你关心的全部），价值密度远高于在小样本上做组合回测。
+当前修复已完成离线回归（后端 749 通过 / 52 跳过 / 5 个环境性失败，前端 287 通过），下一步是在可连接环境只读核查真实库、按手动入口验收。正式 Gate 不通过不等于自动砍掉信号，而是没有足够证据作去留决定。Phase 1 只做评审明确暴露的输入可追溯性最小补强，不开启 FRED、一致预期或全组合回测。闭环仍是长期价值核心，但它也不能免除记录缺失、计价和选择偏差检查。
 
 ---
 
 ## 4. 迁移编号约定
 
-现有迁移到 `009_event_studies`（事件研究缓存已在 Phase 0 落地，占用了原规划给 ohlcv 的 009）。后续新表顺延：
+以仓库实际文件为准，不能把历史预占编号当已建表或迁移验收证据。
 
-| 迁移 | 表 | 阶段 | 状态 |
-|------|----|----|----|
-| 009 | `event_studies`（事件研究结果缓存） | Phase 0 | ✅ 已建 |
-| 010 | `ohlcv_bars` | Phase 1 | 规划 |
-| 011 | `market_breadth` | Phase 1 | 规划 |
-| 012 | `fundamentals` | Phase 1 | 规划 |
-| 013 | `execution_plans` | Phase 2 | 规划 |
-| 014 | `trade_journal` | Phase 2 | 规划 |
-| 015 | `llm_predictions`（校准追踪） | Phase 3 | 规划 |
+| 迁移 | 实际用途 | 当前边界 |
+| --- | --- | --- |
+| 009 | `event_studies` 缓存 | 已有实现，当前库覆盖未知 |
+| 010 | `job_reports` 目标日期 | 已有实现 |
+| 011 | SEC `filings` | 已有实现，不是 EPS surprise |
+| 012 | 通知渠道 | 邮件 / Discord 配置已落地 |
+| 013 | A 股研究 | 不是 `execution_plans` |
+| 014 | 美股研究 | 不是 `trade_journal` |
+| 015 | `signal_provenance` 最小补强 | 本轮新增文件，离线测试通过；未对真实 DB 执行；不是 `llm_predictions` |
 
-> 实际实施时以落地顺序为准，本表是规划参考。每个迁移遵循现有约定：`CREATE TABLE IF NOT EXISTS` + 幂等。
+通用 OHLCV、广度、FRED、EPS surprise、plans / journal、LLM 校准的未来迁移编号均待实施时分配，不再预占已用编号。015 老行新增字段为 null 且不回填；本轮不运行生产迁移。
 
 ---
 
@@ -92,9 +85,9 @@ Phase 3  复盘引擎 + 区制条件化            ← 复盘火力 + 让结论�
 
 - **TDD**：新增逻辑必须先写测试；外部依赖（DB / 网络 / LLM）全部 mock 或注入，离线可跑。
 - **分层**：`api/routes/*` → `services/*` → `db.py` / `tasks/*`，路由层薄封装。
-- **优雅降级**：无 `INVESTMENT_ASSISTANT_DATABASE_URL` 时只读端点返回空 + `{"degraded": true}`，不崩。
-- **不静默吞错**：外部失败结构化返回 + 日志，不裸 `except` 后丢弃。
-- **配置已预留**：`config.py` 已定义 `MacroConfig` / `FundamentalsConfig` / `PriceConfig` / `StrategyParams` / `BacktestConfig` 脚手架（当前未实现），实施时填充即可，无需重设计配置结构。
+- **降级不伪造成功**：无数据库配置、数据库不可达、事件源不可用与真实空样本必须区分；不可达不等于零记录，失败不应被吞成成功。
+- **不静默吞错**：外部失败结构化返回 + 日志，敏感凭据和 DSN 不进入报告。
+- **配置不是交付**：`MacroConfig` / `FundamentalsConfig` / `PriceConfig` 等配置存在不代表采集已实现；`BacktestConfig` 已用于事件研究，默认窗口为 5/10/20。
 
 ---
 

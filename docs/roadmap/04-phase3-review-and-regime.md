@@ -2,7 +2,9 @@
 
 > 目标：把 DeepSeek + Hermes 从「泛泛宏观解读」聚焦到你真正想要的「拿我的交易记录做归因复盘」。复盘的火力在**跨笔行为模式识别**和**三方业绩对比**，不是单笔点评。
 > 依赖：Phase 2 的 `trade_journal` / `execution_plans` / 期望值统计；Phase 0 事件研究基线；现有 `hermes/deepseek_client.py`（已修好真实模型 ID）、`hermes/agents.py`（agent 框架）、`hermes/run_log.py`。
-> 预计：1.5–2 周。
+> 历史估算：1.5–2 周，不是本轮新排期。
+
+**2026-10-17：本阶段未落地。** 下文是依赖 Phase 2 真实计划/日志的长期设计，不能把已有 Hermes 宏观分析或观察卡称为行为复盘。Phase 0 虽有分层输出接口，本次归档无可信 VIX/历史区制，全部为 `unknown`，不能生成可执行的区制结论。015 已用于本轮信号来源最小补强，LLM 校准迁移编号待未来实施时分配；本轮不调用新增 LLM 流程或扩大采集。
 
 ---
 
@@ -83,11 +85,11 @@
 
 ---
 
-## Task 3.4 — LLM 校准追踪（迁移 015）★旧 roadmap 缺失
+## Task 3.4 — LLM 校准追踪（规划，编号待定）
 
 **为什么**：只要系统/Hermes 输出带概率的判断（「70% 守住 21EMA」「conviction 80」），就该记录并事后验证。否则 LLM 只会产出**自信的废话**，你无法知道它准不准。
 
-**迁移 `015_llm_predictions.sql`**：
+**未来 `llm_predictions` 迁移草案（编号待定）**：
 
 ```sql
 CREATE TABLE IF NOT EXISTS llm_predictions (
