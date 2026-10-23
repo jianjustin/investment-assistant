@@ -6,6 +6,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
+from investment_assistant.filings.monitor_source import edgar_acceptance, edgar_items
+
 COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 ARCHIVE_DOC_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession_nodash}/{doc}"
@@ -69,6 +71,8 @@ class SecEdgarDownloader:
         dates = recent.get("filingDate", [])
         accns = recent.get("accessionNumber", [])
         docs = recent.get("primaryDocument", [])
+        accepted = recent.get("acceptanceDateTime", [])
+        items = recent.get("items", [])
         first_day = start_date.isoformat()
         last_day = end_date.isoformat()
         out: list[dict[str, Any]] = []
@@ -94,5 +98,7 @@ class SecEdgarDownloader:
                 "primary_document": doc_name,
                 "path": str(dest),
                 "downloaded": downloaded,
+                "accepted_at": edgar_acceptance(accepted[i] if i < len(accepted) else None),
+                "items": edgar_items(items[i] if i < len(items) else None),
             })
         return out

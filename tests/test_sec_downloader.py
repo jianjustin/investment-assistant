@@ -94,3 +94,17 @@ def test_download_skips_existing_file_but_returns_metadata(tmp_path, monkeypatch
     assert called == []  # 未重复下载
     assert out[0]["downloaded"] is False
     assert out[0]["path"] == str(dest)
+
+
+def test_download_records_acceptance_time_and_items(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEC_USER_AGENT", "test test@example.com")
+    tickers_json = {"0": {"cik_str": 1045810, "ticker": "NVDA", "title": "NVIDIA"}}
+    submissions_json = {"filings": {"recent": {
+        "form": ["8-K", "10-Q"], "filingDate": ["2026-08-27", "2026-08-27"],
+        "accessionNumber": ["acc-8k", "acc-q"], "primaryDocument": ["k.htm", "q.htm"],
+        "acceptanceDateTime": ["2026-08-27T16:20:31.000Z", "bad"], "items": ["2.02,9.01", ""],
+    }}}
+    monkeypatch.setattr(sec_downloader, "_download_document", lambda url, dest, *, headers: dest)
+    out = SecEdgarDownloader(getter=make_getter(tickers_json, submissions_json), cache_dir=tmp_path).download_filings_batch(
+        "NVDA", ["8-K", "10-Q"], date(2026, 8, 27), date(2026, 8, 27), tmp_path / "filings")
+    assert [(o["accepted_at"], o["items"]) for o in out] == [("2026-08-27T16:20:31-04:00", ["2.02", "9.01"]), (None, [])]
