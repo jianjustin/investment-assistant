@@ -310,6 +310,66 @@ def insert_weekly_review(conn, week_start: date, calc_version: str, stats: dict[
                 (week_start, calc_version, _canonical(stats), notes, supersedes_id))
 
 
+_SNAPSHOT_COLUMNS = ('id, request_id, request_hash, as_of, equity, note, recorded_at, supersedes_id, '
+                    'created_at')
+_FLOW_COLUMNS = 'id, request_id, request_hash, flow_date, amount, note, recorded_at, voided_at, void_reason'
+
+
+def snapshot_by_request(conn, request_id):
+    return _one(conn, f'SELECT {_SNAPSHOT_COLUMNS} FROM account_snapshots WHERE request_id = %s', (request_id,))
+
+
+def snapshot_head(conn) -> dict[str, Any] | None:
+    """The latest snapshot nothing else supersedes; a correction must target this row."""
+    return _one(conn, f'SELECT {_SNAPSHOT_COLUMNS} FROM account_snapshots s WHERE NOT EXISTS '
+                      '(SELECT 1 FROM account_snapshots x WHERE x.supersedes_id = s.id) '
+                      'ORDER BY recorded_at DESC, created_at DESC LIMIT 1', ())
+
+
+def insert_snapshot(conn, rec: dict[str, Any], digest: str, *, recorded_at: datetime) -> dict[str, Any]:
+    return _one(conn, 'INSERT INTO account_snapshots (request_id, request_hash, as_of, equity, note, recorded_at, '
+                      f'supersedes_id) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING {_SNAPSHOT_COLUMNS}',
+                (rec['request_id'], digest, rec['as_of'], rec['equity'], rec['note'], recorded_at,
+                 rec['supersedes_id']))
+
+
+def snapshot_at(conn, as_of: date, *, cutoff_at: datetime) -> dict[str, Any] | None:
+    """Latest valid snapshot usable at ``cutoff_at``: recorded on time, not superseded, as_of on or before."""
+    return _one(conn, f'SELECT {_SNAPSHOT_COLUMNS} FROM account_snapshots s WHERE s.as_of <= %s '
+                      'AND s.recorded_at <= %s AND NOT EXISTS '
+                      '(SELECT 1 FROM account_snapshots x WHERE x.supersedes_id = s.id) '
+                      'ORDER BY s.as_of DESC, s.recorded_at DESC LIMIT 1', (as_of, cutoff_at))
+
+
+def list_snapshots(conn) -> list[dict[str, Any]]:
+    return _all(conn, f'SELECT {_SNAPSHOT_COLUMNS} FROM account_snapshots ORDER BY recorded_at DESC, '
+                      'created_at DESC', ())
+
+
+def flow_by_request(conn, request_id):
+    return _one(conn, f'SELECT {_FLOW_COLUMNS} FROM cash_flows WHERE request_id = %s', (request_id,))
+
+
+def flow_by_id(conn, flow_id):
+    return _one(conn, f'SELECT {_FLOW_COLUMNS} FROM cash_flows WHERE id = %s', (flow_id,))
+
+
+def insert_flow(conn, rec: dict[str, Any], digest: str, *, recorded_at: datetime) -> dict[str, Any]:
+    return _one(conn, 'INSERT INTO cash_flows (request_id, request_hash, flow_date, amount, note, recorded_at) '
+                      f'VALUES (%s, %s, %s, %s, %s, %s) RETURNING {_FLOW_COLUMNS}',
+                (rec['request_id'], digest, rec['flow_date'], rec['amount'], rec['note'], recorded_at))
+
+
+def mark_flow_voided(conn, flow_id, reason: str, *, voided_at: datetime) -> dict[str, Any]:
+    # Status fields only, as with trades; the flow itself is never rewritten.
+    return _one(conn, f'UPDATE cash_flows SET voided_at = %s, void_reason = %s WHERE id = %s AND voided_at IS NULL '
+                      f'RETURNING {_FLOW_COLUMNS}', (voided_at, reason, flow_id))
+
+
+def list_flows(conn) -> list[dict[str, Any]]:
+    return _all(conn, f'SELECT {_FLOW_COLUMNS} FROM cash_flows ORDER BY flow_date, created_at', ())
+
+
 _EARNINGS_COLUMNS = 'id, ticker, earnings_date, status, source, fetched_at, created_at'
 
 

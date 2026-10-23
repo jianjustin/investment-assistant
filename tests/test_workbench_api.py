@@ -104,3 +104,21 @@ def test_trade_list_endpoint(client, monkeypatch):
     assert client.get('/api/workbench/trades').json() == {'trades': [{'id': 't1'}]}
     monkeypatch.setattr(service, 'list_trades', raiser(service.Unavailable('down')))
     assert client.get('/api/workbench/trades').status_code == 503
+
+
+@pytest.mark.parametrize('method, path, target, kwargs', [
+    ('get', '/api/workbench/account/snapshots', 'account_view', {}),
+    ('get', '/api/workbench/account/flows', 'account_view', {}),
+    ('post', '/api/workbench/account/snapshots', 'add_snapshot', {'json': {}}),
+    ('post', '/api/workbench/account/flows', 'add_flow', {'json': {}}),
+    ('post', '/api/workbench/account/flows/x/void', 'void_flow', {'json': {'reason': 'r'}}),
+])
+def test_account_routes_503_without_db(client, monkeypatch, method, path, target, kwargs):
+    monkeypatch.setattr(service, target, raiser(service.Unavailable('工作台数据表未就绪')))
+    resp = getattr(client, method)(path, **kwargs)
+    assert resp.status_code == 503 and '未就绪' in resp.json()['error']
+
+
+def test_post_flow_400_on_zero(client, monkeypatch):
+    monkeypatch.setattr(service, 'add_flow', raiser(ledger.LedgerError('amount must be non-zero')))
+    assert client.post('/api/workbench/account/flows', json={'amount': 0}).status_code == 400

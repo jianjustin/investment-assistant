@@ -11,7 +11,8 @@ from zoneinfo import ZoneInfo
 
 from investment_assistant.data.calendar import is_trading_day
 from investment_assistant.db import connect
-from investment_assistant.workbench import bars, briefs, ledger, news, positions, repository, review, rules, synthesis
+from investment_assistant.workbench import (account, bars, briefs, ledger, news, positions, repository,
+                                               review, rules, synthesis)
 
 NY = ZoneInfo('America/New_York')
 BENCHMARK = 'SPY'
@@ -232,6 +233,32 @@ def list_trades() -> list[dict[str, Any]]:
 def void_trade(trade_id: str, reason: Any, *, now: datetime) -> dict[str, Any]:
     with _tx() as conn:
         return ledger.void_trade(conn, trade_id, reason, now=now)
+
+
+def account_view() -> dict[str, Any]:
+    from investment_assistant.config import load_config
+
+    params = load_config().workbench
+    with _tx() as conn:
+        return {'snapshots': repository.list_snapshots(conn), 'flows': repository.list_flows(conn),
+                'params': {'risk_pct': params.risk_pct, 'single_cap': params.single_cap,
+                           'total_cap': params.total_cap, 'public_url': params.public_url,
+                           'return_tiers': list(params.return_tiers)}}
+
+
+def add_snapshot(payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    with _tx() as conn:
+        return account.record_snapshot(conn, payload, now=now)
+
+
+def add_flow(payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    with _tx() as conn:
+        return account.record_flow(conn, payload, now=now)
+
+
+def void_flow(flow_id: str, reason: Any, *, now: datetime) -> dict[str, Any]:
+    with _tx() as conn:
+        return account.void_flow(conn, flow_id, reason, now=now)
 
 
 def instrument(ticker: str, *, now: datetime) -> dict[str, Any]:

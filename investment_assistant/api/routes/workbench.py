@@ -65,6 +65,31 @@ def void_trade(trade_id: str, payload: dict[str, Any] = Body(default_factory=dic
     return _call(service.void_trade, trade_id, payload.get('reason'), now=_now())
 
 
+@router.get('/api/workbench/account/snapshots')
+def account_view():
+    return _call(service.account_view)
+
+
+@router.post('/api/workbench/account/snapshots')
+def add_snapshot(payload: dict[str, Any] = Body(default_factory=dict)):
+    return _call(service.add_snapshot, payload, now=_now())
+
+
+@router.get('/api/workbench/account/flows')
+def account_flows():
+    return _call(service.account_view)
+
+
+@router.post('/api/workbench/account/flows')
+def add_flow(payload: dict[str, Any] = Body(default_factory=dict)):
+    return _call(service.add_flow, payload, now=_now())
+
+
+@router.post('/api/workbench/account/flows/{flow_id}/void')
+def void_flow(flow_id: str, payload: dict[str, Any] = Body(default_factory=dict)):
+    return _call(service.void_flow, flow_id, payload.get('reason'), now=_now())
+
+
 @router.get('/api/workbench/review/shadow')
 def shadow(since: str | None = None):
     return _call(service.shadow, now=_now(), since=_date(since, 'since'))
