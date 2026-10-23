@@ -275,3 +275,24 @@ def split_events(conn, ticker: str) -> list[tuple[date, Decimal]]:
         '  FROM price_bars WHERE ticker = %s ORDER BY price_date, revision DESC) latest '
         'WHERE split_factor <> 1 ORDER BY price_date', (ticker.upper(),)).fetchall()
     return [(d, Decimal(f)) for d, f in rows]
+
+
+_WEEKLY_COLUMNS = 'id, week_start, calc_version, stats, notes, supersedes_id, created_at'
+
+
+def weekly_head(conn, week_start: date) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_WEEKLY_COLUMNS} FROM weekly_reviews w WHERE week_start = %s AND NOT EXISTS '
+                      '(SELECT 1 FROM weekly_reviews s WHERE s.supersedes_id = w.id)', (week_start,))
+
+
+def weekly_heads(conn, limit: int) -> list[dict[str, Any]]:
+    return _all(conn, f'SELECT {_WEEKLY_COLUMNS} FROM weekly_reviews w WHERE NOT EXISTS '
+                      '(SELECT 1 FROM weekly_reviews s WHERE s.supersedes_id = w.id) '
+                      'ORDER BY week_start DESC LIMIT %s', (limit,))
+
+
+def insert_weekly_review(conn, week_start: date, calc_version: str, stats: dict[str, Any], notes: str,
+                         supersedes_id) -> dict[str, Any]:
+    return _one(conn, 'INSERT INTO weekly_reviews (week_start, calc_version, stats, notes, supersedes_id) '
+                      f'VALUES (%s, %s, %s::jsonb, %s, %s) RETURNING {_WEEKLY_COLUMNS}',
+                (week_start, calc_version, _canonical(stats), notes, supersedes_id))
