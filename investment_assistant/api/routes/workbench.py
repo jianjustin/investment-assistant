@@ -90,6 +90,11 @@ def void_flow(flow_id: str, payload: dict[str, Any] = Body(default_factory=dict)
     return _call(service.void_flow, flow_id, payload.get('reason'), now=_now())
 
 
+@router.get('/api/workbench/plans/shadow')
+def plans_shadow(since: str | None = None):
+    return _call(service.plan_shadow, now=_now(), since=_date(since, 'since'))
+
+
 @router.get('/api/workbench/review/shadow')
 def shadow(since: str | None = None):
     return _call(service.shadow, now=_now(), since=_date(since, 'since'))

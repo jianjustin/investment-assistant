@@ -158,3 +158,13 @@ def test_bad_own_levels_400_and_nothing_written(client, workbench_db, monkeypatc
     assert resp.status_code == 400
     assert workbench_db.execute("SELECT count(*) FROM trade_plans WHERE kind = 'own'").fetchone()[0] == 0
     assert workbench_db.execute('SELECT count(*) FROM signal_decisions').fetchone()[0] == 0
+
+
+def test_plan_shadow_503_without_db(client, monkeypatch):
+    monkeypatch.setattr(service, 'plan_shadow', raiser(service.Unavailable('工作台数据表未就绪')))
+    resp = client.get('/api/workbench/plans/shadow')
+    assert resp.status_code == 503 and '未就绪' in resp.json()['error']
+
+
+def test_plan_shadow_since_is_validated(client):
+    assert client.get('/api/workbench/plans/shadow', params={'since': '2026-13-01'}).status_code == 400

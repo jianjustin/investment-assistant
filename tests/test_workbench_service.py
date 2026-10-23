@@ -281,3 +281,13 @@ def test_today_includes_holdings(db):
     assert holding['plan_id'] is None and holding['stop'] is None and holding['t1_reached'] is False
     assert holding['last_close'] > 0
     assert holding['next_earnings'] == '2027-02-18'
+
+
+def test_plan_shadow_view(db):
+    from investment_assistant.workbench import plan_shadow as shadow_module
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
+    view = service.plan_shadow(now=NOW)
+    assert view['calc_version'] == shadow_module.SHADOW_VERSION
+    assert len(view['plans']) == 1
+    plan = view['plans'][0]
+    assert plan['ticker'] == 'NVDA' and plan['outcome']['status'] in ('pending', 'open', 'expired')

@@ -14,6 +14,7 @@ from investment_assistant.data.calendar import is_trading_day
 from investment_assistant.db import connect
 from investment_assistant.workbench import (account, bars, briefs, earnings, exits, ledger, news, plans,
                                                positions, repository, review, rules, synthesis)
+from investment_assistant.workbench import plan_shadow as _plan_shadow_module
 
 NY = ZoneInfo('America/New_York')
 BENCHMARK = 'SPY'
@@ -410,6 +411,21 @@ def shadow(*, now: datetime, since: date | None = None) -> dict[str, Any]:
         outcomes = _outcomes(conn, units, session, now)
     return {'session': session, 'since': since, 'calc_version': review.CALC_VERSION,
             'units': [{**u, 'outcome': outcomes[u['id']]} for u in units]}
+
+
+def plan_shadow(*, now: datetime, since: date | None = None) -> dict[str, Any]:
+    """Simulated outcomes for rule and own plans of the last 90 days; nothing frozen until a review."""
+    session = bars.latest_closed_session(now)
+    since = since or session - timedelta(days=90)
+    with _tx() as conn:
+        spy = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now, limit=400)
+        out = []
+        for plan in repository.plans_since(conn, since):
+            ticker_bars = repository.read_bars(conn, plan['ticker'], session, cutoff_at=now, limit=400)
+            outcome = _plan_shadow_module.simulate(plan, ticker_bars, spy,
+                                           splits=repository.split_events(conn, plan['ticker']))
+            out.append({**plan, 'outcome': outcome})
+    return {'session': session, 'since': since, 'calc_version': _plan_shadow_module.SHADOW_VERSION, 'plans': out}
 
 
 def trade_review(*, now: datetime) -> dict[str, Any]:
