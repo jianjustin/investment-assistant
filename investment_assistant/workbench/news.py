@@ -5,12 +5,15 @@ from datetime import UTC, datetime
 from typing import Any, Callable
 
 NewsFetcher = Callable[[str], list]
+NEWS_COUNT = 20
 
 
 def _yfinance_fetcher(ticker: str) -> list:
+    # Ticker.get_news() hits an endpoint Yahoo now answers with 404, and yfinance turns that
+    # into an empty list. The search endpoint still returns news, tagged with relatedTickers.
     import yfinance as yf
 
-    return yf.Ticker(ticker).get_news(count=20)
+    return yf.Search(ticker, news_count=NEWS_COUNT, max_results=0, enable_fuzzy_query=False).news
 
 
 def fetch_yfinance(ticker: str, *, fetcher: NewsFetcher | None = None) -> list:
@@ -37,12 +40,19 @@ def _published(content: dict) -> datetime | None:
     return None
 
 
-def normalize_yfinance(raw: list) -> tuple[list[dict[str, Any]], int]:
-    """Accept both the current ``{'content': {...}}`` shape and the legacy flat shape."""
+def normalize_yfinance(raw: list, *, ticker: str | None = None) -> tuple[list[dict[str, Any]], int]:
+    """Accept both the ``{'content': {...}}`` shape and the flat search shape.
+
+    With ``ticker``, items whose relatedTickers omit it are skipped (search matches loosely).
+    """
     items: list[dict[str, Any]] = []
     skipped = 0
     for entry in raw:
         if not isinstance(entry, dict):
+            skipped += 1
+            continue
+        related = entry.get('relatedTickers')
+        if ticker and isinstance(related, list) and ticker.upper() not in related:
             skipped += 1
             continue
         content = entry.get('content') if isinstance(entry.get('content'), dict) else entry

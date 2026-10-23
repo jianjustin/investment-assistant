@@ -341,3 +341,18 @@ def missing_tables(conn) -> list[str]:
             "AND table_schema = ANY(current_schemas(false))").fetchone() is None:
         missing.append('filings.accepted_at')
     return missing
+
+
+def fill_filing_acceptance(conn, metas: list[dict[str, Any]]) -> int:
+    """Copy SEC's acceptance time and items onto indexed filings that lack them; never overwrite."""
+    filled = 0
+    for meta in metas:
+        accession, accepted = meta.get('accession_number'), meta.get('accepted_at')
+        if not accession or (accepted is None and meta.get('items') is None):
+            continue
+        filled += conn.execute(
+            'UPDATE filings SET accepted_at = COALESCE(accepted_at, %s), items = COALESCE(items, %s) '
+            'WHERE accession_number = %s AND ((accepted_at IS NULL AND %s::timestamptz IS NOT NULL) '
+            'OR (items IS NULL AND %s::text[] IS NOT NULL))',
+            (accepted, meta.get('items'), accession, accepted, meta.get('items'))).rowcount
+    return filled

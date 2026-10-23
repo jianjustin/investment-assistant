@@ -6,26 +6,25 @@ import json
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
-from zoneinfo import ZoneInfo
 
 import requests
 from lxml import html
 
 ACCESSION = re.compile(r"\d{10}-\d{2}-\d{6}")
-# EDGAR suffixes acceptanceDateTime with "Z", but the clock is US Eastern local time.
-_EDGAR_CLOCK = ZoneInfo("America/New_York")
-_ACCEPTANCE = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?Z?")
+# acceptanceDateTime is UTC ("Z"). Verified against EDGAR: an after-hours Item 2.02 8-K
+# with filingDate 2026-10-21 is stamped 2026-10-22T00:41:42Z, i.e. 20:41 New York time.
+_ACCEPTANCE = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?Z")
 
 
 def edgar_acceptance(value) -> str | None:
-    """ISO timestamp with the Eastern offset, or None when absent or malformed."""
+    """ISO timestamp in UTC, or None when absent or malformed."""
     match = _ACCEPTANCE.fullmatch(value) if isinstance(value, str) else None
     if not match:
         return None
-    return datetime.fromisoformat(match.group(1)).replace(tzinfo=_EDGAR_CLOCK).isoformat()
+    return datetime.fromisoformat(match.group(1)).replace(tzinfo=timezone.utc).isoformat()
 
 
 def edgar_items(value) -> list[str] | None:

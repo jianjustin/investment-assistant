@@ -288,15 +288,16 @@ def _submission_source(tmp_path, **extra):
     return source
 
 
-def test_acceptance_time_is_eastern_local_despite_z_suffix(tmp_path):
-    # EDGAR labels acceptanceDateTime with "Z" but the clock is US Eastern
-    # (e.g. after-close earnings show 16:20). Parsing it as UTC would move them intraday.
-    source = _submission_source(tmp_path, acceptanceDateTime=["2026-08-27T16:20:31.000Z", "2026-08-27T07:05:00.000Z"],
+def test_acceptance_time_z_suffix_is_real_utc(tmp_path):
+    # Observed on EDGAR (TSLA, 2026-10): an Item 2.02 8-K with filingDate 2026-10-21 carries
+    # acceptanceDateTime 2026-10-22T00:41:42Z. Only the UTC reading (20:41 ET on 10-21) fits the
+    # filing date and EDGAR's hours; reading it as Eastern would put it after midnight on 10-22.
+    source = _submission_source(tmp_path, acceptanceDateTime=["2026-10-22T00:41:42.000Z", "2026-08-27T11:05:00.000Z"],
                                 items=["2.02,9.01", ""])
     out = {x["form"]: x for x in source.discover(["NVDA"], "2026-08-01", "2026-08-31")}
-    assert out["8-K"]["accepted_at"] == "2026-08-27T16:20:31-04:00"
+    assert out["8-K"]["accepted_at"] == "2026-10-22T00:41:42+00:00"
     assert out["8-K"]["items"] == ["2.02", "9.01"]
-    assert out["10-Q"]["accepted_at"] == "2026-08-27T07:05:00-04:00"
+    assert out["10-Q"]["accepted_at"] == "2026-08-27T11:05:00+00:00"
     assert out["10-Q"]["items"] == []
 
 

@@ -121,10 +121,11 @@ def run_batch(*, tickers: list[str], now: datetime, deps: Deps | None = None, sk
             problems.append(f'bars: {exc}')
         if ticker != BENCHMARK:
             try:
-                items, bad = news.normalize_yfinance(news.fetch_yfinance(ticker, fetcher=deps.news_fetcher))
+                raw = news.fetch_yfinance(ticker, fetcher=deps.news_fetcher)
+                items, bad = news.normalize_yfinance(raw, ticker=ticker)
                 with _tx() as conn:
                     entry['news'] = {**repository.store_news(conn, [(i, [ticker]) for i in items], now=now),
-                                     'unparsed': bad}
+                                     'fetched': len(raw), 'skipped': bad}
             except Unavailable:
                 raise
             except Exception as exc:
@@ -144,7 +145,8 @@ def run_batch(*, tickers: list[str], now: datetime, deps: Deps | None = None, sk
             source = EdgarSource(SEC_EVIDENCE_DIR)
         metas = source.discover(tickers, (session - timedelta(days=FILING_LOOKBACK_DAYS)).isoformat(), session.isoformat())
         with _tx() as conn:
-            summary['filings'] = repository.store_news(conn, news.filing_news(metas), now=now)
+            summary['filings'] = {**repository.store_news(conn, news.filing_news(metas), now=now),
+                                  'acceptance_filled': repository.fill_filing_acceptance(conn, metas)}
     except Unavailable:
         raise
     except Exception as exc:

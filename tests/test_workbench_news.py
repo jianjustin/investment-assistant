@@ -100,3 +100,28 @@ def test_store_rejects_unknown_source(workbench_db, bad):
     import psycopg
     with pytest.raises(psycopg.errors.CheckViolation):
         repository.store_news(workbench_db, [({**item('https://x'), **bad}, ['NVDA'])], now=T0)
+
+
+def test_search_results_are_kept_only_when_related_to_the_ticker():
+    raw = [
+        {'title': 'Related', 'link': 'https://n/1', 'publisher': 'W', 'providerPublishTime': 1792000000,
+         'relatedTickers': ['NVDA', 'TSLA']},
+        {'title': 'Unrelated', 'link': 'https://n/2', 'publisher': 'W', 'providerPublishTime': 1792000000,
+         'relatedTickers': ['TSLA']},
+        {'title': 'No tags', 'link': 'https://n/3', 'publisher': 'W', 'providerPublishTime': 1792000000},
+    ]
+    items, skipped = news.normalize_yfinance(raw, ticker='nvda')
+    assert [i['url'] for i in items] == ['https://n/1', 'https://n/3'] and skipped == 1
+
+
+def test_default_fetcher_uses_search_news(monkeypatch):
+    import yfinance as yf
+    calls = []
+
+    class FakeSearch:
+        def __init__(self, query, **kwargs):
+            calls.append((query, kwargs))
+            self.news = [{'title': 't'}]
+    monkeypatch.setattr(yf, 'Search', FakeSearch)
+    assert news.fetch_yfinance('nvda') == [{'title': 't'}]
+    assert calls[0][0] == 'NVDA' and calls[0][1]['news_count'] == news.NEWS_COUNT

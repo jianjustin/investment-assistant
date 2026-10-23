@@ -140,3 +140,24 @@ def test_missing_schema_is_unavailable_not_empty(workbench_db, monkeypatch):
     monkeypatch.setattr(service, 'connection', connection)
     with pytest.raises(service.Unavailable):
         service.today(now=NOW)
+
+
+def test_sec_listing_fills_unknown_filing_acceptance_without_overwriting(db):
+    insert = ("INSERT INTO filings (ticker, form, filing_date, accession_number, primary_document, file_path, "
+              "accepted_at, items) VALUES ('NVDA', '8-K', '2026-10-21', %s, 'k.htm', '/x', %s, %s)")
+    db.execute(insert, ['0001045810-26-000001', None, None])
+    known = datetime(2026, 10, 20, 12, tzinfo=UTC)
+    db.execute(insert, ['0001045810-26-000002', known, ['8.01']])
+
+    class Listing(Sources):
+        def discover(self, tickers, start, end):
+            return [{'ticker': 'NVDA', 'form': '8-K', 'filing_date': '2026-10-21', 'accession_number': acc,
+                     'items': ['2.02', '9.01'], 'accepted_at': '2026-10-22T00:41:42+00:00',
+                     'edgar_url': f'https://www.sec.gov/Archives/{acc}.htm'}
+                    for acc in ('0001045810-26-000001', '0001045810-26-000002')]
+    summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Listing()))
+    assert summary['filings']['acceptance_filled'] == 1
+    rows = {acc: (accepted, items) for acc, accepted, items in
+            db.execute('SELECT accession_number, accepted_at, items FROM filings').fetchall()}
+    assert rows['0001045810-26-000001'] == (datetime(2026, 10, 22, 0, 41, 42, tzinfo=UTC), ['2.02', '9.01'])
+    assert rows['0001045810-26-000002'] == (known, ['8.01'])

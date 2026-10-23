@@ -72,3 +72,33 @@ def test_tests_never_reach_a_real_model_by_default():
             'labels': [], 'candidate_ids': []}
     brief = briefs.generate(unit, [], [], [], cutoff_at=__import__('datetime').datetime(2026, 10, 22, tzinfo=__import__('datetime').UTC))
     assert brief['status'] == 'fallback' and brief['model'] == 'none'
+
+
+def test_transient_failure_is_retried_once():
+    state = {'n': 0}
+    ok = fake_runner()
+    bad = fake_runner(returncode=1, stderr='prompt echo\nERROR: stream disconnected before completion\nmore echo')
+
+    def flaky(cmd, **kwargs):
+        state['n'] += 1
+        return (bad if state['n'] == 1 else ok)(cmd, **kwargs)
+    result, status = codex_client.request(system_prompt='S', user_payload={}, model=None, runner=flaky)
+    assert result == OUT and status['attempts'] == 2
+
+
+def test_error_message_prefers_real_error_lines_over_prompt_echo():
+    stderr = 'user\n你是美股波段研究助手\n{"ticker": "NVDA"}\nERROR: stream disconnected before completion\ncodex\n'
+    _, status = codex_client.request(system_prompt='S', user_payload={}, model=None,
+                                     runner=fake_runner(returncode=1, stderr=stderr))
+    assert 'stream disconnected' in status['error'] and 'NVDA' not in status['error']
+    assert status['attempts'] == 2
+
+
+def test_timeouts_are_not_retried():
+    calls = []
+
+    def slow(cmd, **kwargs):
+        calls.append(1)
+        raise subprocess.TimeoutExpired('codex', 1)
+    codex_client.request(system_prompt='S', user_payload={}, model=None, runner=slow)
+    assert len(calls) == 1

@@ -107,4 +107,4 @@ def test_download_records_acceptance_time_and_items(tmp_path, monkeypatch):
     monkeypatch.setattr(sec_downloader, "_download_document", lambda url, dest, *, headers: dest)
     out = SecEdgarDownloader(getter=make_getter(tickers_json, submissions_json), cache_dir=tmp_path).download_filings_batch(
         "NVDA", ["8-K", "10-Q"], date(2026, 8, 27), date(2026, 8, 27), tmp_path / "filings")
-    assert [(o["accepted_at"], o["items"]) for o in out] == [("2026-08-27T16:20:31-04:00", ["2.02", "9.01"]), (None, [])]
+    assert [(o["accepted_at"], o["items"]) for o in out] == [("2026-08-27T16:20:31+00:00", ["2.02", "9.01"]), (None, [])]
