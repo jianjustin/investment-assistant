@@ -24,26 +24,35 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
         if plan is None:
             continue
         sizing = plan.get('sizing') or {}
+        output = (u.get('brief') or {}).get('output') or {}
+        snapshot_as_of = sizing.get('snapshot_as_of')
         plans.append({
             'ticker': u['ticker'], 'action': u['proposed_action'], 'rule_ids': u.get('rule_ids', []),
             'kind': plan['kind'], 'plan_version': plan.get('plan_version'), 'status': plan['status'],
             'entry_low': plan['entry_low'], 'entry_high': plan['entry_high'],
             'stop': plan['stop'], 'target1': plan['target1'],
             'shares': sizing.get('shares'), 'risk_amount': sizing.get('risk_amount'),
-            'sizing_status': sizing.get('status'), 'snapshot_as_of': sizing.get('snapshot_as_of'),
+            'sizing_status': sizing.get('status'),
+            'snapshot_as_of': snapshot_as_of.isoformat() if snapshot_as_of else None,
             'valid_from': plan['valid_from'], 'valid_until': plan['valid_until'],
             'warnings': plan.get('warnings') or [], 'invalid_reasons': plan.get('invalid_reasons') or [],
             'evidence': EVIDENCE_TEXT,
-            'brief_summary': (u.get('brief') or {}).get('output', {}).get('summary'),
+            'brief_summary': output.get('summary'),
+            'contra': ' | '.join(item.get('text', '') for item in (output.get('contra') or [])
+                                 if isinstance(item, dict)),
             'url': f'{public_url.rstrip("/")}/today',
         })
         if plan['valid_until'] <= tomorrow:
             expiring.append({'ticker': u['ticker'], 'valid_until': plan['valid_until']})
 
+    def alerts(ticker: str) -> list[str]:
+        candidates = (summary.get('tickers') or {}).get(ticker, {}).get('candidates') or []
+        return [c for c in ('plan_stop', 'plan_target') if c in candidates]
+
     holdings_out = []
     for h in holdings:
         earnings_eve = h.get('next_earnings') is not None and h['next_earnings'] == tomorrow.isoformat()
-        holdings_out.append({**h, 'earnings_eve': earnings_eve})
+        holdings_out.append({**h, 'earnings_eve': earnings_eve, 'plan_alerts': alerts(h['ticker'])})
 
     errors = list(summary.get('errors') or [])
     errors += [f"{ticker} earnings: {status.split('error: ', 1)[1]}"

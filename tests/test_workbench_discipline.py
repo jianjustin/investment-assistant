@@ -102,6 +102,17 @@ def test_held_loser_when_no_sell_next_session():
     assert out['counts']['held_loser'] == 1
 
 
+def test_early_take_after_stop_window_still_flags():
+    # 止损日后第 3 个交易日才卖出：超出「当日/次日」豁免窗口，T1 随后到位仍算过早止盈
+    sell_day = add_trading_days(D2, 3)
+    bars = [bar(D1), bar(D2), bar(sell_day), bar(add_trading_days(sell_day, 2), h=113)]
+    trades = [trade('b1', price=100, executed=at(D1)), trade('s1', side='sell', price=105, executed=at(sell_day))]
+    out = evaluate(trades, bars=bars, segments=[segment(closed=sell_day)],
+                   session=add_trading_days(sell_day, 20),
+                   stop_events=[{'ticker': 'NVDA', 'signal_date': D2, 'rule_id': 'plan_stop'}])
+    assert 'early_take' in out['trades'][0]['flags']
+
+
 def test_held_loser_cleared_by_next_day_sell():
     trades = [trade('b1', price=100, executed=at(D1)), trade('s1', side='sell', price=95, executed=at(D3))]
     out = evaluate(trades, session=D4,

@@ -44,14 +44,23 @@ def test_trailing_floor_is_cost():
 
 
 def test_split_rescales_levels():
-    bars = [bar(T0, close=100, high=105), bar(T1, close=60, high=55), bar(T2, close=55, high=54)]
+    # 存储口径：bar 已按拆股回溯调整（当前基准）；只换算计划价位，bar 原样参与比较
+    bars = [bar(T0, close=50, high=52.5), bar(T1, close=50, high=51), bar(T2, close=49, high=50)]
     state = exits.active_stop(plan(), bars, avg_cost=D('52'), splits=[(T1, D(2))])
     assert state['mode'] == 'initial'
     assert state['stop'] == D('47') and state['target1'] == D('56')
-    # 触及 T1 后的移动止损同样按拆股换算：最高收盘（换算后 60）− 1.5 × 3
-    hit = [bar(T0, close=100, high=105), bar(T1, close=60, high=57), bar(T2, close=55, high=55)]
-    state2 = exits.active_stop(plan(), hit, avg_cost=D('50'), splits=[(T1, D(2))])
-    assert state2['mode'] == 'trailing' and state2['stop'] == D('55.5')
+    hit = [bar(T0, close=60, high=55.5), bar(T1, close=56, high=57), bar(T2, close=55, high=55)]
+    state2 = exits.active_stop(plan(), hit, avg_cost=D('45'), splits=[(T1, D(2))])
+    assert state2['mode'] == 'trailing'
+    assert state2['stop'] == D('55.5')  # 最高收盘取拆股前 bar 的当前基准值 60：60 − 3 × 1.5
+
+
+def test_trailing_stop_uses_prior_close():
+    # 移动止损收盘后更新、次日生效：评估日创新高当天，不用当日收盘抬高当日止损
+    bars = [bar(T0, close=100, high=100), bar(T1, close=110, high=113), bar(T2, close=112, high=115, low=104)]
+    state = exits.active_stop(plan(), bars, avg_cost=D('100'), splits=[])
+    assert state['mode'] == 'trailing'
+    assert state['stop'] == D('101')  # 110 − 9；不是 max(112) − 9 = 103
 
 
 def test_position_plan_picks_latest_planned_buy():

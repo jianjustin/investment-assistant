@@ -4,6 +4,7 @@ from investment_assistant.notify.message import Notification, NotifyField
 
 MAX_FIELD = 1024
 MAX_MESSAGE = 6000
+ACTIONS = {'buy': '买入', 'sell': '卖出', 'watch': '观察'}
 
 
 def _clip_field(fields: list[NotifyField], name: str, value: str) -> None:
@@ -100,16 +101,17 @@ def workbench_digest(digest: dict) -> list[Notification]:
     if not plans:
         _clip_field(fields, '新计划', '今日无新计划')
     for p in plans:
-        sizing = f"{p.get('shares')} 股 · 风险 {p.get('risk_amount')}" if p.get('shares') is not None else '缺资金快照，无法计算'
-        if p.get('sizing_status') == 'no_equity':
-            sizing = '缺资金快照，无法计算'
+        sizing = '缺资金快照，无法计算' if p.get('sizing_status') == 'no_equity' else (
+            f"{p.get('shares')} 股 · 风险 {p.get('risk_amount')}")
+        funding = f"资金日 {p['snapshot_as_of']}" if p.get('snapshot_as_of') else None
         notes = '；'.join([*(f"提示 {w}" for w in p.get('warnings', [])),
                            *(f"作废 {r}" for r in p.get('invalid_reasons', []))])
-        summary = p.get('brief_summary') or ''
+        head = f"动作 {ACTIONS.get(p.get('action'), p.get('action'))} · {'、'.join(p.get('rule_ids') or [])} · {p.get('plan_version')}"
         _clip_field(fields, p['ticker'], '；'.join(filter(None, [
+            head,
             f"区间 {p['entry_low']}–{p['entry_high']} · 止损 {p['stop']} · T1 {p['target1']}",
-            f"仓位 {sizing}", f"有效期 至 {p['valid_until']}", notes, p.get('evidence', ''),
-            summary, p.get('url', '')])) or '—')
+            f"仓位 {sizing}", funding, f"有效期 至 {p['valid_until']}", notes, p.get('evidence', ''),
+            p.get('brief_summary') or '', p.get('contra') or '', p.get('url', '')])) or '—')
     plans_msg = _fit_message(f"🆕 新计划 · {session}", fields, _footer())
 
     fields = []
@@ -120,8 +122,13 @@ def workbench_digest(digest: dict) -> list[Notification]:
         if h.get('to_stop_pct') is not None:
             pct = f"距止损 {h['to_stop_pct']:+.1%} · 距 T1 {h.get('to_target_pct', 0):+.1%}"
         eve = '⚠️ 下一交易日为财报日' if h.get('earnings_eve') else ''
+        alerts = ''
+        if 'plan_stop' in (h.get('plan_alerts') or []):
+            alerts = '⚠️ 今日触发 plan_stop，请核对券商止损单是否已成交'
+        elif 'plan_target' in (h.get('plan_alerts') or []):
+            alerts = '今日触发 plan_target（卖出一半）'
         _clip_field(fields, h['ticker'], '；'.join(filter(None, [
-            f"{h.get('quantity')} 股 @ {h.get('avg_cost')}", stop_line, t1, pct, eve])) or '—')
+            f"{h.get('quantity')} 股 @ {h.get('avg_cost')}", stop_line, t1, pct, eve, alerts])) or '—')
     holdings_msg = _fit_message(f"💼 持仓 · {session}", fields, _footer())
 
     fields = []

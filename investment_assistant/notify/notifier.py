@@ -93,9 +93,10 @@ def send_notifications(task: str, notifications: list[Notification], notify_cfg,
         return {"sent": False, "messages": 0, "reason": "no_channel"}
     try:
         cli = client or DiscordClient.from_config(notify_cfg)
+        sent = 0
         for notification in notifications:
             cli.send(DiscordChannel(channel_name), render_discord(notification))
-        return {"sent": True, "messages": len(notifications), "channel": "discord",
-                "discord_channel": channel_name}
-    except Exception as exc:  # 推送失败不拖垮任务；结构化返回
-        return {"sent": False, "messages": 0, "reason": f"send_failed: {exc}"}
+            sent += 1
+        return {"sent": True, "messages": sent, "channel": "discord", "discord_channel": channel_name}
+    except Exception as exc:  # 推送失败不拖垮任务；已发出的条数如实计数
+        return {"sent": False, "messages": sent, "reason": f"send_failed: {exc}"}

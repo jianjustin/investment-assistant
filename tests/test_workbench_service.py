@@ -294,6 +294,17 @@ def test_plan_shadow_view(db):
     assert plan['ticker'] == 'NVDA' and plan['outcome']['status'] in ('pending', 'open', 'expired')
 
 
+def test_discipline_since_filters_trades(db):
+    service.add_trade({'request_id': '6f1d1c1e-8888-4444-8888-000000000001', 'ticker': 'NVDA', 'side': 'buy',
+                       'quantity': '10', 'price': '100.00',
+                       'executed_at': '2026-06-15T15:00:00+00:00'}, now=NOW)
+    service.add_trade({'request_id': '6f1d1c1e-9999-4444-8888-000000000002', 'ticker': 'AMD', 'side': 'buy',
+                       'quantity': '10', 'price': '100.00',
+                       'executed_at': '2026-10-20T15:00:00+00:00'}, now=NOW)
+    view = service.discipline(now=NOW, since=date(2026, 10, 1))
+    assert [t['ticker'] for t in view['trades']] == ['AMD']
+
+
 class PushClient:
     def __init__(self):
         self.sent = []

@@ -92,12 +92,14 @@ def test_trail_floor_is_fill_price():
 
 
 def test_split_inside_window():
-    bars = [bar(D1, 100, 103, 99, 101), bar(D2, 50.5, 57, 49.5, 56), bar(D3, 53.5, 54, 52.9, 53)]
+    # 存储口径：拆股后重抓取会把历史 bar 修订为当前基准；只有计划价位需要换算
+    bars = [bar(D1, 50, 51.5, 49.5, 50), bar(D2, 50.5, 57, 49.5, 56), bar(D3, 52, 52.5, 51, 51.2)]
     out = sim(plan(), bars, splits=[(D2, D(2))])
     assert out['fill_price'] == D('50') and out['fill_date'] == D1
+    # trail = 56 − 3 ×（ATR 2 ÷ 2）= 53，D3 开盘 52 跳空低于止损，按开盘出场
     assert out['legs'] == [{'fraction': 0.5, 'exit_date': D2.isoformat(), 'exit_price': D('56'), 'reason': 'target1'},
-                           {'fraction': 0.5, 'exit_date': D3.isoformat(), 'exit_price': D('53'), 'reason': 'trail'}]
-    assert out['r'] == pytest.approx(((56 - 50) / 3 + (53 - 50) / 3) / 2)
+                           {'fraction': 0.5, 'exit_date': D3.isoformat(), 'exit_price': D('52'), 'reason': 'trail'}]
+    assert out['r'] == pytest.approx(((56 - 50) / 3 + (52 - 50) / 3) / 2)
 
 
 def test_open_reports_floating_r():

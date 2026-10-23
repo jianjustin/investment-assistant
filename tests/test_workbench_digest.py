@@ -12,7 +12,7 @@ URL = 'http://localhost:8787'
 
 
 def plan_row(signal_date=SESSION, ticker='NVDA', **over):
-    row = {'ticker': ticker, 'signal_date': signal_date, 'kind': 'rule', 'status': 'ok',
+    row = {'ticker': ticker, 'signal_date': signal_date, 'kind': 'rule', 'plan_version': 'plan-1', 'status': 'ok',
            'entry_low': D('98.5'), 'entry_high': D('101.5'), 'stop': D('94'), 'target1': D('112'),
            'valid_from': date(2026, 10, 23), 'valid_until': date(2026, 10, 27),
            'sizing': {'status': 'sized', 'shares': 166, 'risk_amount': D('1000'),
@@ -45,6 +45,32 @@ def build(units=(), holdings=(), summary=None, last_push_failed=False):
 
 def all_text(messages):
     return '\n'.join(f.value for m in messages for f in m.fields)
+
+
+def test_digest_plan_carries_action_rules_funding_and_contra():
+    u = unit(plan=plan_row())
+    u['brief']['output']['contra'] = [{'text': '反证：量能不足'}]
+    dg = build(units=[u])
+    entry = dg['plans'][0]
+    assert entry['action'] == 'buy' and entry['rule_ids'] == ['trend_reclaim']
+    assert entry['plan_version'] == 'plan-1' and entry['snapshot_as_of'] == '2026-10-20'
+    assert '反证：量能不足' in entry['contra']
+    text = all_text(templates.workbench_digest(dg))
+    for needle in ('买入', 'trend_reclaim · plan-1', '资金日 2026-10-20', '反证：量能不足'):
+        assert needle in text, needle
+
+
+def test_holding_alerts_today():
+    summary = {'errors': [], 'earnings': {},
+               'tickers': {'NVDA': {'candidates': ['plan_stop']}}}
+    dg = build(holdings=[holding()], summary=summary)
+    assert dg['holdings'][0]['plan_alerts'] == ['plan_stop']
+    text = all_text(templates.workbench_digest(dg))
+    assert 'plan_stop' in text and '核对券商止损单' in text
+    target = build(holdings=[holding()],
+                   summary={'errors': [], 'earnings': {}, 'tickers': {'NVDA': {'candidates': ['plan_target']}}})
+    assert target['holdings'][0]['plan_alerts'] == ['plan_target']
+    assert '卖出一半' in all_text(templates.workbench_digest(target))
 
 
 def test_digest_sections():

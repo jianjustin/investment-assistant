@@ -160,6 +160,25 @@ def test_send_notifications_sends_each_message():
     assert out['sent'] is True and out['messages'] == 2 and len(client.sent) == 2
 
 
+def test_send_notifications_partial_failure_counts_sent():
+    from investment_assistant.notify.message import Notification
+
+    class HalfBoom(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def send(self, channel, payload):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError('network')
+
+    out = notifier.send_notifications('workbench', [Notification(title='a', color=1, fields=[]),
+                                                    Notification(title='b', color=2, fields=[])],
+                                      NotifyConfig(), client=HalfBoom())
+    assert out['sent'] is False and out['messages'] == 1 and 'send_failed' in out['reason']
+
+
 def test_send_notifications_failure_is_structured():
     from investment_assistant.notify.message import Notification
 

@@ -27,7 +27,7 @@ def _splits_of(bars: list[dict[str, Any]]) -> list[tuple[date, Decimal]]:
 
 
 def _at_basis(level: Decimal, signal_date: date, day: date, splits: list[tuple[date, Decimal]]) -> Decimal:
-    """Express a plan-time level in ``day``'s split basis."""
+    """Express a plan-time level in ``day``'s split basis (for trade-date comparisons)."""
     factor = Decimal(1)
     for split_date, split_factor in splits:
         if signal_date < split_date <= day:
@@ -35,14 +35,15 @@ def _at_basis(level: Decimal, signal_date: date, day: date, splits: list[tuple[d
     return level / factor
 
 
+def _current_basis(level: Decimal, signal_date: date, splits: list[tuple[date, Decimal]]) -> Decimal:
+    """Bars are stored in the current split basis, so bar comparisons use this basis."""
+    return _at_basis(level, signal_date, date.max, splits)
+
+
 def _t1_touched_through(bars: list[dict[str, Any]], target1: Decimal, signal_date: date, through: date,
                         splits: list[tuple[date, Decimal]]) -> bool:
-    for b in bars:
-        if b['price_date'] > through:
-            break
-        if Decimal(str(b['high'])) >= _at_basis(target1, signal_date, b['price_date'], splits):
-            return True
-    return False
+    target = _current_basis(target1, signal_date, splits)
+    return any(b['price_date'] <= through and Decimal(str(b['high'])) >= target for b in bars)
 
 
 def evaluate(*, trades: list[dict[str, Any]], decisions_by_id: dict, plans_by_id: dict,
@@ -96,15 +97,14 @@ def evaluate(*, trades: list[dict[str, Any]], decisions_by_id: dict, plans_by_id
                 sell_day = _session(seg['closed_at'])
                 if _t1_touched_through(bars, p['target1'], p['signal_date'], sell_day, splits):
                     continue
-                if any(sell_day >= d >= add_trading_days(d, -1) or d <= sell_day <= add_trading_days(d, 1)
-                       for d in stop_days.get(ticker, [])):
-                    continue  # the sell followed a plan_stop: executing the stop is the plan
+                if any(d <= sell_day <= add_trading_days(d, 1) for d in stop_days.get(ticker, [])):
+                    continue  # the sell followed a plan_stop within a session: executing the stop is the plan
                 window_end = add_trading_days(sell_day, EARLY_TAKE_SESSIONS)
                 if session < window_end:
                     immature.append('early_take')
                     continue
                 window = [b for b in bars if sell_day < b['price_date'] <= window_end]
-                if any(Decimal(str(b['high'])) >= _at_basis(p['target1'], p['signal_date'], b['price_date'], splits)
+                if any(Decimal(str(b['high'])) >= _current_basis(p['target1'], p['signal_date'], splits)
                        for b in window):
                     flags.append('early_take')
             # Held loser: a plan_stop fired on an open lot and no sell followed through the next session.

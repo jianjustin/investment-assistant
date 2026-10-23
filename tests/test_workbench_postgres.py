@@ -285,3 +285,38 @@ def test_monthly_frozen_and_supersede(workbench_db, monkeypatch):
     listed = service.list_monthly()
     assert [r['id'] for r in listed] == [fix['id']]
     assert workbench_db.execute('SELECT count(*) FROM monthly_reviews').fetchone()[0] == 2
+
+
+def test_monthly_ignores_stop_events_outside_the_month(workbench_db, monkeypatch):
+    from contextlib import contextmanager
+    from datetime import UTC, date, datetime
+    from decimal import Decimal as D
+
+    from investment_assistant.workbench import repository, rules, service
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+
+    monkeypatch.setattr(service, 'connection', connection)
+    unit_day = date(2026, 10, 21)
+    plan = repository.insert_plan(workbench_db, {
+        'ticker': 'NVDA', 'signal_date': unit_day, 'kind': 'rule', 'based_on_id': None, 'plan_version': 'plan-1',
+        'ref_price': D('100'), 'atr': D('2'), 'entry_low': D('99'), 'entry_high': D('101'), 'stop': D('94'),
+        'target1': D('108'), 'trail_atr_multiple': D('3'), 'valid_from': date(2026, 10, 22),
+        'valid_until': date(2026, 10, 27), 'sizing': {}, 'status': 'ok', 'invalid_reasons': [], 'warnings': [],
+        'inputs': {}, 'request_id': None, 'request_hash': None})
+    decision = repository.insert_decision(workbench_db, {
+        'request_id': uuid.uuid4(), 'ticker': 'NVDA', 'signal_date': unit_day,
+        'candidate_ids': [], 'brief_id': None, 'proposed_action': 'buy', 'final_action': 'buy',
+        'decision': 'accept', 'reason': '合成', 'supersedes_id': None, 'plan_id': plan['id']},
+        'h', decided_at=datetime(2026, 10, 22, tzinfo=UTC))
+    repository.insert_trade(workbench_db, {
+        'request_id': uuid.uuid4(), 'ticker': 'NVDA', 'side': 'buy', 'quantity': D('10'), 'price': D('100'),
+        'fee': D('0'), 'executed_at': datetime(2026, 10, 22, 15, tzinfo=UTC), 'decision_id': decision['id'],
+        'note': None}, 'h', recorded_at=datetime(2026, 10, 22, 16, tzinfo=UTC))
+    repository.store_candidate(workbench_db, 'NVDA', date(2026, 11, 10),
+                               rules.Candidate('plan_stop', 'sell', {'signal_date': '2026-11-10'}), run_id='r')
+
+    review = service.generate_monthly(date(2026, 10, 1), now=datetime(2026, 11, 20, 22, 30, tzinfo=UTC))
+    assert review['stats']['discipline']['counts']['held_loser'] == 0  # 11 月的止损事件不算 10 月

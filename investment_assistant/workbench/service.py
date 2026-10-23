@@ -470,7 +470,9 @@ def discipline(*, now: datetime, since: date | None = None) -> dict[str, Any]:
     session = bars.latest_closed_session(now)
     since = since or session - timedelta(days=90)
     with _tx() as conn:
-        trades = repository.list_trades(conn)
+        # Buys and stop events share one window, or old buys see no stops and flag false early_takes.
+        trades = [t for t in repository.list_trades(conn)
+                  if t['voided_at'] is None and t['executed_at'].astimezone(NY).date() >= since]
         decisions_by_id: dict[Any, dict[str, Any]] = {}
         for t in trades:
             if t['decision_id'] and t['decision_id'] not in decisions_by_id:
@@ -511,8 +513,10 @@ def trade_review(*, now: datetime) -> dict[str, Any]:
 
 
 def _week_discipline(conn, session: date, now: datetime) -> dict[str, Any]:
-    """Discipline over all recorded trades, computed inside an existing transaction."""
-    trades = repository.list_trades(conn)
+    """Discipline over the same 90-day window the stop events use, in an existing transaction."""
+    since = session - timedelta(days=90)
+    trades = [t for t in repository.list_trades(conn)
+              if t['voided_at'] is None and t['executed_at'].astimezone(NY).date() >= since]
     decisions_by_id = {}
     for t in trades:
         if t['decision_id'] and t['decision_id'] not in decisions_by_id:
@@ -528,7 +532,7 @@ def _week_discipline(conn, session: date, now: datetime) -> dict[str, Any]:
     tickers = sorted({t['ticker'] for t in trades})
     stop_events, segments = [], []
     for tk in tickers:
-        stop_events += [c for c in repository.read_candidates(conn, tk, since=session - timedelta(days=90))
+        stop_events += [c for c in repository.read_candidates(conn, tk, since=since)
                         if c['rule_id'] == 'plan_stop']
         segments += _book(conn, tk)['closed']
     return _discipline_module.evaluate(trades=trades, decisions_by_id=decisions_by_id, plans_by_id=plans_by_id,
@@ -659,7 +663,7 @@ def generate_monthly(month: date, *, notes: str = '', supersedes_id=None, now: d
         stop_events_month = []
         for ticker in tickers:
             stop_events_month += [c for c in repository.read_candidates(conn, ticker, since=month)
-                                  if c['rule_id'] == 'plan_stop']
+                                  if c['rule_id'] == 'plan_stop' and c['signal_date'] <= month_end]
         disc = _discipline_module.evaluate(
             trades=[t for t in trades if month <= t['executed_at'].astimezone(NY).date() <= month_end],
             decisions_by_id=decisions_by_id, plans_by_id=plans_by_id,

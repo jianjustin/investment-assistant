@@ -33,6 +33,8 @@ def _spy_return(spy_bars: list[dict[str, Any]], fill_day: date, last_day: date |
 def simulate(plan: dict[str, Any], bars: list[dict[str, Any]], spy_bars: list[dict[str, Any]],
              *, splits: list[tuple[date, Decimal]]) -> dict[str, Any]:
     """Replay one plan over ``bars`` (oldest first, split-adjusted OHLC)."""
+    # Bars arrive in the current split basis (storage is split-adjusted with revisions);
+    # only the plan's frozen levels move to that basis.
     splits = sorted(splits)
     rescale = _basis_factor(plan['signal_date'], splits)
     entry_low = plan['entry_low'] / rescale
@@ -41,17 +43,12 @@ def simulate(plan: dict[str, Any], bars: list[dict[str, Any]], spy_bars: list[di
     target1 = plan['target1'] / rescale
     atr = plan['atr'] / rescale
 
-    def basis(bar: dict[str, Any]) -> tuple[Decimal, Decimal, Decimal, Decimal]:
-        f = _basis_factor(bar['price_date'], splits)
-        return (Decimal(str(bar['open'])) / f, Decimal(str(bar['high'])) / f,
-                Decimal(str(bar['low'])) / f, Decimal(str(bar['close'])) / f)
-
     latest_day = bars[-1]['price_date'] if bars else None
     window = [b for b in bars if plan['valid_from'] <= b['price_date'] <= plan['valid_until']]
 
     fill_date, fill_price, fill_bar = None, None, None
     for bar in window:
-        op, hi, lo, _ = basis(bar)
+        op, hi, lo = Decimal(str(bar['open'])), Decimal(str(bar['high'])), Decimal(str(bar['low']))
         if lo > entry_high or hi < entry_low:
             continue
         fill_price = op if entry_low <= op <= entry_high else (entry_high if op > entry_high else entry_low)
@@ -68,7 +65,8 @@ def simulate(plan: dict[str, Any], bars: list[dict[str, Any]], spy_bars: list[di
     legs: list[dict[str, Any]] = []
     last_day = fill_date
     for bar in (b for b in bars if b['price_date'] >= fill_date):
-        op, hi, lo, cl = basis(bar)
+        op, hi, lo, cl = (Decimal(str(bar['open'])), Decimal(str(bar['high'])),
+                          Decimal(str(bar['low'])), Decimal(str(bar['close'])))
         last_day = bar['price_date']
         highest_close = cl if highest_close is None else max(highest_close, cl)
         if lo <= stop:  # stop first when both stop and T1 touch on the same day
@@ -93,7 +91,7 @@ def simulate(plan: dict[str, Any], bars: list[dict[str, Any]], spy_bars: list[di
                 'r': r_sum, 'return': float(closed_value / fill_price - 1),
                 'spy_return': _spy_return(spy_bars, fill_date, last_day)}
     open_fraction = 1 - closed_fraction
-    last_close = basis(bars[-1])[3]
+    last_close = Decimal(str(bars[-1]['close']))
     return {'status': 'open', 'fill_date': fill_date, 'fill_price': fill_price, 'legs': legs,
             'r': r_sum + open_fraction * float((last_close - fill_price) / risk),
             'return': float((closed_value + Decimal(str(open_fraction)) * last_close) / fill_price - 1),
