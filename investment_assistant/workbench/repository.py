@@ -167,3 +167,111 @@ def latest_brief(conn, ticker: str, signal_date: date) -> dict[str, Any] | None:
             'created_at FROM signal_briefs WHERE ticker = %s AND signal_date = %s '
             'ORDER BY created_at DESC, id DESC LIMIT 1', (ticker.upper(), signal_date))
         return cur.fetchone()
+
+
+def lock(conn, key: str) -> None:
+    """Transaction-scoped advisory lock serialising writes to one unit or ticker."""
+    conn.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', (key,))
+
+
+_DECISION_COLUMNS = ('id, request_id, request_hash, ticker, signal_date, candidate_ids, brief_id, proposed_action, '
+                     'final_action, decision, reason, decided_at, supersedes_id')
+_TRADE_COLUMNS = ('id, request_id, request_hash, ticker, side, quantity, price, fee, executed_at, decision_id, note, '
+                  'recorded_at, voided_at, void_reason')
+
+
+def _one(conn, sql: str, params) -> dict[str, Any] | None:
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(sql, params)
+        return cur.fetchone()
+
+
+def _all(conn, sql: str, params) -> list[dict[str, Any]]:
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(sql, params)
+        return cur.fetchall()
+
+
+def decision_by_request(conn, request_id):
+    return _one(conn, f'SELECT {_DECISION_COLUMNS} FROM signal_decisions WHERE request_id = %s', (request_id,))
+
+
+def decision_by_id(conn, decision_id):
+    return _one(conn, f'SELECT {_DECISION_COLUMNS} FROM signal_decisions WHERE id = %s', (decision_id,))
+
+
+def decision_head(conn, ticker: str, signal_date: date) -> dict[str, Any] | None:
+    """The unit's current decision: the one no other decision supersedes."""
+    return _one(conn,
+                f'SELECT {_DECISION_COLUMNS} FROM signal_decisions d WHERE ticker = %s AND signal_date = %s '
+                'AND NOT EXISTS (SELECT 1 FROM signal_decisions s WHERE s.supersedes_id = d.id) '
+                'ORDER BY decided_at DESC LIMIT 1', (ticker, signal_date))
+
+
+def decision_heads(conn, *, since: date | None = None, ticker: str | None = None) -> list[dict[str, Any]]:
+    clauses = ['NOT EXISTS (SELECT 1 FROM signal_decisions s WHERE s.supersedes_id = d.id)']
+    params: list[Any] = []
+    if since is not None:
+        clauses.append('signal_date >= %s')
+        params.append(since)
+    if ticker is not None:
+        clauses.append('ticker = %s')
+        params.append(ticker.upper())
+    return _all(conn, f"SELECT {_DECISION_COLUMNS} FROM signal_decisions d WHERE {' AND '.join(clauses)} "
+                      'ORDER BY signal_date, ticker', params)
+
+
+def count_unit_candidates(conn, ticker: str, signal_date: date, ids) -> int:
+    return conn.execute('SELECT count(*) FROM signal_candidates WHERE ticker = %s AND signal_date = %s AND id = ANY(%s)',
+                        (ticker, signal_date, list(ids))).fetchone()[0]
+
+
+def brief_in_unit(conn, brief_id, ticker: str, signal_date: date) -> bool:
+    return conn.execute('SELECT 1 FROM signal_briefs WHERE id = %s AND ticker = %s AND signal_date = %s',
+                        (brief_id, ticker, signal_date)).fetchone() is not None
+
+
+def insert_decision(conn, rec: dict[str, Any], digest: str, *, decided_at: datetime) -> dict[str, Any]:
+    return _one(conn,
+                'INSERT INTO signal_decisions (request_id, request_hash, ticker, signal_date, candidate_ids, brief_id, '
+                'proposed_action, final_action, decision, reason, decided_at, supersedes_id) '
+                f'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING {_DECISION_COLUMNS}',
+                (rec['request_id'], digest, rec['ticker'], rec['signal_date'], rec['candidate_ids'], rec['brief_id'],
+                 rec['proposed_action'], rec['final_action'], rec['decision'], rec['reason'], decided_at,
+                 rec['supersedes_id']))
+
+
+def trade_by_request(conn, request_id):
+    return _one(conn, f'SELECT {_TRADE_COLUMNS} FROM trades WHERE request_id = %s', (request_id,))
+
+
+def trade_by_id(conn, trade_id):
+    return _one(conn, f'SELECT {_TRADE_COLUMNS} FROM trades WHERE id = %s', (trade_id,))
+
+
+def list_trades(conn, ticker: str | None = None) -> list[dict[str, Any]]:
+    if ticker is None:
+        return _all(conn, f'SELECT {_TRADE_COLUMNS} FROM trades ORDER BY executed_at, id', ())
+    return _all(conn, f'SELECT {_TRADE_COLUMNS} FROM trades WHERE ticker = %s ORDER BY executed_at, id', (ticker.upper(),))
+
+
+def insert_trade(conn, rec: dict[str, Any], digest: str, *, recorded_at: datetime) -> dict[str, Any]:
+    return _one(conn,
+                'INSERT INTO trades (request_id, request_hash, ticker, side, quantity, price, fee, executed_at, '
+                f'decision_id, note, recorded_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING {_TRADE_COLUMNS}',
+                (rec['request_id'], digest, rec['ticker'], rec['side'], rec['quantity'], rec['price'], rec['fee'],
+                 rec['executed_at'], rec['decision_id'], rec['note'], recorded_at))
+
+
+def mark_trade_voided(conn, trade_id, reason: str, *, voided_at: datetime) -> dict[str, Any]:
+    # The only post-insert write in the workbench: status fields, never the trade itself.
+    return _one(conn, f'UPDATE trades SET voided_at = %s, void_reason = %s WHERE id = %s AND voided_at IS NULL '
+                      f'RETURNING {_TRADE_COLUMNS}', (voided_at, reason, trade_id))
+
+
+def split_events(conn, ticker: str) -> list[tuple[date, Decimal]]:
+    rows = conn.execute(
+        'SELECT price_date, split_factor FROM (SELECT DISTINCT ON (price_date) price_date, split_factor '
+        '  FROM price_bars WHERE ticker = %s ORDER BY price_date, revision DESC) latest '
+        'WHERE split_factor <> 1 ORDER BY price_date', (ticker.upper(),)).fetchall()
+    return [(d, Decimal(f)) for d, f in rows]
