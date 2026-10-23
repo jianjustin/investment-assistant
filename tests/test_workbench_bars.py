@@ -109,3 +109,22 @@ def test_read_bars_limit_keeps_most_recent(workbench_db):
     repository.store_bars(workbench_db, 'NVDA', [bar(d) for d in days], now=T0)
     out = repository.read_bars(workbench_db, 'NVDA', days[-1], cutoff_at=T0, limit=2)
     assert [b['price_date'] for b in out] == days[-2:]
+
+
+def test_float_noise_in_adjusted_close_is_not_a_revision(workbench_db):
+    # Observed live: yfinance re-derives adj_close with ~1e-7 relative noise between fetches.
+    d = date(2026, 3, 4)
+    repository.store_bars(workbench_db, 'GOOG', [bar(d, close='303.450012', adj='302.857391')], now=T0)
+    noisy = repository.store_bars(workbench_db, 'GOOG', [bar(d, close='303.450012', adj='302.857361')],
+                                  now=T0 + timedelta(minutes=10))
+    dividend = repository.store_bars(workbench_db, 'GOOG', [bar(d, close='303.450012', adj='302.55')],
+                                     now=T0 + timedelta(days=90))
+    assert noisy == {'inserted': 0, 'unchanged': 1}
+    assert dividend == {'inserted': 1, 'unchanged': 0}
+
+
+def test_any_change_in_raw_prices_is_still_a_revision(workbench_db):
+    d = date(2026, 3, 4)
+    repository.store_bars(workbench_db, 'GOOG', [bar(d, close='303.450012')], now=T0)
+    assert repository.store_bars(workbench_db, 'GOOG', [bar(d, close='303.450013')],
+                                 now=T0 + timedelta(minutes=1)) == {'inserted': 1, 'unchanged': 0}

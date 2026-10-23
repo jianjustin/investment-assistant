@@ -13,9 +13,21 @@ BAR_VALUES = ('open', 'high', 'low', 'close', 'adj_close', 'volume', 'split_fact
 _FLOAT_FIELDS = ('open', 'high', 'low', 'close', 'adj_close', 'split_factor')
 
 
+# yfinance re-derives adj_close with ~1e-7 relative float noise between fetches; a real dividend
+# adjustment is around 1e-3 or larger. Raw prices and volume still compare exactly.
+ADJ_CLOSE_TOLERANCE = Decimal('0.000001')
+
+
 def _quantized(row: dict[str, Any]) -> tuple:
     return tuple(int(row[k]) if k == 'volume' else Decimal(row[k]).quantize(Decimal('0.000001'))
-                 for k in BAR_VALUES)
+                 for k in BAR_VALUES if k != 'adj_close')
+
+
+def _same_bar(stored: dict[str, Any], fetched: dict[str, Any]) -> bool:
+    if _quantized(stored) != _quantized(fetched):
+        return False
+    old, new = Decimal(stored['adj_close']), Decimal(fetched['adj_close'])
+    return abs(new - old) <= abs(old) * ADJ_CLOSE_TOLERANCE
 
 
 def store_bars(conn, ticker: str, rows: list[dict[str, Any]], *, now: datetime) -> dict[str, int]:
@@ -33,7 +45,7 @@ def store_bars(conn, ticker: str, rows: list[dict[str, Any]], *, now: datetime) 
                 'WHERE ticker = %s AND price_date = %s ORDER BY revision DESC LIMIT 1',
                 (ticker, row['price_date']))
             latest = cur.fetchone()
-            if latest and _quantized(latest) == _quantized(row):
+            if latest and _same_bar(latest, row):
                 counts['unchanged'] += 1
                 continue
             cur.execute(
