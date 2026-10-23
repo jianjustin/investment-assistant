@@ -12,8 +12,8 @@ from zoneinfo import ZoneInfo
 
 from investment_assistant.data.calendar import is_trading_day
 from investment_assistant.db import connect
-from investment_assistant.workbench import (account, bars, briefs, earnings, exits, ledger, news, plans,
-                                               positions, repository, review, rules, synthesis)
+from investment_assistant.workbench import (account, bars, briefs, discipline, earnings, exits, ledger, news,
+                                               plans, positions, repository, review, rules, synthesis)
 from investment_assistant.workbench import plan_shadow as _plan_shadow_module
 
 NY = ZoneInfo('America/New_York')
@@ -426,6 +426,41 @@ def plan_shadow(*, now: datetime, since: date | None = None) -> dict[str, Any]:
                                            splits=repository.split_events(conn, plan['ticker']))
             out.append({**plan, 'outcome': outcome})
     return {'session': session, 'since': since, 'calc_version': _plan_shadow_module.SHADOW_VERSION, 'plans': out}
+
+
+def discipline_view(*, now: datetime, since: date | None = None) -> dict[str, Any]:
+    """Execution discipline of recorded buys against their confirmed plans."""
+    session = bars.latest_closed_session(now)
+    since = since or session - timedelta(days=90)
+    with _tx() as conn:
+        trades = repository.list_trades(conn)
+        decisions_by_id: dict[Any, dict[str, Any]] = {}
+        for t in trades:
+            if t['decision_id'] and t['decision_id'] not in decisions_by_id:
+                d = repository.decision_by_id(conn, t['decision_id'])
+                if d is not None:
+                    decisions_by_id[t['decision_id']] = d
+        plans_by_id = {}
+        for d in decisions_by_id.values():
+            if d['plan_id'] and d['plan_id'] not in plans_by_id:
+                p = repository.plan_by_id(conn, d['plan_id'])
+                if p is not None:
+                    plans_by_id[d['plan_id']] = p
+        tickers = sorted({t['ticker'] for t in trades})
+        bars_by_ticker = {tk: repository.read_bars(conn, tk, session, cutoff_at=now, limit=400) for tk in tickers}
+        stop_events, segments = [], []
+        for tk in tickers:
+            stop_events += [c for c in repository.read_candidates(conn, tk, since=since)
+                            if c['rule_id'] == 'plan_stop']
+            segments += _book(conn, tk)['closed']
+        out = discipline.evaluate(trades=trades, decisions_by_id=decisions_by_id, plans_by_id=plans_by_id,
+                                  bars_by_ticker=bars_by_ticker, stop_events=stop_events, segments=segments,
+                                  session=session)
+    return {'session': session, 'since': since, **out}
+
+
+# discipline() is the interface name; keep both for the route.
+discipline = discipline_view
 
 
 def trade_review(*, now: datetime) -> dict[str, Any]:

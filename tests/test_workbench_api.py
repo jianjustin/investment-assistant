@@ -168,3 +168,8 @@ def test_plan_shadow_503_without_db(client, monkeypatch):
 
 def test_plan_shadow_since_is_validated(client):
     assert client.get('/api/workbench/plans/shadow', params={'since': '2026-13-01'}).status_code == 400
+
+
+def test_discipline_503_without_db(client, monkeypatch):
+    monkeypatch.setattr(service, 'discipline', raiser(service.Unavailable('工作台数据表未就绪')))
+    assert client.get('/api/workbench/discipline').status_code == 503

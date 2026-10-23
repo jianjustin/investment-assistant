@@ -100,6 +100,11 @@ def shadow(since: str | None = None):
     return _call(service.shadow, now=_now(), since=_date(since, 'since'))
 
 
+@router.get('/api/workbench/discipline')
+def workbench_discipline():
+    return _call(service.discipline, now=_now())
+
+
 @router.get('/api/workbench/review/trades')
 def trade_review():
     return _call(service.trade_review, now=_now())
