@@ -1,11 +1,13 @@
 """Cited LLM briefs for decision units (design §8). The model explains; it never sets the action."""
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from investment_assistant.hermes.deepseek_client import DEFAULT_MODEL, request_json_completion_verbose
+from investment_assistant.workbench import codex_client
 
 PROMPT_VERSION = 'workbench-brief-1'
 NY = ZoneInfo('America/New_York')
@@ -22,8 +24,22 @@ support 写支持候选方向的证据，contra 写反证，conflicts 写互相�
 BriefClient = Callable[..., tuple[dict[str, Any] | None, dict[str, Any]]]
 
 
-def _default_client(*, system_prompt: str, user_payload: dict[str, Any], model: str):
+def _deepseek_client(*, system_prompt: str, user_payload: dict[str, Any], model: str):
     return request_json_completion_verbose(system_prompt=system_prompt, user_payload=user_payload, model=model)
+
+
+def _disabled_client(**_):
+    return None, {'ok': False, 'error': 'LLM 已关闭（WORKBENCH_LLM_PROVIDER=off）'}
+
+
+def provider_client() -> tuple[BriefClient, str]:
+    """WORKBENCH_LLM_PROVIDER: codex (default, ChatGPT plan via Codex CLI) | deepseek | off."""
+    provider = os.environ.get('WORKBENCH_LLM_PROVIDER', 'codex').strip().lower()
+    if provider == 'deepseek':
+        return _deepseek_client, DEFAULT_MODEL
+    if provider == 'off':
+        return _disabled_client, 'none'
+    return codex_client.request, codex_client.MODEL_LABEL
 
 
 def _iso(value: datetime | None) -> str:
@@ -84,12 +100,16 @@ def _fallback_summary(unit, candidates) -> dict[str, Any]:
 
 
 def generate(unit, candidates, filings, news, *, cutoff_at: datetime, client: BriefClient | None = None,
-             model: str = DEFAULT_MODEL) -> dict[str, Any]:
+             model: str | None = None) -> dict[str, Any]:
+    if client is None:
+        client, label = provider_client()
+        model = model or label
     payload, refs = build_payload(unit, candidates, filings, news, cutoff_at)
     brief = {'ticker': unit['ticker'], 'signal_date': unit['signal_date'], 'model': model,
              'prompt_version': PROMPT_VERSION, 'cutoff_at': cutoff_at, 'input_refs': refs}
     try:
-        raw, status = (client or _default_client)(system_prompt=SYSTEM_PROMPT, user_payload=payload, model=model)
+        call_model = None if model == codex_client.MODEL_LABEL else model
+        raw, status = client(system_prompt=SYSTEM_PROMPT, user_payload=payload, model=call_model)
     except Exception as exc:  # optional enhancement: any failure keeps the rule-only brief
         raw, status = None, {'error': f'client failed: {type(exc).__name__}'}
     if raw is None:

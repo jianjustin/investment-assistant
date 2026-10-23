@@ -8,7 +8,8 @@
 
 1. 对目标数据库执行迁移 `016_us_workbench.sql`（新增 8 张表、`filings` 两个可空列、一个调度任务）。未迁移时，所有工作台接口返回 503，页面显示「数据库未就绪」，不会显示成空列表，也不会自动迁移。
 2. 观察名单（配置 `watchlist`）中的美股不超过 10 只；超过时批处理报错，不会静默截断。
-3. 可选：`DEEPSEEK_API_KEY` 用于 LLM 解读，`SEC_USER_AGENT`（含联系邮箱）用于 SEC 列表。没有 DeepSeek 密钥时退回规则版解读；SEC 列表失败只记入运行报告。
+3. LLM 解读由 `WORKBENCH_LLM_PROVIDER` 选择：默认 `codex`，通过本机 Codex CLI 使用已登录的 ChatGPT 套餐（只读沙箱、不保存会话、单次约 20 秒）；`deepseek` 需要 `DEEPSEEK_API_KEY`；`off` 关闭。调用失败时退回规则版解读。可用 `WORKBENCH_CODEX_MODEL` 指定模型。
+4. `SEC_USER_AGENT`（含联系邮箱）用于 SEC 列表；列表失败只记入运行报告。
 
 ## 每日流程
 
