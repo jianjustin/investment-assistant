@@ -222,6 +222,11 @@ def add_trade(payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:
         return ledger.record_trade(conn, payload, now=now)
 
 
+def list_trades() -> list[dict[str, Any]]:
+    with _tx() as conn:
+        return list(reversed(repository.list_trades(conn)))
+
+
 def void_trade(trade_id: str, reason: Any, *, now: datetime) -> dict[str, Any]:
     with _tx() as conn:
         return ledger.void_trade(conn, trade_id, reason, now=now)

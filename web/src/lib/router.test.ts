@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseHash } from './router'
+import { isLegacyZone, parseHash } from './router'
 
 describe('parseHash', () => {
   it('parses technicals zone with ticker sub', () => {
@@ -8,8 +8,15 @@ describe('parseHash', () => {
   it('parses data/signals', () => {
     expect(parseHash('#data/signals')).toEqual({ zone: 'data', sub: 'signals' })
   })
-  it('falls back to tools for unknown zone', () => {
-    expect(parseHash('#nope')).toEqual({ zone: 'tools', sub: undefined })
+  it('falls back to today for unknown zone', () => {
+    expect(parseHash('#nope')).toEqual({ zone: 'today', sub: undefined })
+  })
+  it('parses the workbench zones and keeps legacy zones reachable', () => {
+    expect(parseHash('#instrument/NVDA')).toEqual({ zone: 'instrument', sub: 'NVDA' })
+    expect(parseHash('#review/weekly')).toEqual({ zone: 'review', sub: 'weekly' })
+    expect(parseHash('#strategy/event-study')).toEqual({ zone: 'strategy', sub: 'event-study' })
+    expect(isLegacyZone('strategy')).toBe(true)
+    expect(isLegacyZone('today')).toBe(false)
   })
 })
 

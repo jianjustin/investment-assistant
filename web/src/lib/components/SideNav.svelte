@@ -4,7 +4,20 @@
 
   let { current, sub }: { current: string; sub?: string } = $props()
 
-  const nav: NavItem[] = [
+  const primary: NavItem[] = [
+    { id: 'today', label: '今日', icon: '🗓️' },
+    { id: 'instrument', label: '标的', icon: '🔎' },
+    {
+      id: 'review', label: '复盘', icon: '🧾', children: [
+        { id: 'trades', label: '交易与持仓' },
+        { id: 'shadow', label: '对照组' },
+        { id: 'weekly', label: '周度复盘' },
+      ],
+    },
+  ]
+
+  // Earlier six entries stay reachable, folded under 更多.
+  const legacy: NavItem[] = [
     {
       id: 'tools', label: '工具', icon: '🔧', children: [
         { id: 'tasks',   label: '任务中心' },
@@ -47,8 +60,14 @@
     },
   ]
 
+  const legacyIds = legacy.map(item => item.id)
   let collapsed = $state(false)
   let openIds = $state<Set<string>>(new Set<string>())
+  let moreOpen = $state(false)
+
+  $effect(() => {
+    if (legacyIds.includes(current)) moreOpen = true
+  })
 
   // Keep the active parent expanded whenever current changes
   $effect(() => {
@@ -91,7 +110,7 @@
   </button>
 
   <div class="flex flex-col gap-0.5 px-1 overflow-y-auto overflow-x-hidden flex-1">
-    {#each nav as item}
+    {#snippet entry(item: NavItem)}
       {@const hasChildren = !!item.children?.length}
       {@const open = openIds.has(item.id)}
       {@const active = isActive(item)}
@@ -144,6 +163,21 @@
           {/if}
         </a>
       {/if}
-    {/each}
+    {/snippet}
+
+    {#each primary as item}{@render entry(item)}{/each}
+
+    <button
+      onclick={() => moreOpen = !moreOpen}
+      class="flex items-center gap-2 w-full px-2 py-2 mt-2 rounded text-sm text-left border-t border-border transition-colors
+        {legacyIds.includes(current) ? 'text-accent' : 'text-muted hover:bg-surface-2 hover:text-ink'}"
+      aria-expanded={moreOpen}
+    >
+      <span class="text-base shrink-0 w-5 text-center">⋯</span>
+      {#if !collapsed}<span class="flex-1 truncate">更多</span>{/if}
+    </button>
+    {#if moreOpen}
+      {#each legacy as item}{@render entry(item)}{/each}
+    {/if}
   </div>
 </nav>

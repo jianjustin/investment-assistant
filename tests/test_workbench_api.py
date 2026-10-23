@@ -97,3 +97,10 @@ def test_task_reports_partial_failures_without_notifying(monkeypatch):
     workbench.run(AssistantConfig(watchlist=['NVDA', '688008.SH']), now=datetime(2026, 10, 22, 22, tzinfo=UTC))
     assert recorded['task'] == 'workbench' and recorded['notify'] is False
     assert recorded['summary'] == {'tickers': ['NVDA'], 'skip': True}
+
+
+def test_trade_list_endpoint(client, monkeypatch):
+    monkeypatch.setattr(service, 'list_trades', lambda: [{'id': 't1'}])
+    assert client.get('/api/workbench/trades').json() == {'trades': [{'id': 't1'}]}
+    monkeypatch.setattr(service, 'list_trades', raiser(service.Unavailable('down')))
+    assert client.get('/api/workbench/trades').status_code == 503

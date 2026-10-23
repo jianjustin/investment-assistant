@@ -50,6 +50,11 @@ def decide(payload: dict[str, Any] = Body(default_factory=dict)):
     return _call(service.decide, payload, now=_now())
 
 
+@router.get('/api/workbench/trades')
+def list_trades():
+    return {'trades': _call(service.list_trades)}
+
+
 @router.post('/api/workbench/trades')
 def add_trade(payload: dict[str, Any] = Body(default_factory=dict)):
     return _call(service.add_trade, payload, now=_now())

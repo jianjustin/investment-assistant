@@ -8,6 +8,9 @@
   import Strategy from './routes/Strategy.svelte'
   import Trade from './routes/Trade.svelte'
   import Settings from './routes/Settings.svelte'
+  import Today from './routes/Today.svelte'
+  import Instrument from './routes/Instrument.svelte'
+  import Review from './routes/Review.svelte'
   import { guardHashNavigation } from './lib/navigation-guard'
   import { parseHash, type Zone } from './lib/router'
 
@@ -29,7 +32,13 @@
 </script>
 
 <AppShell route={zone} {sub}>
-  {#if zone === 'tools'}
+  {#if zone === 'today'}
+    <Today />
+  {:else if zone === 'instrument'}
+    <Instrument {sub} />
+  {:else if zone === 'review'}
+    <Review {sub} />
+  {:else if zone === 'tools'}
     <Tools {sub} />
   {:else if zone === 'data'}
     <Data {sub} />
@@ -39,7 +48,7 @@
     <Strategy {sub} />
   {:else if zone === 'trade'}
     <Trade {sub} />
-  {:else}
+  {:else if zone === 'settings'}
     <Settings {sub} />
   {/if}
 </AppShell>

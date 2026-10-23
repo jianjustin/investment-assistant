@@ -27,6 +27,11 @@ vi.mock('./lib/api', () => ({
   patchNotifySettings: vi.fn(async () => ({})),
   testNotifyChannel: vi.fn(async () => ({ ok: true })),
   getEnvStatus: vi.fn(async () => ({})),
+  get: vi.fn(async () => ({})),
+}))
+vi.mock('./lib/workbench', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./lib/workbench')>()),
+  getToday: vi.fn(async () => ({ session: '2026-10-22', units: [] })),
 }))
 
 // Mock EventSource for SSE
@@ -41,7 +46,16 @@ beforeEach(() => { location.hash = '' })
 afterEach(() => cleanup())
 
 describe('app routing', () => {
-  it('defaults to tools zone and renders 5-layer nav', async () => {
+  it('defaults to the today zone with workbench entries first and legacy entries under more', async () => {
+    const { getAllByText, getByRole } = render(App)
+    expect(getAllByText('今日').length).toBeGreaterThan(0)
+    expect(getAllByText('标的').length).toBeGreaterThan(0)
+    expect(getAllByText('复盘').length).toBeGreaterThan(0)
+    expect(getByRole('button', { name: /更多/ })).toBeInTheDocument()
+  })
+
+  it('shows legacy entries under more when a legacy zone is open', async () => {
+    location.hash = '#tools'
     const { getAllByText } = render(App)
     expect(getAllByText('工具').length).toBeGreaterThan(0)
     expect(getAllByText('数据').length).toBeGreaterThan(0)
