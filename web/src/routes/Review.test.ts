@@ -81,3 +81,94 @@ it('reports 503 instead of an empty review', async () => {
   render(Review, { sub: 'shadow' })
   expect(await screen.findByText(/数据库未就绪/)).toBeInTheDocument()
 })
+
+
+describe('monthly and account tabs', () => {
+  const monthly = (stats: Record<string, unknown>) => ({
+    id: 'm1', month: '2026-10-01', calc_version: 'monthly-1', stats, notes: '', supersedes_id: null,
+    created_at: '2026-11-01T02:00:00Z',
+  })
+  const baseStats = { month: '2026-10-01', tier: null, spy: null, review_flag: 'insufficient',
+                      sensitivity: { approximate: true, rows: [] }, discipline: {}, plans: {},
+                      generated_at: '2026-11-01T02:00:00Z' }
+
+  it('monthly tab shows missing snapshot message', async () => {
+    respond = async (url) => url.includes('/monthly-reviews')
+      ? json({ reviews: [monthly({ ...baseStats, return: { status: 'missing_snapshot', return: null } })] })
+      : json({})
+    render(Review, { sub: 'monthly' })
+    expect(await screen.findByText(/缺资金快照，无法计算/)).toBeInTheDocument()
+  })
+
+  it('monthly tab shows tier and SPY', async () => {
+    respond = async (url) => url.includes('/monthly-reviews')
+      ? json({ reviews: [monthly({ ...baseStats, return: { status: 'ok', return: 0.12, net_flow: 5000 },
+                                   tier: 'excellent', spy: { return: 0.04, excess: 0.08 } })] })
+      : json({})
+    render(Review, { sub: 'monthly' })
+    expect(await screen.findByText(/优秀/)).toBeInTheDocument()
+    expect(screen.getByText(/\+12\.00%/)).toBeInTheDocument()
+    expect(screen.getByText(/SPY \+4\.00%/)).toBeInTheDocument()
+    expect(screen.getByText(/超额 \+8\.00%/)).toBeInTheDocument()
+  })
+
+  it('account tab records a snapshot and a flow', async () => {
+    respond = async (url, init) => {
+      if (url.includes('/account/snapshots') && init?.method !== 'POST')
+        return json({ snapshots: [], flows: [], params: { risk_pct: 0.01, single_cap: 0.25, total_cap: 1,
+                                                          public_url: 'http://localhost:8787',
+                                                          return_tiers: [0.2, 0.1, 0] } })
+      if (url.includes('/account/flows') && init?.method === 'POST')
+        return json({ status: 'created', record: { id: 'f1' } })
+      if (url.includes('/account/snapshots'))
+        return json({ status: 'created', record: { id: 's1' } })
+      return json({})
+    }
+    render(Review, { sub: 'account' })
+    expect(await screen.findByText(/单票上限 25%/)).toBeInTheDocument()
+    await fireEvent.input(screen.getByLabelText('资金日期'), { target: { value: '2026-10-31' } })
+    await fireEvent.input(screen.getByLabelText('总资金'), { target: { value: '112000' } })
+    await fireEvent.click(screen.getByRole('button', { name: '录入资金快照' }))
+    await fireEvent.input(screen.getByLabelText('出入金日期'), { target: { value: '2026-10-15' } })
+    await fireEvent.input(screen.getByLabelText('金额'), { target: { value: '5000' } })
+    await fireEvent.click(screen.getByRole('button', { name: '录入出入金' }))
+    const snap = calls.find(c => c.url.includes('/account/snapshots') && c.init?.method === 'POST')!
+    expect(JSON.parse(String(snap.init!.body))).toMatchObject({ as_of: '2026-10-31', equity: '112000' })
+    const flow = calls.find(c => c.url.includes('/account/flows') && c.init?.method === 'POST')!
+    expect(JSON.parse(String(flow.init!.body))).toMatchObject({ flow_date: '2026-10-15', amount: '5000' })
+  })
+
+  it('account tab voids a flow with a reason', async () => {
+    respond = async (url) => url.includes('/account/snapshots')
+      ? json({ snapshots: [], params: {}, flows: [{ id: 'f1', request_id: 'r', flow_date: '2026-10-15',
+                                                    amount: 5000, note: null, recorded_at: '2026-10-15T12:00:00Z',
+                                                    voided_at: null, void_reason: null }] })
+      : json({})
+    render(Review, { sub: 'account' })
+    await screen.findByText(/5000/)
+    await fireEvent.click(screen.getByRole('button', { name: '作废' }))
+    await fireEvent.input(screen.getByLabelText('作废理由'), { target: { value: '录错' } })
+    await fireEvent.click(screen.getByRole('button', { name: '确认作废' }))
+    await waitFor(() => {
+      const voided = calls.find(c => c.url.includes('/account/flows/f1/void'))
+      expect(voided).toBeTruthy()
+      expect(JSON.parse(String(voided!.init!.body))).toEqual({ reason: '录错' })
+    })
+  })
+
+  it('weekly shows plan and discipline sections', async () => {
+    respond = async (url) => url.includes('/weekly-reviews')
+      ? json({ reviews: [{ id: 'w1', week_start: '2026-10-19', calc_version: 'review-2',
+                           notes: '', supersedes_id: null, created_at: '2026-10-24T02:00:00Z',
+                           stats: { week: { start: '2026-10-19', end: '2026-10-25' }, units: { decided: 1, undecided: 0 },
+                                    plans: { rule: { count: 2, expired: 1, r_mean: 1.5, r_median: 1.5 } },
+                                    discipline: { counts: { chase: 1, early_take: 0, held_loser: 0, unplanned: 0 },
+                                                  planned_buys: 2, compliance_rate: 0.5 } } }] })
+      : json({})
+    render(Review, { sub: 'weekly' })
+    expect(await screen.findByText(/计划影子/)).toBeInTheDocument()
+    expect(screen.getByText(/已过期 1/)).toBeInTheDocument()
+    expect(screen.getByText(/遵守率 50%/)).toBeInTheDocument()
+    expect(screen.getByText(/追高 1/)).toBeInTheDocument()
+  })
+})

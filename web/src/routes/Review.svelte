@@ -3,7 +3,8 @@
   import * as wb from '../lib/workbench'
 
   let { sub }: { sub?: string } = $props()
-  const TABS = [['trades', '交易与持仓'], ['shadow', '对照组'], ['weekly', '周度复盘']] as const
+  const TABS = [['trades', '交易与持仓'], ['shadow', '对照组'], ['weekly', '周度复盘'],
+                 ['monthly', '月度复盘'], ['account', '资金']] as const
   let tab = $derived(TABS.some(([id]) => id === sub) ? sub! : 'trades')
 
   let error = $state('')
@@ -11,6 +12,8 @@
   let tradeReview = $state<wb.TradeReview | null>(null)
   let shadow = $state<wb.ShadowView | null>(null)
   let weekly = $state<wb.WeeklyReview[] | null>(null)
+  let monthly = $state<wb.MonthlyReview[] | null>(null)
+  let account = $state<wb.AccountView | null>(null)
 
   const emptyForm = () => ({ ticker: '', side: 'buy', quantity: '', price: '', fee: '0', executed: '', decisionId: '', note: '',
                              requestId: wb.newRequestId() })
@@ -38,6 +41,10 @@
         shadow = decided
       } else if (which === 'shadow') {
         shadow = await wb.getShadow()
+      } else if (which === 'monthly') {
+        monthly = (await wb.getMonthly()).reviews
+      } else if (which === 'account') {
+        account = await wb.getAccount()
       } else {
         weekly = (await wb.getWeekly()).reviews
       }
@@ -91,6 +98,71 @@
       await load('weekly')
     } catch (err) {
       weekError = wb.describeError(err)
+    }
+  }
+
+  const monthForm = () => ({ month: '', notes: '', requestId: wb.newRequestId() })
+  let monthFormState = $state(monthForm())
+  let monthError = $state('')
+
+  async function generateMonthly(e: Event) {
+    e.preventDefault()
+    monthError = ''
+    if (!/^\d{4}-\d{2}-01$/.test(monthFormState.month)) { monthError = '月份须为当月 1 日（YYYY-MM-01）'; return }
+    const head = monthly?.find(r => r.month === monthFormState.month)
+    try {
+      await wb.postMonthly({ month: monthFormState.month, notes: monthFormState.notes,
+                             supersedes_id: head?.id ?? null })
+      monthFormState = monthForm()
+      await load('monthly')
+    } catch (err) {
+      monthError = wb.describeError(err)
+    }
+  }
+
+  const snapshotForm = () => ({ as_of: '', equity: '', note: '', requestId: wb.newRequestId() })
+  let snap = $state(snapshotForm())
+  const flowForm = () => ({ flow_date: '', amount: '', note: '', requestId: wb.newRequestId() })
+  let flow = $state(flowForm())
+  let accountError = $state('')
+  let voidingFlow = $state<string | null>(null)
+  let flowVoidReason = $state('')
+
+  async function recordSnapshot(e: Event) {
+    e.preventDefault()
+    accountError = ''
+    try {
+      await wb.postSnapshot({ request_id: snap.requestId, as_of: snap.as_of, equity: String(snap.equity),
+                              note: snap.note || null })
+      snap = snapshotForm()
+      account = await wb.getAccount()
+    } catch (err) {
+      accountError = wb.describeError(err)
+    }
+  }
+
+  async function recordFlow(e: Event) {
+    e.preventDefault()
+    accountError = ''
+    try {
+      await wb.postFlow({ request_id: flow.requestId, flow_date: flow.flow_date, amount: String(flow.amount),
+                          note: flow.note || null })
+      flow = flowForm()
+      account = await wb.getAccount()
+    } catch (err) {
+      accountError = wb.describeError(err)
+    }
+  }
+
+  async function voidAFlow(id: string) {
+    if (!flowVoidReason.trim()) return
+    try {
+      await wb.voidFlow(id, flowVoidReason.trim())
+      voidingFlow = null
+      flowVoidReason = ''
+      account = await wb.getAccount()
+    } catch (err) {
+      accountError = wb.describeError(err)
     }
   }
 
@@ -222,7 +294,107 @@
           <ul>{#each r.stats.execution as x}<li>{x.ticker} 成交价较 T+1 开盘 {wb.pct(x.slippage)} · 决定后 {Number(x.delay_hours).toFixed(1)} 小时成交</li>{/each}</ul>
         {/if}
         {#if r.stats.unsignaled_trades?.length}<p>无信号交易 {r.stats.unsignaled_trades.length} 笔</p>{/if}
+        {#if r.stats.plans && Object.keys(r.stats.plans).length}
+          <p class="text-xs text-muted">计划影子（数量 / 已过期 / R 均值 / 中位数）</p>
+          <ul>{#each Object.entries(r.stats.plans) as [kind, p]}
+            <li>{kind === 'rule' ? '规则' : '自定'}：{p.count} · 已过期 {p.expired} · R {p.r_mean ?? '—'} / {p.r_median ?? '—'}</li>
+          {/each}</ul>
+        {/if}
+        {#if r.stats.discipline}
+          {@const d = r.stats.discipline}
+          <p class="text-xs text-muted">纪律</p>
+          <p>计划内买入 {d.planned_buys ?? 0} · 遵守率 {d.compliance_rate == null ? '—' : `${Math.round(d.compliance_rate * 100)}%`}</p>
+          <p class="text-xs text-muted">追高 {d.counts?.chase ?? 0} · 过早止盈 {d.counts?.early_take ?? 0} · 死扛亏损 {d.counts?.held_loser ?? 0} · 计划外 {d.counts?.unplanned ?? 0}</p>
+        {/if}
       </article>
     {:else}<p class="text-sm text-muted">尚无周度复盘</p>{/each}
+  {/if}
+
+  {#if tab === 'monthly' && !error}
+    <form class="flex flex-wrap items-end gap-2 text-sm border border-border rounded p-3" onsubmit={generateMonthly}>
+      <label class="flex flex-col">月份（当月 1 日）<input aria-label="月份（当月 1 日）" type="date" class="border border-border rounded px-2 py-1 bg-bg" bind:value={monthFormState.month} /></label>
+      <label class="flex flex-col flex-1">复盘笔记<textarea aria-label="月度复盘笔记" rows="2" class="border border-border rounded px-2 py-1 bg-bg" bind:value={monthFormState.notes}></textarea></label>
+      <button type="submit" class="px-3 py-1 rounded bg-accent text-white">生成月度复盘</button>
+      {#if monthError}<span class="text-xs text-red-600">{monthError}</span>{/if}
+    </form>
+    {#each monthly ?? [] as r (r.id)}
+      <article class="border border-border rounded p-3 text-sm space-y-2">
+        <h2 class="font-semibold">{r.month} · {wb.TIER_LABELS[r.stats.tier] ?? '缺数据'}</h2>
+        {#if r.stats.return?.status === 'ok'}
+          <p>月度收益 {wb.pct(r.stats.return.return)} · 净出入金 {r.stats.return.net_flow ?? '—'}</p>
+          {#if r.stats.spy}<p>SPY {wb.pct(r.stats.spy.return)} · 超额 {wb.pct(r.stats.spy.excess)}</p>{/if}
+        {:else}
+          <p class="text-amber-700">缺资金快照，无法计算</p>
+        {/if}
+        {#if r.stats.review_flag === 'review'}<p class="text-red-600">流程复查：连续 3 个月亏损且跑输 SPY</p>
+        {:else if r.stats.review_flag === 'insufficient'}<p class="text-xs text-muted">流程复查：样本不足（不足 3 个月）</p>{/if}
+        {#if r.stats.sensitivity?.rows?.length}
+          <p class="text-xs text-muted">敏感性（近似）</p>
+          <ul class="text-xs">{#each r.stats.sensitivity.rows as row}
+            <li>风险 {wb.pct(row.risk_pct)}：收益 ≈ {wb.pct(row.return)} · 最大回撤 ≈ {wb.pct(row.max_drawdown)}</li>
+          {/each}</ul>
+        {/if}
+        {#if r.stats.plans && Object.keys(r.stats.plans).length}
+          <p class="text-xs text-muted">计划影子</p>
+          <ul>{#each Object.entries(r.stats.plans) as [kind, p]}
+            <li>{kind === 'rule' ? '规则' : '自定'}：{p.count} · 已过期 {p.expired} · R {p.r_mean ?? '—'} / {p.r_median ?? '—'}</li>
+          {/each}</ul>
+        {/if}
+        {#if r.stats.discipline}
+          <p class="text-xs text-muted">纪律 · 遵守率 {r.stats.discipline.compliance_rate == null ? '—' : `${Math.round(r.stats.discipline.compliance_rate * 100)}%`}</p>
+          <p class="text-xs text-muted">追高 {r.stats.discipline.counts?.chase ?? 0} · 过早止盈 {r.stats.discipline.counts?.early_take ?? 0} · 死扛亏损 {r.stats.discipline.counts?.held_loser ?? 0} · 计划外 {r.stats.discipline.counts?.unplanned ?? 0}</p>
+        {/if}
+        {#if r.notes}<p>{r.notes}</p>{/if}
+        <p class="text-xs text-muted">口径 {r.calc_version} · 生成于 {wb.dateTime(r.created_at)}{r.supersedes_id ? ' · 更正版' : ''}</p>
+      </article>
+    {:else}<p class="text-sm text-muted">尚无月度复盘</p>{/each}
+  {/if}
+
+  {#if tab === 'account' && !error}
+    {#if account}
+      <div class="text-sm border border-border rounded p-3">
+        <h2 class="font-semibold text-sm">风险参数（只读，改配置文件）</h2>
+        <p class="text-xs text-muted">单笔风险 {wb.pct(account.params.risk_pct)} · 单票上限 {Math.round(account.params.single_cap * 100)}% · 总持仓上限 {Math.round(account.params.total_cap * 100)}%</p>
+      </div>
+      {#if accountError}<p class="text-xs text-red-600">{accountError}</p>{/if}
+      <div class="grid md:grid-cols-2 gap-3">
+        <form class="space-y-2 text-sm border border-border rounded p-3" onsubmit={recordSnapshot}>
+          <h2 class="font-semibold text-sm">录入资金快照</h2>
+          <label class="flex flex-col">资金日期<input aria-label="资金日期" type="date" class="border border-border rounded px-2 py-1 bg-bg" bind:value={snap.as_of} /></label>
+          <label class="flex flex-col">总资金<input aria-label="总资金" inputmode="decimal" class="border border-border rounded px-2 py-1 bg-bg" bind:value={snap.equity} /></label>
+          <label class="flex flex-col">备注<input aria-label="快照备注" class="border border-border rounded px-2 py-1 bg-bg" bind:value={snap.note} /></label>
+          <button type="submit" class="px-3 py-1 rounded bg-accent text-white" disabled={!snap.as_of || !snap.equity}>录入资金快照</button>
+        </form>
+        <form class="space-y-2 text-sm border border-border rounded p-3" onsubmit={recordFlow}>
+          <h2 class="font-semibold text-sm">录入出入金</h2>
+          <label class="flex flex-col">出入金日期<input aria-label="出入金日期" type="date" class="border border-border rounded px-2 py-1 bg-bg" bind:value={flow.flow_date} /></label>
+          <label class="flex flex-col">金额（入金为正）<input aria-label="金额" inputmode="decimal" class="border border-border rounded px-2 py-1 bg-bg" bind:value={flow.amount} /></label>
+          <label class="flex flex-col">备注<input aria-label="出入金备注" class="border border-border rounded px-2 py-1 bg-bg" bind:value={flow.note} /></label>
+          <button type="submit" class="px-3 py-1 rounded bg-accent text-white" disabled={!flow.flow_date || !flow.amount}>录入出入金</button>
+        </form>
+      </div>
+      <h2 class="font-semibold text-sm">资金快照</h2>
+      <ul class="text-sm space-y-1">
+        {#each account.snapshots as s (s.id)}
+          <li>{s.as_of} · {s.equity}{s.note ? `（${s.note}）` : ''}{s.supersedes_id ? ' · 更正版' : ''} · 录入于 {wb.dateTime(s.recorded_at)}</li>
+        {:else}<li class="text-muted">暂无快照</li>{/each}
+      </ul>
+      <h2 class="font-semibold text-sm">出入金</h2>
+      <ul class="text-sm space-y-1">
+        {#each account.flows as f (f.id)}
+          <li class={f.voided_at ? 'line-through text-muted' : ''}>
+            {f.flow_date} · {f.amount > 0 ? '入金' : '出金'} {Math.abs(f.amount)}{f.note ? `（${f.note}）` : ''}
+            {#if f.voided_at}<span>（已作废：{f.void_reason}）</span>
+            {:else if voidingFlow === f.id}
+              <input aria-label="作废理由" class="border border-border rounded px-1 text-xs bg-bg" bind:value={flowVoidReason} />
+              <button class="text-xs text-red-600 disabled:opacity-50" disabled={!flowVoidReason.trim()} onclick={() => voidAFlow(f.id)}>确认作废</button>
+              <button class="text-xs" onclick={() => { voidingFlow = null; flowVoidReason = '' }}>取消</button>
+            {:else}
+              <button class="text-xs text-muted hover:text-red-600" onclick={() => { voidingFlow = f.id; flowVoidReason = '' }}>作废</button>
+            {/if}
+          </li>
+        {:else}<li class="text-muted">暂无出入金</li>{/each}
+      </ul>
+    {/if}
   {/if}
 </section>

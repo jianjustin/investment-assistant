@@ -5,7 +5,21 @@ import { confirmResearchNavigation } from '../lib/navigation-guard'
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
+const plan = (overrides: Record<string, unknown> = {}) => ({
+  id: 'p1', ticker: 'NVDA', signal_date: '2026-10-22', kind: 'rule', plan_version: 'plan-1', status: 'ok',
+  entry_low: 98.5, entry_high: 101.5, stop: 94, target1: 112, ref_price: 100, atr: 2.11,
+  valid_from: '2026-10-23', valid_until: '2026-10-27',
+  sizing: { status: 'sized', shares: 166, risk_amount: 1000, snapshot_as_of: '2026-10-20' },
+  invalid_reasons: [], warnings: [], ...overrides,
+})
+
+const holding = (overrides: Record<string, unknown> = {}) => ({
+  ticker: 'NVDA', quantity: 10, avg_cost: 100, plan_id: 'p1', stop: 105, mode: 'trailing', t1_reached: true,
+  target1: 112, last_close: 110, to_stop_pct: -0.045, to_target_pct: 0.018, next_earnings: null, ...overrides,
+})
+
 const unit = (overrides: Record<string, unknown> = {}) => ({
+  plan: null,
   ticker: 'NVDA', signal_date: '2026-10-22', proposed_action: 'buy', labels: [], candidate_ids: ['c1'],
   rule_ids: ['trend_reclaim'], entry_passed: false, market_status: 'green', holding: false, position: null,
   candidates: [{ id: 'c1', signal_date: '2026-10-22', action: 'buy', rule_id: 'trend_reclaim',
@@ -23,7 +37,7 @@ let respond: (url: string, init?: RequestInit) => Promise<Response>
 
 beforeEach(() => {
   calls = []
-  respond = async () => json({ session: '2026-10-22', units: [unit()] })
+  respond = async () => json({ session: '2026-10-22', units: [unit()], holdings: [] })
   vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => { calls.push({ url: String(url), init }); return respond(String(url), init) }))
   vi.stubGlobal('crypto', { randomUUID: vi.fn().mockReturnValueOnce('req-1').mockReturnValueOnce('req-2') })
 })
@@ -97,4 +111,108 @@ it('guards unsent decision drafts on navigation', async () => {
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
   expect(confirmResearchNavigation()).toBe(false)
   expect(confirm).toHaveBeenCalled()
+})
+
+
+describe('trade plans', () => {
+  it('renders plan levels and shares', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [unit({ plan: plan() })], holdings: [] })
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    expect(screen.getByText(/入场区间 98\.5–101\.5/)).toBeInTheDocument()
+    expect(screen.getByText(/止损 94/)).toBeInTheDocument()
+    expect(screen.getByText(/T1 112/)).toBeInTheDocument()
+    expect(screen.getByText(/建议 166 股/)).toBeInTheDocument()
+    expect(screen.getByText(/证据：未验证/)).toBeInTheDocument()
+  })
+
+  it('shows the no_equity hint without inventing a size', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [unit({ plan: plan(
+      { sizing: { status: 'no_equity', shares: null, snapshot_as_of: null } }) })], holdings: [] })
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    expect(screen.getByText(/缺资金快照，无法计算/)).toBeInTheDocument()
+  })
+
+  it('only allows own levels when the rule plan is invalid', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [unit({ plan: plan(
+      { status: 'invalid', invalid_reasons: ['earnings_in_validity'] }) })], holdings: [] })
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    expect(screen.getByText(/作废：earnings_in_validity/)).toBeInTheDocument()
+    expect(screen.getByLabelText('规则计划')).toBeDisabled()
+    expect(screen.getByLabelText('自定价位')).toBeChecked()
+  })
+
+  it('blocks own levels with stop >= entry_low', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [unit({ plan: plan({ status: 'invalid' }) })],
+                                 holdings: [] })
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '自定价位' } })
+    await fireEvent.input(screen.getByLabelText('入场下限'), { target: { value: '99' } })
+    await fireEvent.input(screen.getByLabelText('入场上限'), { target: { value: '101' } })
+    await fireEvent.input(screen.getByLabelText('止损价'), { target: { value: '100' } })
+    await fireEvent.input(screen.getByLabelText('T1 价'), { target: { value: '112' } })
+    expect(screen.getByText(/价位需满足/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '提交决定' })).toBeDisabled()
+  })
+
+  it('accept sends plan_id for a healthy rule plan', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [unit({ plan: plan() })], holdings: [] })
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '按规则计划' } })
+    respond = async (url) => url.includes('/decisions')
+      ? json({ status: 'created', record: { id: 'd1' } })
+      : json({ session: '2026-10-22', units: [], holdings: [] })
+    await fireEvent.click(screen.getByRole('button', { name: '提交决定' }))
+    await waitFor(() => expect(screen.getByText('今日没有待处理的信号')).toBeInTheDocument())
+    const post = calls.find(c => c.url.includes('/decisions'))!
+    const body = JSON.parse(String(post.init!.body))
+    expect(body.plan_id).toBe('p1')
+    expect(body.own_plan).toBeNull()
+  })
+
+  it('accept with own levels sends own_plan', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [unit({ plan: plan() })], holdings: [] })
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    await fireEvent.click(screen.getByLabelText('自定价位'))
+    await fireEvent.input(screen.getByLabelText('入场下限'), { target: { value: '97' } })
+    await fireEvent.input(screen.getByLabelText('入场上限'), { target: { value: '101' } })
+    await fireEvent.input(screen.getByLabelText('止损价'), { target: { value: '94' } })
+    await fireEvent.input(screen.getByLabelText('T1 价'), { target: { value: '110' } })
+    await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '自定' } })
+    respond = async (url) => url.includes('/decisions')
+      ? json({ status: 'created', record: { id: 'd2' } })
+      : json({ session: '2026-10-22', units: [], holdings: [] })
+    await fireEvent.click(screen.getByRole('button', { name: '提交决定' }))
+    await waitFor(() => expect(screen.getByText('今日没有待处理的信号')).toBeInTheDocument())
+    const body = JSON.parse(String(calls.find(c => c.url.includes('/decisions'))!.init!.body))
+    expect(body.plan_id).toBeNull()
+    expect(body.own_plan).toMatchObject({ entry_low: '97', entry_high: '101', stop: '94', target1: '110' })
+    expect(body.own_plan.request_id).toBeTruthy()
+  })
+
+  it('holdings show stop and t1 state', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [], holdings: [holding()] })
+    render(Today)
+    expect(await screen.findByText(/持仓止损/)).toBeInTheDocument()
+    expect(screen.getByText(/NVDA/)).toBeInTheDocument()
+    expect(screen.getByText(/止损 105/)).toBeInTheDocument()
+    expect(screen.getByText(/已触 T1/)).toBeInTheDocument()
+  })
+
+  it('repush button calls pushToday and shows the result', async () => {
+    respond = async (url) => url.includes('/api/workbench/push')
+      ? json({ session: '2026-10-22', sent: true, messages: 4 })
+      : json({ session: '2026-10-22', units: [], holdings: [] })
+    render(Today)
+    await screen.findByText('今日没有待处理的信号')
+    await fireEvent.click(screen.getByRole('button', { name: '重新推送今日计划' }))
+    await waitFor(() => expect(screen.getByText(/已推送 4 条/)).toBeInTheDocument())
+    const push = calls.find(c => c.url.includes('/api/workbench/push'))!
+    expect(push.init?.method).toBe('POST')
+  })
 })

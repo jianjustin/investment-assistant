@@ -22,12 +22,67 @@ export interface NewsItem {
   published_at: string | null; fetched_at: string
 }
 export interface Position { quantity: number; avg_cost: number; opened_at: string }
+export interface Plan {
+  id: string; ticker: string; signal_date: string; kind: 'rule' | 'own'; plan_version: string
+  status: 'ok' | 'invalid'; entry_low: number; entry_high: number; stop: number; target1: number
+  ref_price: number; atr: number; valid_from: string; valid_until: string
+  sizing: { status: 'sized' | 'capped' | 'no_equity' | 'no_room'; shares: number | null
+            risk_amount?: number | null; snapshot_as_of?: string | null } | null
+  invalid_reasons: string[]; warnings: string[]; based_on_id?: string | null
+}
+export interface Holding {
+  ticker: string; quantity: number; avg_cost: number; plan_id: string | null
+  stop: number | null; mode: string | null; t1_reached: boolean; target1: number | null
+  last_close: number | null; to_stop_pct: number | null; to_target_pct: number | null
+  next_earnings: string | null
+}
+export interface Snapshot {
+  id: string; request_id: string; as_of: string; equity: number; note: string | null
+  recorded_at: string; supersedes_id: string | null
+}
+export interface CashFlow {
+  id: string; request_id: string; flow_date: string; amount: number; note: string | null
+  recorded_at: string; voided_at: string | null; void_reason: string | null
+}
+export interface AccountParams {
+  risk_pct: number; single_cap: number; total_cap: number; public_url: string; return_tiers: number[]
+}
+export interface AccountView { snapshots: Snapshot[]; flows: CashFlow[]; params: AccountParams }
+export interface PlanShadowOutcome {
+  status: 'pending' | 'expired' | 'open' | 'closed'; fill_date: string | null; fill_price: number | null
+  legs: { fraction: number; exit_date: string; exit_price: number; reason: string }[]
+  r: number | null; return: number | null; spy_return: number | null
+}
+export interface PlanShadow {
+  id: string; ticker: string; signal_date: string; kind: 'rule' | 'own'; plan_version: string
+  status: string; outcome: PlanShadowOutcome
+}
+export interface PlanShadowView { session: string; since: string; calc_version: string; plans: PlanShadow[] }
+export interface DisciplineTrade {
+  trade_id: string; ticker: string; track: 'rule' | 'own' | null
+  flags: string[]; immature: string[]; r: number | null
+}
+export interface DisciplineView {
+  session: string; since: string; trades: DisciplineTrade[]
+  counts: { chase: number; early_take: number; held_loser: number; unplanned: number }
+  immature: Record<string, number>; planned_buys: number; compliance_rate: number | null
+}
+export interface MonthlyReview {
+  id: string; month: string; calc_version: string; stats: {
+    month: string; return: { status: string; return: number | null; net_flow?: number | null }
+    tier: string | null; spy: { return: number; excess: number } | null; review_flag: string
+    sensitivity: { approximate: boolean; rows: { risk_pct: number; return: number; max_drawdown: number }[] }
+    discipline: DisciplineView; plans: Record<string, { count: number; expired: number; r_mean: number | null; r_median: number | null }>
+    generated_at: string
+  }; notes: string; supersedes_id: string | null; created_at: string
+}
 export interface Unit {
   ticker: string; signal_date: string; proposed_action: Action; labels: string[]; candidate_ids: string[]
   rule_ids: string[]; entry_passed: boolean; market_status: string | null; holding: boolean
   candidates: Candidate[]; brief: Brief | null; filings: Filing[]; news: NewsItem[]; position: Position | null
+  plan: Plan | null
 }
-export interface TodayView { session: string; units: Unit[] }
+export interface TodayView { session: string; units: Unit[]; holdings: Holding[] }
 export interface Decision {
   id: string; ticker: string; signal_date: string; proposed_action: Action; final_action: FinalAction
   decision: Choice; reason: string; decided_at: string; supersedes_id: string | null
@@ -76,6 +131,16 @@ export const getTradeReview = () => request<TradeReview>('/api/workbench/review/
 export const getWeekly = () => request<{ reviews: WeeklyReview[] }>('/api/workbench/weekly-reviews')
 export const postWeekly = (body: object) => post<WeeklyReview>('/api/workbench/weekly-reviews', body)
 export const runWorkbench = () => post<{ run_id: string; status: string }>('/api/workbench/run', {})
+export const getAccount = () => request<AccountView>('/api/workbench/account/snapshots')
+export const postSnapshot = (body: object) => post<{ status: string; record: Snapshot }>('/api/workbench/account/snapshots', body)
+export const postFlow = (body: object) => post<{ status: string; record: CashFlow }>('/api/workbench/account/flows', body)
+export const voidFlow = (id: string, reason: string) => post<CashFlow>(`/api/workbench/account/flows/${id}/void`, { reason })
+export const getPlanShadow = (since?: string) =>
+  request<PlanShadowView>(`/api/workbench/plans/shadow${since ? `?since=${since}` : ''}`)
+export const getDiscipline = () => request<DisciplineView>('/api/workbench/discipline')
+export const getMonthly = () => request<{ reviews: MonthlyReview[] }>('/api/workbench/monthly-reviews')
+export const postMonthly = (body: object) => post<MonthlyReview>('/api/workbench/monthly-reviews', body)
+export const pushToday = () => post<{ session: string; sent: boolean; messages?: number; reason?: string }>('/api/workbench/push', {})
 
 export function describeError(error: unknown): string {
   if (error instanceof WorkbenchError) {
@@ -92,12 +157,24 @@ export function finalAction(proposed: Action, choice: Choice): FinalAction {
   return choice === 'accept' ? proposed : choice === 'reject' ? 'ignore' : 'watch'
 }
 
-export function decisionPayload(unit: Unit, choice: Choice, reason: string, requestId: string) {
+export interface OwnPlanInput { entry_low: string; entry_high: string; stop: string; target1: string }
+
+export function levelsError(input: OwnPlanInput): string | null {
+  const [low, high, stop, target1] = [input.entry_low, input.entry_high, input.stop, input.target1].map(Number)
+  if (![low, high, stop, target1].every(n => Number.isFinite(n) && n > 0)) return '四个价位都必须是正数'
+  if (!(stop < low && low <= high && high < target1)) return '价位需满足：止损 < 入场下限 ≤ 入场上限 < T1'
+  return null
+}
+
+export function decisionPayload(unit: Unit, choice: Choice, reason: string, requestId: string,
+                                ownPlan: ({ request_id: string } & OwnPlanInput) | null = null) {
   return {
     request_id: requestId, ticker: unit.ticker, signal_date: unit.signal_date, candidate_ids: unit.candidate_ids,
     brief_id: unit.brief && unit.brief.status !== 'error' ? unit.brief.id : null,
     proposed_action: unit.proposed_action, final_action: finalAction(unit.proposed_action, choice),
     decision: choice, reason: reason.trim(),
+    plan_id: choice === 'accept' && !ownPlan && unit.plan && unit.plan.status === 'ok' ? unit.plan.id : null,
+    own_plan: ownPlan,
   }
 }
 
@@ -108,6 +185,8 @@ export const RULE_LABELS: Record<string, string> = {
 }
 export const ACTION_LABELS: Record<string, string> = { buy: '买入', sell: '卖出', watch: '观察', ignore: '忽略' }
 export const UNIT_LABELS: Record<string, string> = { conflict: '冲突', avoid: '回避' }
+export const TIER_LABELS: Record<string, string> = { excellent_plus: '非常优秀', excellent: '优秀', viable: '可行', attention: '需关注' }
+export const FLAG_LABELS: Record<string, string> = { chase: '追高', early_take: '过早止盈', held_loser: '死扛亏损', unplanned: '计划外' }
 export const CHOICE_LABELS: Record<Choice, string> = { accept: '采纳', reject: '否决', downgrade: '降级为观察' }
 
 export const ruleLabel = (id: string) => RULE_LABELS[id] ?? id

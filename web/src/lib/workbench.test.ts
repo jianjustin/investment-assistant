@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  WorkbenchError, decisionPayload, describeError, finalAction, getToday, pct, publishedText, ruleLabel, timeline,
+  WorkbenchError, decisionPayload, describeError, finalAction, getAccount, getDiscipline, getMonthly,
+  getPlanShadow, getToday, levelsError, pct, publishedText, pushToday, ruleLabel, timeline,
 } from './workbench'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -22,7 +23,28 @@ describe('decision payload', () => {
     expect(decisionPayload(unit as any, 'accept', '  趋势修复 ', 'req-1')).toEqual({
       request_id: 'req-1', ticker: 'NVDA', signal_date: '2026-10-22', candidate_ids: ['c1', 'c2'], brief_id: 'b1',
       proposed_action: 'buy', final_action: 'buy', decision: 'accept', reason: '趋势修复',
+      plan_id: null, own_plan: null,
     })
+  })
+
+  it('sends plan_id when accepting against a healthy rule plan', () => {
+    const withPlan = { ...unit, plan: { id: 'p1', status: 'ok', kind: 'rule' } }
+    expect(decisionPayload(withPlan as any, 'accept', 'r', 'req-2')).toMatchObject({ plan_id: 'p1' })
+  })
+
+  it('sends own_plan with its own request id when levels are custom', () => {
+    const payload = decisionPayload(unit as any, 'accept', 'r', 'req-3', {
+      request_id: 'own-1', entry_low: '98.5', entry_high: '101.5', stop: '94', target1: '112',
+    })
+    expect(payload.own_plan).toEqual({ request_id: 'own-1', entry_low: '98.5', entry_high: '101.5',
+                                       stop: '94', target1: '112' })
+    expect(payload.plan_id).toBeNull()
+  })
+
+  it('rejects own levels that break the ordering', () => {
+    expect(levelsError({ entry_low: '99', entry_high: '101.5', stop: '100', target1: '112' })).toContain('止损')
+    expect(levelsError({ entry_low: 'abc', entry_high: '101.5', stop: '94', target1: '112' })).toBeTruthy()
+    expect(levelsError({ entry_low: '98.5', entry_high: '101.5', stop: '94', target1: '112' })).toBeNull()
   })
 
   it('does not cite a brief that was rejected as invalid', () => {
@@ -73,5 +95,21 @@ describe('timeline', () => {
     } as any)
     expect(items.map(i => i.kind)).toEqual(['candidate', 'news', 'filing'])
     expect(items[1].text).toContain('发布时间未知')
+  })
+})
+
+
+describe('P1 endpoints', () => {
+  it('hits account, plan shadow, discipline, monthly and push', async () => {
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      urls.push(`${init?.method ?? 'GET'} ${String(url)}`)
+      return new Response('{}', { status: 200 })
+    }))
+    await getAccount(); await getPlanShadow(); await getDiscipline(); await getMonthly(); await pushToday()
+    expect(urls).toEqual([
+      'GET /api/workbench/account/snapshots', 'GET /api/workbench/plans/shadow',
+      'GET /api/workbench/discipline', 'GET /api/workbench/monthly-reviews', 'POST /api/workbench/push',
+    ])
   })
 })
