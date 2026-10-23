@@ -310,6 +310,27 @@ def insert_weekly_review(conn, week_start: date, calc_version: str, stats: dict[
                 (week_start, calc_version, _canonical(stats), notes, supersedes_id))
 
 
+_EARNINGS_COLUMNS = 'id, ticker, earnings_date, status, source, fetched_at, created_at'
+
+
+def store_earnings(conn, ticker: str, row: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    """Append only when the answer changed; a same-day re-fetch writes nothing."""
+    latest = latest_earnings(conn, ticker, cutoff_at=now)
+    if latest and latest['status'] == row['status'] and latest['earnings_date'] == row.get('earnings_date'):
+        return {'status': 'unchanged', 'id': latest['id']}
+    with conn.cursor() as cur:
+        cur.execute('INSERT INTO earnings_dates (ticker, earnings_date, status, fetched_at) '
+                    'VALUES (%s, %s, %s, %s) RETURNING id',
+                    (ticker.upper(), row.get('earnings_date'), row['status'], now))
+        return {'status': 'inserted', 'id': cur.fetchone()[0]}
+
+
+def latest_earnings(conn, ticker: str, *, cutoff_at: datetime) -> dict[str, Any] | None:
+    """The newest earnings answer known by ``cutoff_at``."""
+    return _one(conn, f'SELECT {_EARNINGS_COLUMNS} FROM earnings_dates WHERE ticker = %s AND fetched_at <= %s '
+                      'ORDER BY fetched_at DESC, created_at DESC LIMIT 1', (ticker.upper(), cutoff_at))
+
+
 _CANDIDATE_COLUMNS = 'id, ticker, signal_date, action, rule_id, rule_version, inputs, run_id, created_at'
 
 

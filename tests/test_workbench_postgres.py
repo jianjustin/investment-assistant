@@ -1,6 +1,6 @@
 """Real constraint behavior for the US workbench schema; disposable schema only."""
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -187,3 +187,32 @@ def test_decision_plan_fk(workbench_db):
     assert _decision(workbench_db, plan_id=plan_id)
     with pytest.raises(psycopg.errors.ForeignKeyViolation):
         _decision(workbench_db, plan_id=uuid.uuid4())
+
+
+def test_store_earnings_dedupes(workbench_db):
+    from investment_assistant.workbench import repository
+    row_a = {'status': 'known', 'earnings_date': date(2026, 11, 19)}
+    out1 = repository.store_earnings(workbench_db, 'NVDA', row_a, now=NOW)
+    out2 = repository.store_earnings(workbench_db, 'NVDA', row_a, now=NOW + timedelta(hours=1))
+    assert out1['status'] == 'inserted'
+    assert out2['status'] == 'unchanged'
+    assert out2['id'] == out1['id']
+    assert workbench_db.execute('SELECT count(*) FROM earnings_dates').fetchone()[0] == 1
+    out3 = repository.store_earnings(workbench_db, 'NVDA',
+                                     {'status': 'known', 'earnings_date': date(2027, 2, 18)},
+                                     now=NOW + timedelta(hours=2))
+    assert out3['status'] == 'inserted'
+    assert workbench_db.execute('SELECT count(*) FROM earnings_dates').fetchone()[0] == 2
+
+
+def test_latest_earnings_respects_cutoff(workbench_db):
+    from investment_assistant.workbench import repository
+    repository.store_earnings(workbench_db, 'NVDA', {'status': 'known', 'earnings_date': date(2026, 11, 19)},
+                              now=NOW)
+    repository.store_earnings(workbench_db, 'NVDA', {'status': 'known', 'earnings_date': date(2027, 2, 18)},
+                              now=NOW + timedelta(hours=1))
+    row = repository.latest_earnings(workbench_db, 'NVDA', cutoff_at=NOW + timedelta(minutes=30))
+    assert row['earnings_date'] == date(2026, 11, 19)
+    assert repository.latest_earnings(workbench_db, 'NVDA', cutoff_at=NOW + timedelta(hours=2))[
+        'earnings_date'] == date(2027, 2, 18)
+    assert repository.latest_earnings(workbench_db, 'MU', cutoff_at=NOW) is None
