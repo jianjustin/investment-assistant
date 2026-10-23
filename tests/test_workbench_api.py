@@ -122,3 +122,39 @@ def test_account_routes_503_without_db(client, monkeypatch, method, path, target
 def test_post_flow_400_on_zero(client, monkeypatch):
     monkeypatch.setattr(service, 'add_flow', raiser(ledger.LedgerError('amount must be non-zero')))
     assert client.post('/api/workbench/account/flows', json={'amount': 0}).status_code == 400
+
+
+def test_bad_own_levels_400_and_nothing_written(client, workbench_db, monkeypatch):
+    from contextlib import contextmanager
+    from datetime import UTC, date, datetime
+    from decimal import Decimal
+
+    from investment_assistant.workbench import repository
+    from investment_assistant.workbench.rules import Candidate
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+
+    monkeypatch.setattr(service, 'connection', connection)
+    now = datetime(2026, 10, 23, 1, 0, tzinfo=UTC)
+    unit_day = date(2026, 10, 22)
+    repository.store_candidate(workbench_db, 'NVDA', unit_day,
+                               Candidate('trend_reclaim', 'buy', {'signal_date': unit_day.isoformat()}), run_id='r')
+    repository.insert_plan(workbench_db, {
+        'ticker': 'NVDA', 'signal_date': unit_day, 'kind': 'rule', 'based_on_id': None, 'plan_version': 'plan-1',
+        'ref_price': Decimal('100'), 'atr': Decimal('2'), 'entry_low': Decimal('99'), 'entry_high': Decimal('101'),
+        'stop': Decimal('94'), 'target1': Decimal('108'), 'trail_atr_multiple': Decimal('3'),
+        'valid_from': date(2026, 10, 23), 'valid_until': date(2026, 10, 27), 'sizing': {}, 'status': 'ok',
+        'invalid_reasons': [], 'warnings': [], 'inputs': {}, 'request_id': None, 'request_hash': None})
+
+    cid = workbench_db.execute('SELECT id FROM signal_candidates').fetchone()[0]
+    resp = client.post('/api/workbench/decisions', json={
+        'request_id': '6f1d1c1e-6666-4444-8888-000000000001', 'ticker': 'NVDA', 'signal_date': unit_day.isoformat(),
+        'candidate_ids': [str(cid)], 'proposed_action': 'buy', 'final_action': 'buy', 'decision': 'accept',
+        'reason': '自定价位', 'own_plan': {'request_id': '6f1d1c1e-7777-4444-8888-000000000002',
+                                            'entry_low': 'abc', 'entry_high': '101.5', 'stop': '94',
+                                            'target1': '112'}})
+    assert resp.status_code == 400
+    assert workbench_db.execute("SELECT count(*) FROM trade_plans WHERE kind = 'own'").fetchone()[0] == 0
+    assert workbench_db.execute('SELECT count(*) FROM signal_decisions').fetchone()[0] == 0

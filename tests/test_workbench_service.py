@@ -124,7 +124,8 @@ def test_decide_then_unit_leaves_today(db):
     out = service.decide({'request_id': '6f1d1c1e-1111-4444-8888-000000000001', 'ticker': 'NVDA',
                           'signal_date': SESSION.isoformat(), 'candidate_ids': [str(c['id']) for c in unit['candidates']],
                           'brief_id': str(unit['brief']['id']), 'proposed_action': 'buy', 'final_action': 'buy',
-                          'decision': 'accept', 'reason': '合成样例：趋势修复'}, now=NOW)
+                          'decision': 'accept', 'reason': '合成样例：趋势修复',
+                          'plan_id': str(unit['plan']['id'])}, now=NOW)
     assert out['status'] == 'created'
     assert service.today(now=NOW)['units'] == []
 

@@ -188,7 +188,7 @@ def lock(conn, key: str) -> None:
 
 
 _DECISION_COLUMNS = ('id, request_id, request_hash, ticker, signal_date, candidate_ids, brief_id, proposed_action, '
-                     'final_action, decision, reason, decided_at, supersedes_id')
+                     'final_action, decision, reason, decided_at, supersedes_id, plan_id')
 _TRADE_COLUMNS = ('id, request_id, request_hash, ticker, side, quantity, price, fee, executed_at, decision_id, note, '
                   'recorded_at, voided_at, void_reason')
 
@@ -247,11 +247,11 @@ def brief_in_unit(conn, brief_id, ticker: str, signal_date: date) -> bool:
 def insert_decision(conn, rec: dict[str, Any], digest: str, *, decided_at: datetime) -> dict[str, Any]:
     return _one(conn,
                 'INSERT INTO signal_decisions (request_id, request_hash, ticker, signal_date, candidate_ids, brief_id, '
-                'proposed_action, final_action, decision, reason, decided_at, supersedes_id) '
-                f'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING {_DECISION_COLUMNS}',
+                'proposed_action, final_action, decision, reason, decided_at, supersedes_id, plan_id) '
+                f'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING {_DECISION_COLUMNS}',
                 (rec['request_id'], digest, rec['ticker'], rec['signal_date'], rec['candidate_ids'], rec['brief_id'],
                  rec['proposed_action'], rec['final_action'], rec['decision'], rec['reason'], decided_at,
-                 rec['supersedes_id']))
+                 rec['supersedes_id'], rec.get('plan_id')))
 
 
 def trade_by_request(conn, request_id):
@@ -370,6 +370,10 @@ def plan_for_buy_trades(conn, trade_ids: list) -> dict[Any, dict[str, Any]]:
                     'JOIN signal_decisions d ON d.id = t.decision_id '
                     'JOIN trade_plans p ON p.id = d.plan_id WHERE t.id = ANY(%s)', (list(trade_ids),))
         return {row['trade_id']: {k: row[k] for k in row if k != 'trade_id'} for row in cur.fetchall()}
+
+
+def plan_by_request(conn, request_id) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_PLAN_COLUMNS} FROM trade_plans WHERE request_id = %s', (request_id,))
 
 
 def rule_plan(conn, ticker: str, signal_date: date, plan_version: str = 'plan-1') -> dict[str, Any] | None:

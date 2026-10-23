@@ -38,6 +38,8 @@ def _plain(value: Any) -> Any:
         return value.isoformat() if not isinstance(value, uuid.UUID) else str(value)
     if isinstance(value, list):
         return [_plain(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
     return value
 
 
@@ -81,6 +83,20 @@ def _decimal(value: Any, field: str, *, minimum: Decimal, inclusive: bool) -> De
     return number
 
 
+def _own_plan(value: Any) -> dict[str, Any] | None:
+    if value in (None, ''):
+        return None
+    if not isinstance(value, dict):
+        raise LedgerError('own_plan must be an object')
+    from investment_assistant.workbench import plans as _plans
+
+    try:
+        levels = _plans.validate_levels(value)
+    except ValueError as exc:
+        raise LedgerError(str(exc)) from None
+    return {'request_id': _uuid(value.get('request_id'), 'own_plan.request_id'), **levels}
+
+
 def validate_decision(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         signal_date = date.fromisoformat(str(payload.get('signal_date')))
@@ -100,7 +116,13 @@ def validate_decision(payload: dict[str, Any]) -> dict[str, Any]:
         'decision': _choice(payload.get('decision'), 'decision', ('accept', 'reject', 'downgrade')),
         'reason': _text(payload.get('reason'), 'reason'),
         'supersedes_id': _uuid(payload.get('supersedes_id'), 'supersedes_id', optional=True),
+        'plan_id': _uuid(payload.get('plan_id'), 'plan_id', optional=True),
+        'own_plan': _own_plan(payload.get('own_plan')),
     }
+    if rec['plan_id'] is not None and rec['own_plan'] is not None:
+        raise LedgerError('plan_id 与 own_plan 只能二选一')
+    if rec['decision'] != 'accept' and (rec['plan_id'] is not None or rec['own_plan'] is not None):
+        raise LedgerError('否则决与降级不需要计划')
     expected = {'accept': rec['proposed_action'], 'reject': 'ignore', 'downgrade': 'watch'}[rec['decision']]
     if rec['final_action'] != expected or (rec['decision'] == 'downgrade' and rec['proposed_action'] == 'watch'):
         raise LedgerError(f"{rec['decision']} of {rec['proposed_action']} cannot end as {rec['final_action']}")
@@ -153,7 +175,54 @@ def record_decision(conn, payload: dict[str, Any], *, now: datetime) -> dict[str
         raise LedgerError('nothing to supersede in this unit')
     if head is not None and rec['supersedes_id'] != head['id']:
         raise Conflict('this unit already has a newer decision; supersede the latest one')
+    rule = repository.rule_plan(conn, rec['ticker'], rec['signal_date'])
+    plan_id = _checked_plan_id(conn, rec, rule)
+    if rec['own_plan'] is not None:
+        plan_id = _record_own_plan(conn, rec, rule, now=now)['id']
+    rec = {**rec, 'plan_id': plan_id}
     return {'status': 'created', 'record': repository.insert_decision(conn, rec, digest, decided_at=now)}
+
+
+def _checked_plan_id(conn, rec: dict[str, Any], rule: dict[str, Any] | None):
+    """spec §5.3: what an accept of a buy unit must carry, and what plan_id may point to."""
+    needs_plan = rec['decision'] == 'accept' and rec['proposed_action'] == 'buy'
+    if needs_plan and rule is not None:
+        if rule['status'] == 'ok':
+            if rec['plan_id'] is None and rec['own_plan'] is None:
+                raise LedgerError('采纳买入必须携带规则计划（plan_id）或自定价位（own_plan）')
+            if rec['plan_id'] is not None and rec['plan_id'] != rule['id']:
+                raise LedgerError('plan_id 必须指向该单元当前规则计划，或改用自定价位')
+        elif rec['plan_id'] is not None:
+            raise LedgerError('规则计划已作废，只能采纳自定价位（own_plan）')
+    if rec['plan_id'] is not None:
+        linked = repository.plan_by_id(conn, rec['plan_id'])
+        if linked is None or linked['ticker'] != rec['ticker'] or linked['signal_date'] != rec['signal_date']:
+            raise LedgerError('plan_id 不属于该决策单元')
+    return rec['plan_id']
+
+
+def _record_own_plan(conn, rec: dict[str, Any], rule: dict[str, Any] | None, *, now: datetime) -> dict[str, Any]:
+    """Build and store the own plan in this decision's transaction; replay by request_id is idempotent."""
+    from investment_assistant.config import load_config
+    from investment_assistant.workbench import plans as _plans, service as _service
+
+    bars = repository.read_bars(conn, rec['ticker'], rec['signal_date'], cutoff_at=now)
+    if not bars:
+        raise LedgerError('该单元缺少 K 线，无法生成自定计划')
+    plan = _plans.build_own_plan(
+        rule_plan=rule, levels={k: rec['own_plan'][k] for k in ('entry_low', 'entry_high', 'stop', 'target1')},
+        ticker=rec['ticker'], signal_date=rec['signal_date'], bars=bars,
+        earnings_row=repository.latest_earnings(conn, rec['ticker'], cutoff_at=now),
+        snapshot=repository.snapshot_at(conn, rec['signal_date'], cutoff_at=now),
+        exposure=_service.exposure(conn, rec['signal_date'], cutoff_at=now, ticker=rec['ticker']),
+        params=load_config().workbench)
+    plan = {**plan, 'request_id': rec['own_plan']['request_id'], 'request_hash': request_hash(plan)}
+    existing = repository.plan_by_request(conn, plan['request_id'])
+    if existing is not None:
+        if existing['request_hash'] != plan['request_hash']:
+            raise Conflict('own_plan.request_id 已用于不同内容')
+        return existing
+    return repository.insert_plan(conn, plan)
 
 
 def _check_book(conn, ticker: str, trades: list[dict[str, Any]]) -> None:

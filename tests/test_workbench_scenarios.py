@@ -79,7 +79,8 @@ def offline(workbench_db, monkeypatch):
 
 def deps():
     s = OfflineSources()
-    return service.Deps(bar_fetcher=s.bars, news_fetcher=s.news, filing_source=s)   # default brief client
+    return service.Deps(bar_fetcher=s.bars, news_fetcher=s.news, filing_source=s,   # default brief client
+                        earnings_fetcher=lambda t: {'Earnings Date': []})
 
 
 def unit_for(view, ticker):
@@ -91,6 +92,7 @@ def decide(u, decision, final, reason, now, supersedes=None):
         'request_id': str(__import__('uuid').uuid4()), 'ticker': u['ticker'], 'signal_date': u['signal_date'].isoformat(),
         'candidate_ids': [str(c) for c in u['candidate_ids']], 'proposed_action': u['proposed_action'],
         'final_action': final, 'decision': decision, 'reason': reason,
+        'plan_id': str(u['plan']['id']) if u.get('plan') else None,
         'supersedes_id': str(supersedes) if supersedes else None}, now=now)['record']
 
 

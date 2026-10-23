@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 
@@ -159,3 +160,91 @@ def test_void_refused_when_it_would_leave_a_sell_uncovered(workbench_db):
                                                     executed_at='2026-10-23T15:00:00+00:00'), now=later)
     with pytest.raises(ledger.LedgerError):
         ledger.void_trade(workbench_db, buy['id'], '录错', now=later)
+
+
+# --- plans linked to decisions (spec §5.3) ---
+
+def rule_plan_row(conn, **overrides):
+    plan = {'ticker': 'NVDA', 'signal_date': T, 'kind': 'rule', 'based_on_id': None, 'plan_version': 'plan-1',
+            'ref_price': Decimal('100'), 'atr': Decimal('2'), 'entry_low': Decimal('99'),
+            'entry_high': Decimal('101'), 'stop': Decimal('94'), 'target1': Decimal('108'),
+            'trail_atr_multiple': Decimal('3'), 'valid_from': date(2026, 10, 23), 'valid_until': date(2026, 10, 27),
+            'sizing': {'status': 'no_equity'}, 'status': 'ok', 'invalid_reasons': [], 'warnings': [],
+            'inputs': {'bar_ids': [1]}, 'request_id': None, 'request_hash': None}
+    plan.update(overrides)
+    return repository.insert_plan(conn, plan)
+
+
+def _unit_bar(conn):
+    conn.execute("INSERT INTO price_bars (ticker, price_date, open, high, low, close, volume, adj_close, "
+                 "revision, fetched_at) VALUES ('NVDA', %s, 100, 102, 99, 100, 1000, 100, 1, %s)", [T, NOW])
+
+
+def own_levels(**overrides):
+    levels = {'entry_low': '98.5', 'entry_high': '101.5', 'stop': '94', 'target1': '112'}
+    levels.update(overrides)
+    return levels
+
+
+def test_accept_buy_requires_plan(workbench_db, cids):
+    rule_plan_row(workbench_db)
+    with pytest.raises(ledger.LedgerError):
+        ledger.record_decision(workbench_db, decision_payload(cids), now=NOW)
+
+
+def test_accept_with_wrong_plan_id_rejected(workbench_db, cids):
+    plan = rule_plan_row(workbench_db)
+    with pytest.raises(ledger.LedgerError):
+        ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(uuid.uuid4())), now=NOW)
+    out = ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(plan['id'])), now=NOW)
+    assert out['record']['plan_id'] == plan['id']
+
+
+def test_invalid_rule_plan_requires_own(workbench_db, cids):
+    plan = rule_plan_row(workbench_db, status='invalid', invalid_reasons=['earnings_in_validity'])
+    _unit_bar(workbench_db)
+    with pytest.raises(ledger.LedgerError):
+        ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(plan['id'])), now=NOW)
+    out = ledger.record_decision(workbench_db, decision_payload(
+        cids, own_plan={'request_id': str(uuid.uuid4()), **own_levels()}), now=NOW)
+    assert out['record']['plan_id'] != plan['id']  # 指向新建的 own 计划
+
+
+def test_own_plan_written_with_decision(workbench_db, cids):
+    rule = rule_plan_row(workbench_db)
+    _unit_bar(workbench_db)
+    own_request = str(uuid.uuid4())
+    out = ledger.record_decision(workbench_db, decision_payload(
+        cids, own_plan={'request_id': own_request, **own_levels()}), now=NOW)
+    plan = repository.plan_by_id(workbench_db, out['record']['plan_id'])
+    assert plan['kind'] == 'own' and str(plan['request_id']) == own_request
+    assert plan['based_on_id'] == rule['id']
+    assert Decimal(plan['stop']) == Decimal('94')
+
+
+def test_own_plan_replay_same_request(workbench_db, cids):
+    rule_plan_row(workbench_db)
+    _unit_bar(workbench_db)
+    payload = decision_payload(cids, own_plan={'request_id': str(uuid.uuid4()), **own_levels()})
+    first = ledger.record_decision(workbench_db, payload, now=NOW)
+    again = ledger.record_decision(workbench_db, payload, now=NOW + timedelta(minutes=1))
+    assert first['status'] == 'created' and again['status'] == 'existing'
+    assert again['record']['id'] == first['record']['id']
+    assert workbench_db.execute("SELECT count(*) FROM trade_plans WHERE kind = 'own'").fetchone()[0] == 1
+
+
+def test_reject_with_plan_rejected(workbench_db, cids):
+    rule_plan_row(workbench_db)
+    with pytest.raises(ledger.LedgerError):
+        ledger.record_decision(workbench_db, decision_payload(cids, decision='reject', final_action='ignore',
+                                                              plan_id=str(uuid.uuid4())), now=NOW)
+    with pytest.raises(ledger.LedgerError):
+        ledger.record_decision(workbench_db, decision_payload(cids, decision='reject', final_action='ignore',
+                                                              own_plan={'request_id': str(uuid.uuid4()),
+                                                                        **own_levels()}), now=NOW)
+
+
+def test_plan_id_must_belong_to_the_unit(workbench_db, cids):
+    other = rule_plan_row(workbench_db, ticker='MU')
+    with pytest.raises(ledger.LedgerError):
+        ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(other['id'])), now=NOW)
