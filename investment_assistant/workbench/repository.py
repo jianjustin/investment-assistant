@@ -1,6 +1,8 @@
 """All workbench SQL. Callers own transactions: this layer never commits or rolls back."""
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -56,3 +58,50 @@ def read_bars(conn, ticker: str, end_date: date, *, cutoff_at: datetime, limit: 
         for key in _FLOAT_FIELDS:
             row[key] = float(row[key])
     return list(reversed(rows))
+
+
+def _news_hash(item: dict[str, Any]) -> str:
+    payload = {k: item.get(k) for k in ('title', 'publisher')}
+    payload['published_at'] = item['published_at'].isoformat() if item.get('published_at') else None
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def store_news(conn, entries: list[tuple[dict[str, Any], list[str]]], *, now: datetime) -> dict[str, int]:
+    """First sighting wins: a re-fetched (source, url) keeps its original row and fetched_at."""
+    counts = {'inserted': 0, 'existing': 0}
+    with conn.cursor() as cur:
+        for item, tickers in entries:
+            cur.execute(
+                'INSERT INTO news_items (source, title, url, publisher, published_at, fetched_at, content_hash) '
+                'VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (source, url) DO NOTHING RETURNING id',
+                (item['source'], item['title'], item['url'], item.get('publisher'), item.get('published_at'),
+                 now, _news_hash(item)))
+            row = cur.fetchone()
+            if row:
+                counts['inserted'] += 1
+            else:
+                counts['existing'] += 1
+                cur.execute('SELECT id FROM news_items WHERE source = %s AND url = %s', (item['source'], item['url']))
+                row = cur.fetchone()
+            for ticker in tickers:
+                cur.execute('INSERT INTO news_item_tickers (news_item_id, ticker) VALUES (%s, %s) '
+                            'ON CONFLICT DO NOTHING', (row[0], ticker.upper()))
+    return counts
+
+
+def read_news(conn, ticker: str, *, cutoff_at: datetime, since: datetime | None = None,
+              limit: int = 50) -> list[dict[str, Any]]:
+    """News known by ``cutoff_at``; undated items are kept and must be shown as such."""
+    clauses = ['t.ticker = %s', 'n.fetched_at <= %s', '(n.published_at IS NULL OR n.published_at <= %s)']
+    params: list[Any] = [ticker.upper(), cutoff_at, cutoff_at]
+    if since is not None:
+        clauses.append('COALESCE(n.published_at, n.fetched_at) >= %s')
+        params.append(since)
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            'SELECT n.id, n.source, n.title, n.url, n.publisher, n.published_at, n.fetched_at '
+            'FROM news_items n JOIN news_item_tickers t ON t.news_item_id = n.id '
+            f"WHERE {' AND '.join(clauses)} "
+            'ORDER BY COALESCE(n.published_at, n.fetched_at) DESC, n.id DESC LIMIT %s',
+            (*params, limit))
+        return cur.fetchall()
