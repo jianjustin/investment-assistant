@@ -296,7 +296,7 @@
         {#if r.stats.unsignaled_trades?.length}<p>无信号交易 {r.stats.unsignaled_trades.length} 笔</p>{/if}
         {#if r.stats.plans && Object.keys(r.stats.plans).length}
           <p class="text-xs text-muted">计划影子（数量 / 已过期 / R 均值 / 中位数）</p>
-          <ul>{#each Object.entries(r.stats.plans) as [kind, p]}
+          <ul>{#each Object.entries(r.stats.plans as Record<string, { count: number; expired: number; r_mean: number | null; r_median: number | null }>) as [kind, p]}
             <li>{kind === 'rule' ? '规则' : '自定'}：{p.count} · 已过期 {p.expired} · R {p.r_mean ?? '—'} / {p.r_median ?? '—'}</li>
           {/each}</ul>
         {/if}
@@ -319,7 +319,7 @@
     </form>
     {#each monthly ?? [] as r (r.id)}
       <article class="border border-border rounded p-3 text-sm space-y-2">
-        <h2 class="font-semibold">{r.month} · {wb.TIER_LABELS[r.stats.tier] ?? '缺数据'}</h2>
+        <h2 class="font-semibold">{r.month} · {(r.stats.tier && wb.TIER_LABELS[r.stats.tier]) || '缺数据'}</h2>
         {#if r.stats.return?.status === 'ok'}
           <p>月度收益 {wb.pct(r.stats.return.return)} · 净出入金 {r.stats.return.net_flow ?? '—'}</p>
           {#if r.stats.spy}<p>SPY {wb.pct(r.stats.spy.return)} · 超额 {wb.pct(r.stats.spy.excess)}</p>{/if}

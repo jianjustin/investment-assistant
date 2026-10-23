@@ -7,8 +7,8 @@
 
 | 阶段 | 状态 | 下一步 |
 | --- | --- | --- |
-| P1 规则计划与推送 | `engineering_done`，`runtime_unverified`（离线测试与一次性测试库全绿；未迁移真实库、未发真实推送） | P1 验收：授权后对真实库 `pg_dump` 并执行迁移 017、开启推送、页面验收 |
-| P2 观察池扩展与市场环境 | 未开工 | 依赖 P1 |
+| P1 规则计划与推送 | `engineering_done`；真实库已迁移 017、服务已重载，页面与接口已检查；推送暂关（待你确认后开启）；`user_acceptance_pending` | 确认后开启 `workbench` 推送；出现第一个买入单元时核对计划价位与推送内容 |
+| P2 观察池扩展与市场环境 | spec 与实施计划已写，待审阅 | 审阅 [P2 spec](../superpowers/specs/2026-10-23-p2-pool-and-market-context-design.md) 与[实施计划](../superpowers/plans/2026-10-23-p2-pool-and-market-context.md)；运行验收依赖 P1 验收 |
 | P3 Agent 轨道 | 未开工 | 依赖 P1、P2 |
 | P4 复盘扩展 | 未开工 | 依赖 P1，三方对比依赖 P3 |
 
@@ -31,7 +31,9 @@ v2 新增：
 
 4. 写 P1「规则计划与推送」spec。（10-23：已批准。）
 5. 审阅 P1 实施计划并开始实施。（10-23：已完成实施。）
-6. P1 验收：对真实库执行迁移 017（先 `pg_dump`）、开启推送并页面验收。（待授权。）
+6. P1 验收：对真实库执行迁移 017（先 `pg_dump`）、开启推送并页面验收。（10-23：迁移与页面检查完成；推送待确认。）
+7. 开启工作台推送：在「设置」把任务 `workbench` 打开（10-23 为避免重载后自动推送而关闭）。
+7. 审阅 P2 spec 与实施计划（11 个任务）。（10-23：已写，待审阅。）
 
 ## 阶段证据
 
@@ -44,3 +46,5 @@ v2 新增：
 | 2026-10-23 | P1 实施计划写成（14 个任务） | [P1 实施计划](../superpowers/plans/2026-10-23-p1-rule-plans-and-push.md) |
 | 2026-10-23 | P1 工程完成（Task 1–14，提交 `0caf127`…见该计划各任务提交；前端完成于 `c2adc45`；终审修复 `a923e6c`） | 端到端场景测试 `tests/test_workbench_scenarios.py::test_plan_to_monthly_review_end_to_end`；[使用文档](../us-workbench.md) P1 四节 |
 | 2026-10-23 | P1 复核修复：月度收益只用上月与本月的快照、自定计划按自定入场区间计仓位、过早止盈只看持有期内的 T1 | 新增 4 个回归测试；全量后端 1129 通过（含一次性库 SQL），前端 201 通过（Node 26 需 `NODE_OPTIONS=--no-experimental-webstorage`） |
+| 2026-10-23 | P2 四项设计确认（分层存数据库观察名单、区制只看广度且仅提示、扩展池只影子跟踪、FRED 官方 API + 密钥），spec 与实施计划写成（11 个任务），待审阅 | [P2 spec](../superpowers/specs/2026-10-23-p2-pool-and-market-context-design.md)、[P2 实施计划](../superpowers/plans/2026-10-23-p2-pool-and-market-context.md) |
+| 2026-10-23 | P1 运行验收（部分） | 备份 `.local/us-workbench/backups/investment_assistant-before-017-20261023-202915.dump`（sha256 `8542b9d5…`）；迁移 017 已执行，5 张新表为空、`signal_decisions.plan_id` 已加，旧行未动；`web/dist` 先备份到 `.local/us-workbench/dist-backup-20261023-203002` 再构建；服务重载后手动批处理成功（9 只财报日期入库、无报错、未推送）；「今日」「复盘 → 资金 / 月度复盘」页面与新接口均正常。未覆盖：当日无买入单元，真实数据上的计划价位与持仓止损尚未出现；推送未开启 |
