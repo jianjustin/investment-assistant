@@ -472,6 +472,28 @@ def latest_earnings(conn, ticker: str, *, cutoff_at: datetime) -> dict[str, Any]
                       'ORDER BY fetched_at DESC, created_at DESC LIMIT 1', (ticker.upper(), cutoff_at))
 
 
+_MONTHLY_COLUMNS = 'id, month, calc_version, stats, notes, supersedes_id, created_at'
+
+
+def insert_monthly_review(conn, month: date, calc_version: str, stats: dict[str, Any], notes: str,
+                          supersedes_id) -> dict[str, Any]:
+    return _one(conn, 'INSERT INTO monthly_reviews (month, calc_version, stats, notes, supersedes_id) '
+                      f'VALUES (%s, %s, %s::jsonb, %s, %s) RETURNING {_MONTHLY_COLUMNS}',
+                (month, calc_version, _plan_json(stats), notes, supersedes_id))
+
+
+def monthly_head(conn, month: date) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_MONTHLY_COLUMNS} FROM monthly_reviews m WHERE month = %s AND NOT EXISTS '
+                      '(SELECT 1 FROM monthly_reviews s WHERE s.supersedes_id = m.id) '
+                      'ORDER BY created_at DESC LIMIT 1', (month,))
+
+
+def monthly_heads(conn, limit: int) -> list[dict[str, Any]]:
+    return _all(conn, f'SELECT {_MONTHLY_COLUMNS} FROM monthly_reviews m WHERE NOT EXISTS '
+                      '(SELECT 1 FROM monthly_reviews s WHERE s.supersedes_id = m.id) '
+                      'ORDER BY month DESC, created_at DESC LIMIT %s', (limit,))
+
+
 _CANDIDATE_COLUMNS = 'id, ticker, signal_date, action, rule_id, rule_version, inputs, run_id, created_at'
 
 

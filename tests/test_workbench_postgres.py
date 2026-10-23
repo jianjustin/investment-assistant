@@ -244,3 +244,44 @@ def test_store_plan_rule_dedup_conflict_and_reads(workbench_db):
     assert repository.plan_by_id(workbench_db, head['id'])['target1'] == 108
     assert len(repository.plans_since(workbench_db, date(2026, 10, 1))) == 1
     assert repository.plans_since(workbench_db, date(2026, 11, 1)) == []
+
+
+def test_old_weekly_snapshot_unchanged(workbench_db, monkeypatch):
+    from contextlib import contextmanager
+
+    from investment_assistant.workbench import repository, review, service
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+
+    monkeypatch.setattr(service, 'connection', connection)
+    old = repository.insert_weekly_review(workbench_db, date(2026, 10, 19), 'review-1', {'units': 3}, '',
+                                          None)
+    assert old['calc_version'] == 'review-1'
+    assert repository.weekly_head(workbench_db, date(2026, 10, 19))['stats'] == {'units': 3}
+
+
+def test_monthly_frozen_and_supersede(workbench_db, monkeypatch):
+    import uuid as _uuid
+    from contextlib import contextmanager
+    from datetime import UTC, datetime
+
+    from investment_assistant.workbench import ledger, service
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+
+    monkeypatch.setattr(service, 'connection', connection)
+    now = datetime(2026, 11, 1, 22, 30, tzinfo=UTC)
+    first = service.generate_monthly(date(2026, 10, 1), notes='初版', now=now)
+    assert first['stats']['calc_version'] == 'monthly-1'
+    assert first['stats']['return']['status'] == 'missing_snapshot'
+    with pytest.raises(ledger.Conflict):
+        service.generate_monthly(date(2026, 10, 1), notes='重复生成', now=now)
+    fix = service.generate_monthly(date(2026, 10, 1), notes='更正', supersedes_id=first['id'], now=now)
+    assert fix['supersedes_id'] == first['id'] and fix['notes'] == '更正'
+    listed = service.list_monthly()
+    assert [r['id'] for r in listed] == [fix['id']]
+    assert workbench_db.execute('SELECT count(*) FROM monthly_reviews').fetchone()[0] == 2

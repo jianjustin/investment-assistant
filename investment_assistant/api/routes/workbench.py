@@ -124,6 +124,22 @@ def generate_weekly(payload: dict[str, Any] = Body(default_factory=dict)):
                  supersedes_id=payload.get('supersedes_id') or None, now=_now())
 
 
+@router.get('/api/workbench/monthly-reviews')
+def monthly_reviews():
+    return {'reviews': _call(service.list_monthly)}
+
+
+@router.post('/api/workbench/monthly-reviews')
+def generate_monthly(payload: dict[str, Any] = Body(default_factory=dict)):
+    month = _date(payload.get('month'), 'month')
+    if month is None:
+        raise HTTPException(status_code=400, detail='month is required')
+    if month.day != 1:
+        raise HTTPException(status_code=400, detail='month must be the first day of the month')
+    return _call(service.generate_monthly, month, notes=payload.get('notes') or '',
+                 supersedes_id=payload.get('supersedes_id') or None, now=_now())
+
+
 @router.post('/api/workbench/run')
 def run_now():
     from investment_assistant.tasks.workbench import run

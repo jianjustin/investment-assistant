@@ -128,7 +128,7 @@ def evaluate(*, trades: list[dict[str, Any]], decisions_by_id: dict, plans_by_id
             immature_counts[flag] += 1
         if p is not None and flags:
             planned_flagged += 1
-        out_trades.append({'trade_id': t['id'], 'ticker': ticker, 'track': track, 'flags': flags,
+        out_trades.append({'trade_id': str(t['id']), 'ticker': ticker, 'track': track, 'flags': flags,
                            'immature': list(dict.fromkeys(immature)), 'r': r})
 
     return {'trades': out_trades, 'counts': counts, 'immature': immature_counts, 'planned_buys': planned_buys,

@@ -173,3 +173,12 @@ def test_plan_shadow_since_is_validated(client):
 def test_discipline_503_without_db(client, monkeypatch):
     monkeypatch.setattr(service, 'discipline', raiser(service.Unavailable('工作台数据表未就绪')))
     assert client.get('/api/workbench/discipline').status_code == 503
+
+
+def test_monthly_reviews_routes(client, monkeypatch):
+    monkeypatch.setattr(service, 'list_monthly', raiser(service.Unavailable('工作台数据表未就绪')))
+    assert client.get('/api/workbench/monthly-reviews').status_code == 503
+    monkeypatch.setattr(service, 'generate_monthly', raiser(service.Unavailable('工作台数据表未就绪')))
+    assert client.post('/api/workbench/monthly-reviews', json={'month': '2026-10-01'}).status_code == 503
+    assert client.post('/api/workbench/monthly-reviews', json={}).status_code == 400
+    assert client.post('/api/workbench/monthly-reviews', json={'month': '2026-10-15'}).status_code == 400

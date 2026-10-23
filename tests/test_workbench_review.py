@@ -133,3 +133,22 @@ def test_weekly_review_week_must_start_monday(workbench_db):
     from investment_assistant.workbench import ledger
     with pytest.raises(ledger.LedgerError):
         review.save_weekly(workbench_db, date(2026, 10, 20), {}, notes='', supersedes_id=None)
+
+
+def test_weekly_review2_has_plans_and_discipline():
+    week = date(2026, 9, 28)
+    in_week = lambda d: week <= d <= week + timedelta(days=6)
+    plan_outcomes = [
+        {'kind': 'rule', 'signal_date': date(2026, 9, 29), 'outcome': {'status': 'open', 'r': 2.0}},
+        {'kind': 'rule', 'signal_date': date(2026, 10, 1), 'outcome': {'status': 'expired', 'r': None}},
+        {'kind': 'own', 'signal_date': date(2026, 9, 30), 'outcome': {'status': 'closed', 'r': 1.0}},
+        {'kind': 'rule', 'signal_date': date(2026, 10, 10), 'outcome': {'status': 'closed', 'r': 9.0}},  # 周外
+    ]
+    disc = {'trades': [], 'counts': {'chase': 0, 'early_take': 0, 'held_loser': 0, 'unplanned': 0},
+            'immature': {'early_take': 0, 'held_loser': 0}, 'planned_buys': 1, 'compliance_rate': 1.0}
+    stats = review.weekly_stats(week, [], {}, [], segments=[], undecided=0, entry_opens={},
+                                plan_outcomes=plan_outcomes, discipline=disc)
+    assert stats['calc_version'] == 'review-2'
+    assert stats['plans']['rule'] == {'count': 2, 'expired': 1, 'r_mean': 2.0, 'r_median': 2.0}
+    assert stats['plans']['own'] == {'count': 1, 'expired': 0, 'r_mean': 1.0, 'r_median': 1.0}
+    assert stats['discipline'] == disc

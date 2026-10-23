@@ -12,8 +12,9 @@ from zoneinfo import ZoneInfo
 
 from investment_assistant.data.calendar import is_trading_day
 from investment_assistant.db import connect
-from investment_assistant.workbench import (account, bars, briefs, discipline, earnings, exits, ledger, news,
+from investment_assistant.workbench import (account, bars, briefs, earnings, exits, ledger, monthly, news,
                                                plans, positions, repository, review, rules, synthesis)
+from investment_assistant.workbench import discipline as _discipline_module
 from investment_assistant.workbench import plan_shadow as _plan_shadow_module
 
 NY = ZoneInfo('America/New_York')
@@ -428,7 +429,7 @@ def plan_shadow(*, now: datetime, since: date | None = None) -> dict[str, Any]:
     return {'session': session, 'since': since, 'calc_version': _plan_shadow_module.SHADOW_VERSION, 'plans': out}
 
 
-def discipline_view(*, now: datetime, since: date | None = None) -> dict[str, Any]:
+def discipline(*, now: datetime, since: date | None = None) -> dict[str, Any]:
     """Execution discipline of recorded buys against their confirmed plans."""
     session = bars.latest_closed_session(now)
     since = since or session - timedelta(days=90)
@@ -453,14 +454,10 @@ def discipline_view(*, now: datetime, since: date | None = None) -> dict[str, An
             stop_events += [c for c in repository.read_candidates(conn, tk, since=since)
                             if c['rule_id'] == 'plan_stop']
             segments += _book(conn, tk)['closed']
-        out = discipline.evaluate(trades=trades, decisions_by_id=decisions_by_id, plans_by_id=plans_by_id,
+        out = _discipline_module.evaluate(trades=trades, decisions_by_id=decisions_by_id, plans_by_id=plans_by_id,
                                   bars_by_ticker=bars_by_ticker, stop_events=stop_events, segments=segments,
                                   session=session)
     return {'session': session, 'since': since, **out}
-
-
-# discipline() is the interface name; keep both for the route.
-discipline = discipline_view
 
 
 def trade_review(*, now: datetime) -> dict[str, Any]:
@@ -475,6 +472,33 @@ def trade_review(*, now: datetime) -> dict[str, Any]:
             if book['position'] and ticker_bars:
                 open_.append(review.open_position_review(ticker, book['position'], ticker_bars))
     return {'session': session, 'calc_version': review.CALC_VERSION, 'closed': closed, 'open': open_}
+
+
+def _week_discipline(conn, session: date, now: datetime) -> dict[str, Any]:
+    """Discipline over all recorded trades, computed inside an existing transaction."""
+    trades = repository.list_trades(conn)
+    decisions_by_id = {}
+    for t in trades:
+        if t['decision_id'] and t['decision_id'] not in decisions_by_id:
+            d = repository.decision_by_id(conn, t['decision_id'])
+            if d is not None:
+                decisions_by_id[t['decision_id']] = d
+    plans_by_id = {}
+    for d in decisions_by_id.values():
+        if d['plan_id'] and d['plan_id'] not in plans_by_id:
+            p = repository.plan_by_id(conn, d['plan_id'])
+            if p is not None:
+                plans_by_id[d['plan_id']] = p
+    tickers = sorted({t['ticker'] for t in trades})
+    stop_events, segments = [], []
+    for tk in tickers:
+        stop_events += [c for c in repository.read_candidates(conn, tk, since=session - timedelta(days=90))
+                        if c['rule_id'] == 'plan_stop']
+        segments += _book(conn, tk)['closed']
+    return _discipline_module.evaluate(trades=trades, decisions_by_id=decisions_by_id, plans_by_id=plans_by_id,
+                               bars_by_ticker={tk: repository.read_bars(conn, tk, session, cutoff_at=now, limit=400)
+                                               for tk in tickers},
+                               stop_events=stop_events, segments=segments, session=session)
 
 
 def generate_weekly(week_start: date, *, notes: str = '', supersedes_id=None, now: datetime) -> dict[str, Any]:
@@ -495,11 +519,136 @@ def generate_weekly(week_start: date, *, notes: str = '', supersedes_id=None, no
             segments += [{'ticker': ticker, **review.trade_segment_review(s, ticker_bars, spy)}
                          for s in _book(conn, ticker)['closed']
                          if week_start <= s['closed_at'].astimezone(NY).date() <= week_end]
+        spy_bars = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now, limit=400)
+        plan_outcomes = []
+        for plan in repository.plans_since(conn, week_start):
+            if plan['signal_date'] > week_end:
+                continue
+            ticker_bars = repository.read_bars(conn, plan['ticker'], session, cutoff_at=now, limit=400)
+            plan_outcomes.append({**plan, 'outcome': _plan_shadow_module.simulate(
+                plan, ticker_bars, spy_bars, splits=repository.split_events(conn, plan['ticker']))})
         stats = review.weekly_stats(week_start, units, outcomes, repository.list_trades(conn), segments=segments,
                                     undecided=undecided,
-                                    entry_opens={k: v.get('entry_price') for k, v in outcomes.items()})
+                                    entry_opens={k: v.get('entry_price') for k, v in outcomes.items()},
+                                    plan_outcomes=plan_outcomes,
+                                    discipline=_week_discipline(conn, session, now))
         stats['generated_at'] = now.isoformat()
         return review.save_weekly(conn, week_start, stats, notes=notes, supersedes_id=supersedes_id)
+
+
+def _prev_month(m: date) -> date:
+    return (m - timedelta(days=1)).replace(day=1)
+
+
+def _spy_return_between(conn, start_day: date, end_day: date, *, now: datetime) -> float | None:
+    index = {b['price_date']: b['adj_close'] for b in
+             repository.read_bars(conn, BENCHMARK, end_day, cutoff_at=now, limit=400)}
+    if start_day not in index or end_day not in index:
+        return None
+    return float(index[end_day] / index[start_day] - 1)
+
+
+def generate_monthly(month: date, *, notes: str = '', supersedes_id=None, now: datetime) -> dict[str, Any]:
+    """Freeze one month's review; corrections supersede. Missing snapshots show, never fake zeros."""
+    from investment_assistant.config import load_config
+
+    if month.day != 1:
+        raise ledger.LedgerError('month must be the first day of the month')
+    month_end = month.replace(day=[31, 29 if month.year % 4 == 0 and (month.year % 100 != 0 or month.year % 400 == 0)
+                                   else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month.month - 1])
+    params = load_config().workbench
+    with _tx() as conn:
+        repository.lock(conn, f'monthly:{month}')
+        head = repository.monthly_head(conn, month)
+        if (head['id'] if head else None) != supersedes_id:
+            raise ledger.Conflict('该月已有更新的月度复盘；请更正最新一条')
+        snapshots, flows = repository.list_snapshots(conn), repository.list_flows(conn)
+
+        months = [month]
+        for _ in range(2):
+            months.insert(0, _prev_month(months[0]))
+        per_month, spy_ret = [], None
+        for m in months:
+            ret = monthly.month_return(m, snapshots, flows)
+            if ret['status'] != 'ok':
+                per_month.append({'return': None, 'spy_return': None})
+                continue
+            spy_r = _spy_return_between(conn, ret['start']['as_of'], ret['end']['as_of'], now=now)
+            per_month.append({'return': ret['return'], 'spy_return': spy_r})
+            if m == month:
+                spy_ret = spy_r
+        ret = monthly.month_return(month, snapshots, flows)
+
+        trades = repository.list_trades(conn)
+        trades_by_id = {t['id']: t for t in trades}
+        tickers = sorted({t['ticker'] for t in trades})
+        plans_by_trade = repository.plan_for_buy_trades(conn, list(trades_by_id))
+        rs, segments_month, plan_outcomes = [], [], []
+        for ticker in tickers:
+            book = _book(conn, ticker)
+            splits = repository.split_events(conn, ticker)
+            for seg in book['closed']:
+                if not month <= seg['closed_at'].astimezone(NY).date() <= month_end:
+                    continue
+                segments_month.append({'ticker': ticker, **seg})
+                plan = plans_by_trade.get(seg['buy_trade_id'])
+                if plan is None:
+                    continue
+                buy_trade = trades_by_id.get(seg['buy_trade_id'])
+                buy_day = buy_trade['executed_at'].astimezone(NY).date()
+                stop = _discipline_module._at_basis(plan['stop'], plan['signal_date'], buy_day, splits)
+                entry, exit_ = seg['entry_cost_per_share'], seg['exit_price']
+                if entry != stop:
+                    rs.append(float((exit_ - entry) / (entry - stop)))
+        spy_bars = repository.read_bars(conn, BENCHMARK, bars.latest_closed_session(now), cutoff_at=now, limit=400)
+        for plan in repository.plans_since(conn, month):
+            if plan['signal_date'] > month_end:
+                continue
+            ticker_bars = repository.read_bars(conn, plan['ticker'], bars.latest_closed_session(now),
+                                               cutoff_at=now, limit=400)
+            plan_outcomes.append({**plan, 'outcome': _plan_shadow_module.simulate(
+                plan, ticker_bars, spy_bars, splits=repository.split_events(conn, plan['ticker']))})
+        decisions_by_id = {}
+        for t in trades:
+            if t['decision_id'] and t['decision_id'] not in decisions_by_id:
+                d = repository.decision_by_id(conn, t['decision_id'])
+                if d is not None:
+                    decisions_by_id[t['decision_id']] = d
+        plans_by_id = {}
+        for d in decisions_by_id.values():
+            if d['plan_id'] and d['plan_id'] not in plans_by_id:
+                p = repository.plan_by_id(conn, d['plan_id'])
+                if p is not None:
+                    plans_by_id[d['plan_id']] = p
+        stop_events_month = []
+        for ticker in tickers:
+            stop_events_month += [c for c in repository.read_candidates(conn, ticker, since=month)
+                                  if c['rule_id'] == 'plan_stop']
+        disc = _discipline_module.evaluate(
+            trades=[t for t in trades if month <= t['executed_at'].astimezone(NY).date() <= month_end],
+            decisions_by_id=decisions_by_id, plans_by_id=plans_by_id,
+            bars_by_ticker={tk: repository.read_bars(conn, tk, bars.latest_closed_session(now), cutoff_at=now,
+                                                     limit=400) for tk in tickers},
+            stop_events=stop_events_month, segments=segments_month,
+            session=bars.latest_closed_session(now))
+
+        stats = {
+            'calc_version': monthly.MONTHLY_VERSION, 'month': month.isoformat(), 'return': ret,
+            'tier': monthly.tier(ret['return'], params.return_tiers) if ret['status'] == 'ok' else None,
+            'spy': ({'return': spy_ret, 'excess': ret['return'] - spy_ret}
+                    if ret['status'] == 'ok' and spy_ret is not None else None),
+            'review_flag': monthly.review_flag(per_month),
+            'sensitivity': {'approximate': True, 'rows': monthly.sensitivity(rs)},
+            'discipline': disc,
+            'plans': review._plan_summary(plan_outcomes, month, month_end),
+            'generated_at': now.isoformat(),
+        }
+        return repository.insert_monthly_review(conn, month, monthly.MONTHLY_VERSION, stats, notes, supersedes_id)
+
+
+def list_monthly(limit: int = 12) -> list[dict[str, Any]]:
+    with _tx() as conn:
+        return repository.monthly_heads(conn, limit)
 
 
 def list_weekly(limit: int = 20) -> list[dict[str, Any]]:

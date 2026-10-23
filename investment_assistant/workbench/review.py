@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from investment_assistant.data.calendar import add_trading_days, trading_days_between
 from investment_assistant.workbench import ledger, repository
 
-CALC_VERSION = 'review-1'
+CALC_VERSION = 'review-2'
 WINDOWS = (5, 10, 20)
 NY = ZoneInfo('America/New_York')
 
@@ -111,9 +111,25 @@ def _grouped(groups: dict[str, list[dict[str, Any]]], outcomes) -> dict[str, Any
     return result
 
 
+def _plan_summary(plan_outcomes: list[dict[str, Any]], week_start: date, week_end: date) -> dict[str, Any]:
+    by_kind: dict[str, list[dict[str, Any]]] = {}
+    for entry in plan_outcomes:
+        if not week_start <= entry['signal_date'] <= week_end:
+            continue
+        by_kind.setdefault(entry['kind'], []).append(entry['outcome'])
+    out = {}
+    for kind, outcomes in by_kind.items():
+        rs = [o['r'] for o in outcomes if o.get('r') is not None]
+        out[kind] = {'count': len(outcomes), 'expired': sum(1 for o in outcomes if o['status'] == 'expired'),
+                     'r_mean': statistics.fmean(rs) if rs else None,
+                     'r_median': statistics.median(rs) if rs else None}
+    return out
+
+
 def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[Any, dict[str, Any]],
                  trades: list[dict[str, Any]], *, segments: list[dict[str, Any]], undecided: int,
-                 entry_opens: dict[Any, float]) -> dict[str, Any]:
+                 entry_opens: dict[Any, float], plan_outcomes: list[dict[str, Any]] | None = None,
+                 discipline: dict[str, Any] | None = None) -> dict[str, Any]:
     """Snapshot for units whose signal_date falls in the week; values are excess returns vs SPY."""
     week_end = week_start + timedelta(days=6)
     by_rule: dict[str, list] = {}
@@ -145,6 +161,8 @@ def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[A
         'execution': execution,
         'unsignaled_trades': unsignaled,
         'closed_trades': segments,
+        'plans': _plan_summary(plan_outcomes or [], week_start, week_start + timedelta(days=6)),
+        'discipline': discipline or {},
         'note': '描述性统计，样本小且重叠，不代表规则有效。',
     }
 
