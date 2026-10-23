@@ -105,3 +105,44 @@ def read_news(conn, ticker: str, *, cutoff_at: datetime, since: datetime | None 
             'ORDER BY COALESCE(n.published_at, n.fetched_at) DESC, n.id DESC LIMIT %s',
             (*params, limit))
         return cur.fetchall()
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False)
+
+
+def store_candidate(conn, ticker: str, signal_date: date, candidate, *, run_id: str | None) -> dict[str, Any]:
+    """Insert once per (ticker, date, rule, version). A re-run with other inputs is a conflict, never an overwrite."""
+    with conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO signal_candidates (ticker, signal_date, action, rule_id, rule_version, inputs, run_id) '
+            'VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s) '
+            'ON CONFLICT (ticker, signal_date, rule_id, rule_version) DO NOTHING RETURNING id',
+            (ticker.upper(), signal_date, candidate.action, candidate.rule_id, candidate.rule_version,
+             _canonical(candidate.inputs), run_id))
+        row = cur.fetchone()
+        if row:
+            return {'status': 'inserted', 'id': row[0]}
+        cur.execute(
+            'SELECT id, action, inputs FROM signal_candidates '
+            'WHERE ticker = %s AND signal_date = %s AND rule_id = %s AND rule_version = %s',
+            (ticker.upper(), signal_date, candidate.rule_id, candidate.rule_version))
+        existing_id, action, inputs = cur.fetchone()
+    same = action == candidate.action and _canonical(inputs) == _canonical(json.loads(_canonical(candidate.inputs)))
+    return {'status': 'existing', 'id': existing_id} if same else {'status': 'conflict', 'id': existing_id}
+
+
+def open_candidate_groups(conn, *, since: date) -> list[dict[str, Any]]:
+    """Candidates grouped by (ticker, signal_date) that have no decision yet, newest first."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            'SELECT c.id, c.ticker, c.signal_date, c.action, c.rule_id, c.rule_version, c.inputs, c.created_at '
+            'FROM signal_candidates c WHERE c.signal_date >= %s AND NOT EXISTS ('
+            '  SELECT 1 FROM signal_decisions d WHERE d.ticker = c.ticker AND d.signal_date = c.signal_date) '
+            'ORDER BY c.signal_date DESC, c.ticker, c.created_at, c.rule_id', (since,))
+        rows = cur.fetchall()
+    groups: dict[tuple, dict[str, Any]] = {}
+    for row in rows:
+        key = (row['ticker'], row['signal_date'])
+        groups.setdefault(key, {'ticker': key[0], 'signal_date': key[1], 'candidates': []})['candidates'].append(row)
+    return list(groups.values())
