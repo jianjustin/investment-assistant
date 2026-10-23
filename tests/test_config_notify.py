@@ -43,3 +43,9 @@ def test_from_config_prefers_config_webhook(monkeypatch):
     client = DiscordClient.from_config(cfg)
     assert client._urls[DiscordChannel.DAILY] == "cfg-daily"
     assert client._urls[DiscordChannel.EARNINGS] == "env-earnings"
+
+
+def test_notify_defaults_include_workbench():
+    cfg = _config_from_dict({})
+    assert cfg.notify.task_channels["workbench"] == "signals"
+    assert cfg.notify.task_enabled["workbench"] is True

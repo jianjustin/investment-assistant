@@ -13,6 +13,13 @@
     "lookback_years": 3,
     "output_dir": "/srv/investment-assistant/filings"
   },
+  "workbench": {
+    "risk_pct": 0.01,
+    "single_cap": 0.25,
+    "total_cap": 1.0,
+    "public_url": "http://localhost:8787",
+    "return_tiers": [0.20, 0.10, 0.0]
+  },
   "vault_ro": "/srv/vault-ro",
   "draft_dir": "/srv/vault-staging/06-收集箱/AI草稿",
   "brief_time_local": "08:30",

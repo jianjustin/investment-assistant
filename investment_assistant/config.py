@@ -61,10 +61,11 @@ class NotifyConfig:
         "from_addr": "", "to_addr": "", "host": "smtp.gmail.com", "port": 465,
     })
     task_channels: dict[str, str] = field(
-        default_factory=lambda: {"metrics": "daily", "filings": "earnings", "scores": "signals"}
+        default_factory=lambda: {"metrics": "daily", "filings": "earnings", "scores": "signals",
+                                 "workbench": "signals"}
     )
     task_enabled: dict[str, bool] = field(
-        default_factory=lambda: {"metrics": True, "filings": True, "scores": True}
+        default_factory=lambda: {"metrics": True, "filings": True, "scores": True, "workbench": True}
     )
 
 
@@ -76,6 +77,17 @@ class MacroConfig:
         default_factory=lambda: ["DGS10", "DGS2", "FEDFUNDS", "CPIAUCSL", "UNRATE", "BAMLH0A0HYM2"]
     )
     lookback_days: int = 400
+
+
+@dataclass(frozen=True)
+class WorkbenchConfig:
+    """P1 trade plan account parameters (design §4.3, §8.2)."""
+
+    risk_pct: float = 0.01
+    single_cap: float = 0.25
+    total_cap: float = 1.0
+    public_url: str = "http://localhost:8787"
+    return_tiers: tuple[float, float, float] = (0.20, 0.10, 0.0)
 
 
 @dataclass(frozen=True)
@@ -140,6 +152,7 @@ class AssistantConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     macro: MacroConfig = field(default_factory=MacroConfig)
+    workbench: WorkbenchConfig = field(default_factory=WorkbenchConfig)
     fundamentals: FundamentalsConfig = field(default_factory=FundamentalsConfig)
     prices: PriceConfig = field(default_factory=PriceConfig)
     strategy: StrategyParams = field(default_factory=StrategyParams)
@@ -195,6 +208,8 @@ def _config_from_dict(data: dict[str, Any]) -> AssistantConfig:
         cfg = replace(cfg, notify=_dataclass_from_dict(data["notify"], cfg.notify))
     if "macro" in data and isinstance(data["macro"], dict):
         cfg = replace(cfg, macro=_dataclass_from_dict(data["macro"], cfg.macro))
+    if "workbench" in data:
+        cfg = replace(cfg, workbench=_validate_workbench(_dataclass_from_dict(data["workbench"], cfg.workbench)))
     if "prices" in data and isinstance(data["prices"], dict):
         cfg = replace(cfg, prices=_dataclass_from_dict(data["prices"], cfg.prices))
     if "backtest" in data and isinstance(data["backtest"], dict):
@@ -250,6 +265,20 @@ def _filings_from_dict(data: dict[str, Any], base: FilingsConfig) -> FilingsConf
     if "output_dir" in data:
         values["output_dir"] = Path(data["output_dir"])
     return replace(base, **values)
+
+
+def _validate_workbench(cfg: WorkbenchConfig) -> WorkbenchConfig:
+    """JSON lists stay lists through _dataclass_from_dict; normalize and range-check here."""
+    tiers = tuple(float(t) for t in cfg.return_tiers)
+    if not 0 < cfg.risk_pct <= 0.05:
+        raise ValueError("workbench.risk_pct must be in (0, 0.05]")
+    if not 0 < cfg.single_cap <= 1:
+        raise ValueError("workbench.single_cap must be in (0, 1]")
+    if not 0 < cfg.total_cap <= 1:
+        raise ValueError("workbench.total_cap must be in (0, 1]")
+    if len(tiers) != 3 or not all(a > b for a, b in zip(tiers, tiers[1:])):
+        raise ValueError("workbench.return_tiers must be three strictly descending thresholds")
+    return replace(cfg, return_tiers=tiers)
 
 
 def _normalize_tickers(raw: Any) -> list[str]:
