@@ -46,11 +46,11 @@ def test_candidate_rejects_unknown_action(workbench_db):
                              "VALUES ('NVDA', '2026-10-21', 'short', 'x', '1', '{}')")
 
 
-def _decision(conn, reason='trend intact'):
+def _decision(conn, reason='trend intact', plan_id=None):
     return conn.execute(
         'INSERT INTO signal_decisions (request_id, request_hash, ticker, signal_date, candidate_ids, '
-        "proposed_action, final_action, decision, reason) VALUES (%s, 'h', 'NVDA', '2026-10-21', "
-        "'{}', 'buy', 'buy', 'accept', %s) RETURNING id", [uuid.uuid4(), reason]).fetchone()[0]
+        "proposed_action, final_action, decision, reason, plan_id) VALUES (%s, 'h', 'NVDA', '2026-10-21', "
+        "'{}', 'buy', 'buy', 'accept', %s, %s) RETURNING id", [uuid.uuid4(), reason, plan_id]).fetchone()[0]
 
 
 def test_decision_requires_reason(workbench_db):
@@ -106,3 +106,84 @@ def test_upsert_filing_keeps_first_known_acceptance(workbench_db):
     accepted, items = workbench_db.execute('SELECT accepted_at, items FROM filings').fetchone()
     assert accepted == datetime(2026, 8, 27, 20, 20, 31, tzinfo=UTC)
     assert items == ['2.02']
+
+
+def _insert(conn, table, values):
+    import json
+    cols, marks, params = [], [], []
+    for key, value in values.items():
+        cols.append(key)
+        if key in ('sizing', 'inputs'):
+            marks.append('%s::jsonb')
+            params.append(json.dumps(value))
+        else:
+            marks.append('%s')
+            params.append(value)
+    return conn.execute(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join(marks)}) RETURNING id",
+                        params).fetchone()[0]
+
+
+def _plan(conn, kind='rule', **overrides):
+    values = {'ticker': 'NVDA', 'signal_date': date(2026, 10, 21), 'kind': kind, 'plan_version': 'plan-1',
+              'ref_price': 100, 'atr': 2, 'entry_low': 99, 'entry_high': 101, 'stop': 96, 'target1': 108,
+              'valid_from': date(2026, 10, 22), 'valid_until': date(2026, 10, 28),
+              'sizing': {}, 'status': 'ok', 'invalid_reasons': [], 'warnings': [], 'inputs': {}}
+    if kind == 'own':
+        values['request_id'] = overrides.pop('request_id', uuid.uuid4())
+        values['request_hash'] = overrides.pop('request_hash', 'h')
+    values.update(overrides)
+    return _insert(conn, 'trade_plans', values)
+
+
+def _flow(conn, **overrides):
+    values = {'request_id': uuid.uuid4(), 'request_hash': 'h',
+              'flow_date': date(2026, 10, 21), 'amount': 1000, 'note': None, 'recorded_at': NOW}
+    values.update(overrides)
+    return _insert(conn, 'cash_flows', values)
+
+
+def _snapshot(conn, **overrides):
+    values = {'request_id': uuid.uuid4(), 'request_hash': 'h', 'as_of': date(2026, 10, 21),
+              'equity': 100000, 'note': None, 'recorded_at': NOW}
+    values.update(overrides)
+    return _insert(conn, 'account_snapshots', values)
+
+
+def test_rule_plan_unique_per_version(workbench_db):
+    import psycopg
+    _plan(workbench_db)
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        _plan(workbench_db)
+    workbench_db.rollback()
+    _plan(workbench_db, kind='own')  # own 计划不受 (ticker, signal_date, plan_version) 唯一约束
+
+
+def test_plan_levels_ordered(workbench_db):
+    import psycopg
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _plan(workbench_db, stop=99)  # stop >= entry_low
+
+
+def test_cash_flow_nonzero_and_void_pair(workbench_db):
+    import psycopg
+    _flow(workbench_db)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _flow(workbench_db, amount=0)
+    workbench_db.rollback()
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _flow(workbench_db, voided_at=NOW)  # voided_at 必须与 void_reason 成对
+
+
+def test_snapshot_equity_positive(workbench_db):
+    import psycopg
+    _snapshot(workbench_db)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _snapshot(workbench_db, equity=0)
+
+
+def test_decision_plan_fk(workbench_db):
+    import psycopg
+    plan_id = _plan(workbench_db)
+    assert _decision(workbench_db, plan_id=plan_id)
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        _decision(workbench_db, plan_id=uuid.uuid4())
