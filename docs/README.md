@@ -26,6 +26,7 @@
 
 | 文档 | 内容 |
 |------|------|
+| [us-workbench.md](us-workbench.md) | 美股投研工作台：每日流程、规则 v1、复盘口径、时点与已知限制 |
 | [research-event-study.md](research-event-study.md) | 事件研究：方法、字段、CLI/API/前端三条验证路径 |
 | [cross-market-research.md](cross-market-research.md) | A/美股关注、财季与来源、跨市场卡及指引、本地证据和待验收限制 |
 | [ashare-research.md](ashare-research.md) | A股接入、CNEquity审计、澜起真实验证、数据边界与本地运行 |
