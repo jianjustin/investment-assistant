@@ -360,6 +360,18 @@ def insert_plan(conn, plan: dict[str, Any]) -> dict[str, Any]:
                  plan.get('request_id'), plan.get('request_hash')))
 
 
+def plan_for_buy_trades(conn, trade_ids: list) -> dict[Any, dict[str, Any]]:
+    """Trade id -> the plan its decision confirmed, for trades that have one."""
+    if not trade_ids:
+        return {}
+    plan_columns = ', '.join('p.' + c.strip() for c in _PLAN_COLUMNS.split(','))
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(f'SELECT t.id AS trade_id, {plan_columns} FROM trades t '
+                    'JOIN signal_decisions d ON d.id = t.decision_id '
+                    'JOIN trade_plans p ON p.id = d.plan_id WHERE t.id = ANY(%s)', (list(trade_ids),))
+        return {row['trade_id']: {k: row[k] for k in row if k != 'trade_id'} for row in cur.fetchall()}
+
+
 def rule_plan(conn, ticker: str, signal_date: date, plan_version: str = 'plan-1') -> dict[str, Any] | None:
     return _one(conn, f'SELECT {_PLAN_COLUMNS} FROM trade_plans WHERE ticker = %s AND signal_date = %s '
                       "AND kind = 'rule' AND plan_version = %s ORDER BY created_at DESC, id DESC LIMIT 1",

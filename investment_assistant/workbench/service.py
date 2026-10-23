@@ -12,8 +12,8 @@ from zoneinfo import ZoneInfo
 
 from investment_assistant.data.calendar import is_trading_day
 from investment_assistant.db import connect
-from investment_assistant.workbench import (account, bars, briefs, earnings, ledger, news, plans, positions,
-                                               repository, review, rules, synthesis)
+from investment_assistant.workbench import (account, bars, briefs, earnings, exits, ledger, news, plans,
+                                               positions, repository, review, rules, synthesis)
 
 NY = ZoneInfo('America/New_York')
 BENCHMARK = 'SPY'
@@ -112,6 +112,25 @@ def exposure(conn, session: date, *, cutoff_at: datetime, ticker: str) -> dict[s
         if held == ticker.upper():
             ticker_value = value
     return {'ticker_value': ticker_value, 'total_value': total_value}
+
+
+def _position_plan_state(conn, ticker: str, book: dict[str, Any], ticker_bars: list[dict[str, Any]],
+                         session: date, *, now: datetime) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """(plan, active_stop state) for a held ticker; both None when the position has no plan."""
+    position = book['position']
+    if position is None:
+        return None, None
+    trades = repository.list_trades(conn, ticker)
+    plans_by_trade = repository.plan_for_buy_trades(conn, [lot['buy_trade_id'] for lot in book['open']])
+    plan = exits.position_plan(book['open'], trades, plans_by_trade)
+    if plan is None:
+        return None, None
+    opened = position['opened_at'].astimezone(NY).date()
+    bars_since = [b for b in ticker_bars if b['price_date'] >= opened]
+    state = exits.active_stop(plan, bars_since, avg_cost=position['avg_cost'],
+                              splits=repository.split_events(conn, ticker)) if bars_since else {
+        'stop': plan['stop'], 't1_reached': False, 't1_reached_on': None, 'mode': 'initial', 'target1': plan['target1']}
+    return plan, state
 
 
 def _generate_rule_plan(conn, ticker: str, session: date, ticker_bars: list[dict[str, Any]], summary: dict[str, Any],
@@ -217,7 +236,8 @@ def run_batch(*, tickers: list[str], now: datetime, deps: Deps | None = None, sk
                 ticker_bars = repository.read_bars(conn, ticker, session, cutoff_at=now)
                 events, filing_rows = _filing_events(conn, ticker, session, now)
                 book = _book(conn, ticker)
-                result = rules.evaluate(ticker, session, ticker_bars, events, book['position'])
+                _, plan_state = _position_plan_state(conn, ticker, book, ticker_bars, session, now=now)
+                result = rules.evaluate(ticker, session, ticker_bars, events, book['position'], plan_state=plan_state)
                 inserted = 0
                 for cand in result['candidates']:
                     out = repository.store_candidate(conn, ticker, session, cand, run_id=run_id)
@@ -248,6 +268,32 @@ def run_batch(*, tickers: list[str], now: datetime, deps: Deps | None = None, sk
     return summary
 
 
+def _holdings(conn, session: date, *, now: datetime) -> list[dict[str, Any]]:
+    out = []
+    for ticker in sorted({t['ticker'] for t in repository.list_trades(conn) if t['voided_at'] is None}):
+        book = _book(conn, ticker)
+        position = book['position']
+        if position is None:
+            continue
+        bars_ = repository.read_bars(conn, ticker, session, cutoff_at=now)
+        plan, state = _position_plan_state(conn, ticker, book, bars_, session, now=now)
+        last_close = bars_[-1]['close'] if bars_ else None
+        earnings = repository.latest_earnings(conn, ticker, cutoff_at=now)
+        next_earnings = (earnings['earnings_date'] if earnings and earnings['status'] == 'known'
+                         and earnings['earnings_date'] and earnings['earnings_date'] >= session else None)
+        out.append({
+            'ticker': ticker, 'quantity': position['quantity'], 'avg_cost': position['avg_cost'],
+            'plan_id': plan['id'] if plan else None,
+            'stop': state['stop'] if state else None, 'mode': state['mode'] if state else None,
+            't1_reached': state['t1_reached'] if state else False, 'target1': state['target1'] if state else None,
+            'last_close': last_close,
+            'to_stop_pct': float(last_close / float(state['stop']) - 1) if state and last_close else None,
+            'to_target_pct': float(float(state['target1']) / last_close - 1) if state and last_close else None,
+            'next_earnings': next_earnings.isoformat() if next_earnings else None,
+        })
+    return out
+
+
 def _brief_view(brief: dict[str, Any] | None) -> dict[str, Any] | None:
     if brief is None or brief['status'] != 'error':
         return brief
@@ -272,7 +318,8 @@ def today(*, now: datetime) -> dict[str, Any]:
                 filings=repository.read_filings(conn, ticker, since=since, cutoff_at=now),
                 news=repository.read_news(conn, ticker, cutoff_at=now, since=_midnight(since), limit=20))
             units.append(unit)
-    return {'session': session, 'units': units}
+        holdings = _holdings(conn, session, now=now)
+    return {'session': session, 'units': units, 'holdings': holdings}
 
 
 def decide(payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:

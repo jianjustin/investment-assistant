@@ -268,3 +268,15 @@ def test_holding_outside_watchlist_is_collected(db):
     summary = service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=10), deps=deps(Sources()))
     assert 'AMD' in summary['tickers']
     assert 'AMD' in summary['earnings']
+
+
+def test_today_includes_holdings(db):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
+    service.add_trade({'request_id': '6f1d1c1e-5555-4444-8888-000000000001', 'ticker': 'NVDA', 'side': 'buy',
+                       'quantity': '10', 'price': '110.00', 'executed_at': '2026-10-22T20:00:00+00:00'}, now=NOW)
+    view = service.today(now=NOW)
+    holding = view['holdings'][0]
+    assert holding['ticker'] == 'NVDA'
+    assert holding['plan_id'] is None and holding['stop'] is None and holding['t1_reached'] is False
+    assert holding['last_close'] > 0
+    assert holding['next_earnings'] == '2027-02-18'

@@ -27,8 +27,8 @@ def ids(result, action=None):
     return [c.rule_id for c in result['candidates'] if action is None or c.action == action]
 
 
-def run(bars, filings=(), position=None):
-    return rules.evaluate('NVDA', T, bars, list(filings), position)
+def run(bars, filings=(), position=None, plan_state=None):
+    return rules.evaluate('NVDA', T, bars, list(filings), position, plan_state=plan_state)
 
 
 def earnings(accepted, items=('2.02',), fid=7):
@@ -213,3 +213,48 @@ def test_every_candidate_carries_rule_version_and_signal_bar():
     for c in result['candidates']:
         assert c.rule_version == '1'
         assert c.inputs['signal_date'] == T.isoformat()
+
+
+# --- S8 plan_stop / plan_target ---
+
+def plan_state(**overrides):
+    state = {'stop': D('94'), 't1_reached': False, 't1_reached_on': None, 'mode': 'initial', 'target1': D('112')}
+    state.update(overrides)
+    return state
+
+
+def test_plan_stop_fires_on_low():
+    result = run(series([100] * 249 + [92]), position=held(100), plan_state=plan_state(stop=D('95')))
+    cand = next(c for c in result['candidates'] if c.rule_id == 'plan_stop')
+    assert cand.action == 'sell'
+    assert cand.inputs['values'] == {'low': 92.0, 'stop': 95.0, 'mode': 'initial'}
+    assert cand.rule_version == '1'
+
+
+def test_plan_stop_quiet_above_stop():
+    result = run(series([100] * 249 + [99]), position=held(100), plan_state=plan_state(stop=D('95')))
+    assert 'plan_stop' not in ids(result) and 'plan_target' not in ids(result)
+
+
+def test_plan_target_fires_once():
+    bars = series([100] * 249 + [113])
+    result = run(bars, position=held(100), plan_state=plan_state())
+    cand = next(c for c in result['candidates'] if c.rule_id == 'plan_target')
+    assert cand.action == 'sell'
+    assert cand.inputs['values'] == {'high': 113.0, 'target1': 112.0, 'sell_fraction': 0.5}
+    # 已触及 T1（之前已触发过）则不再触发
+    again = run(bars, position=held(100),
+                plan_state=plan_state(t1_reached=True, t1_reached_on=add_trading_days(T, -1), mode='trailing',
+                                      stop=D('111')))
+    assert 'plan_target' not in ids(again)
+
+
+def test_drawdown_skipped_with_plan():
+    result = run(series([100] * 249 + [92]), position=held(100), plan_state=plan_state(stop=D('80')))
+    assert 'position_drawdown' not in ids(result)
+    assert 'plan_stop' not in ids(result)
+
+
+def test_drawdown_runs_without_plan():
+    result = run(series([100] * 249 + [92]), position=held(100))
+    assert 'position_drawdown' in ids(result, 'sell')

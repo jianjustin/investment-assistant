@@ -48,7 +48,7 @@ class Skip:
 
 
 PRICE_RULES = ('trend_reclaim', 'volume_breakout', 'earnings_gap_up', 'trend_break',
-               'earnings_gap_down', 'position_drawdown', 'abnormal_move')
+               'earnings_gap_down', 'position_drawdown', 'abnormal_move', 'plan_stop', 'plan_target')
 
 
 def _r(x: float) -> float:
@@ -176,9 +176,33 @@ def _abnormal_move(s: _Series, d: date) -> Candidate | None:
     return None
 
 
+def _plan_stop(s: _Series, d: date, state: dict[str, Any]) -> Candidate | None:
+    low, stop = s.bars[s.t]['low'], float(state['stop'])
+    if low > stop:
+        return None
+    return Candidate('plan_stop', 'sell', {
+        **_base(d, s.bars), 'values': {'low': low, 'stop': stop, 'mode': state['mode']},
+        'thresholds': {}})  # 阈值冻结在计划里；此处只报当期止损
+
+
+def _plan_target(s: _Series, d: date, state: dict[str, Any]) -> Candidate | None:
+    if state['t1_reached']:
+        return None
+    high, target1 = s.bars[s.t]['high'], float(state['target1'])
+    if high < target1:
+        return None
+    return Candidate('plan_target', 'sell', {
+        **_base(d, s.bars), 'values': {'high': high, 'target1': target1, 'sell_fraction': 0.5},
+        'thresholds': {}})
+
+
 def evaluate(ticker: str, signal_date: date, bars: list[dict[str, Any]], filings: list[dict[str, Any]],
-             position: dict[str, Any] | None) -> dict[str, list]:
-    """Candidates and skip reasons for one ticker on one session. ``bars`` oldest first."""
+             position: dict[str, Any] | None, plan_state: dict[str, Any] | None = None) -> dict[str, list]:
+    """Candidates and skip reasons for one ticker on one session. ``bars`` oldest first.
+
+    A planned position (``plan_state`` from exits.active_stop) uses plan_stop /
+    plan_target and skips position_drawdown; unplanned positions keep the drawdown rule.
+    """
     candidates: list[Candidate] = []
     skips: list[Skip] = []
 
@@ -209,8 +233,13 @@ def evaluate(ticker: str, signal_date: date, bars: list[dict[str, Any]], filings
         if earnings_session(f['accepted_at']) == signal_date and (c := _earnings_gap(s, signal_date, f)):
             candidates.append(c)
 
-    if position and position['quantity'] > 0 and (c := _position_drawdown(s, signal_date, position)):
-        candidates.append(c)
+    if position and position['quantity'] > 0:
+        if plan_state:
+            for rule in (_plan_stop, _plan_target):
+                if (c := rule(s, signal_date, plan_state)) is not None:
+                    candidates.append(c)
+        elif (c := _position_drawdown(s, signal_date, position)) is not None:
+            candidates.append(c)
     if not new_filings and (c := _abnormal_move(s, signal_date)):
         candidates.append(c)
     return {'candidates': candidates, 'skips': skips}
