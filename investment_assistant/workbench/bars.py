@@ -1,0 +1,77 @@
+"""Daily bars: fetch from yfinance without auto-adjustment and normalize for storage."""
+from __future__ import annotations
+
+import math
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
+from typing import Any, Callable
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+
+from investment_assistant.data.calendar import add_trading_days, is_trading_day
+
+NY = ZoneInfo('America/New_York')
+# Daily bars settle after the 16:00 close; one hour of slack also covers 13:00 early closes.
+SESSION_SETTLED = time(17, 0)
+_SIX = Decimal('0.000001')
+
+# (ticker, start, end_exclusive) -> DataFrame with Open/High/Low/Close/Adj Close/Volume/Stock Splits
+HistoryFetcher = Callable[[str, date, date], pd.DataFrame]
+
+
+class BarsUnavailable(RuntimeError):
+    pass
+
+
+def _yfinance_fetcher(ticker: str, start: date, end: date) -> pd.DataFrame:
+    import yfinance as yf
+
+    return yf.Ticker(ticker).history(start=start.isoformat(), end=end.isoformat(),
+                                     auto_adjust=False, actions=True)
+
+
+def fetch_history(ticker: str, start: date, end: date, *, fetcher: HistoryFetcher | None = None) -> pd.DataFrame:
+    """Bars for [start, end]; OHLC are split-adjusted only, Adj Close is fully adjusted."""
+    df = (fetcher or _yfinance_fetcher)(ticker.upper(), start, end + timedelta(days=1))
+    if df is None or df.empty:
+        raise BarsUnavailable(f'no bars returned for {ticker.upper()} {start}..{end}')
+    return df
+
+
+def _decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    number = float(value)
+    if math.isnan(number) or math.isinf(number):
+        return None
+    return Decimal(str(number)).quantize(_SIX)
+
+
+def normalize_history(df: pd.DataFrame) -> tuple[list[dict[str, Any]], list[date]]:
+    """Return (rows, skipped_dates). Incomplete rows are skipped, never filled from neighbours."""
+    rows: list[dict[str, Any]] = []
+    skipped: list[date] = []
+    for ts, rec in df.iterrows():
+        day = ts.date() if hasattr(ts, 'date') else ts
+        values = {key: _decimal(rec.get(col)) for key, col in
+                  (('open', 'Open'), ('high', 'High'), ('low', 'Low'), ('close', 'Close'), ('adj_close', 'Adj Close'))}
+        volume = rec.get('Volume')
+        if any(v is None or v <= 0 for v in values.values()) or volume is None or pd.isna(volume):
+            skipped.append(day)
+            continue
+        split = _decimal(rec.get('Stock Splits', 0))
+        rows.append({'price_date': day, **values, 'volume': int(volume),
+                     'split_factor': split if split and split > 0 else Decimal('1').quantize(_SIX)})
+    return rows, skipped
+
+
+def latest_closed_session(now: datetime) -> date:
+    """Most recent NYSE session whose daily bar has settled at ``now``."""
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError('now must be timezone-aware')
+    local = now.astimezone(NY)
+    today = local.date()
+    if is_trading_day(today) and local.time() >= SESSION_SETTLED:
+        return today
+    return add_trading_days(today, -1)
