@@ -503,24 +503,33 @@ _FILING_KEYS = ["id", "ticker", "form", "filing_date", "accession_number",
 def upsert_filing(
     conn, *, ticker: str, form: str, filing_date, accession_number: str,
     primary_document: str, file_path: str, run_id: str | None = None,
+    accepted_at: str | None = None, items: list[str] | None = None,
 ) -> None:
+    """accepted_at/items only fill unknown values; a recorded acceptance is never replaced."""
+    from datetime import datetime
+
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO filings (
-              ticker, form, filing_date, accession_number, primary_document, file_path, run_id
+              ticker, form, filing_date, accession_number, primary_document, file_path, run_id,
+              accepted_at, items
             ) VALUES (
               %(ticker)s, %(form)s, %(filing_date)s, %(accession_number)s,
-              %(primary_document)s, %(file_path)s, %(run_id)s
+              %(primary_document)s, %(file_path)s, %(run_id)s, %(accepted_at)s, %(items)s
             )
             ON CONFLICT (accession_number, primary_document) DO UPDATE SET
               file_path = EXCLUDED.file_path,
-              run_id = COALESCE(EXCLUDED.run_id, filings.run_id)
+              run_id = COALESCE(EXCLUDED.run_id, filings.run_id),
+              accepted_at = COALESCE(filings.accepted_at, EXCLUDED.accepted_at),
+              items = COALESCE(filings.items, EXCLUDED.items)
             """,
             {
                 "ticker": ticker, "form": form, "filing_date": filing_date,
                 "accession_number": accession_number, "primary_document": primary_document,
                 "file_path": file_path, "run_id": run_id,
+                "accepted_at": datetime.fromisoformat(accepted_at) if accepted_at else None,
+                "items": items,
             },
         )
     conn.commit()

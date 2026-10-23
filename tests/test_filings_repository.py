@@ -61,3 +61,25 @@ def test_list_filings_applies_filters():
 
 def test_get_filing_by_id_returns_none_when_missing():
     assert db.get_filing(FakeConn(), 42) is None
+
+
+def test_upsert_filing_records_acceptance_without_overwriting_known_values():
+    conn = FakeConn()
+    db.upsert_filing(
+        conn, ticker="NVDA", form="8-K", filing_date=date(2026, 8, 27),
+        accession_number="acc-2", primary_document="k.htm", file_path="/x",
+        accepted_at="2026-08-27T16:20:31-04:00", items=["2.02"],
+    )
+    sql, params = conn.store[0]
+    assert "accepted_at" in sql and "items" in sql
+    assert "COALESCE(filings.accepted_at, EXCLUDED.accepted_at)" in sql
+    assert params["accepted_at"].isoformat() == "2026-08-27T16:20:31-04:00"
+    assert params["items"] == ["2.02"]
+
+
+def test_upsert_filing_defaults_acceptance_to_unknown():
+    conn = FakeConn()
+    db.upsert_filing(conn, ticker="AAPL", form="10-Q", filing_date=date(2026, 6, 28),
+                     accession_number="acc-3", primary_document="q.htm", file_path="/x")
+    _, params = conn.store[0]
+    assert params["accepted_at"] is None and params["items"] is None

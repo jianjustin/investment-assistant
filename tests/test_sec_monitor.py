@@ -272,3 +272,40 @@ def test_harness_reports_collector_error_without_duplicate_notification(monkeypa
     monkeypatch.setattr(_harness, "dispatch", lambda *a, **kw: pytest.fail("must not dispatch twice"))
     out = _harness.run_task("filings", lambda: {"errors": {"source": "403"}}, config=AssistantConfig(), notify=False)
     assert out["status"] == recorded[0]["status"] == "error"
+
+
+def _submission_source(tmp_path, **extra):
+    source = EdgarSource(tmp_path)
+    recent = {"form": ["8-K", "10-Q"], "filingDate": ["2026-08-27", "2026-08-27"],
+              "accessionNumber": ["0001045810-26-000010", "0001045810-26-000011"],
+              "primaryDocument": ["k.htm", "q.htm"], **extra}
+
+    def get(url):
+        if "company_tickers" in url:
+            return {"0": {"ticker": "NVDA", "cik_str": 1045810}}
+        return {"filings": {"recent": recent, "files": []}}
+    source.json = get
+    return source
+
+
+def test_acceptance_time_is_eastern_local_despite_z_suffix(tmp_path):
+    # EDGAR labels acceptanceDateTime with "Z" but the clock is US Eastern
+    # (e.g. after-close earnings show 16:20). Parsing it as UTC would move them intraday.
+    source = _submission_source(tmp_path, acceptanceDateTime=["2026-08-27T16:20:31.000Z", "2026-08-27T07:05:00.000Z"],
+                                items=["2.02,9.01", ""])
+    out = {x["form"]: x for x in source.discover(["NVDA"], "2026-08-01", "2026-08-31")}
+    assert out["8-K"]["accepted_at"] == "2026-08-27T16:20:31-04:00"
+    assert out["8-K"]["items"] == ["2.02", "9.01"]
+    assert out["10-Q"]["accepted_at"] == "2026-08-27T07:05:00-04:00"
+    assert out["10-Q"]["items"] == []
+
+
+def test_missing_acceptance_fields_stay_unknown(tmp_path):
+    out = _submission_source(tmp_path).discover(["NVDA"], "2026-08-01", "2026-08-31")
+    assert all(x["accepted_at"] is None and x["items"] is None for x in out)
+
+
+def test_malformed_acceptance_time_is_unknown_not_guessed(tmp_path):
+    source = _submission_source(tmp_path, acceptanceDateTime=["not-a-time", None], items=[None, 5])
+    out = source.discover(["NVDA"], "2026-08-01", "2026-08-31")
+    assert all(x["accepted_at"] is None and x["items"] is None for x in out)

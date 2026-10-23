@@ -97,4 +97,6 @@ def _persist_filing_index(filings_meta: list[dict[str, Any]]) -> None:
                 accession_number=meta["accession_number"],
                 primary_document=meta["primary_document"],
                 file_path=meta["path"],
+                accepted_at=meta.get("accepted_at"),
+                items=meta.get("items"),
             )

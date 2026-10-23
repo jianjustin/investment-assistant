@@ -6,13 +6,32 @@ import json
 import os
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
+from zoneinfo import ZoneInfo
 
 import requests
 from lxml import html
 
 ACCESSION = re.compile(r"\d{10}-\d{2}-\d{6}")
+# EDGAR suffixes acceptanceDateTime with "Z", but the clock is US Eastern local time.
+_EDGAR_CLOCK = ZoneInfo("America/New_York")
+_ACCEPTANCE = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?Z?")
+
+
+def edgar_acceptance(value) -> str | None:
+    """ISO timestamp with the Eastern offset, or None when absent or malformed."""
+    match = _ACCEPTANCE.fullmatch(value) if isinstance(value, str) else None
+    if not match:
+        return None
+    return datetime.fromisoformat(match.group(1)).replace(tzinfo=_EDGAR_CLOCK).isoformat()
+
+
+def edgar_items(value) -> list[str] | None:
+    if not isinstance(value, str):
+        return None
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 def atomic_write(path: Path, data: bytes) -> None:
@@ -116,7 +135,10 @@ class EdgarSource:
         count = len(payload["form"])
         if any(len(payload[k]) != count for k in keys):
             raise ValueError("SEC submissions 数组长度不一致")
-        return [{k: payload[k][i] for k in keys} for i in range(count)]
+        optional = [k for k in ("acceptanceDateTime", "items")
+                    if isinstance(payload.get(k), list) and len(payload[k]) == count]
+        return [{**{k: payload[k][i] for k in keys}, **{k: payload[k][i] for k in optional}}
+                for i in range(count)]
 
     def discover(self, tickers: list[str], start: str, end: str) -> list[dict]:
         mapping = self.json("https://www.sec.gov/files/company_tickers.json")
@@ -156,6 +178,8 @@ class EdgarSource:
                     "ticker": ticker, "form": form, "filing_date": row["filingDate"],
                     "accession_number": accession, "primary_document": doc,
                     "edgar_url": base + doc, "index_url": base + accession + "-index.html",
+                    "accepted_at": edgar_acceptance(row.get("acceptanceDateTime")),
+                    "items": edgar_items(row.get("items")),
                 })
         return sorted(results, key=lambda x: (x["filing_date"], x["ticker"], x["accession_number"]))
 

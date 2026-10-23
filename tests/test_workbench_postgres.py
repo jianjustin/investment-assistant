@@ -94,3 +94,15 @@ def test_filings_columns_and_scheduled_job(workbench_db):
     row = workbench_db.execute("SELECT time_local, weekday_mask, timezone FROM scheduled_jobs "
                                "WHERE name = 'workbench'").fetchone()
     assert row == ('06:30', '2-6', 'Asia/Shanghai')
+
+
+def test_upsert_filing_keeps_first_known_acceptance(workbench_db):
+    from investment_assistant import db
+    args = dict(ticker='NVDA', form='8-K', filing_date=date(2026, 8, 27),
+                accession_number='0001045810-26-000010', primary_document='k.htm', file_path='/x')
+    db.upsert_filing(workbench_db, **args)
+    db.upsert_filing(workbench_db, **args, accepted_at='2026-08-27T16:20:31-04:00', items=['2.02'])
+    db.upsert_filing(workbench_db, **args, accepted_at='2026-08-28T09:00:00-04:00', items=['8.01'])
+    accepted, items = workbench_db.execute('SELECT accepted_at, items FROM filings').fetchone()
+    assert accepted == datetime(2026, 8, 27, 20, 20, 31, tzinfo=UTC)
+    assert items == ['2.02']
