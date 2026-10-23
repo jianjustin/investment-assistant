@@ -7,7 +7,7 @@
 
 | 阶段 | 状态 | 下一步 |
 | --- | --- | --- |
-| P1 规则计划与推送 | 设计已确认，spec 待审阅 | 审阅 [P1 spec](../superpowers/specs/2026-10-23-p1-rule-plans-and-push-design.md)，再写实施计划 |
+| P1 规则计划与推送 | spec 已批准，实施计划待审阅 | 审阅 [P1 实施计划](../superpowers/plans/2026-10-23-p1-rule-plans-and-push.md) 并选择执行方式 |
 | P2 观察池扩展与市场环境 | 未开工 | 依赖 P1 |
 | P3 Agent 轨道 | 未开工 | 依赖 P1、P2 |
 | P4 复盘扩展 | 未开工 | 依赖 P1，三方对比依赖 P3 |
@@ -29,7 +29,8 @@
 
 v2 新增：
 
-4. 写 P1「规则计划与推送」spec。（10-23：已写，待审阅。）
+4. 写 P1「规则计划与推送」spec。（10-23：已批准。）
+5. 审阅 P1 实施计划并开始实施。
 
 ## 阶段证据
 
@@ -39,3 +40,4 @@ v2 新增：
 | --- | --- | --- |
 | 2026-10-23 | roadmap v2 确认，v1 归档 | 本目录 |
 | 2026-10-23 | P1 设计逐项确认 | [P1 spec](../superpowers/specs/2026-10-23-p1-rule-plans-and-push-design.md) |
+| 2026-10-23 | P1 实施计划写成（14 个任务） | [P1 实施计划](../superpowers/plans/2026-10-23-p1-rule-plans-and-push.md) |
