@@ -146,3 +146,24 @@ def open_candidate_groups(conn, *, since: date) -> list[dict[str, Any]]:
         key = (row['ticker'], row['signal_date'])
         groups.setdefault(key, {'ticker': key[0], 'signal_date': key[1], 'candidates': []})['candidates'].append(row)
     return list(groups.values())
+
+
+def store_brief(conn, brief: dict[str, Any]):
+    with conn.cursor() as cur:
+        cur.execute(
+            # clock_timestamp(): several briefs in one transaction must still order by creation.
+            'INSERT INTO signal_briefs (ticker, signal_date, model, prompt_version, cutoff_at, input_refs, output, '
+            'status, error, created_at) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, clock_timestamp()) '
+            'RETURNING id',
+            (brief['ticker'], brief['signal_date'], brief.get('model'), brief['prompt_version'], brief['cutoff_at'],
+             _canonical(brief['input_refs']), _canonical(brief['output']), brief['status'], brief.get('error')))
+        return cur.fetchone()[0]
+
+
+def latest_brief(conn, ticker: str, signal_date: date) -> dict[str, Any] | None:
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            'SELECT id, ticker, signal_date, model, prompt_version, cutoff_at, input_refs, output, status, error, '
+            'created_at FROM signal_briefs WHERE ticker = %s AND signal_date = %s '
+            'ORDER BY created_at DESC, id DESC LIMIT 1', (ticker.upper(), signal_date))
+        return cur.fetchone()
