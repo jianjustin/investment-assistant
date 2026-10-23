@@ -21,8 +21,8 @@ def client():
     return TestClient(create_app())
 
 
-WORKBENCH_MIGRATIONS = ('007_scheduled_jobs.sql', '011_filings.sql', '016_us_workbench.sql',
-                        '017_trade_plans.sql')
+WORKBENCH_MIGRATIONS = ('006_job_reports.sql', '007_scheduled_jobs.sql', '011_filings.sql',
+                        '016_us_workbench.sql', '017_trade_plans.sql')
 
 
 @pytest.fixture

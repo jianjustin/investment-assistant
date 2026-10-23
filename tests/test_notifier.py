@@ -141,3 +141,32 @@ def test_dispatch_task_disabled_wins_over_channel():
     cfg = NotifyConfig(channel="email", task_enabled={"metrics": False})
     out = notifier.dispatch("metrics", "success", {}, cfg, client=FakeEmailClient())
     assert out == {"sent": False, "reason": "task_disabled"}
+
+
+def test_send_notifications_disabled_task():
+    from investment_assistant.notify.message import Notification
+
+    out = notifier.send_notifications('workbench', [Notification(title='x', color=1, fields=[])],
+                                      NotifyConfig(task_enabled={'workbench': False}), client=FakeClient())
+    assert out['sent'] is False and out['reason'] == 'task_disabled' and out['messages'] == 0
+
+
+def test_send_notifications_sends_each_message():
+    from investment_assistant.notify.message import Notification
+
+    client = FakeClient()
+    notes = [Notification(title='a', color=1, fields=[]), Notification(title='b', color=2, fields=[])]
+    out = notifier.send_notifications('workbench', notes, NotifyConfig(), client=client)
+    assert out['sent'] is True and out['messages'] == 2 and len(client.sent) == 2
+
+
+def test_send_notifications_failure_is_structured():
+    from investment_assistant.notify.message import Notification
+
+    class Boom(FakeClient):
+        def send(self, channel, payload):
+            raise RuntimeError('network')
+
+    out = notifier.send_notifications('workbench', [Notification(title='x', color=1, fields=[])],
+                                      NotifyConfig(), client=Boom())
+    assert out['sent'] is False and out['messages'] == 0 and 'send_failed' in out['reason']

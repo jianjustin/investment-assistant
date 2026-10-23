@@ -68,3 +68,34 @@ def _send_email(notification: Notification, notify_cfg, *, client=None) -> dict[
         return {"sent": True, "channel": "email"}
     except Exception as exc:  # 通知失败不拖垮任务；结构化返回
         return {"sent": False, "reason": f"send_failed: {exc}"}
+
+
+def send_notifications(task: str, notifications: list[Notification], notify_cfg, *,
+                       client=None) -> dict[str, Any]:
+    """Send several messages for one task with dispatch's gating, channels and error handling."""
+    if notify_cfg.task_enabled.get(task) is False:
+        return {"sent": False, "messages": 0, "reason": "task_disabled"}
+    if not notifications:
+        return {"sent": False, "messages": 0, "reason": "no_notifications"}
+    if notify_cfg.channel == "email":
+        sent = 0
+        for notification in notifications:
+            out = _send_email(notification, notify_cfg, client=client)
+            if out.get("sent"):
+                sent += 1
+        if sent != len(notifications):
+            return {"sent": False, "messages": sent, "reason": "send_failed: some emails failed"}
+        return {"sent": True, "messages": sent, "channel": "email"}
+    if not notify_cfg.discord_enabled:
+        return {"sent": False, "messages": 0, "reason": "discord_disabled"}
+    channel_name = notify_cfg.task_channels.get(task)
+    if not channel_name:
+        return {"sent": False, "messages": 0, "reason": "no_channel"}
+    try:
+        cli = client or DiscordClient.from_config(notify_cfg)
+        for notification in notifications:
+            cli.send(DiscordChannel(channel_name), render_discord(notification))
+        return {"sent": True, "messages": len(notifications), "channel": "discord",
+                "discord_channel": channel_name}
+    except Exception as exc:  # 推送失败不拖垮任务；结构化返回
+        return {"sent": False, "messages": 0, "reason": f"send_failed: {exc}"}

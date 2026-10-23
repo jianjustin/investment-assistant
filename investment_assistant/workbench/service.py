@@ -370,6 +370,42 @@ def void_flow(flow_id: str, reason: Any, *, now: datetime) -> dict[str, Any]:
         return account.void_flow(conn, flow_id, reason, now=now)
 
 
+def _last_push_failed(conn, session: date) -> bool:
+    last = repository.last_push(conn)
+    return bool(last and last.get('session') == session.isoformat() and last.get('sent') is False
+                and last.get('reason') not in (None, 'already_pushed'))
+
+
+def push(*, now: datetime, force: bool, summary: dict[str, Any] | None = None, notify_cfg, client=None) -> dict[str, Any]:
+    """Send the day's digest; scheduled runs skip when today already pushed successfully."""
+    from investment_assistant.config import load_config
+    from investment_assistant.notify import notifier, templates
+    from investment_assistant.workbench import digest as digest_module
+
+    session = bars.latest_closed_session(now)
+    with _tx() as conn:
+        if not force:
+            last = repository.last_push(conn, session=session)
+            if last and last.get('sent') is True:
+                return {'session': session.isoformat(), 'sent': False, 'reason': 'already_pushed', 'messages': 0}
+        view = today(now=now)
+        payload = digest_module.build(
+            session=session, units=view['units'], holdings=view.get('holdings', []), summary=summary or {},
+            last_push_failed=_last_push_failed(conn, session),
+            public_url=load_config().workbench.public_url)
+    out = notifier.send_notifications('workbench', templates.workbench_digest(payload), notify_cfg, client=client)
+    return {'session': session.isoformat(), **out}
+
+
+def push_closed(*, now: datetime, notify_cfg, client=None) -> dict[str, Any]:
+    """One line for a New York holiday instead of the digest."""
+    from investment_assistant.notify import notifier, templates
+
+    ny_date = now.astimezone(NY).date()
+    out = notifier.send_notifications('workbench', templates.workbench_closed(ny_date), notify_cfg, client=client)
+    return {'session': ny_date.isoformat(), **out}
+
+
 def instrument(ticker: str, *, now: datetime) -> dict[str, Any]:
     ticker = ticker.strip().upper()
     session = bars.latest_closed_session(now)

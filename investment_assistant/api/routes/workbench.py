@@ -140,6 +140,15 @@ def generate_monthly(payload: dict[str, Any] = Body(default_factory=dict)):
                  supersedes_id=payload.get('supersedes_id') or None, now=_now())
 
 
+@router.post('/api/workbench/push')
+def push_today():
+    from investment_assistant.config import load_config
+    from investment_assistant.services.settings import effective_notify_config
+
+    return _call(service.push, now=_now(), force=True,
+                 notify_cfg=effective_notify_config(load_config().notify))
+
+
 @router.post('/api/workbench/run')
 def run_now():
     from investment_assistant.tasks.workbench import run

@@ -1,4 +1,5 @@
 """Batch + read model against a disposable schema; all market data below is synthetic."""
+import json
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 
@@ -291,3 +292,80 @@ def test_plan_shadow_view(db):
     assert len(view['plans']) == 1
     plan = view['plans'][0]
     assert plan['ticker'] == 'NVDA' and plan['outcome']['status'] in ('pending', 'open', 'expired')
+
+
+class PushClient:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, channel, payload):
+        self.sent.append(payload)
+
+
+def test_push_once_per_session_and_force(db):
+    from investment_assistant.config import NotifyConfig
+
+    cfg = NotifyConfig()
+    out = service.push(now=NOW, force=False, notify_cfg=cfg, client=PushClient())
+    assert out['sent'] is True and out['messages'] >= 1 and out['session'] == SESSION.isoformat()
+    db.execute("INSERT INTO job_reports (task, run_id, status, started_at, finished_at, summary) "
+               "VALUES ('workbench', 'r1', 'success', %s, %s, %s::jsonb)",
+               [NOW, NOW, json.dumps({'push': out})])
+    again = service.push(now=NOW, force=False, notify_cfg=cfg, client=PushClient())
+    assert again['sent'] is False and again['reason'] == 'already_pushed'
+    forced = service.push(now=NOW, force=True, notify_cfg=cfg, client=PushClient())
+    assert forced['sent'] is True
+
+
+def test_push_failure_recorded_not_raised(db):
+    from investment_assistant.config import NotifyConfig
+
+    class Boom:
+        def send(self, channel, payload):
+            raise RuntimeError('discord down')
+
+    out = service.push(now=NOW, force=True, notify_cfg=NotifyConfig(), client=Boom())
+    assert out['sent'] is False and out['reason'].startswith('send_failed')
+
+
+def _task_run(trigger, moment=NOW, task_deps=None):
+    from investment_assistant.config import AssistantConfig
+    from investment_assistant.tasks import workbench as workbench_task
+
+    return workbench_task.run(config=AssistantConfig(), trigger_source=trigger, now=moment,
+                              deps=task_deps or deps(Sources()))
+
+
+def test_scheduled_run_pushes_once_per_session(db, monkeypatch):
+    calls = []
+
+    def fake_push(*, now, force, summary=None, notify_cfg=None, client=None):
+        calls.append(force)
+        return {'session': SESSION.isoformat(), 'sent': True, 'messages': 4}
+
+    monkeypatch.setattr(service, 'push', fake_push)
+    result = _task_run('scheduled')
+    assert calls == [False]
+    assert result['summary']['push'] == {'session': SESSION.isoformat(), 'sent': True, 'messages': 4}
+
+
+def test_manual_run_does_not_push(db, monkeypatch):
+    def boom(**_):
+        raise AssertionError('manual run must not push')
+
+    monkeypatch.setattr(service, 'push', boom)
+    result = _task_run('manual')
+    assert 'push' not in result['summary']
+
+
+def test_closed_day_pushes_closed_message(db, monkeypatch):
+    closed = []
+
+    def fake_closed(*, now, notify_cfg=None, client=None):
+        closed.append(now)
+        return {'session': '2026-10-24', 'sent': True, 'messages': 1}
+
+    monkeypatch.setattr(service, 'push_closed', fake_closed)
+    result = _task_run('scheduled', moment=datetime(2026, 10, 24, 22, 30, tzinfo=UTC))
+    assert closed and result['summary']['status'] == 'skipped'
+    assert result['summary']['push']['sent'] is True

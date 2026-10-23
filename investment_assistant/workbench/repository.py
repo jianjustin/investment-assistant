@@ -530,6 +530,20 @@ WORKBENCH_TABLES = ('price_bars', 'news_items', 'news_item_tickers', 'signal_can
                     'account_snapshots', 'cash_flows', 'monthly_reviews')
 
 
+def last_push(conn, *, session: date | None = None) -> dict[str, Any] | None:
+    """The newest recorded push result for the workbench task, optionally for one session."""
+    if conn.execute("SELECT to_regclass('job_reports')").fetchone()[0] is None:
+        return None
+    sql = "SELECT summary->'push' AS push FROM job_reports WHERE task = 'workbench' AND summary ? 'push'"
+    params: list[Any] = []
+    if session is not None:
+        sql += " AND (summary->'push'->>'session') = %s"
+        params.append(session.isoformat())
+    sql += ' ORDER BY created_at DESC LIMIT 1'
+    row = conn.execute(sql, params).fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
 def missing_tables(conn) -> list[str]:
     row = conn.execute('SELECT ' + ', '.join(f"to_regclass('{t}')" for t in WORKBENCH_TABLES)).fetchone()
     missing = [t for t, found in zip(WORKBENCH_TABLES, row) if found is None]

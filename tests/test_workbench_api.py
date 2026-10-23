@@ -94,9 +94,12 @@ def test_task_reports_partial_failures_without_notifying(monkeypatch):
     monkeypatch.setattr(workbench, 'run_task', run_task)
     monkeypatch.setattr(workbench.service, 'run_batch',
                         lambda *, tickers, now, deps, skip_non_trading: {'tickers': tickers, 'skip': skip_non_trading})
+    monkeypatch.setattr(workbench.service, 'push',
+                        lambda **_: {'session': '2026-10-22', 'sent': True, 'messages': 4})
     workbench.run(AssistantConfig(watchlist=['NVDA', '688008.SH']), now=datetime(2026, 10, 22, 22, tzinfo=UTC))
     assert recorded['task'] == 'workbench' and recorded['notify'] is False
-    assert recorded['summary'] == {'tickers': ['NVDA'], 'skip': True}
+    assert recorded['summary'] == {'tickers': ['NVDA'], 'skip': True,
+                                   'push': {'session': '2026-10-22', 'sent': True, 'messages': 4}}
 
 
 def test_trade_list_endpoint(client, monkeypatch):
@@ -182,3 +185,15 @@ def test_monthly_reviews_routes(client, monkeypatch):
     assert client.post('/api/workbench/monthly-reviews', json={'month': '2026-10-01'}).status_code == 503
     assert client.post('/api/workbench/monthly-reviews', json={}).status_code == 400
     assert client.post('/api/workbench/monthly-reviews', json={'month': '2026-10-15'}).status_code == 400
+
+
+def test_push_route_forces(client, monkeypatch):
+    seen = {}
+
+    def push(*, now, force, notify_cfg=None, client=None):
+        seen['force'] = force
+        return {'session': '2026-10-22', 'sent': True, 'messages': 4}
+
+    monkeypatch.setattr(service, 'push', push)
+    resp = client.post('/api/workbench/push')
+    assert resp.status_code == 200 and seen['force'] is True and resp.json()['sent'] is True
