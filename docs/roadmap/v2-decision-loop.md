@@ -1,8 +1,8 @@
-# 09 — 长期路线：数据 → 交易计划 → 复盘
+# Roadmap v2 — 数据 → 交易计划 → 复盘
 
 > 2026-10-23，基线 `main@0b7c078`。本文是与你逐项讨论后确认的长期路线（决策记录见 §9）。
-> 这是方向和排序，不是实施授权。每个阶段开工前另写 spec 和 plan，按 [00 §6 DoD](00-principles-and-direction.md#6-交付硬性标准dod) 交付。
-> 本文改了一条既有边界：[工作台形态](../design/2026-10-17-workbench-shape.md)原写「目标价、仓位不在这套系统里完成」，现改为**系统按规则算出计划价位和建议仓位，人决定是否下单**。仍不接券商、不自动下单。
+> 这是方向和排序，不是实施授权。每个阶段开工前另写 spec 和 plan，按 [交付标准（DoD）](README.md#交付标准dod) 交付。
+> 本文改了一条 v1 边界：[工作台形态](../archive/roadmap-v1/workbench-shape-2026-10-17.md)原写「目标价、仓位不在这套系统里完成」，现改为**系统按规则算出计划价位和建议仓位，人决定是否下单**。仍不接券商、不自动下单。
 
 ---
 
@@ -206,12 +206,14 @@
 
 ---
 
-## 7. 与既有路线的关系
+## 7. 与 v1 的关系
 
-- [00](00-principles-and-direction.md) 的原则继续有效：闭环优先于回测，诚实优先于漂亮。
-- [03 计划—执行—复盘](03-phase2-plan-execution-loop.md) 的核心由 P1 落地，以工作台的 `signal_decisions`、`trades` 为基础扩展，不另建平行的 `execution_plans` / `trade_journal`。
-- [04 区制与校准](04-phase3-review-and-regime.md) 的区制条件化由 P2 的池内广度实现；LLM 校准随晋升机制一起暂缓。
-- [08](08-living-collaboration.md) 继续作为近期待办，阶段开工时在 08 记录切片和证据。
+v1 文档已归档到 [archive/roadmap-v1](../archive/roadmap-v1/README.md)。
+
+- v1 [00](../archive/roadmap-v1/00-principles-and-direction.md) 的核心原则和 DoD 继续有效，已摘入 [README](README.md#沿用原则)。
+- v1 [03 计划—执行—复盘](../archive/roadmap-v1/03-phase2-plan-execution-loop.md) 的核心由 P1 落地，以工作台的 `signal_decisions`、`trades` 为基础扩展，不另建平行的 `execution_plans` / `trade_journal`。
+- v1 [04 区制与校准](../archive/roadmap-v1/04-phase3-review-and-regime.md) 的区制条件化由 P2 的池内广度实现；LLM 校准随晋升机制一起暂缓。
+- v1 [08 活路线](../archive/roadmap-v1/08-living-collaboration.md) 由 [v2 进度](v2-progress.md) 接替，未完成的待办已转入。
 - Phase 0 正式 Gate 仍为 HOLD；本路线不改变它，只要求推送如实标注。
 
 ---

@@ -1,19 +1,21 @@
 # 08 — 长期协作与当前切片
 
-> 2026-10-17。本文是活路线，用来排近期待办。阶段设计仍以 [00](00-principles-and-direction.md) 到 [07](07-phase-r-fastapi-migration.md) 为准，验收数字以 [实施状态](../implementation-status-2026-10-17.md) 为准。
+> **已归档（2026-10-23）**：本文属于 roadmap v1，已被 [roadmap v2](../../roadmap/README.md) 取代，仅作历史参考，不再更新。
+
+> 2026-10-17。本文是活路线，用来排近期待办。阶段设计仍以 [00](00-principles-and-direction.md) 到 [07](07-phase-r-fastapi-migration.md) 为准，验收数字以 [实施状态](implementation-status-2026-10-17.md) 为准。
 > 本文不授权补采、真实库迁移、通知、部署或交易。
 > 2026-10-23 更新：按新证据改了下面标注日期的句子；10-17 的原始判断保留在括号里。
 
 ## 2026-10-23 变化
 
-- 美股投研工作台（采集 → 信号 → 复盘）已在 `main` 落地并部署到本地服务：[设计](../superpowers/specs/2026-10-23-us-research-workbench-design.md)、[实施计划](../superpowers/plans/2026-10-23-us-research-workbench.md)、[使用文档](../us-workbench.md)。界面收敛为「今日／标的／复盘」三个主入口，原六入口收在「更多」下。
+- 美股投研工作台（采集 → 信号 → 复盘）已在 `main` 落地并部署到本地服务：[设计](../../superpowers/specs/2026-10-23-us-research-workbench-design.md)、[实施计划](../../superpowers/plans/2026-10-23-us-research-workbench.md)、[使用文档](../../us-workbench.md)。界面收敛为「今日／标的／复盘」三个主入口，原六入口收在「更多」下。
 - 真实库执行了迁移 `015` 和 `016`，执行前做了 `pg_dump` 备份。`workbench` 每日任务已启用（北京时间周二至周六 06:30）。
 - 第一次真实批处理暴露并修复了：EDGAR 受理时间实为 UTC、Yahoo 新闻接口 404、财报库缺受理时间、Codex 偶发失败、复权价浮点噪声导致的重复修订。
 - 软件交付与真实运行已验证；用户使用验收与四周使用观察尚未开始。
 
 ## 当前不能合并的事实
 
-- 形态文档：[工作台形态](../design/2026-10-17-workbench-shape.md)。
+- 形态文档：[工作台形态](workbench-shape-2026-10-17.md)。
 - 2026-10-23：`main` 已包含美股工作台的提交（尚未推送）。（10-17：`main` 为 `76688de`，晚于状态文档使用的基线 `6fd63f8`，状态文档里的测试数字不能直接当成 `76688de` 的结果。）
 - Phase 0 正式信号 Gate 全部 HOLD。美股工作台的复盘只做描述性统计，不改变这一点。
 - 2026-10-23：本机数据库（本地 PostgreSQL 17）可达，工作台已真实读写；工作台页面做过浏览器检查。跨市场页面仍未做本轮验收。（10-17：回环不可达，行数 unknown。）

@@ -14,9 +14,9 @@
 
 ## 当前状态
 
-当前系统基于 FastAPI + uvicorn，使用 PostgreSQL 存储调度状态、任务报告、市场信号和策略评分。FastAPI、邮件渠道与六入口 UI 已实现。详细架构与设计见 [docs/architecture.md](docs/architecture.md)；Roadmap 见 [docs/roadmap/](docs/roadmap/)。
+当前系统基于 FastAPI + uvicorn，使用 PostgreSQL 存储调度状态、任务报告、市场信号和策略评分。FastAPI、邮件渠道与六入口 UI 已实现。详细架构与设计见 [docs/architecture.md](docs/architecture.md)；Roadmap 见 [docs/roadmap/](docs/roadmap/README.md)（当前 v2）。
 
-**2026-10-17，基线 `6fd63f8`**：本轮扫描/历史评分/事件研究修复及来源补强正在最终复核，最终测试数字待补，不以基线后端 526 passed / 52 skipped、前端 129 passed 冒充最终结果。Phase 0 全部正式 Gate HOLD；当前 DB 回环不可达（当前行数 unknown，不是 0），HTTP/UI 未验收。长期通用 OHLCV/广度/FRED/EPS surprise、计划—执行—复盘闭环及 Phase 3 均未完成。详见 [实施状态与验收边界](docs/implementation-status-2026-10-17.md)和 [Phase 0 只读评审](docs/roadmap/reports/2026-10-17-phase0-review.md)。本轮未补采、未写真实 DB/执行迁移、未通知、交易、部署或 commit/push。
+**2026-10-23**：美股投研工作台（采集 → 信号 → 复盘）已在本机运行，迁移 `015`、`016` 已上真实库，每日 `workbench` 任务已启用；用户使用验收进行中。Phase 0 全部正式 Gate HOLD。长期路线已更新为 [roadmap v2](docs/roadmap/README.md)（数据 → 交易计划 → 复盘），当前进度见 [v2 进度](docs/roadmap/v2-progress.md)。2026-10-17 的状态说明已随 v1 归档：[实施状态与验收边界](docs/archive/roadmap-v1/implementation-status-2026-10-17.md)、[Phase 0 只读评审](docs/archive/roadmap-v1/reports/2026-10-17-phase0-review.md)。
 
 A 股研究现已接入“数据 → A 股研究数据”和“策略 → 研究观察卡”，首个真实样本为澜起科技 `688008.SH`。只在本地运行，A 股研究不发通知，定时开关沿用本机既有配置；使用独立上海交易日历。局部复用 CNEquity 0.16.0，严格历史 PIT、公告全文解析和产品分部提取尚未实现。详见 [A 股接入与验证报告](docs/ashare-research.md)。下述 SPY/VIX 信号流仅适用于既有美股流程。
 

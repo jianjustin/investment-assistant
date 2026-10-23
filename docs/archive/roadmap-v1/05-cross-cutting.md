@@ -1,5 +1,7 @@
 # 05 — 横切关注点（贯穿各阶段）
 
+> **已归档（2026-10-23）**：本文属于 roadmap v1，已被 [roadmap v2](../../roadmap/README.md) 取代，仅作历史参考，不再更新。
+
 > 这些不属于某个单一阶段，而是贯穿始终。按「与核心闭环的耦合度」排序。
 
 ---
@@ -43,7 +45,7 @@
 
 **2026-10-17 对齐范围**：README 已说明 FastAPI 与新任务入口，不再要求重写成另一份历史设计。本轮更新 roadmap、事件研究说明与实施状态，将 `engineering_done`、`gate_hold`、`runtime_unverified`、`user_acceptance_pending` 分开记录。原估算不是排期，基线测试不是最终变更测试。
 
-历史审计、[跨市场交付](../cross-market-research.md)与 [A 股交付](../ashare-research.md)保留原文，引用其时点上下文；不删除或重写历史数字来迎合当前状态。新增证据集中在 [实施状态](../implementation-status-2026-10-17.md)和 [Phase 0 评审](reports/2026-10-17-phase0-review.md)，凭据/DSN 不进入文档。
+历史审计、[跨市场交付](../../cross-market-research.md)与 [A 股交付](../../ashare-research.md)保留原文，引用其时点上下文；不删除或重写历史数字来迎合当前状态。新增证据集中在 [实施状态](implementation-status-2026-10-17.md)和 [Phase 0 评审](reports/2026-10-17-phase0-review.md)，凭据/DSN 不进入文档。
 
 ---
 
@@ -61,7 +63,7 @@
 
 后续 CI 可补 lint（ruff）、pytest、前端 vitest 与隔离数据库迁移验证。仓库已有显式 TEMP 表集成测试，不能继续写“只有 SQL 子串断言”；但它们也不代表所有迁移已经在本轮真实执行。
 
-普通回归须移除数据库环境变量；**不得给完整测试套件配置生产数据库 URL**，旧迁移集成测试会写业务表。真实 SQL/迁移测试只在逐文件审查的临时表或可丢弃库中执行。本轮 DB 不可达，015 未执行；基线后端 526 passed / 52 skipped、前端 129 passed 不是当前变更最终结果，最终数见 [实施状态](../implementation-status-2026-10-17.md)待补项。
+普通回归须移除数据库环境变量；**不得给完整测试套件配置生产数据库 URL**，旧迁移集成测试会写业务表。真实 SQL/迁移测试只在逐文件审查的临时表或可丢弃库中执行。本轮 DB 不可达，015 未执行；基线后端 526 passed / 52 skipped、前端 129 passed 不是当前变更最终结果，最终数见 [实施状态](implementation-status-2026-10-17.md)待补项。
 
 依赖锁定与 dev 依赖整理仍是候选，不由本轮文档更新自动执行。
 

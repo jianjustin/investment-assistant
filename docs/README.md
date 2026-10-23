@@ -39,5 +39,6 @@
 
 | 位置 | 内容 |
 |------|------|
-| [roadmap/](roadmap/README.md) | 原则与各 Phase 方向文档（含 DoD 标准，roadmap/00 §6） |
+| [roadmap/](roadmap/README.md) | 当前 roadmap v2：长期路线、进度、沿用原则与 DoD |
+| [archive/roadmap-v1/](archive/roadmap-v1/README.md) | 已归档的 roadmap v1（2026-06-30 – 2026-10-23）及其状态、评审与形态文档 |
 | [superpowers/](superpowers/) | 各阶段的设计 spec 与实施 plan（历史工件，按日期命名，只增不改） |
