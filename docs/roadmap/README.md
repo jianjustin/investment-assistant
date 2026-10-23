@@ -20,6 +20,7 @@
 | 文档 | 内容 | 给谁看 |
 |------|------|--------|
 | [08-living-collaboration.md](08-living-collaboration.md) | 当前切片、调度边界和每周回顾 | **先看近况**；阶段原则仍先读 00 |
+| [09-long-term-decision-loop.md](09-long-term-decision-loop.md) | 2026-10-23 逐项讨论后确认的长期路线：数据 → 交易计划 → 复盘，P1–P4 分阶段，含决策记录 | 长期方向；各阶段开工前另写 spec |
 | [工作台形态](../design/2026-10-17-workbench-shape.md) | 五层形态，以及从 vibe trading 项目吸收和拒绝的部分 | 长期草案，不代替实施状态 |
 | [00-principles-and-direction.md](00-principles-and-direction.md) | 方向判断、量化陷阱（过拟合/小样本/幸存者偏差）、护城河论证、系统定位 | **先读这篇**，它解释了后面所有优先级排序的依据 |
 | [01-phase0-data-quality-and-event-study.md](01-phase0-data-quality-and-event-study.md) | 数据质量与事件研究：框架已落地，本轮修复最终复核；归档探索已评审 | **全部正式 Gate HOLD** |
