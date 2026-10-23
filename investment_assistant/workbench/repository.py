@@ -296,3 +296,48 @@ def insert_weekly_review(conn, week_start: date, calc_version: str, stats: dict[
     return _one(conn, 'INSERT INTO weekly_reviews (week_start, calc_version, stats, notes, supersedes_id) '
                       f'VALUES (%s, %s, %s::jsonb, %s, %s) RETURNING {_WEEKLY_COLUMNS}',
                 (week_start, calc_version, _canonical(stats), notes, supersedes_id))
+
+
+_CANDIDATE_COLUMNS = 'id, ticker, signal_date, action, rule_id, rule_version, inputs, run_id, created_at'
+
+
+def unit_candidates(conn, ticker: str, signal_date: date) -> list[dict[str, Any]]:
+    return _all(conn, f'SELECT {_CANDIDATE_COLUMNS} FROM signal_candidates WHERE ticker = %s AND signal_date = %s '
+                      'ORDER BY created_at, rule_id', (ticker.upper(), signal_date))
+
+
+def read_candidates(conn, ticker: str, *, since: date) -> list[dict[str, Any]]:
+    return _all(conn, f'SELECT {_CANDIDATE_COLUMNS} FROM signal_candidates WHERE ticker = %s AND signal_date >= %s '
+                      'ORDER BY signal_date DESC, created_at, rule_id', (ticker.upper(), since))
+
+
+def candidates_by_ids(conn, ids) -> list[dict[str, Any]]:
+    return _all(conn, f'SELECT {_CANDIDATE_COLUMNS} FROM signal_candidates WHERE id = ANY(%s)', (list(ids),))
+
+
+def read_filings(conn, ticker: str, *, since: date, cutoff_at: datetime) -> list[dict[str, Any]]:
+    """Filings indexed by ``cutoff_at`` (created_at is when this system first stored them)."""
+    return _all(conn, 'SELECT id, ticker, form, filing_date, accession_number, primary_document, accepted_at, items '
+                      'FROM filings WHERE ticker = %s AND filing_date >= %s AND created_at <= %s '
+                      'ORDER BY filing_date, id', (ticker.upper(), since, cutoff_at))
+
+
+def market_status(conn, signal_date: date) -> str | None:
+    if conn.execute("SELECT to_regclass('market_signals')").fetchone()[0] is None:
+        return None
+    row = conn.execute('SELECT market_status FROM market_signals WHERE signal_date = %s', (signal_date,)).fetchone()
+    return row[0] if row else None
+
+
+WORKBENCH_TABLES = ('price_bars', 'news_items', 'news_item_tickers', 'signal_candidates', 'signal_briefs',
+                    'signal_decisions', 'trades', 'weekly_reviews', 'filings')
+
+
+def missing_tables(conn) -> list[str]:
+    row = conn.execute('SELECT ' + ', '.join(f"to_regclass('{t}')" for t in WORKBENCH_TABLES)).fetchone()
+    missing = [t for t, found in zip(WORKBENCH_TABLES, row) if found is None]
+    if 'filings' not in missing and conn.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = 'filings' AND column_name = 'accepted_at' "
+            "AND table_schema = ANY(current_schemas(false))").fetchone() is None:
+        missing.append('filings.accepted_at')
+    return missing
