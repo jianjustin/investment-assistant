@@ -25,6 +25,7 @@ ATR_PERIOD = 14
 MIN_BARS = ATR_PERIOD + 1
 
 CENT = Decimal('0.01')
+SIX = Decimal('0.000001')  # price_bars NUMERIC(18,6): freeze ref_price/atr at storable precision
 LEVEL_KEYS = ('entry_low', 'entry_high', 'stop', 'target1')
 
 
@@ -34,6 +35,10 @@ def _dec(value: Any) -> Decimal:
 
 def _cent(value: Decimal) -> Decimal:
     return value.quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def _freeze(value: Decimal) -> Decimal:
+    return value.quantize(SIX, rounding=ROUND_HALF_UP)
 
 
 def _floor(value: Decimal) -> int:
@@ -149,10 +154,10 @@ def build_rule_plan(*, ticker: str, signal_date: date, bars: list[dict[str, Any]
                     snapshot: dict[str, Any] | None, exposure: dict[str, Any],
                     params: WorkbenchConfig) -> dict[str, Any]:
     """The rule plan for a buy unit; {'skip': 'atr_unavailable'} when the bars cannot price it."""
-    atr = atr14(bars)
+    atr = _freeze(atr14(bars)) if (raw := atr14(bars)) is not None else None
     if atr is None or atr <= 0:
         return {'skip': 'atr_unavailable'}
-    ref_price = _dec(bars[-1]['close'])
+    ref_price = _freeze(_dec(bars[-1]['close']))
     levels = rule_levels(ref_price, atr)
     if not levels_ordered(levels):
         return {'skip': 'atr_unavailable'}
@@ -181,10 +186,10 @@ def build_own_plan(*, rule_plan: dict[str, Any] | None, levels: dict[str, Decima
     valid_from, valid_until = validity(signal_date)
     invalid, warnings = earnings_flags(earnings_row, signal_date=signal_date, valid_from=valid_from,
                                        valid_until=valid_until)
-    atr = atr14(bars)
+    atr = _freeze(atr14(bars)) if (raw := atr14(bars)) is not None else None
     if atr is None:
         atr = rule_plan['atr'] if rule_plan is not None and rule_plan.get('atr') is not None else Decimal(0)
-    ref_price = _dec(bars[-1]['close'])
+    ref_price = _freeze(_dec(bars[-1]['close']))
     sizing, size_invalid = size(snapshot=snapshot, ref_price=ref_price, stop=levels['stop'],
                                 entry_high=levels['entry_high'], ticker_value=exposure['ticker_value'],
                                 total_value=exposure['total_value'], params=params)

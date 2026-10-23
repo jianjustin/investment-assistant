@@ -216,3 +216,31 @@ def test_latest_earnings_respects_cutoff(workbench_db):
     assert repository.latest_earnings(workbench_db, 'NVDA', cutoff_at=NOW + timedelta(hours=2))[
         'earnings_date'] == date(2027, 2, 18)
     assert repository.latest_earnings(workbench_db, 'MU', cutoff_at=NOW) is None
+
+
+def _plan_row(**overrides):
+    values = {'ticker': 'NVDA', 'signal_date': date(2026, 10, 21), 'kind': 'rule', 'based_on_id': None,
+              'plan_version': 'plan-1', 'ref_price': 100, 'atr': 2, 'entry_low': 99, 'entry_high': 101,
+              'stop': 96, 'target1': 108, 'trail_atr_multiple': 3, 'valid_from': date(2026, 10, 22),
+              'valid_until': date(2026, 10, 28), 'sizing': {'status': 'no_equity', 'per_share_risk': '4'},
+              'status': 'ok', 'invalid_reasons': [], 'warnings': [], 'inputs': {'bar_ids': [1, 2]},
+              'request_id': None, 'request_hash': None}
+    values.update(overrides)
+    return values
+
+
+def test_store_plan_rule_dedup_conflict_and_reads(workbench_db):
+    from investment_assistant.workbench import repository
+    plan = _plan_row()
+    out1 = repository.store_plan(workbench_db, plan)
+    assert out1['status'] == 'inserted'
+    assert repository.store_plan(workbench_db, _plan_row())['status'] == 'existing'
+    out3 = repository.store_plan(workbench_db, _plan_row(entry_low=98))
+    assert out3['status'] == 'conflict' and out3['record']['id'] == out1['record']['id']
+    assert workbench_db.execute('SELECT count(*) FROM trade_plans').fetchone()[0] == 1
+    head = repository.rule_plan(workbench_db, 'NVDA', date(2026, 10, 21))
+    assert head['id'] == out1['record']['id'] and head['stop'] == 96
+    assert repository.rule_plan(workbench_db, 'NVDA', date(2026, 10, 21), plan_version='plan-2') is None
+    assert repository.plan_by_id(workbench_db, head['id'])['target1'] == 108
+    assert len(repository.plans_since(workbench_db, date(2026, 10, 1))) == 1
+    assert repository.plans_since(workbench_db, date(2026, 11, 1)) == []

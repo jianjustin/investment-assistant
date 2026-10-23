@@ -6,7 +6,9 @@ import pandas as pd
 import pytest
 
 from investment_assistant.data.calendar import add_trading_days
-from investment_assistant.workbench import service
+from decimal import Decimal
+
+from investment_assistant.workbench import account, plans, repository, service
 
 SESSION = date(2026, 10, 22)                         # Thursday
 NOW = datetime(2026, 10, 22, 22, 30, tzinfo=UTC)     # 18:30 New York
@@ -24,9 +26,10 @@ def frame(ticker, end):
     days = [add_trading_days(SESSION, -(len(closes) - 1 - i)) for i in range(len(closes))]
     rows = [(d, c) for d, c in zip(days, closes) if d <= end]
     index = pd.DatetimeIndex([pd.Timestamp(d, tz='America/New_York') for d, _ in rows])
-    return pd.DataFrame({'Open': [c for _, c in rows], 'High': [c for _, c in rows], 'Low': [c for _, c in rows],
-                         'Close': [c for _, c in rows], 'Adj Close': [c for _, c in rows],
-                         'Volume': [1000] * len(rows), 'Stock Splits': [0.0] * len(rows)}, index=index)
+    return pd.DataFrame({'Open': [c for _, c in rows], 'High': [c * 1.02 for _, c in rows],
+                         'Low': [c * 0.99 for _, c in rows], 'Close': [c for _, c in rows],
+                         'Adj Close': [c for _, c in rows], 'Volume': [1000] * len(rows),
+                         'Stock Splits': [0.0] * len(rows)}, index=index)
 
 
 class Sources:
@@ -58,9 +61,10 @@ def db(workbench_db, monkeypatch):
     return workbench_db
 
 
-def deps(sources, brief_client=None):
+def deps(sources, brief_client=None, earnings=None):
     return service.Deps(bar_fetcher=sources.bars, news_fetcher=sources.news, filing_source=sources,
-                        brief_client=brief_client or (lambda **_: (None, {'error': 'no key'})))
+                        brief_client=brief_client or (lambda **_: (None, {'error': 'no key'})),
+                        earnings_fetcher=earnings or (lambda t: {'Earnings Date': [date(2027, 2, 18)]}))
 
 
 def test_batch_collects_evaluates_and_briefs(db):
@@ -161,3 +165,106 @@ def test_sec_listing_fills_unknown_filing_acceptance_without_overwriting(db):
             db.execute('SELECT accession_number, accepted_at, items FROM filings').fetchall()}
     assert rows['0001045810-26-000001'] == (datetime(2026, 10, 22, 0, 41, 42, tzinfo=UTC), ['2.02', '9.01'])
     assert rows['0001045810-26-000002'] == (known, ['8.01'])
+
+
+def breakdown_closes():
+    base = [50 + i * 0.25 for i in range(299)]
+    return base + [110.0]   # 10+ days above MA50, then a break below it: trend_break
+
+
+class BreakdownSources(Sources):
+    def bars(self, ticker, start, end_exclusive):
+        if ticker != 'AMD' and ticker != 'MU':
+            return super().bars(ticker, start, end_exclusive)
+        closes = breakdown_closes() if ticker == 'AMD' else closes_for(ticker)
+        days = [add_trading_days(SESSION, -(len(closes) - 1 - i)) for i in range(len(closes))]
+        rows = [(d, c) for d, c in zip(days, closes) if d <= end_exclusive - timedelta(days=1)]
+        index = pd.DatetimeIndex([pd.Timestamp(d, tz='America/New_York') for d, _ in rows])
+        return pd.DataFrame({'Open': [c for _, c in rows], 'High': [c * 1.02 for _, c in rows],
+                             'Low': [c * 0.99 for _, c in rows], 'Close': [c for _, c in rows],
+                             'Adj Close': [c for _, c in rows], 'Volume': [1000] * len(rows),
+                             'Stock Splits': [0.0] * len(rows)}, index=index)
+
+
+def test_batch_writes_rule_plan_for_buy_unit(db):
+    summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
+    assert summary['plans']['NVDA'] == 'inserted'
+    unit = service.today(now=NOW)['units'][0]
+    plan = unit['plan']
+    assert plan['kind'] == 'rule' and plan['plan_version'] == 'plan-1' and plan['status'] == 'ok'
+    assert plan['sizing']['status'] == 'no_equity'
+    bars = repository.read_bars(db, 'NVDA', SESSION, cutoff_at=NOW)
+    levels = plans.rule_levels(Decimal(str(bars[-1]['close'])), plans.atr14(bars))
+    for key, value in levels.items():
+        assert plan[key] == value
+    assert plan['inputs']['bar_ids'] == [b['id'] for b in bars[-15:]]
+    assert plan['inputs']['earnings_date_id'] is not None
+
+
+def test_no_plan_for_conflict_or_sell_units(db):
+    # 冲突单元：趋势修复（buy）+ 持仓回撤（sell）
+    service.add_trade({'request_id': '6f1d1c1e-2222-4444-8888-000000000001', 'ticker': 'NVDA', 'side': 'buy',
+                       'quantity': '10', 'price': '137.00', 'executed_at': '2026-10-10T15:00:00+00:00'}, now=NOW)
+    conflict = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
+    assert 'plans' not in conflict or 'NVDA' not in conflict['plans']
+    # 卖出单元：趋势跌破且无持仓
+    sell = service.run_batch(tickers=['AMD'], now=NOW, deps=deps(BreakdownSources()))
+    assert 'AMD' not in sell['plans']
+    assert db.execute('SELECT count(*) FROM trade_plans').fetchone()[0] == 0
+
+
+def test_rerun_returns_existing_plan(db):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
+    again = service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=5), deps=deps(Sources()))
+    assert again['plans']['NVDA'] == 'existing'
+    assert db.execute('SELECT count(*) FROM trade_plans').fetchone()[0] == 1
+
+
+def test_changed_inputs_record_conflict_without_overwrite(db):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
+    original = service.today(now=NOW)['units'][0]['plan']
+
+    class Shifted(Sources):
+        def bars(self, ticker, start, end_exclusive):
+            f = super().bars(ticker, start, end_exclusive)
+            f.iloc[-1, f.columns.get_loc('Close')] += 2
+            f.iloc[-1, f.columns.get_loc('Adj Close')] += 2
+            return f
+
+    again = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Shifted()))
+    assert again['plans']['NVDA'] == 'conflict'
+    assert any(c.get('rule_id') == 'rule_plan' for c in again['conflicts'])
+    assert db.execute('SELECT count(*) FROM trade_plans').fetchone()[0] == 1
+    assert service.today(now=NOW)['units'][0]['plan']['ref_price'] == original['ref_price']
+
+
+def test_backdated_snapshot_recorded_after_cutoff_ignored(db):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
+    plan = service.today(now=NOW)['units'][0]['plan']
+    assert plan['sizing']['status'] == 'no_equity'
+    # 补录一笔 as_of 在信号日之前、recorded_at 晚于本次运行截止时间的快照
+    account.record_snapshot(db, {'request_id': '6f1d1c1e-3333-4444-8888-000000000001',
+                                 'as_of': (SESSION - timedelta(days=2)).isoformat(),
+                                 'equity': '100000'}, now=NOW + timedelta(hours=1))
+    again = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
+    assert again['plans']['NVDA'] == 'existing'  # 补录不可见，重算结果与原计划一致
+
+
+def test_earnings_fetch_failure_not_stored(db):
+    def boom(_t):
+        raise RuntimeError('calendar down')
+
+    summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources(), earnings=boom))
+    assert summary['earnings']['NVDA'].startswith('error:')
+    assert db.execute('SELECT count(*) FROM earnings_dates').fetchone()[0] == 0
+    plan = service.today(now=NOW)['units'][0]['plan']
+    assert 'earnings_unknown' in plan['warnings']
+
+
+def test_holding_outside_watchlist_is_collected(db):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
+    service.add_trade({'request_id': '6f1d1c1e-4444-4444-8888-000000000001', 'ticker': 'AMD', 'side': 'buy',
+                       'quantity': '10', 'price': '100.00', 'executed_at': '2026-10-20T15:00:00+00:00'}, now=NOW)
+    summary = service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=10), deps=deps(Sources()))
+    assert 'AMD' in summary['tickers']
+    assert 'AMD' in summary['earnings']

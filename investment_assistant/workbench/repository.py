@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -308,6 +309,70 @@ def insert_weekly_review(conn, week_start: date, calc_version: str, stats: dict[
     return _one(conn, 'INSERT INTO weekly_reviews (week_start, calc_version, stats, notes, supersedes_id) '
                       f'VALUES (%s, %s, %s::jsonb, %s, %s) RETURNING {_WEEKLY_COLUMNS}',
                 (week_start, calc_version, _canonical(stats), notes, supersedes_id))
+
+
+_PLAN_COLUMNS = ('id, ticker, signal_date, kind, based_on_id, plan_version, ref_price, atr, entry_low, '
+                 'entry_high, stop, target1, trail_atr_multiple, valid_from, valid_until, sizing, status, '
+                 'invalid_reasons, warnings, inputs, request_id, request_hash, created_at')
+
+
+def _plan_json(value: Any) -> str:
+    """Canonical JSON with Decimals and dates as strings, stable across a jsonb round-trip."""
+    def scalar(item: Any) -> Any:
+        if isinstance(item, Decimal):
+            return format(item.normalize(), 'f')
+        if isinstance(item, (date, datetime)):
+            return item.isoformat()
+        if isinstance(item, uuid.UUID):
+            return str(item)
+        raise TypeError(f'not JSON-serializable: {type(item)!r}')
+
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False, default=scalar)
+
+
+def store_plan(conn, plan: dict[str, Any]) -> dict[str, Any]:
+    """Insert once per rule unit; same levels/sizing/status returns the stored row, different is a conflict."""
+    if plan.get('kind') == 'rule':
+        existing = rule_plan(conn, plan['ticker'], plan['signal_date'], plan.get('plan_version', 'plan-1'))
+        if existing is not None:
+            same = (existing['status'] == plan['status']
+                    and all(Decimal(existing[k]) == plan[k]
+                            for k in ('ref_price', 'atr', 'entry_low', 'entry_high', 'stop', 'target1'))
+                    and _plan_json(existing['sizing']) == _plan_json(plan['sizing']))
+            if same:
+                return {'status': 'existing', 'record': existing}
+            return {'status': 'conflict', 'record': existing}
+    return {'status': 'inserted', 'record': insert_plan(conn, plan)}
+
+
+def insert_plan(conn, plan: dict[str, Any]) -> dict[str, Any]:
+    return _one(conn,
+                'INSERT INTO trade_plans (ticker, signal_date, kind, based_on_id, plan_version, ref_price, atr, '
+                'entry_low, entry_high, stop, target1, trail_atr_multiple, valid_from, valid_until, sizing, '
+                'status, invalid_reasons, warnings, inputs, request_id, request_hash) '
+                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s::jsonb, '
+                f'%s, %s) RETURNING {_PLAN_COLUMNS}',
+                (plan['ticker'], plan['signal_date'], plan['kind'], plan.get('based_on_id'),
+                 plan.get('plan_version', 'plan-1'), plan['ref_price'], plan['atr'], plan['entry_low'],
+                 plan['entry_high'], plan['stop'], plan['target1'], plan['trail_atr_multiple'],
+                 plan['valid_from'], plan['valid_until'], _plan_json(plan['sizing']), plan['status'],
+                 plan['invalid_reasons'], plan['warnings'], _plan_json(plan['inputs']),
+                 plan.get('request_id'), plan.get('request_hash')))
+
+
+def rule_plan(conn, ticker: str, signal_date: date, plan_version: str = 'plan-1') -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_PLAN_COLUMNS} FROM trade_plans WHERE ticker = %s AND signal_date = %s '
+                      "AND kind = 'rule' AND plan_version = %s ORDER BY created_at DESC, id DESC LIMIT 1",
+                (ticker.upper(), signal_date, plan_version))
+
+
+def plan_by_id(conn, plan_id) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_PLAN_COLUMNS} FROM trade_plans WHERE id = %s', (plan_id,))
+
+
+def plans_since(conn, since: date) -> list[dict[str, Any]]:
+    return _all(conn, f'SELECT {_PLAN_COLUMNS} FROM trade_plans WHERE signal_date >= %s '
+                      'ORDER BY signal_date, created_at, id', (since,))
 
 
 _SNAPSHOT_COLUMNS = ('id, request_id, request_hash, as_of, equity, note, recorded_at, supersedes_id, '

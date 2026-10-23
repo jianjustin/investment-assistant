@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
+from decimal import Decimal
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -11,8 +12,8 @@ from zoneinfo import ZoneInfo
 
 from investment_assistant.data.calendar import is_trading_day
 from investment_assistant.db import connect
-from investment_assistant.workbench import (account, bars, briefs, ledger, news, positions, repository,
-                                               review, rules, synthesis)
+from investment_assistant.workbench import (account, bars, briefs, earnings, ledger, news, plans, positions,
+                                               repository, review, rules, synthesis)
 
 NY = ZoneInfo('America/New_York')
 BENCHMARK = 'SPY'
@@ -34,6 +35,7 @@ class Deps:
     news_fetcher: Callable | None = None
     filing_source: Any = None           # object with discover(tickers, start_iso, end_iso)
     brief_client: Callable | None = None
+    earnings_fetcher: Callable | None = None
 
 
 def connection():
@@ -94,17 +96,62 @@ def _validate_tickers(tickers: list[str]) -> list[str]:
     return cleaned
 
 
+def exposure(conn, session: date, *, cutoff_at: datetime, ticker: str) -> dict[str, Decimal]:
+    """Market value of the ticker's open position and of all open positions, at each latest close."""
+    from decimal import Decimal
+
+    ticker_value = Decimal('0')
+    total_value = Decimal('0')
+    for held in sorted({t['ticker'] for t in repository.list_trades(conn) if t['voided_at'] is None}):
+        pos = _book(conn, held)['position']
+        if pos is None:
+            continue
+        latest = repository.read_bars(conn, held, session, cutoff_at=cutoff_at, limit=1)
+        value = Decimal(str(pos['quantity'])) * Decimal(str(latest[-1]['close'])) if latest else Decimal('0')
+        total_value += value
+        if held == ticker.upper():
+            ticker_value = value
+    return {'ticker_value': ticker_value, 'total_value': total_value}
+
+
+def _generate_rule_plan(conn, ticker: str, session: date, ticker_bars: list[dict[str, Any]], summary: dict[str, Any],
+                        *, now: datetime) -> None:
+    """Build and store the rule plan for a fresh buy unit; record skip/conflict in the summary."""
+    from investment_assistant.config import load_config
+
+    plan = plans.build_rule_plan(
+        ticker=ticker, signal_date=session, bars=ticker_bars,
+        earnings_row=repository.latest_earnings(conn, ticker, cutoff_at=now),
+        snapshot=repository.snapshot_at(conn, session, cutoff_at=now),
+        exposure=exposure(conn, session, cutoff_at=now, ticker=ticker),
+        params=load_config().workbench)
+    if 'skip' in plan:
+        summary['plans'][ticker] = f"skip: {plan['skip']}"
+        return
+    out = repository.store_plan(conn, plan)
+    summary['plans'][ticker] = out['status']
+    if out['status'] == 'conflict':
+        summary['conflicts'].append({'ticker': ticker, 'rule_id': 'rule_plan', 'id': str(out['record']['id'])})
+
+
 def run_batch(*, tickers: list[str], now: datetime, deps: Deps | None = None, skip_non_trading: bool = False,
               run_id: str | None = None) -> dict[str, Any]:
     """Collect -> rules -> units -> briefs for the latest settled session. Idempotent per session."""
     deps = deps or Deps()
-    tickers = _validate_tickers(tickers)
+    watchlist = _validate_tickers(tickers)
     ny_date = now.astimezone(NY).date()
     if skip_non_trading and not is_trading_day(ny_date):
         return {'status': 'skipped', 'reason': 'not a trading day in New York', 'ny_date': ny_date.isoformat()}
     session = bars.latest_closed_session(now)
+    # Holdings join the batch even off the watchlist: plan stops and earnings reminders need their data.
+    # The size cap only ever applies to the watchlist.
+    with _tx() as conn:
+        held = [t for t in sorted({r['ticker'] for r in repository.list_trades(conn) if r['voided_at'] is None})
+                if t not in watchlist]
+    tickers = [*watchlist, *held]
     summary: dict[str, Any] = {'session': session.isoformat(), 'cutoff_at': now.isoformat(), 'tickers': {},
-                               'benchmark': {}, 'filings': {}, 'conflicts': [], 'errors': [], 'briefs': {}}
+                               'benchmark': {}, 'filings': {}, 'earnings': {}, 'plans': {},
+                               'conflicts': [], 'errors': [], 'briefs': {}}
 
     for ticker in [BENCHMARK, *tickers]:
         entry: dict[str, Any] = {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [], 'skips': [],
@@ -131,6 +178,15 @@ def run_batch(*, tickers: list[str], now: datetime, deps: Deps | None = None, sk
                 raise
             except Exception as exc:
                 problems.append(f'news: {exc}')
+        try:
+            row = earnings.fetch_next(ticker, fetcher=deps.earnings_fetcher, today=ny_date)
+            with _tx() as conn:
+                summary['earnings'][ticker] = repository.store_earnings(conn, ticker, row, now=now)['status']
+        except Unavailable:
+            raise
+        except Exception as exc:  # 采集失败不写库，也不冒充无财报
+            summary['earnings'][ticker] = f'error: {exc}'
+            summary['errors'].append(f'{ticker} earnings: {exc}')
         if problems:
             entry['error'] = '; '.join(problems)
             summary['errors'].extend(f'{ticker} {p}' for p in problems)
@@ -171,11 +227,14 @@ def run_batch(*, tickers: list[str], now: datetime, deps: Deps | None = None, sk
                 entry['candidates'] = [c.rule_id for c in result['candidates']]
                 entry['skips'] = sorted({f'{s.rule_id}:{s.reason}' for s in result['skips']})
                 group = repository.unit_candidates(conn, ticker, session)
+                unit = synthesis.synthesize(ticker, session, group, holding=book['position'] is not None,
+                                            market_status=repository.market_status(conn, session), now=now) \
+                    if group and repository.decision_head(conn, ticker, session) is None else None
+                if unit is not None and unit['proposed_action'] == 'buy' and 'conflict' not in unit['labels']:
+                    _generate_rule_plan(conn, ticker, session, ticker_bars, summary, now=now)
                 needs_brief = group and repository.decision_head(conn, ticker, session) is None and (
                     inserted or repository.latest_brief(conn, ticker, session) is None)
                 if needs_brief:
-                    unit = synthesis.synthesize(ticker, session, group, holding=book['position'] is not None,
-                                                market_status=repository.market_status(conn, session), now=now)
                     recent = repository.read_news(conn, ticker, cutoff_at=now,
                                                   since=_midnight(session - timedelta(days=NEWS_LOOKBACK_DAYS)))
                     brief = briefs.generate(unit, group, filing_rows, recent, cutoff_at=now, client=deps.brief_client)
@@ -209,6 +268,7 @@ def today(*, now: datetime) -> dict[str, Any]:
             unit.update(
                 candidates=group['candidates'], position=book['position'],
                 brief=_brief_view(repository.latest_brief(conn, ticker, signal_date)),
+                plan=repository.rule_plan(conn, ticker, signal_date),
                 filings=repository.read_filings(conn, ticker, since=since, cutoff_at=now),
                 news=repository.read_news(conn, ticker, cutoff_at=now, since=_midnight(since), limit=20))
             units.append(unit)
