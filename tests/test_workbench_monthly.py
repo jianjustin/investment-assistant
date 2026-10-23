@@ -80,3 +80,16 @@ def test_sensitivity_drawdown():
     assert [r['risk_pct'] for r in rows] == [0.005, 0.01, 0.015, 0.02]
     assert rows[1]['return'] == pytest.approx(0.03)
     assert rows[1]['max_drawdown'] == pytest.approx(0.02)
+
+
+def test_month_without_snapshot_inside_it_is_missing():
+    # 只录了 10 月快照：11 月的期末不能沿用 10 月那条，否则会算成 0% 并评为「可行」
+    out = monthly.month_return(date(2026, 11, 1), [snap(date(2026, 10, 30), 100000)], [])
+    assert out['status'] == 'missing_snapshot' and out['return'] is None
+
+
+def test_month_start_must_be_previous_month():
+    # 10 月没有快照：期初不能拿 7 月的快照顶替，否则会把四个月的收益当成单月收益
+    out = monthly.month_return(date(2026, 11, 1),
+                               [snap(date(2026, 7, 31), 100000), snap(date(2026, 11, 30), 130000)], [])
+    assert out['status'] == 'missing_snapshot' and out['return'] is None

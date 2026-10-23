@@ -40,10 +40,11 @@ def _current_basis(level: Decimal, signal_date: date, splits: list[tuple[date, D
     return _at_basis(level, signal_date, date.max, splits)
 
 
-def _t1_touched_through(bars: list[dict[str, Any]], target1: Decimal, signal_date: date, through: date,
-                        splits: list[tuple[date, Decimal]]) -> bool:
+def _t1_touched_while_held(bars: list[dict[str, Any]], target1: Decimal, signal_date: date, since: date,
+                           through: date, splits: list[tuple[date, Decimal]]) -> bool:
+    """Whether T1 traded between the buy and the sell; highs from before the buy never count."""
     target = _current_basis(target1, signal_date, splits)
-    return any(b['price_date'] <= through and Decimal(str(b['high'])) >= target for b in bars)
+    return any(since <= b['price_date'] <= through and Decimal(str(b['high'])) >= target for b in bars)
 
 
 def evaluate(*, trades: list[dict[str, Any]], decisions_by_id: dict, plans_by_id: dict,
@@ -95,7 +96,7 @@ def evaluate(*, trades: list[dict[str, Any]], decisions_by_id: dict, plans_by_id
             # Early take: sold before T1, not executing a plan_stop, and T1 arrived within 20 sessions.
             for seg in segments_by_buy.get(t['id'], []):
                 sell_day = _session(seg['closed_at'])
-                if _t1_touched_through(bars, p['target1'], p['signal_date'], sell_day, splits):
+                if _t1_touched_while_held(bars, p['target1'], p['signal_date'], buy_day, sell_day, splits):
                     continue
                 if any(d <= sell_day <= add_trading_days(d, 1) for d in stop_days.get(ticker, [])):
                     continue  # the sell followed a plan_stop within a session: executing the stop is the plan

@@ -43,3 +43,4 @@ v2 新增：
 | 2026-10-23 | P1 设计逐项确认 | [P1 spec](../superpowers/specs/2026-10-23-p1-rule-plans-and-push-design.md) |
 | 2026-10-23 | P1 实施计划写成（14 个任务） | [P1 实施计划](../superpowers/plans/2026-10-23-p1-rule-plans-and-push.md) |
 | 2026-10-23 | P1 工程完成（Task 1–14，提交 `0caf127`…见该计划各任务提交；前端完成于 `c2adc45`；终审修复 `a923e6c`） | 端到端场景测试 `tests/test_workbench_scenarios.py::test_plan_to_monthly_review_end_to_end`；[使用文档](../us-workbench.md) P1 四节 |
+| 2026-10-23 | P1 复核修复：月度收益只用上月与本月的快照、自定计划按自定入场区间计仓位、过早止盈只看持有期内的 T1 | 新增 4 个回归测试；全量后端 1129 通过（含一次性库 SQL），前端 201 通过（Node 26 需 `NODE_OPTIONS=--no-experimental-webstorage`） |

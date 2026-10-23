@@ -138,3 +138,13 @@ def test_actual_r_uses_plan_stop():
 def test_track_from_plan_kind():
     out = evaluate([trade('b1')], plans={'p1': plan(kind='own')})
     assert out['trades'][0]['track'] == 'own'
+
+
+def test_early_take_ignores_highs_before_the_buy():
+    # 买入前很久曾高于 T1，不能算作「卖出时已触及 T1」
+    sell_day = D2
+    bars = [bar(add_trading_days(D1, -30), h=150), bar(D1), bar(sell_day)]
+    bars += [bar(add_trading_days(sell_day, 5), h=113)]          # 卖出后 20 个交易日内 T1 到达
+    trades = [trade('b1', price=100, executed=at(D1)), trade('s1', side='sell', price=105, executed=at(sell_day))]
+    out = evaluate(trades, bars=bars, segments=[segment(closed=sell_day)], session=add_trading_days(sell_day, 20))
+    assert 'early_take' in out['trades'][0]['flags']

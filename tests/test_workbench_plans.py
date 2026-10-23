@@ -182,3 +182,16 @@ def test_validate_levels_rejects():
         plans.validate_levels({**good, 'entry_low': '102'})
     with pytest.raises(ValueError):
         plans.validate_levels({**good, 'stop': '99'})
+
+
+def test_own_plan_sizes_from_own_entry_not_signal_close():
+    # 收盘 100，自定入场区间 105–106、止损 100：每股风险按自定区间中点 105.5 − 100 = 5.5 计
+    plan = plans.build_own_plan(
+        rule_plan=None, levels={'entry_low': Decimal('105'), 'entry_high': Decimal('106'),
+                                'stop': Decimal('100'), 'target1': Decimal('115')},
+        ticker='NVDA', signal_date=date(2026, 10, 22), bars=_bars(20), earnings_row=None,
+        snapshot=_snapshot(), exposure=_exposure(), params=PARAMS)
+    assert plan['sizing']['per_share_risk'] == Decimal('5.5')
+    assert plan['sizing']['shares'] == 181          # floor(1000 / 5.5)
+    assert plan['sizing']['status'] == 'sized'
+    assert 'no_room' not in plan['warnings']

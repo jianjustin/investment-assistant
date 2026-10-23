@@ -18,16 +18,21 @@ def _month_end(month: date) -> date:
     return month.replace(day=calendar.monthrange(month.year, month.month)[1])
 
 
-def _usable(snapshots: list[dict[str, Any]], through: date) -> dict[str, Any] | None:
+def _usable(snapshots: list[dict[str, Any]], month: date) -> dict[str, Any] | None:
+    """The month's last live snapshot; an older month's snapshot never stands in for it."""
     superseded = {s['supersedes_id'] for s in snapshots if s['supersedes_id']}
-    live = [s for s in snapshots if s['id'] not in superseded and s['as_of'] <= through]
+    live = [s for s in snapshots if s['id'] not in superseded and month <= s['as_of'] <= _month_end(month)]
     return max(live, key=lambda s: (s['as_of'], s['recorded_at']), default=None)
 
 
 def month_return(month: date, snapshots: list[dict[str, Any]], flows: list[dict[str, Any]]) -> dict[str, Any]:
-    """(end − start − net deposits and withdrawals) / start over one calendar month."""
-    start = _usable(snapshots, month - timedelta(days=1))
-    end = _usable(snapshots, _month_end(month))
+    """(end − start − net deposits and withdrawals) / start over one calendar month.
+
+    start is the previous month's last snapshot and end this month's; either missing
+    means missing_snapshot, so a stale snapshot never yields a 0% or multi-month return.
+    """
+    start = _usable(snapshots, (month - timedelta(days=1)).replace(day=1))
+    end = _usable(snapshots, month)
     if start is None or end is None:
         return {'status': 'missing_snapshot', 'start': start, 'end': end, 'net_flow': None, 'return': None}
     net = sum((f['amount'] for f in flows if f['voided_at'] is None

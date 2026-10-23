@@ -190,7 +190,10 @@ def build_own_plan(*, rule_plan: dict[str, Any] | None, levels: dict[str, Decima
     if atr is None:
         atr = rule_plan['atr'] if rule_plan is not None and rule_plan.get('atr') is not None else Decimal(0)
     ref_price = _freeze(_dec(bars[-1]['close']))
-    sizing, size_invalid = size(snapshot=snapshot, ref_price=ref_price, stop=levels['stop'],
+    # Risk per share is priced from the user's own entry band (its midpoint, as the rule
+    # plan's ref sits mid-band), not the signal close the own levels may sit above.
+    own_entry = (levels['entry_low'] + levels['entry_high']) / 2
+    sizing, size_invalid = size(snapshot=snapshot, ref_price=own_entry, stop=levels['stop'],
                                 entry_high=levels['entry_high'], ticker_value=exposure['ticker_value'],
                                 total_value=exposure['total_value'], params=params)
     return {
