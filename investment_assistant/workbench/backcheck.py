@@ -60,7 +60,10 @@ def replay(ticker: str, bars: list[dict[str, Any]], filings: list[dict[str, Any]
                        'valid_from': plan['valid_from'], 'valid_until': plan['valid_until']}
         mature = add_trading_days(plan['valid_until'], MATURE_SESSIONS) <= bars[-1]['price_date']
         outcome = (plan_shadow.simulate(shadow_plan, bars, spy_bars, splits=splits) if mature else None)
-        signals.append({'rule_id': cands[0].rule_id, 'signal_date': day, 'mature': mature, 'outcome': outcome})
+        # One signal per ticker-day (one plan); every buy rule that fired is listed and counts for its own row.
+        rule_ids = list(dict.fromkeys(c.rule_id for c in cands))
+        signals.append({'rule_id': rule_ids[0], 'rule_ids': rule_ids, 'signal_date': day, 'mature': mature,
+                        'outcome': outcome})
     return {'ticker': ticker, 'warmup_end': warmup_end, 'eval_start': eval_start, 'eval_end': eval_end,
             'eval_sessions': max(0, len(bars) - WARMUP), 'skipped_atr': skipped_atr, 'signals': signals}
 
@@ -130,26 +133,22 @@ def summarize(replays: list[dict[str, Any]]) -> dict[str, Any]:
         tickers_meta.append({k: (replayed[k].isoformat() if isinstance(replayed[k], date) else replayed[k])
                              for k in ('ticker', 'warmup_end', 'eval_start', 'eval_end', 'eval_sessions')})
         for signal in replayed['signals']:
-            by_rule.setdefault(signal['rule_id'], {'signals': [], 'counts': {}, 'dates': {},
-                                                   'ticker_sessions': 0})
-            bucket = by_rule[signal['rule_id']]
-            bucket['signals'].append(signal)
-            bucket['counts'][replayed['ticker']] = bucket['counts'].get(replayed['ticker'], 0) + 1
-            day_tickers = bucket['dates'].setdefault(signal['signal_date'], set())
-            day_tickers.add(replayed['ticker'])
-        all_signals.append((replayed, [s for s in replayed['signals']]))
+            for rule_id in signal.get('rule_ids') or [signal['rule_id']]:
+                bucket = by_rule.setdefault(rule_id, {'signals': [], 'counts': {}, 'dates': {},
+                                                      'ticker_sessions': 0})
+                bucket['signals'].append(signal)
+                bucket['counts'][replayed['ticker']] = bucket['counts'].get(replayed['ticker'], 0) + 1
+                day_tickers = bucket['dates'].setdefault(signal['signal_date'], set())
+                day_tickers.add(replayed['ticker'])
+        # The overall row counts each signal (one plan) once, however many rules fired.
+        all_signals.append((replayed, list(replayed['signals'])))
 
     rules_out: dict[str, Any] = {}
     total_sessions = sum(r['eval_sessions'] for r in replays)
     for rule_id, bucket in by_rule.items():
         row = _row()
         cluster_dates = {day for day, tickers in bucket['dates'].items() if len(tickers) >= CLUSTER_MIN}
-        merged = []
-        for replayed, signals in all_signals:
-            kept = [s for s in signals if s['rule_id'] == rule_id]
-            if kept:
-                merged.extend(kept)
-        _fill_row(row, merged, bucket['counts'], total_sessions, cluster_dates)
+        _fill_row(row, bucket['signals'], bucket['counts'], total_sessions, cluster_dates)
         rules_out[rule_id] = row
     all_row = _row()
     all_counts: dict[str, int] = {}

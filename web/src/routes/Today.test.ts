@@ -239,9 +239,35 @@ describe('market context and extended pool', () => {
     expect(screen.getByText(/SMH/)).toBeTruthy()
   })
   it('market card shows FRED not configured', async () => {
-    respond = async () => json({ session: '2026-10-22', units: [], holdings: [], extended_units: [], market })
+    const unconfigured = { ...market, inputs: { macro_status: { BAMLH0A0HYM2: 'not_configured', T10Y2Y: 'not_configured' } } }
+    respond = async () => json({ session: '2026-10-22', units: [], holdings: [], extended_units: [], market: unconfigured })
     render(Today)
     expect(await screen.findByText('FRED 未配置')).toBeTruthy()
+  })
+  it('market card tells a FRED failure apart from no key', async () => {
+    const failed = { ...market, inputs: { macro_status: { BAMLH0A0HYM2: 'error', T10Y2Y: 'error' } } }
+    respond = async () => json({ session: '2026-10-22', units: [], holdings: [], extended_units: [], market: failed })
+    render(Today)
+    expect(await screen.findByText(/FRED 采集失败/)).toBeTruthy()
+    expect(screen.queryByText('FRED 未配置')).toBeNull()
+  })
+  it('market card without recorded FRED status says no data', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [], holdings: [], extended_units: [], market })
+    render(Today)
+    expect(await screen.findByText('FRED 无数据')).toBeTruthy()
+  })
+  it('extended units show the plan status', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [], holdings: [], market: null,
+                                 extended_units: [
+                                   { ticker: 'AMD', signal_date: '2026-10-22', proposed_action: 'buy',
+                                     rule_ids: ['trend_reclaim'], plan: contextPlan({ status: 'invalid' }) },
+                                   { ticker: 'ARM', signal_date: '2026-10-22', proposed_action: 'buy',
+                                     rule_ids: ['trend_reclaim'], plan: contextPlan() }] })
+    render(Today)
+    await screen.findByText(/扩展池（只影子跟踪）/)
+    const items = [...document.querySelectorAll('details li')].map(li => li.textContent ?? '')
+    expect(items.find(t => t.includes('AMD'))).toContain('已作废')
+    expect(items.find(t => t.includes('ARM'))).toContain('有效')
   })
   it('plan card shows regime, next earnings and sector', async () => {
     respond = async () => json({ session: '2026-10-22', units: [unit({ plan: contextPlan() })], holdings: [],

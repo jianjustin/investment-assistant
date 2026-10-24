@@ -471,6 +471,8 @@ def test_fred_not_configured(db, monkeypatch):
     assert summary['macro'] == {'BAMLH0A0HYM2': 'not_configured', 'T10Y2Y': 'not_configured'}
     assert summary['sources']['fred'] == []
     assert called == []
+    inputs = db.execute('SELECT inputs FROM market_regimes').fetchone()[0]
+    assert inputs['macro_status'] == {'BAMLH0A0HYM2': 'not_configured', 'T10Y2Y': 'not_configured'}
 
 
 def test_fred_error_in_sources(db, monkeypatch):
@@ -485,6 +487,8 @@ def test_fred_error_in_sources(db, monkeypatch):
     assert sorted(summary['sources']['fred']) == ['BAMLH0A0HYM2', 'T10Y2Y']
     assert 'SECRET123' not in json.dumps(summary)
     assert all(v.startswith('error:') for v in summary['macro'].values())
+    inputs = db.execute('SELECT inputs FROM market_regimes').fetchone()[0]
+    assert inputs['macro_status'] == {'BAMLH0A0HYM2': 'error', 'T10Y2Y': 'error'}
 
 
 def test_regime_snapshot_written(db):

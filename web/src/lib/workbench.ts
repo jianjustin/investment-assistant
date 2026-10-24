@@ -93,7 +93,8 @@ export interface MarketContext {
   sectors: Record<string, { rs20: number; rs60: number; state: 'strong' | 'weak' | 'mixed' } | null>
   macro: Record<string, { value: number | string; obs_date: string; change: number | string | null
                           change_from: string | null } | null>
-  inputs: Record<string, unknown>; created_at: string
+  inputs: { macro_status?: Record<string, 'ok' | 'not_configured' | 'error'>; [key: string]: unknown }
+  created_at: string
 }
 export interface ExtendedUnit {
   ticker: string; signal_date: string; proposed_action: Action; rule_ids: string[]; plan: Plan | null

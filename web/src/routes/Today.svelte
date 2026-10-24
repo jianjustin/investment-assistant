@@ -86,9 +86,16 @@
     : '未映射'
   const pctText = (value: number | null | undefined) =>
     value == null ? '—' : `${(value * 100).toFixed(1)}%`
+  // No stored value: tell a missing key from a failed fetch (status recorded in the snapshot inputs).
+  const fredMissing = (m: wb.MarketContext) => {
+    const status = Object.values(m.inputs?.macro_status ?? {})
+    if (status.length && status.every(s => s === 'not_configured')) return 'FRED 未配置'
+    if (status.includes('error')) return 'FRED 采集失败（见运行报告）'
+    return 'FRED 无数据'
+  }
   const fredText = (m: wb.MarketContext) =>
     Object.values(m.macro ?? {}).every(v => v == null)
-      ? 'FRED 未配置'
+      ? fredMissing(m)
       : Object.entries(m.macro ?? {}).map(([series, view]) =>
           view == null ? `${series} 无数据` : `${series} ${view.value}（20 期 ${view.change == null ? '无变化' : (Number(view.change) >= 0 ? '+' : '') + view.change}）`).join(' · ')
   const values = (c: wb.Candidate) =>
@@ -262,7 +269,7 @@
       <ul class="mt-2 space-y-1">
         {#each view.extended_units as u (`${u.ticker}|${u.signal_date}`)}
           <li>{u.ticker} · {u.signal_date} · 建议{wb.ACTION_LABELS[u.proposed_action]} · {u.rule_ids.map(wb.ruleLabel).join('、')}
-            {#if u.plan}· 入场 {u.plan.entry_low}–{u.plan.entry_high} · 止损 {u.plan.stop} · T1 {u.plan.target1} · 有效期至 {u.plan.valid_until}{/if}
+            {#if u.plan}· {u.plan.status === 'invalid' ? '已作废' : '有效'} · 入场 {u.plan.entry_low}–{u.plan.entry_high} · 止损 {u.plan.stop} · T1 {u.plan.target1} · 有效期至 {u.plan.valid_until}{/if}
           </li>
         {/each}
       </ul>

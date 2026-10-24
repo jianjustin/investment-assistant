@@ -344,8 +344,11 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
             spy_read = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now)
             macro_read = {s: repository.read_macro(conn, s, end_date=session, cutoff_at=now)
                           for s in macro_module.MACRO_SERIES}
+            macro_status = {s: v if v == 'not_configured' else
+                            ('error' if isinstance(v, str) and v.startswith('error:') else 'ok')
+                            for s, v in summary['macro'].items()}
             snap = regime_module.snapshot(session=session, pool_bars=pool_bars, etf_bars=etf_read,
-                                          spy_bars=spy_read, macro_rows=macro_read)
+                                          spy_bars=spy_read, macro_rows=macro_read, macro_status=macro_status)
             out = repository.store_regime(conn, snap, now=now)
         summary['regime'] = {'status': out['status'], 'label': snap['label']}
         if out['status'] == 'conflict':

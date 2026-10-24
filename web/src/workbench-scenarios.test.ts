@@ -93,7 +93,9 @@ it('shows the market context card and the collapsed extended pool', async () => 
                   breadth: { tickers: 27, eligible_50: 27, above_50: 27, pct_50: 1, eligible_200: 27,
                              above_200: 20, pct_200: 0.74, eligible_52w: 27, new_highs: 5, new_lows: 0 },
                   sectors: { SMH: null, XLK: null, QQQ: null },
-                  macro: { BAMLH0A0HYM2: null, T10Y2Y: null }, inputs: {}, created_at: '2026-09-01T22:30:00Z' } })
+                  macro: { BAMLH0A0HYM2: null, T10Y2Y: null },
+                  inputs: { macro_status: { BAMLH0A0HYM2: 'not_configured', T10Y2Y: 'not_configured' } },
+                  created_at: '2026-09-01T22:30:00Z' } })
     return json({})
   }))
   render(App)

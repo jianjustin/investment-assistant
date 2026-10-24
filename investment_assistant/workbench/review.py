@@ -139,6 +139,7 @@ def pool_summary(triggers: list[dict], plan_outcomes: list[dict]) -> dict:
     """Per pool and buy rule: trigger count, plan count, expired, filled and R stats.
 
     A plan counts once for each of its buy rules; `filled` covers open and closed outcomes.
+    Only rule plans count (spec §9): an own plan on the same unit would double it.
     """
     rows: dict[tuple, dict] = {}
 
@@ -148,6 +149,8 @@ def pool_summary(triggers: list[dict], plan_outcomes: list[dict]) -> dict:
     for trigger in triggers:
         row(trigger['pool'], trigger['rule_id'])['triggers'] += 1
     for plan in plan_outcomes:
+        if plan.get('kind', 'rule') != 'rule':
+            continue
         outcome = plan.get('outcome') or {}
         for rule_id in plan.get('rule_ids') or []:
             r = row(plan['pool'], rule_id)

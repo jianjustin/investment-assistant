@@ -74,7 +74,7 @@
 ## 市场环境
 
 - **功能**：每次批处理在采集之后、规则之前生成市场环境快照（`regime-1`，表 `market_regimes`）：池内广度（当日有 K 线的观察池股票，`adj_close` 口径：站上 MA50/MA200 占比、52 周新高/新低）、区制标签（MA200 合格样本 < 20 为「样本不足」；占比 ≥ 60% 且 MA50 占比 ≥ 50% 为「进攻」；< 40% 且 < 30% 为「防守」；其余「中性」）、行业 ETF 相对 SPY 的 20/60 日强弱（rs20/rs60，弱/强/分化/数据不足）、FRED 利差背景（`BAMLH0A0HYM2` HY OAS 与 `T10Y2Y`，各 120 天，含 20 个观测前变化；值为 `.` 跳过；修订追加）。区制只作提示：每份计划把 `context`（分层、区制、行业、下次财报日）冻结进 `inputs.context`，防守区制、快照失败、行业弱势分别追加提示 `regime_risk_off` / `regime_unavailable` / `sector_weak`，不改价位、仓位与有效性（`plan_version` 仍为 `plan-1`）。FRED 密钥只取环境变量，任何日志与错误文本中出现即替换为 `***`。
-- **手动入口**：页面「今日」顶部「市场环境」卡片（区制、广度、行业强弱、利差或「FRED 未配置」）；计划卡片上的「区制 · 下次财报 · 行业」一行；推送概览的「市场环境」字段与「扩展池新计划 N 份（不推送）」。
+- **手动入口**：页面「今日」顶部「市场环境」卡片（区制、广度、行业强弱、利差；无数据时分别写「FRED 未配置」「FRED 采集失败」「FRED 无数据」）；计划卡片上的「区制 · 下次财报 · 行业」一行；推送概览的「市场环境」字段与「扩展池新计划 N 份（不推送）」。
 - **验证入口**：运行报告 `summary.regime`（`inserted/existing/conflict` 与标签）、`summary.etfs`、`summary.macro`、`summary.sources`（按数据源列失败：日线/资讯/财报日期/SEC/ETF 日线/FRED/区制）、`summary.timings`（collect/regime/rules/total 秒数；总耗时 > 1800 秒记 `batch_over_budget`）；表 `market_regimes`、`macro_observations`；页面「今日」。
 - **验证示例**：批处理运行报告中 `regime: {status: inserted, label: risk_on}`、`macro.BAMLH0A0HYM2.inserted > 0`；「今日」市场环境卡片显示「市场环境 进攻 · 站上 MA50 …%」，新计划卡片显示「区制 进攻 · 下次财报 … · 行业 SMH 强」。
 

@@ -11,6 +11,16 @@ SOURCE_NAMES = {'bars': '日线', 'news': '资讯', 'earnings': '财报日期', 
 _SECTOR_STATE = {'strong': '强', 'weak': '弱', 'mixed': '分化'}
 
 
+def _fred_missing_text(market: dict) -> str:
+    """Why no FRED value is shown: no key, a failed fetch, or simply no stored rows."""
+    status = list(((market.get('inputs') or {}).get('macro_status') or {}).values())
+    if status and all(s == 'not_configured' for s in status):
+        return 'FRED 未配置'
+    if 'error' in status:
+        return 'FRED 采集失败（见异常段）'
+    return 'FRED 无数据'
+
+
 def _market_environment(market: dict | None) -> str:
     """One line block for the overview market field; absent snapshot or FRED says so plainly."""
     if not market:
@@ -34,7 +44,7 @@ def _market_environment(market: dict | None) -> str:
         lines.append(' · '.join(parts))
     macro = market.get('macro') or {}
     if not any(view is not None for view in macro.values()):
-        lines.append('FRED 未配置')
+        lines.append(_fred_missing_text(market))
     else:
         hy, curve = macro.get('BAMLH0A0HYM2'), macro.get('T10Y2Y')
         parts = []

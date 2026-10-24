@@ -182,9 +182,22 @@ def test_digest_market_field_text():
 
 
 def test_digest_fred_not_configured_text():
-    market = market_row(macro={'BAMLH0A0HYM2': None, 'T10Y2Y': None})
+    market = market_row(macro={'BAMLH0A0HYM2': None, 'T10Y2Y': None},
+                        inputs={'macro_status': {'BAMLH0A0HYM2': 'not_configured', 'T10Y2Y': 'not_configured'}})
     assert 'FRED 未配置' in all_text(templates.workbench_digest(build(market=market)))
     assert '市场环境未生成' in all_text(templates.workbench_digest(build(market=None)))
+
+
+def test_digest_fred_failed_is_not_called_unconfigured():
+    market = market_row(macro={'BAMLH0A0HYM2': None, 'T10Y2Y': None},
+                        inputs={'macro_status': {'BAMLH0A0HYM2': 'error', 'T10Y2Y': 'error'}})
+    text = all_text(templates.workbench_digest(build(market=market)))
+    assert 'FRED 采集失败' in text and 'FRED 未配置' not in text
+    # A snapshot without recorded status (or with no stored rows) says only that there is no data.
+    for inputs in ({}, {'macro_status': {'BAMLH0A0HYM2': 'ok', 'T10Y2Y': 'ok'}}):
+        text = all_text(templates.workbench_digest(build(market=market_row(
+            macro={'BAMLH0A0HYM2': None, 'T10Y2Y': None}, inputs=inputs))))
+        assert 'FRED 无数据' in text and 'FRED 未配置' not in text
 
 
 def test_plan_line_has_regime_earnings_sector():

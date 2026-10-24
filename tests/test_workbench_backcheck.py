@@ -73,6 +73,23 @@ def test_immature_counted_not_scored():
     assert stats['all']['triggers'] == 2
 
 
+def test_two_buy_rules_same_day_count_per_rule_once_overall():
+    bars = _bars(260)
+
+    def evaluate(ticker, d, upto, filings, position):
+        both = [Candidate('trend_reclaim', 'buy', {}), Candidate('volume_breakout', 'buy', {})]
+        return {'candidates': both if len(upto) == 211 else [], 'skips': []}
+    out = backcheck.replay('NVDA', bars, [], bars, splits=[], evaluate=evaluate)
+    assert len(out['signals']) == 1
+    assert out['signals'][0]['rule_ids'] == ['trend_reclaim', 'volume_breakout']
+    stats = backcheck.summarize([out])
+    assert stats['rules']['trend_reclaim']['triggers'] == 1
+    assert stats['rules']['volume_breakout']['triggers'] == 1
+    # One ticker-day with one plan: the overall row counts it once.
+    assert stats['all']['triggers'] == 1 and stats['all']['max_per_ticker'] == 1
+    assert stats['all']['r']['count'] == 1
+
+
 def test_atr_unavailable_skipped():
     out = backcheck.replay('NVDA', _bars(260, flat=True), [], _bars(260, flat=True), splits=[],
                            evaluate=_evaluator(set(range(201, 261))))

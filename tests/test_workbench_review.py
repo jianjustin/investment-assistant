@@ -192,6 +192,16 @@ def test_pool_summary_counts_expired_and_filled():
     assert out['r_mean'] == 2.0 and out['r_median'] == 2.0
 
 
+def test_pool_summary_counts_only_rule_plans():
+    # An own plan on the same unit must not double the rule plan's counts (spec §9: rule plans only).
+    plan_outcomes = [{'pool': 'core', 'kind': 'rule', 'rule_ids': ['trend_reclaim'],
+                      'outcome': {'status': 'closed', 'r': 1.0}},
+                     {'pool': 'core', 'kind': 'own', 'rule_ids': ['trend_reclaim'],
+                      'outcome': {'status': 'closed', 'r': 3.0}}]
+    out = review.pool_summary([], plan_outcomes)['core']['trend_reclaim']
+    assert (out['plans'], out['filled'], out['r_mean']) == (1, 1, 1.0)
+
+
 def test_weekly_stats_carries_by_pool():
     stats = review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], undecided=0, entry_opens={},
                                 by_pool={'core': {'trend_reclaim': {'triggers': 1}}})

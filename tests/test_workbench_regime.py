@@ -119,4 +119,11 @@ def test_snapshot_shape():
     assert snap['sectors']['QQQ'] is None
     assert snap['macro'] == {'BAMLH0A0HYM2': None, 'T10Y2Y': None}
     assert snap['inputs'] == {'tickers': sorted(bars), 'etfs': ['SMH', 'XLK', 'QQQ'],
-                              'series': ['BAMLH0A0HYM2', 'T10Y2Y']}
+                              'series': ['BAMLH0A0HYM2', 'T10Y2Y'], 'macro_status': {}}
+
+
+def test_snapshot_records_macro_status():
+    status = {'BAMLH0A0HYM2': 'not_configured', 'T10Y2Y': 'error'}
+    snap = regime.snapshot(session=SESSION, pool_bars={}, etf_bars={}, spy_bars=[],
+                           macro_rows={'BAMLH0A0HYM2': [], 'T10Y2Y': []}, macro_status=status)
+    assert snap['inputs']['macro_status'] == status
