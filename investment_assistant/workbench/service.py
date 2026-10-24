@@ -587,7 +587,7 @@ def push(*, now: datetime, force: bool, summary: dict[str, Any] | None = None, n
             last_push_failed=_last_push_failed(conn, session),
             public_url=load_config().workbench.public_url,
             extended_plans=sum(1 for u in view.get('extended_units', []) if u.get('plan') is not None),
-            market=view.get('market'))
+            market=view.get('market'), agent_summary=(summary or {}).get('agent'))
     out = notifier.send_notifications('workbench', templates.workbench_digest(payload), notify_cfg, client=client)
     return {'session': session.isoformat(), **out}
 

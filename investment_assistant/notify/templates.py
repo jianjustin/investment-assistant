@@ -7,6 +7,7 @@ MAX_FIELD = 1024
 MAX_MESSAGE = 6000
 ACTIONS = {'buy': '买入', 'sell': '卖出', 'watch': '观察'}
 SOURCE_NAMES = {'bars': '日线', 'news': '资讯', 'earnings': '财报日期', 'sec': 'SEC', 'etf_bars': 'ETF 日线',
+                'agent': 'Agent',
                 'fred': 'FRED', 'regime': '区制', 'budget': '耗时'}
 _SECTOR_STATE = {'strong': '强', 'weak': '弱', 'mixed': '分化'}
 
@@ -146,6 +147,12 @@ def workbench_digest(digest: dict) -> list[Notification]:
              f"待处理 {overview.get('pending', 0)} · 异常 {overview.get('errors', 0)}"]
     if overview.get('extended_plans'):
         lines.append(f"扩展池新计划 {overview['extended_plans']} 份（不推送）")
+    agent = overview.get('agent') or {}
+    if agent:
+        lines.append(f"Agent 建议 {agent.get('ok', 0)} · 不建议 {agent.get('pass', 0)}"
+                     f" · 未给出 {agent.get('missing', 0)}")
+    if overview.get('agent_quota_exhausted'):
+        lines.append('⚠️ Agent 额度用尽，其余单元未运行')
     if overview.get('core_empty'):
         lines.append('核心池为空，只推送持仓')
     if overview.get('last_push_failed'):
@@ -169,12 +176,16 @@ def workbench_digest(digest: dict) -> list[Notification]:
         sector_text = (f"行业 {sector['etf']} {_SECTOR_STATE.get(sector.get('state'), '数据不足')}"
                        if sector else '行业 未映射')
         context = f"区制 {LABEL_TEXT.get(p.get('regime_label'), '未知')} · 下次财报 {p.get('next_earnings') or '未知'} · {sector_text}"
+        band = (f"区间 {p['entry_low']}–{p['entry_high']} · 止损 {p['stop']} · T1 {p['target1']}"
+                if p.get('entry_low') is not None else None)   # agent-only units have no rule band
+        position = f"仓位 {sizing}" if p.get('sizing_status') is not None else None
         _clip_field(fields, p['ticker'], '；'.join(filter(None, [
             head,
             context,
-            f"区间 {p['entry_low']}–{p['entry_high']} · 止损 {p['stop']} · T1 {p['target1']}",
-            f"仓位 {sizing}", funding, f"有效期 至 {p['valid_until']}", notes, p.get('evidence', ''),
-            p.get('brief_summary') or '', p.get('contra') or '', p.get('url', '')])) or '—')
+            band,
+            position, funding, f"有效期 至 {p['valid_until']}", notes, p.get('evidence', ''),
+            p.get('brief_summary') or '', p.get('contra') or '', p.get('url', ''),
+            _agent_line(p.get('agent'))])) or '—')
     plans_msg = _fit_message(f"🆕 新计划 · {session}", fields, _footer())
 
     fields = []
@@ -214,3 +225,22 @@ def workbench_digest(digest: dict) -> list[Notification]:
 def workbench_closed(ny_date) -> list[Notification]:
     return [Notification(title=f"🛌 纽约休市，未运行 · {ny_date.isoformat()}", color=9807270,
                          fields=[], footer=_footer())]
+
+
+def _agent_line(agent: dict | None) -> str:
+    """The agent's line beside the rule plan (P3 §10.2, wording verbatim)."""
+    if not agent:
+        return ''
+    if agent['status'] == 'ok':
+        line = (f"Agent（{agent['model']}）买入 · 区间 {agent['entry_low']}–{agent['entry_high']}"
+                f" · 止损 {agent['stop']} · T1 {agent['target1']} · {agent['shares']} 股；{agent['summary']}")
+        if agent.get('first_risk'):
+            line += f"；反方：{agent['first_risk']}"
+        voided = '；'.join(f"作废 {r}" for r in agent.get('invalid_reasons') or [])
+        if voided:
+            line += f"；{voided}"
+        return line
+    if agent['status'] == 'pass':
+        return f"Agent（{agent['model']}）不建议买入；{agent['summary']}"
+    from investment_assistant.workbench.agent import REASON_TEXT
+    return f"Agent 未给出建议（{REASON_TEXT.get(agent.get('reason'), agent.get('reason'))}）"

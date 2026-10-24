@@ -189,3 +189,13 @@ def test_send_notifications_failure_is_structured():
     out = notifier.send_notifications('workbench', [Notification(title='x', color=1, fields=[])],
                                       NotifyConfig(), client=Boom())
     assert out['sent'] is False and out['messages'] == 0 and 'send_failed' in out['reason']
+
+
+def test_agent_error_source_uses_display_name():
+    from investment_assistant.notify.templates import SOURCE_NAMES, workbench_digest
+    assert SOURCE_NAMES['agent'] == 'Agent'
+    payload = {'session': '2026-10-22', 'overview': {}, 'plans': [], 'holdings': [], 'pending': {},
+               'errors': [], 'errors_by_source': {'agent': ['NVDA', 'MU']}}
+    fields = [f for m in workbench_digest(payload) for f in m.fields]
+    agent_field = next(f for f in fields if f.name == 'Agent')
+    assert 'NVDA' in agent_field.value and 'MU' in agent_field.value

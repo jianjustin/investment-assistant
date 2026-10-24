@@ -22,10 +22,11 @@ def plan_row(signal_date=SESSION, ticker='NVDA', **over):
     return row
 
 
-def unit(ticker='NVDA', plan=None, brief_summary='解读：量价配合。', signal_date=SESSION):
+def unit(ticker='NVDA', plan=None, brief_summary='解读：量价配合。', signal_date=SESSION, agent=None):
     return {'ticker': ticker, 'signal_date': signal_date, 'proposed_action': 'buy', 'rule_ids': ['trend_reclaim'],
             'labels': [],
             'plan': plan,
+            'agent': agent,
             'brief': ({'status': 'fallback', 'output': {'summary': brief_summary}} if brief_summary else None)}
 
 
@@ -37,11 +38,24 @@ def holding(ticker='NVDA', **over):
     return row
 
 
-def build(units=(), holdings=(), summary=None, last_push_failed=False, extended_plans=0, market=None):
+def build(units=(), holdings=(), summary=None, last_push_failed=False, extended_plans=0, market=None,
+          agent_summary=None):
     return digest.build(session=SESSION, units=list(units), holdings=list(holdings),
                         summary=summary or {'errors': [], 'earnings': {}},
                         last_push_failed=last_push_failed, public_url=URL,
-                        extended_plans=extended_plans, market=market)
+                        extended_plans=extended_plans, market=market, agent_summary=agent_summary)
+
+
+def agent_ok(ticker='NVDA', summary='回踩修复放量', first_risk='财报临近'):
+    plan = plan_row(ticker=ticker, kind='agent', plan_version='agent-1')
+    return {'id': 'r1', 'status': 'ok', 'model': 'glm-5.3', 'agent_version': 'agent-1',
+            'output': {'action': 'buy', 'summary': summary,
+                       'levels': {k: {'value': str(plan[k]), 'refs': ['call:1']}
+                                  for k in ('entry_low', 'entry_high', 'stop', 'target1')},
+                       'thesis': [{'text': 't', 'refs': ['call:1']}]},
+            'counter': ({'status': 'ok', 'risks': [{'text': first_risk, 'refs': ['call:1']}], 'dropped': 0}
+                        if first_risk else None),
+            'plan': plan, 'input_tokens': 10, 'output_tokens': 5, 'created_at': '2026-10-22T23:00:00+00:00'}
 
 
 def all_text(messages):
@@ -249,6 +263,68 @@ def test_digest_limits_with_100_ticker_summary():
                            'etf_bars': ['XLK'], 'fred': ['T10Y2Y'], 'regime': []}}
     dg = build(summary=summary)
     for message in templates.workbench_digest(dg):
+        for field in message.fields:
+            assert len(field.value) <= 1024
+        total = len(message.title) + sum(len(f.name) + len(f.value) for f in message.fields) + len(message.footer)
+        assert total <= 6000
+
+
+# --- agent lines in the daily push (P3 §10.2) ---
+
+def test_agent_line_ok():
+    u = unit(plan=plan_row(), agent=agent_ok())
+    text = all_text(templates.workbench_digest(build(units=[u])))
+    assert 'Agent（glm-5.3）买入 · 区间 98.5–101.5 · 止损 94 · T1 112 · 166 股；回踩修复放量' in text
+    assert '反方：财报临近' in text
+
+
+def test_agent_line_pass():
+    agent = {'id': 'r2', 'status': 'pass', 'model': 'glm-5.3', 'agent_version': 'agent-1',
+             'output': {'action': 'pass', 'summary': '趋势不明'}, 'counter': None, 'plan': None,
+             'input_tokens': 5, 'output_tokens': 5, 'created_at': '2026-10-22T23:00:00+00:00'}
+    text = all_text(templates.workbench_digest(build(units=[unit(plan=plan_row(), agent=agent)])))
+    assert 'Agent（glm-5.3）不建议买入；趋势不明' in text
+
+
+def test_agent_line_missing_reason():
+    agent = {'id': 'r3', 'status': 'skipped', 'reason': 'quota_exhausted',
+             'created_at': '2026-10-22T23:00:00+00:00'}
+    text = all_text(templates.workbench_digest(build(units=[unit(plan=plan_row(), agent=agent)])))
+    assert 'Agent 未给出建议（额度用尽）' in text
+
+
+def test_agent_only_unit_listed():
+    u = unit(plan=None, agent=agent_ok())
+    dg = build(units=[u])
+    assert len(dg['plans']) == 1
+    item = dg['plans'][0]
+    assert item['kind'] == 'agent' and item['entry_low'] is None and item['shares'] is None
+    text = all_text(templates.workbench_digest(dg))
+    assert 'Agent（glm-5.3）买入 · 区间 98.5–101.5' in text
+    assert text.count('区间') == 1          # 规则区间行不写，只有 Agent 行里的区间
+
+
+def test_overview_agent_counts_and_quota_warning():
+    units = [unit(plan=plan_row(), agent=agent_ok()),
+             unit(ticker='MU', plan=plan_row(ticker='MU'),
+                  agent={'id': 'r', 'status': 'pass', 'model': 'glm-5.3', 'output': {'summary': 's'},
+                         'counter': None, 'plan': None, 'input_tokens': 0, 'output_tokens': 0,
+                         'created_at': 'c'}),
+             unit(ticker='AMD', plan=plan_row(ticker='AMD'), agent=None)]
+    dg = build(units=units, agent_summary={'quota_exhausted': True})
+    assert dg['overview']['agent'] == {'ok': 1, 'pass': 1, 'missing': 1}
+    assert dg['overview']['agent_quota_exhausted'] is True
+    text = all_text(templates.workbench_digest(dg))
+    assert 'Agent 建议 1 · 不建议 1 · 未给出 1' in text
+    assert '⚠️ Agent 额度用尽，其余单元未运行' in text
+
+
+def test_digest_limits_with_agent_lines():
+    long_text = '风' * 900
+    units = [unit(ticker=f'T{i:02d}', plan=plan_row(ticker=f'T{i:02d}'),
+                  agent=agent_ok(ticker=f'T{i:02d}', summary=long_text, first_risk=long_text))
+             for i in range(15)]
+    for message in templates.workbench_digest(build(units=units)):
         for field in message.fields:
             assert len(field.value) <= 1024
         total = len(message.title) + sum(len(f.name) + len(f.value) for f in message.fields) + len(message.footer)
