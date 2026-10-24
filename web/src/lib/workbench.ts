@@ -29,6 +29,7 @@ export interface Plan {
   sizing: { status: 'sized' | 'capped' | 'no_equity' | 'no_room'; shares: number | null
             risk_amount?: number | null; snapshot_as_of?: string | null } | null
   invalid_reasons: string[]; warnings: string[]; based_on_id?: string | null
+  inputs?: { context?: PlanContext }
 }
 export interface Holding {
   ticker: string; quantity: number; avg_cost: number; plan_id: string | null
@@ -76,13 +77,50 @@ export interface MonthlyReview {
     generated_at: string
   }; notes: string; supersedes_id: string | null; created_at: string
 }
+export interface PlanContext {
+  context_version: string; pool_tier: 'core' | 'extended' | 'unknown'
+  regime: { id: string; label: string } | null
+  sector: { etf: string; rs20: number | null; rs60: number | null
+            state: 'strong' | 'weak' | 'mixed' | null } | null
+  next_earnings: string | null
+}
+export interface MarketContext {
+  id: string; session: string; calc_version: string
+  label: 'risk_on' | 'neutral' | 'risk_off' | 'insufficient'
+  breadth: { tickers?: number; eligible_50?: number; above_50?: number; pct_50?: number | null
+             eligible_200?: number; above_200?: number; pct_200?: number | null
+             eligible_52w?: number; new_highs?: number; new_lows?: number }
+  sectors: Record<string, { rs20: number; rs60: number; state: 'strong' | 'weak' | 'mixed' } | null>
+  macro: Record<string, { value: number | string; obs_date: string; change: number | string | null
+                          change_from: string | null } | null>
+  inputs: Record<string, unknown>; created_at: string
+}
+export interface ExtendedUnit {
+  ticker: string; signal_date: string; proposed_action: Action; rule_ids: string[]; plan: Plan | null
+}
+export interface BackcheckRow {
+  triggers: number; ticker_sessions: number; per_100: number; max_per_ticker: number; cluster_days: number
+  filled: number; expired: number; stopped_within_5: number; stopped_within_5_share: number | null
+  t1_share: number | null
+  r: { count: number; mean: number | null; median: number | null; p25: number | null; p75: number | null }
+  flags: string[]
+}
+export interface Backcheck {
+  id: string; calc_version: string; created_at: string; params: Record<string, unknown>
+  stats: { note: string; all: BackcheckRow; rules: Record<string, BackcheckRow>
+           tickers: { ticker: string; warmup_end: string | null; eval_start: string | null
+                      eval_end: string | null; eval_sessions: number }[] }
+}
 export interface Unit {
   ticker: string; signal_date: string; proposed_action: Action; labels: string[]; candidate_ids: string[]
   rule_ids: string[]; entry_passed: boolean; market_status: string | null; holding: boolean
   candidates: Candidate[]; brief: Brief | null; filings: Filing[]; news: NewsItem[]; position: Position | null
   plan: Plan | null
 }
-export interface TodayView { session: string; units: Unit[]; holdings: Holding[] }
+export interface TodayView {
+  session: string; units: Unit[]; extended_units: ExtendedUnit[]; holdings: Holding[]
+  market: MarketContext | null
+}
 export interface Decision {
   id: string; ticker: string; signal_date: string; proposed_action: Action; final_action: FinalAction
   decision: Choice; reason: string; decided_at: string; supersedes_id: string | null
@@ -141,6 +179,8 @@ export const getDiscipline = () => request<DisciplineView>('/api/workbench/disci
 export const getMonthly = () => request<{ reviews: MonthlyReview[] }>('/api/workbench/monthly-reviews')
 export const postMonthly = (body: object) => post<MonthlyReview>('/api/workbench/monthly-reviews', body)
 export const pushToday = () => post<{ session: string; sent: boolean; messages?: number; reason?: string }>('/api/workbench/push', {})
+export const getBackchecks = () => request<{ backchecks: Backcheck[] }>('/api/workbench/backchecks')
+export const runBackcheck = (tickers?: string[]) => post<Backcheck>('/api/workbench/backchecks', { tickers: tickers ?? null })
 
 export function describeError(error: unknown): string {
   if (error instanceof WorkbenchError) {
@@ -185,6 +225,8 @@ export const RULE_LABELS: Record<string, string> = {
 }
 export const ACTION_LABELS: Record<string, string> = { buy: '买入', sell: '卖出', watch: '观察', ignore: '忽略' }
 export const UNIT_LABELS: Record<string, string> = { conflict: '冲突', avoid: '回避' }
+export const REGIME_LABELS: Record<string, string> = { risk_on: '进攻', neutral: '中性', risk_off: '防守', insufficient: '样本不足' }
+export const SECTOR_STATE_LABELS: Record<string, string> = { strong: '强', weak: '弱', mixed: '分化' }
 export const TIER_LABELS: Record<string, string> = { excellent_plus: '非常优秀', excellent: '优秀', viable: '可行', attention: '需关注' }
 export const FLAG_LABELS: Record<string, string> = { chase: '追高', early_take: '过早止盈', held_loser: '死扛亏损', unplanned: '计划外' }
 export const CHOICE_LABELS: Record<Choice, string> = { accept: '采纳', reject: '否决', downgrade: '降级为观察' }

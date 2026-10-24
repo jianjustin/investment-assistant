@@ -172,3 +172,52 @@ describe('monthly and account tabs', () => {
     expect(screen.getByText(/追高 1/)).toBeInTheDocument()
   })
 })
+
+describe('P2 review views', () => {
+  it('weekly shows by-pool table', async () => {
+    respond = async (url) => {
+      if (url.includes('/weekly-reviews')) return json({ reviews: [{ id: 'w1', week_start: '2026-10-19',
+        calc_version: 'review-3', notes: '', supersedes_id: null, created_at: '2026-10-24T00:00:00Z',
+        stats: { week: { start: '2026-10-19', end: '2026-10-25' }, units: { decided: 2, undecided: 1 },
+                 by_rule: {}, by_decision: {}, by_pool: {
+                   core: { trend_reclaim: { triggers: 3, plans: 2, expired: 1, filled: 1, r_mean: 1.5, r_median: 1.5 } },
+                   extended: { trend_reclaim: { triggers: 1, plans: 1, expired: 0, filled: 0, r_mean: null, r_median: null } } } } }] })
+      return json({})
+    }
+    render(Review, { sub: 'weekly' })
+    expect(await screen.findByText(/分池视角/)).toBeTruthy()
+    expect(screen.getByText(/核心池/)).toBeTruthy()
+    expect(screen.getByText(/扩展池/)).toBeTruthy()
+    expect(screen.getAllByText(/趋势回踩修复/).length).toBe(2)
+  })
+  it('backcheck tab lists runs with flags', async () => {
+    respond = async (url) => {
+      if (url.includes('/backchecks')) return json({ backchecks: [
+        { id: 'b1', calc_version: 'backcheck-1', created_at: '2026-10-24T00:00:00Z',
+          params: { tickers: ['NVDA', 'MU'] },
+          stats: { note: '描述性检查，不调参，不代表规则有效。',
+                   all: { triggers: 12, filled: 3, flags: ['too_frequent'] },
+                   rules: {}, tickers: [] } }] })
+      return json({})
+    }
+    render(Review, { sub: 'backchecks' })
+    expect(await screen.findByText('上线前检查')).toBeTruthy()
+    expect(await screen.findByText(/too_frequent/)).toBeTruthy()
+    expect(await screen.findByText(/描述性检查，不调参，不代表规则有效。/)).toBeTruthy()
+  })
+  it('backcheck run posts and shows the descriptive note', async () => {
+    respond = async (url, init) => {
+      if (url.includes('/backchecks')) {
+        if (init?.method === 'POST') return json({ id: 'b2', calc_version: 'backcheck-1', created_at: '2026-10-24T01:00:00Z',
+          params: { tickers: [] }, stats: { note: '描述性检查，不调参，不代表规则有效。',
+                                             all: { triggers: 0, filled: 0, flags: ['insufficient'] }, rules: {}, tickers: [] } })
+        return json({ backchecks: [] })
+      }
+      return json({})
+    }
+    render(Review, { sub: 'backchecks' })
+    await fireEvent.click(await screen.findByRole('button', { name: '运行历史检查' }))
+    await waitFor(() => expect(calls.some(c => c.url.includes('/backchecks') && c.init?.method === 'POST')).toBe(true))
+    expect(await screen.findByText(/描述性检查/)).toBeTruthy()
+  })
+})

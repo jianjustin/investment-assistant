@@ -116,3 +116,50 @@ it('shows unsupported legacy identities for deletion and omits them from the pic
  await screen.findByRole('option',{name:'MU'})
  expect(screen.queryByRole('option',{name:'AAPL.US'})).toBeNull()
 })
+
+describe('pool tier controls', () => {
+  const usRows = [
+    { ticker: 'NVDA', market: 'US', status: 'active', thesis: 'ai', tags: ['core', 'sector:SMH'], updated_at: '2026-10-16T00:00:00Z' },
+    { ticker: 'MU', market: 'US', status: 'active', thesis: '', tags: [], updated_at: '2026-10-16T00:00:00Z' },
+    { ticker: 'AMD', market: 'US', status: 'paused', thesis: '', tags: [], updated_at: '2026-10-16T00:00:00Z' },
+    { ticker: '600519.SH', market: 'CN', name: '贵州茅台', board: '主板', status: 'active', thesis: '', tags: [], updated_at: '2026-10-16T00:00:00Z' },
+  ]
+  it('header shows pool and core counts', async () => {
+    vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows: usRows } as any)
+    render(Watchlist)
+    expect(await screen.findByText('美股池 2/100 · 核心 1/15')).toBeTruthy()
+  })
+  it('core checkbox writes core tag', async () => {
+    vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows: usRows } as any)
+    const save = vi.spyOn(api, 'addWatchlistItem').mockResolvedValue({} as any)
+    render(Watchlist)
+    const box = await screen.findByRole('checkbox', { name: '核心池 MU' })
+    await fireEvent.click(box)
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ ticker: 'MU', tags: ['core'] })))
+  })
+  it('sector select writes sector tag', async () => {
+    vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows: usRows } as any)
+    const save = vi.spyOn(api, 'addWatchlistItem').mockResolvedValue({} as any)
+    render(Watchlist)
+    const select = await screen.findByRole('combobox', { name: '行业 ETF NVDA' })
+    await fireEvent.change(select, { target: { value: 'XLK' } })
+    await waitFor(() => expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ ticker: 'NVDA', tags: ['core', 'sector:XLK'] })))
+  })
+  it('server 400 detail is shown and row unchanged', async () => {
+    vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows: usRows } as any)
+    vi.spyOn(api, 'addWatchlistItem').mockRejectedValue(new Error('核心池超出上限：16 > 15'))
+    render(Watchlist)
+    await screen.findByText('美股池 2/100 · 核心 1/15')
+    await fireEvent.click(screen.getByRole('checkbox', { name: '核心池 MU' }))
+    await screen.findByText(/核心池超出上限：16 > 15/)
+    expect(screen.getByRole('checkbox', { name: '核心池 MU' })).toBeTruthy()
+  })
+  it('A-share rows have no core or sector controls', async () => {
+    vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows: usRows } as any)
+    render(Watchlist)
+    await screen.findByText('贵州茅台')
+    expect(screen.queryByRole('checkbox', { name: /核心池 600519/ })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: /行业 ETF 600519/ })).toBeNull()
+  })
+})

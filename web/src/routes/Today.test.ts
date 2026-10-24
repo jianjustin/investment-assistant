@@ -216,3 +216,54 @@ describe('trade plans', () => {
     expect(push.init?.method).toBe('POST')
   })
 })
+
+describe('market context and extended pool', () => {
+  const market = { id: 'r1', session: '2026-10-22', calc_version: 'regime-1', label: 'risk_off',
+    breadth: { tickers: 40, eligible_50: 40, above_50: 12, pct_50: 0.3, eligible_200: 40, above_200: 10,
+               pct_200: 0.25, eligible_52w: 38, new_highs: 3, new_lows: 5 },
+    sectors: { SMH: { rs20: -0.12, rs60: -0.2, state: 'weak' } }, macro: { BAMLH0A0HYM2: null, T10Y2Y: null },
+    inputs: {}, created_at: '2026-10-22T23:00:00Z' }
+  const contextPlan = (overrides: Record<string, unknown> = {}) => plan({
+    inputs: { context: { context_version: 'context-1', pool_tier: 'core',
+                         regime: { id: 'r1', label: 'risk_off' },
+                         sector: { etf: 'SMH', rs20: -0.12, rs60: -0.2, state: 'weak' },
+                         next_earnings: '2026-11-20' } }, ...overrides,
+  })
+
+  it('market card shows label and breadth', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [], holdings: [], extended_units: [], market })
+    render(Today)
+    expect(await screen.findByText('防守')).toBeTruthy()
+    expect(screen.getByText(/站上 MA50 30\.0%/)).toBeTruthy()
+    expect(screen.getByText(/新高 3 \/ 新低 5/)).toBeTruthy()
+    expect(screen.getByText(/SMH/)).toBeTruthy()
+  })
+  it('market card shows FRED not configured', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [], holdings: [], extended_units: [], market })
+    render(Today)
+    expect(await screen.findByText('FRED 未配置')).toBeTruthy()
+  })
+  it('plan card shows regime, next earnings and sector', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [unit({ plan: contextPlan() })], holdings: [],
+                                 extended_units: [], market })
+    render(Today)
+    expect(await screen.findByText(/区制 防守 · 下次财报 2026-11-20 · 行业 SMH 弱/)).toBeTruthy()
+  })
+  it('plan card falls back to unknown context', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [unit({ plan: plan() })], holdings: [], extended_units: [], market: null })
+    render(Today)
+    expect(await screen.findByText(/下次财报 未知 · 行业 未映射/)).toBeTruthy()
+  })
+  it('extended units are collapsed and have no decision controls', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [], holdings: [], market: null,
+                                 extended_units: [{ ticker: 'AMD', signal_date: '2026-10-22', proposed_action: 'buy',
+                                                    rule_ids: ['trend_reclaim'], plan: contextPlan() }] })
+    render(Today)
+    expect(await screen.findByText(/扩展池（只影子跟踪）/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '提交决定' })).toBeNull()
+    expect(screen.queryByLabelText('理由')).toBeNull()
+    const details = document.querySelector('details')!
+    expect(details.open).toBe(false)
+    expect(details.textContent).toContain('AMD')
+  })
+})

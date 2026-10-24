@@ -80,6 +80,17 @@
     }
   }
 
+  const regimeText = (label?: string | null) => label ? (wb.REGIME_LABELS[label] ?? label) : '未知'
+  const sectorText = (ctx: wb.PlanContext | undefined) => ctx?.sector
+    ? `${ctx.sector.etf} ${ctx.sector.state ? (wb.SECTOR_STATE_LABELS[ctx.sector.state] ?? '数据不足') : '数据不足'}`
+    : '未映射'
+  const pctText = (value: number | null | undefined) =>
+    value == null ? '—' : `${(value * 100).toFixed(1)}%`
+  const fredText = (m: wb.MarketContext) =>
+    Object.values(m.macro ?? {}).every(v => v == null)
+      ? 'FRED 未配置'
+      : Object.entries(m.macro ?? {}).map(([series, view]) =>
+          view == null ? `${series} 无数据` : `${series} ${view.value}（20 期 ${view.change == null ? '无变化' : (Number(view.change) >= 0 ? '+' : '') + view.change}）`).join(' · ')
   const values = (c: wb.Candidate) =>
     Object.entries(c.inputs?.values ?? {}).map(([k, v]) => `${k}=${Array.isArray(v) ? v.join('/') : v}`).join(' · ')
 
@@ -105,6 +116,23 @@
     </div>
   </header>
   {#if notice}<p class="text-xs text-muted">{notice}</p>{/if}
+
+  {#if view}
+    <section class="border border-border rounded p-3 bg-surface text-sm" aria-label="市场环境">
+      {#if view.market}
+        {@const m = view.market}
+        <h2 class="font-semibold">市场环境 <span class="text-xs px-1.5 py-0.5 rounded bg-accent/10 text-accent">{wb.REGIME_LABELS[m.label] ?? m.label}</span></h2>
+        <p>站上 MA50 {pctText(m.breadth?.pct_50)} · MA200 {pctText(m.breadth?.pct_200)} · 新高 {m.breadth?.new_highs ?? 0} / 新低 {m.breadth?.new_lows ?? 0}</p>
+        {#if m.sectors && Object.keys(m.sectors).length}
+          <p class="text-xs text-muted">{Object.entries(m.sectors).map(([etf, v]) =>
+            v == null ? `${etf} 数据不足` : `${etf} rs20 ${wb.pct(v.rs20)} ${wb.SECTOR_STATE_LABELS[v.state] ?? '数据不足'}`).join(' · ')}</p>
+        {/if}
+        <p class="text-xs text-muted">{fredText(m)}</p>
+      {:else}
+        <h2 class="font-semibold">市场环境 <span class="text-xs text-muted">未生成</span></h2>
+      {/if}
+    </section>
+  {/if}
 
   {#if error}
     <p role="alert" class="text-sm text-red-600">{error}</p>
@@ -167,6 +195,7 @@
         <div class="text-sm border-l-2 border-accent/40 pl-2 space-y-1">
           <p class="font-medium">计划（{p.kind === 'rule' ? '规则' : '自定'} · {p.plan_version}{p.status === 'invalid' ? ' · 已作废' : ''}）</p>
           <p>入场区间 {p.entry_low}–{p.entry_high} · 止损 {p.stop} · T1 {p.target1} · 有效期至 {p.valid_until}</p>
+          <p class="text-xs text-muted">区制 {regimeText(p.inputs?.context?.regime?.label)} · 下次财报 {p.inputs?.context?.next_earnings ?? '未知'} · 行业 {sectorText(p.inputs?.context)}</p>
           {#if p.sizing?.status === 'no_equity'}
             <p class="text-amber-700">缺资金快照，无法计算建议股数</p>
           {:else if p.sizing?.shares != null}
@@ -226,6 +255,19 @@
       {/if}
     </article>
   {/each}
+
+  {#if view?.extended_units?.length}
+    <details class="border border-border rounded p-3 bg-surface text-sm">
+      <summary class="cursor-pointer font-medium">扩展池（只影子跟踪）· {view.extended_units.length} 个单元</summary>
+      <ul class="mt-2 space-y-1">
+        {#each view.extended_units as u (`${u.ticker}|${u.signal_date}`)}
+          <li>{u.ticker} · {u.signal_date} · 建议{wb.ACTION_LABELS[u.proposed_action]} · {u.rule_ids.map(wb.ruleLabel).join('、')}
+            {#if u.plan}· 入场 {u.plan.entry_low}–{u.plan.entry_high} · 止损 {u.plan.stop} · T1 {u.plan.target1} · 有效期至 {u.plan.valid_until}{/if}
+          </li>
+        {/each}
+      </ul>
+    </details>
+  {/if}
 
   {#if view?.holdings?.length}
     <h2 class="font-semibold text-sm">持仓止损</h2>

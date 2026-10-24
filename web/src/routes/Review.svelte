@@ -4,7 +4,7 @@
 
   let { sub }: { sub?: string } = $props()
   const TABS = [['trades', '交易与持仓'], ['shadow', '对照组'], ['weekly', '周度复盘'],
-                 ['monthly', '月度复盘'], ['account', '资金']] as const
+                 ['monthly', '月度复盘'], ['account', '资金'], ['backchecks', '上线前检查']] as const
   let tab = $derived(TABS.some(([id]) => id === sub) ? sub! : 'trades')
 
   let error = $state('')
@@ -14,6 +14,9 @@
   let weekly = $state<wb.WeeklyReview[] | null>(null)
   let monthly = $state<wb.MonthlyReview[] | null>(null)
   let account = $state<wb.AccountView | null>(null)
+  let backchecks = $state<wb.Backcheck[] | null>(null)
+  let backcheckNote = $state('')
+  let backcheckError = $state('')
 
   const emptyForm = () => ({ ticker: '', side: 'buy', quantity: '', price: '', fee: '0', executed: '', decisionId: '', note: '',
                              requestId: wb.newRequestId() })
@@ -45,6 +48,8 @@
         monthly = (await wb.getMonthly()).reviews
       } else if (which === 'account') {
         account = await wb.getAccount()
+      } else if (which === 'backchecks') {
+        backchecks = (await wb.getBackchecks()).backchecks
       } else {
         weekly = (await wb.getWeekly()).reviews
       }
@@ -73,6 +78,17 @@
       await load('trades')
     } catch (err) {
       formError = wb.describeError(err)
+    }
+  }
+
+  async function runBackcheckNow() {
+    backcheckError = ''; backcheckNote = ''
+    try {
+      const record = await wb.runBackcheck()
+      backcheckNote = record.stats?.note ?? ''
+      await load('backchecks')
+    } catch (e) {
+      backcheckError = wb.describeError(e)
     }
   }
 
@@ -289,6 +305,21 @@
             </ul>
           {/if}
         {/each}
+        {#if r.stats.by_pool && Object.keys(r.stats.by_pool).length}
+          <p class="text-xs text-muted">分池视角（触发 / 计划 / 过期 / 成交 / R 均值 / 中位数）</p>
+          <table class="text-xs w-full">
+            <thead><tr class="text-left text-muted"><th>池</th><th>规则</th><th>触发</th><th>计划</th><th>过期</th><th>成交</th><th>R 均值</th><th>R 中位</th></tr></thead>
+            <tbody>
+              {#each Object.entries(r.stats.by_pool) as [pool, rules]}
+                {#each Object.entries(rules as Record<string, { triggers: number; plans: number; expired: number; filled: number; r_mean: number | null; r_median: number | null }>) as [ruleId, row]}
+                  <tr><td>{pool === 'core' ? '核心池' : '扩展池'}</td><td>{wb.ruleLabel(ruleId)}</td>
+                      <td>{row.triggers}</td><td>{row.plans}</td><td>{row.expired}</td><td>{row.filled}</td>
+                      <td>{row.r_mean ?? '—'}</td><td>{row.r_median ?? '—'}</td></tr>
+                {/each}
+              {/each}
+            </tbody>
+          </table>
+        {/if}
         {#if r.stats.execution?.length}
           <p class="text-xs text-muted">执行偏差</p>
           <ul>{#each r.stats.execution as x}<li>{x.ticker} 成交价较 T+1 开盘 {wb.pct(x.slippage)} · 决定后 {Number(x.delay_hours).toFixed(1)} 小时成交</li>{/each}</ul>
@@ -396,5 +427,31 @@
         {:else}<li class="text-muted">暂无出入金</li>{/each}
       </ul>
     {/if}
+  {/if}
+
+  {#if tab === 'backchecks' && !error}
+    <section class="space-y-2">
+      <h2 class="font-semibold text-sm">上线前检查 · 历史回放</h2>
+      <p class="text-xs text-muted">新规则上线前手动运行，回答「触发是否过频、止损是否总被扫掉」。只读已存 K 线与 SEC 文件，不联网、不补采。也可用命令行：python -m investment_assistant.workbench.backcheck。</p>
+      <div class="flex items-center gap-2">
+        <button class="text-sm px-3 py-1 rounded bg-accent text-white" onclick={runBackcheckNow}>运行历史检查</button>
+        {#if backcheckError}<span class="text-xs text-red-600">{backcheckError}</span>{/if}
+      </div>
+      {#if backcheckNote}<p class="text-xs text-muted">{backcheckNote}</p>{/if}
+      {#if backchecks?.length}
+        <ul class="text-sm space-y-1">
+          {#each backchecks as b (b.id)}
+            <li class="border border-border rounded p-2 bg-surface">
+              {wb.dateTime(b.created_at)} · {b.calc_version} · 标的 {(b.params?.tickers as string[] | undefined)?.join('、') ?? '当前观察池'}
+              · 触发 {b.stats?.all?.triggers ?? 0} · 成交 {b.stats?.all?.filled ?? 0}
+              · 标记 {(b.stats?.all?.flags ?? []).join('、') || '无'}
+              <small class="block text-xs text-muted">{b.stats?.note}</small>
+            </li>
+          {/each}
+        </ul>
+      {:else if backchecks}
+        <p class="text-sm text-muted">尚无历史检查记录</p>
+      {/if}
+    </section>
   {/if}
 </section>
