@@ -372,3 +372,108 @@ def test_pool_and_context_end_to_end(offline, monkeypatch):
     record = service.run_backcheck(now=evening(S1))
     assert record['calc_version'] == 'backcheck-1' and record['params']['tickers'][0] == 'SYNB'
     assert len(repository.list_backchecks(offline, 10)) == 1
+
+
+def test_agent_track_end_to_end(offline, scripted_model):
+    from contextlib import nullcontext
+
+    from langchain_core.messages import AIMessage
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from investment_assistant.config import NotifyConfig
+    from investment_assistant.workbench import repository
+    from investment_assistant.workbench.agent import model as agent_model_module
+
+    # 观察名单：2 只核心 + 1 只扩展（无 core 标签即扩展），三者同日触发 trend_reclaim 买入
+    for ticker, tags in (('SYNTH', ['core']), ('SYNC', ['core']), ('SYNE', [])):
+        offline.execute("INSERT INTO watchlist_items (ticker, status, tags) VALUES (%s, 'active', %s)",
+                        [ticker, tags])
+
+    def tool_reply(name, args, call_id):
+        return AIMessage(content='', tool_calls=[{'name': name, 'args': args, 'id': call_id}])
+
+    def buy_json(ref):
+        return json.dumps({'action': 'buy', 'summary': '回踩修复放量',
+                           'levels': {k: {'value': v, 'refs': [ref]} for k, v in
+                                      (('entry_low', 120.0), ('entry_high', 128.0), ('stop', 115.0),
+                                       ('target1', 140.0))},
+                           'thesis': [{'text': '放量突破 20 日线', 'refs': [ref]}]}, ensure_ascii=False)
+
+    settings = agent_model_module.AgentSettings(provider='zhipu', model='glm-5.3', base_url='https://x/v4',
+                                                api_key='sk-test', daily_tokens=None, config_error=None)
+
+    def agent_deps(responses):
+        d = p1_deps()
+        d.agent_model = scripted_model(responses)
+        d.agent_checkpointer = lambda: nullcontext(InMemorySaver())
+        d.agent_settings = settings
+        return d
+
+    batch = service.run_batch(now=evening(S1), deps=agent_deps([
+        # SYNC（核心，字母序在前）：引用 call:99 → 整条作废
+        tool_reply('get_indicators', {'ticker': 'SYNC'}, 't1'),
+        AIMessage(content=buy_json('call:99')),
+        # SYNTH（核心）：工具 → 买入 JSON → 反方工具 → 风险
+        tool_reply('get_indicators', {'ticker': 'SYNTH'}, 't2'),
+        AIMessage(content=buy_json('call:1')),
+        tool_reply('get_news', {'days': 7}, 't3'),
+        AIMessage(content=json.dumps({'risks': [{'text': '财报临近', 'refs': ['call:1']}]})),
+        # SYNE（扩展，最后跑）：pass
+        tool_reply('get_indicators', {'ticker': 'SYNE'}, 't4'),
+        AIMessage(content=json.dumps({'action': 'pass', 'summary': '趋势不明',
+                                      'thesis': [{'text': '量能不足', 'refs': ['call:1']}]})),
+        AIMessage(content=json.dumps({'risks': []})),
+    ]))
+    assert batch['errors'] == []
+    assert batch['agent']['runs'] == {'SYNTH': 'ok', 'SYNC': 'rejected: invalid_citation', 'SYNE': 'pass'}
+    runs = {t: repository.agent_runs_for(offline, t, S1) for t in ('SYNTH', 'SYNC', 'SYNE')}
+    assert all(len(v) == 1 for v in runs.values())                       # agent_runs 三行
+    agent_plan = repository.agent_plan(offline, 'SYNTH', S1)
+    assert agent_plan['kind'] == 'agent' and agent_plan['plan_version'] == 'agent-1'
+    assert str(runs['SYNTH'][0]['plan_id']) == str(agent_plan['id'])
+
+    # 推送（替身客户端）：只有主列表单元；作废建议只写原因，不写内容
+    spy = PushSpy()
+    push_out = service.push(now=evening(S1), force=True, summary=batch, notify_cfg=NotifyConfig(), client=spy)
+    assert push_out['sent'] is True
+    pushed_text = json.dumps(spy.payloads, ensure_ascii=False)
+    assert 'Agent（glm-5.3）买入' in pushed_text
+    assert 'Agent 未给出建议（引用无效已作废）' in pushed_text
+    assert 'SYNE' not in pushed_text                                       # 扩展池不推送
+    assert 'Agent 建议 1 · 不建议 0 · 未给出 1' in pushed_text
+
+    # 「今日」：作废的 SYNC 不含建议内容
+    view = service.today(now=evening(S1))
+    assert set(unit_for(view, 'SYNC')['agent']) == {'id', 'status', 'reason', 'created_at'}
+    synth = unit_for(view, 'SYNTH')
+    assert synth['agent']['status'] == 'ok' and synth['agent']['plan']['id'] == agent_plan['id']
+
+    # 采纳 SYNTH，以 Agent 计划为执行依据；录入买入成交
+    decision = service.decide({
+        'request_id': str(uuid.uuid4()), 'ticker': 'SYNTH', 'signal_date': S1.isoformat(),
+        'candidate_ids': [str(c) for c in synth['candidate_ids']], 'proposed_action': 'buy',
+        'final_action': 'buy', 'decision': 'accept', 'reason': '按 Agent 建议执行',
+        'plan_id': str(agent_plan['id'])}, now=evening(S1))['record']
+    assert decision['plan_id'] == agent_plan['id']
+    entry_day = add_trading_days(S1, 1)
+    service.add_trade(_trade_payload(201, 'buy', '10', '125', entry_day, decision['id']), now=evening(entry_day))
+
+    # 纪律轨道为 agent；计划影子含 rule 与 agent 两份计划
+    after = evening(add_trading_days(S1, 7))
+    disc = service.discipline(now=after)
+    assert disc['trades'][0]['track'] == 'agent' and disc['trades'][0]['flags'] == []
+    shadow = service.plan_shadow(now=after, since=S1)
+    assert {p['kind'] for p in shadow['plans']} == {'rule', 'agent'}
+
+    # 覆盖率 3/3：每个买入单元都有 Agent 建议或明确原因
+    assert service.agent_runs(now=after)['coverage'] == {'units': 3, 'covered': 3, 'missing': []}
+
+    # 同日重跑：ok/pass 单元不再运行，agent 计划不新增（失败的 SYNC 按 §8.1 重试）
+    again = service.run_batch(now=evening(S1), deps=agent_deps([
+        tool_reply('get_indicators', {'ticker': 'SYNC'}, 't5'),
+        AIMessage(content=buy_json('call:99')),
+    ]))
+    assert again['agent']['runs'] == {'SYNC': 'rejected: invalid_citation'}
+    assert len(repository.agent_runs_for(offline, 'SYNTH', S1)) == 1
+    assert len(repository.agent_runs_for(offline, 'SYNE', S1)) == 1
+    assert offline.execute("SELECT count(*) FROM trade_plans WHERE kind = 'agent'").fetchone()[0] == 1

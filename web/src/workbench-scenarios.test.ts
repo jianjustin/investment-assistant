@@ -107,3 +107,38 @@ it('shows the market context card and the collapsed extended pool', async () => 
   expect(document.querySelector('details')?.open).toBe(false)
   expect(document.querySelector('details')?.textContent).toContain('X01')
 })
+
+it('shows an agent suggestion and accepts against the agent plan', async () => {
+  const agentPlan = { ...plan, id: 'ap1', kind: 'agent', plan_version: 'agent-1' }
+  const agentRun = { id: 'r1', status: 'ok' as const, model: 'glm-5.3', agent_version: 'agent-1',
+    output: { action: 'buy' as const, summary: '回踩修复放量',
+      levels: { entry_low: { value: '123.20', refs: ['call:1'] },
+                entry_high: { value: '126.30', refs: ['call:1'] },
+                stop: { value: '117.30', refs: ['call:1'] },
+                target1: { value: '139.60', refs: ['call:1'] } },
+      thesis: [{ text: '放量突破 20 日线', refs: ['call:1'] }] },
+    counter: { status: 'ok', risks: [{ text: '财报临近', refs: ['call:1'] }], dropped: 0 },
+    plan: agentPlan, input_tokens: 40, output_tokens: 20, created_at: '2026-09-01T23:00:00Z' }
+  const invalidRule = { ...plan, status: 'invalid', invalid_reasons: ['earnings_in_validity'] }
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    url = String(url)
+    if (url === '/api/workbench/today')
+      return json({ session: '2026-09-01', units: decisions.length
+        ? [] : [{ ...unit, plan: invalidRule, agent: agentRun }], holdings: [] })
+    if (url === '/api/workbench/decisions') {
+      const body = JSON.parse(String(init!.body))
+      decisions.push({ id: 'd1', ...body, decided_at: '2026-09-02T01:00:00Z', supersedes_id: null })
+      return json({ status: 'created', record: decisions[0] })
+    }
+    return json({})
+  }))
+  history.replaceState(null, '', '#today')
+  render(App)
+  expect(await screen.findByText('Agent 建议（glm-5.3 · agent-1）买入')).toBeInTheDocument()
+  expect(screen.getByText(/反方：/)).toBeInTheDocument()
+  expect((screen.getByLabelText(/Agent 建议/) as HTMLInputElement).checked).toBe(true)   // 规则作废 → 默认 Agent
+  await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '按 Agent 建议执行' } })
+  await fireEvent.click(screen.getByRole('button', { name: '提交决定' }))
+  await waitFor(() => expect(decisions.length).toBe(1))
+  expect(decisions[0]).toMatchObject({ plan_id: 'ap1', reason: '按 Agent 建议执行' })
+})
