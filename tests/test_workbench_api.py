@@ -219,3 +219,34 @@ def test_backcheck_route_runs_and_lists(client, monkeypatch):
     listing = client.get('/api/workbench/backchecks')
     assert listing.status_code == 200
     assert listing.json() == {'backchecks': [{'id': 'b1', 'calc_version': 'backcheck-1'}]}
+
+
+def test_agent_run_routes(client, monkeypatch):
+    # GET 列表与覆盖率
+    monkeypatch.setattr(service, 'agent_runs', lambda *, now, since=None: {
+        'since': '2026-10-08', 'runs': [{'id': 'r1', 'ticker': 'NVDA'}],
+        'coverage': {'units': 1, 'covered': 1, 'missing': []}})
+    resp = client.get('/api/workbench/agent-runs')
+    assert resp.status_code == 200 and resp.json()['coverage']['units'] == 1
+    assert client.get('/api/workbench/agent-runs?since=2026-10-01').status_code == 200
+
+    # GET 详情：404 与正常
+    monkeypatch.setattr(service, 'agent_run_detail', raiser(LookupError('no such run')))
+    assert client.get('/api/workbench/agent-runs/abc').status_code == 404
+    monkeypatch.setattr(service, 'agent_run_detail', lambda run_id: {'id': run_id, 'tool_calls': []})
+    assert client.get('/api/workbench/agent-runs/abc').status_code == 200
+
+    # POST：400（非买入）、409（已有建议）、503（库未就绪）、200（成功）
+    body = {'ticker': 'AMD', 'signal_date': '2026-10-21'}
+    monkeypatch.setattr(service, 'run_agent', raiser(ValueError('not a buy unit')))
+    assert client.post('/api/workbench/agent-runs', json=body).status_code == 400
+    monkeypatch.setattr(service, 'run_agent', raiser(service.AgentConflict('already ok')))
+    assert client.post('/api/workbench/agent-runs', json=body).status_code == 409
+    monkeypatch.setattr(service, 'run_agent', raiser(service.Unavailable('数据库不可达')))
+    assert client.post('/api/workbench/agent-runs', json=body).status_code == 503
+    monkeypatch.setattr(service, 'run_agent',
+                        lambda ticker, signal_date, *, now, deps=None: {'id': 'r9', 'status': 'ok',
+                                                                         'reason': None})
+    resp = client.post('/api/workbench/agent-runs', json=body)
+    assert resp.status_code == 200 and resp.json() == {'id': 'r9', 'status': 'ok', 'reason': None}
+    assert client.post('/api/workbench/agent-runs', json={'ticker': 'AMD'}).status_code == 400

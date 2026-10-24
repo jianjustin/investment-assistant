@@ -877,3 +877,65 @@ def test_manual_run_conflict_and_not_buy(db, scripted_model):
     assert run['status'] == 'ok' and run['plan_id'] is not None
     with pytest.raises(service.AgentConflict):
         service.run_agent('NVDA', SESSION, now=NOW, deps=agent_deps(scripted_model, []))
+
+
+# ---------------------------------------------------------------- agent views (P3 §10.1/10.3)
+
+def test_today_unit_has_agent_ok_view(db, scripted_model):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    unit = service.today(now=NOW)['units'][0]
+    assert set(unit['agent']) == {'id', 'status', 'model', 'agent_version', 'output', 'counter', 'plan',
+                                  'input_tokens', 'output_tokens', 'created_at'}
+    assert unit['agent']['status'] == 'ok' and unit['agent']['model'] == 'glm-5.3'
+    assert unit['agent']['plan']['kind'] == 'agent'
+    assert unit['agent']['output']['levels']['entry_low']['value'] == '98.50'
+
+
+def test_today_hides_rejected_output(db, scripted_model):
+    bad = json.dumps({'action': 'buy', 'summary': 'x',
+                      'levels': {k: {'value': v, 'refs': ['call:99']} for k, v in
+                                 (('entry_low', 98.5), ('entry_high', 101.5), ('stop', 96.0), ('target1', 108.0))},
+                      'thesis': [{'text': 't', 'refs': ['call:99']}]})
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, [
+        _tool_msg('get_indicators', {'ticker': 'NVDA'}), AIMessage(content=bad)]))
+    unit = service.today(now=NOW)['units'][0]
+    assert set(unit['agent']) == {'id', 'status', 'reason', 'created_at'}
+    assert unit['agent']['reason'] == 'invalid_citation'
+
+
+def test_extended_unit_agent_status(db):
+    from investment_assistant.workbench import pool as pool_module
+    db.execute("INSERT INTO pool_tiers (ticker, tier, effective_session, recorded_at) "
+               "VALUES ('CCC', 'extended', %s, %s)", [SESSION - timedelta(days=1), NOW])
+    off = deps(Sources())
+    off.agent_settings = _agent_settings(provider='off')
+    service.run_batch(pool=pool_module.Pool(core=('AAA',), extended=('CCC',)), now=NOW, deps=off)
+    db.execute("INSERT INTO pool_tiers (ticker, tier, effective_session, recorded_at) "
+               "VALUES ('XNO', 'extended', %s, %s)", [SESSION - timedelta(days=1), NOW])
+    db.execute("INSERT INTO signal_candidates (ticker, signal_date, action, rule_id, rule_version, inputs) "
+               "VALUES ('XNO', %s, 'buy', 'trend_reclaim', '1', '{}')", [SESSION])
+    ext = {e['ticker']: e for e in service.today(now=NOW)['extended_units']}
+    assert ext['CCC']['agent_status'] == 'skipped: disabled'
+    assert ext['XNO']['agent_status'] is None      # 从未运行
+
+
+def test_agent_runs_coverage_lists_missing(db, scripted_model):
+    service.run_batch(tickers=['NVDA'], now=NOW,
+                      deps=agent_deps(scripted_model, [], settings=_agent_settings(provider='off')))
+    db.execute("INSERT INTO signal_candidates (ticker, signal_date, action, rule_id, rule_version, inputs) "
+               "VALUES ('XNO', %s, 'buy', 'trend_reclaim', '1', '{}')", [SESSION])
+    out = service.agent_runs(now=NOW)
+    assert out['coverage'] == {'units': 2, 'covered': 1,
+                               'missing': [{'ticker': 'XNO', 'signal_date': SESSION}]}
+    assert [r['ticker'] for r in out['runs']] == ['NVDA']
+    assert all('output' not in r and r['tool_calls'] >= 0 for r in out['runs'])
+
+
+def test_agent_run_detail_has_calls_and_hashes(db, scripted_model):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    run = repository.latest_agent_run(db, 'NVDA', SESSION)
+    detail = service.agent_run_detail(str(run['id']))
+    assert [c['seq'] for c in detail['tool_calls']] == [1, 2]
+    assert all(len(c['result_sha256']) == 64 for c in detail['tool_calls'])
+    with pytest.raises(LookupError):
+        service.agent_run_detail(str(uuid.uuid4()))

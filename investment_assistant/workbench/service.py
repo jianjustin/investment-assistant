@@ -469,12 +469,16 @@ def today(*, now: datetime) -> dict[str, Any]:
                 brief=_brief_view(repository.latest_brief(conn, ticker, signal_date)),
                 plan=repository.rule_plan(conn, ticker, signal_date),
                 filings=repository.read_filings(conn, ticker, since=since, cutoff_at=now),
-                news=repository.read_news(conn, ticker, cutoff_at=now, since=_midnight(since), limit=20))
+                news=repository.read_news(conn, ticker, cutoff_at=now, since=_midnight(since), limit=20),
+                agent=_agent_view(repository.latest_agent_run(conn, ticker, signal_date),
+                                  repository.agent_plan(conn, ticker, signal_date)))
             # The tier as of the signal date decides the list, not today's tier.
             if _unit_is_extended(conn, ticker, signal_date, held=held, now=now):
+                agent_run = repository.latest_agent_run(conn, ticker, signal_date)
                 extended_units.append({'ticker': ticker, 'signal_date': signal_date,
                                        'proposed_action': unit['proposed_action'],
-                                       'rule_ids': unit['rule_ids'], 'plan': unit['plan']})
+                                       'rule_ids': unit['rule_ids'], 'plan': unit['plan'],
+                                       'agent_status': _agent_status_line(agent_run)})
             else:
                 units.append(unit)
         holdings = _holdings(conn, session, now=now)
@@ -1125,3 +1129,55 @@ def run_agent(ticker: str, signal_date: date, *, now: datetime, deps: Deps | Non
     if unavailable is not None:
         return _skip(agent_unit, unavailable, now=now, settings=settings, attempt=len(prior) + 1)
     return _run_agent_unit(agent_unit, now=now, deps=deps, settings=settings, attempt=len(prior) + 1)
+
+
+def _agent_view(run: dict[str, Any] | None, plan: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The unit's latest agent run (§10.1): full suggestion on ok/pass, status and reason only otherwise."""
+    if run is None:
+        return None
+    if run['status'] in ('ok', 'pass'):
+        return {'id': str(run['id']), 'status': run['status'], 'model': run['model'],
+                'agent_version': run['agent_version'], 'output': run['output'], 'counter': run['counter'],
+                'plan': plan, 'input_tokens': run['input_tokens'], 'output_tokens': run['output_tokens'],
+                'created_at': run['created_at']}
+    return {'id': str(run['id']), 'status': run['status'], 'reason': run['reason'],
+            'created_at': run['created_at']}
+
+
+def _agent_status_line(run: dict[str, Any] | None) -> str | None:
+    if run is None:
+        return None
+    return run['status'] if run['status'] in ('ok', 'pass') else f"{run['status']}: {run['reason']}"
+
+
+def agent_runs(*, now: datetime, since: date | None = None) -> dict[str, Any]:
+    """Run rows without result payloads, plus coverage: every buy unit in range has a run or is missing."""
+    session = bars.latest_closed_session(now)
+    with _tx() as conn:
+        start = since if since is not None else session - timedelta(days=14)
+        runs = repository.list_agent_runs(conn, start)
+        total = covered = 0
+        missing: list[dict[str, Any]] = []
+        for group in repository.candidate_groups_since(conn, start):
+            ticker, signal_date = group['ticker'], group['signal_date']
+            book = _book(conn, ticker)
+            unit = synthesis.synthesize(ticker, signal_date, group['candidates'],
+                                        holding=book['position'] is not None,
+                                        market_status=repository.market_status(conn, signal_date), now=now)
+            if unit is None or unit['proposed_action'] != 'buy' or 'conflict' in unit['labels']:
+                continue
+            total += 1
+            if repository.latest_agent_run(conn, ticker, signal_date) is not None:
+                covered += 1
+            else:
+                missing.append({'ticker': ticker, 'signal_date': signal_date})
+    return {'since': start, 'runs': runs, 'coverage': {'units': total, 'covered': covered, 'missing': missing}}
+
+
+def agent_run_detail(run_id: str) -> dict[str, Any]:
+    """One run with every tool call, arguments, results and hashes (§10.3 traceability)."""
+    with _tx() as conn:
+        run = repository.agent_run_by_id(conn, run_id)
+        if run is None:
+            raise LookupError(f'运行 {run_id} 不存在')
+        return {**run, 'id': str(run['id']), 'tool_calls': repository.agent_tool_calls(conn, run['id'])}

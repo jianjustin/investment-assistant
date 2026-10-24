@@ -18,9 +18,9 @@ def _call(fn, *args, **kwargs):
         return fn(*args, **kwargs)
     except service.Unavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ledger.Conflict as exc:
+    except (ledger.Conflict, service.AgentConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ledger.NotFound as exc:
+    except (ledger.NotFound, LookupError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -164,3 +164,22 @@ def run_now():
     from investment_assistant.tasks.workbench import run
     run_id = runner.submit('workbench', lambda: run(trigger_source='manual'))
     return {'run_id': run_id, 'status': 'pending'}
+
+
+@router.get('/api/workbench/agent-runs')
+def agent_runs(since: str | None = None):
+    return _call(service.agent_runs, now=_now(), since=_date(since, 'since'))
+
+
+@router.get('/api/workbench/agent-runs/{run_id}')
+def agent_run_detail(run_id: str):
+    return _call(service.agent_run_detail, run_id)
+
+
+@router.post('/api/workbench/agent-runs')
+def run_agent(payload: dict[str, Any] = Body(default_factory=dict)):
+    ticker = str(payload.get('ticker') or '')
+    signal_date = _date(payload.get('signal_date'), 'signal_date')
+    if not ticker or signal_date is None:
+        raise HTTPException(status_code=400, detail='ticker 与 signal_date 必填')
+    return _call(service.run_agent, ticker.upper(), signal_date, now=_now())
