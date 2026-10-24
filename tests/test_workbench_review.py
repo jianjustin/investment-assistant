@@ -148,7 +148,52 @@ def test_weekly_review2_has_plans_and_discipline():
             'immature': {'early_take': 0, 'held_loser': 0}, 'planned_buys': 1, 'compliance_rate': 1.0}
     stats = review.weekly_stats(week, [], {}, [], segments=[], undecided=0, entry_opens={},
                                 plan_outcomes=plan_outcomes, discipline=disc)
-    assert stats['calc_version'] == 'review-2'
+    assert stats['calc_version'] == 'review-3'
     assert stats['plans']['rule'] == {'count': 2, 'expired': 1, 'r_mean': 2.0, 'r_median': 2.0}
     assert stats['plans']['own'] == {'count': 1, 'expired': 0, 'r_mean': 1.0, 'r_median': 1.0}
     assert stats['discipline'] == disc
+
+
+# --- P2: by-pool view (review-3) ---
+
+def test_pool_of_prefers_context():
+    assert review.pool_of('extended', {'tier': 'core'}) == 'extended'
+    assert review.pool_of('core', {'tier': 'extended'}) == 'core'
+    assert review.pool_of(None, {'tier': 'extended'}) == 'extended'
+    assert review.pool_of(None, {'tier': 'core'}) == 'core'
+
+
+def test_legacy_plan_without_context_counts_core():
+    assert review.pool_of(None, None) == 'core'
+    assert review.pool_of('unknown', None) == 'core'
+
+
+def test_pool_summary_splits_by_pool_and_rule():
+    triggers = [{'pool': 'core', 'rule_id': 'trend_reclaim'}, {'pool': 'core', 'rule_id': 'trend_reclaim'},
+                {'pool': 'extended', 'rule_id': 'trend_reclaim'}, {'pool': 'core', 'rule_id': 'volume_breakout'}]
+    plan_outcomes = [{'pool': 'core', 'rule_ids': ['trend_reclaim', 'volume_breakout'],
+                      'outcome': {'status': 'expired', 'r': None}},
+                     {'pool': 'extended', 'rule_ids': ['trend_reclaim'], 'outcome': {'status': 'open', 'r': 2.0}}]
+    out = review.pool_summary(triggers, plan_outcomes)
+    assert out['core']['trend_reclaim'] == {'triggers': 2, 'plans': 1, 'expired': 1, 'filled': 0,
+                                            'r_mean': None, 'r_median': None}
+    assert out['core']['volume_breakout']['triggers'] == 1 and out['core']['volume_breakout']['plans'] == 1
+    assert out['extended']['trend_reclaim'] == {'triggers': 1, 'plans': 1, 'expired': 0, 'filled': 1,
+                                                'r_mean': 2.0, 'r_median': 2.0}
+
+
+def test_pool_summary_counts_expired_and_filled():
+    plan_outcomes = [{'pool': 'core', 'rule_ids': ['earnings_gap_up'], 'outcome': {'status': 'expired', 'r': None}},
+                     {'pool': 'core', 'rule_ids': ['earnings_gap_up'], 'outcome': {'status': 'open', 'r': 1.0}},
+                     {'pool': 'core', 'rule_ids': ['earnings_gap_up'], 'outcome': {'status': 'closed', 'r': 3.0}},
+                     {'pool': 'core', 'rule_ids': ['earnings_gap_up'], 'outcome': {'status': 'pending', 'r': None}}]
+    out = review.pool_summary([], plan_outcomes)['core']['earnings_gap_up']
+    assert (out['plans'], out['expired'], out['filled']) == (4, 1, 2)
+    assert out['r_mean'] == 2.0 and out['r_median'] == 2.0
+
+
+def test_weekly_stats_carries_by_pool():
+    stats = review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], undecided=0, entry_opens={},
+                                by_pool={'core': {'trend_reclaim': {'triggers': 1}}})
+    assert stats['by_pool'] == {'core': {'trend_reclaim': {'triggers': 1}}}
+    assert review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], undecided=0, entry_opens={})['by_pool'] == {}

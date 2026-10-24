@@ -435,3 +435,81 @@ def test_store_regime_existing_then_conflict(workbench_db):
     assert repository.latest_regime(workbench_db, on_or_before=date(2026, 10, 22), cutoff_at=far)['id'] == \
         first['record']['id']
     assert repository.latest_regime(workbench_db, on_or_before=date(2026, 10, 20), cutoff_at=far) is None
+
+
+def _pool_week_seed(db, *, tier_rows, candidate_days, plan_days):
+    """Bars + pool tiers + buy candidates + rule plans for the by-pool weekly tests."""
+    from investment_assistant.config import WorkbenchConfig
+    from investment_assistant.workbench import plans, repository
+    from investment_assistant.workbench.rules import Candidate
+    monday = date(2026, 10, 19)
+    repository.insert_pool_tiers(db, tier_rows, session=monday, now=NOW)
+    for i in range(50):  # 40 calendar days of warmup before the week, then through the Friday
+        _bar(db, price_date=monday - timedelta(days=40) + timedelta(days=i), close=100 + i, high=102 + i,
+             low=99 + i, open=100 + i, adj_close=100 + i)
+    bars = repository.read_bars(db, 'NVDA', monday + timedelta(days=9), cutoff_at=NOW)
+    for day, tier in plan_days:
+        upto = [b for b in bars if b['price_date'] <= day]
+        plan = plans.build_rule_plan(ticker='NVDA', signal_date=day, bars=upto, earnings_row=None, snapshot=None,
+                                     exposure={'ticker_value': 0, 'total_value': 0}, params=WorkbenchConfig(),
+                                     context={'pool_tier': tier, 'regime': None, 'sector': None, 'next_earnings': None})
+        repository.insert_plan(db, plan)
+    for day in candidate_days:
+        repository.store_candidate(db, 'NVDA', day, Candidate('trend_reclaim', 'buy', {'signal_date': day.isoformat()}),
+                                   run_id='r')
+
+
+def test_weekly_review3_has_by_pool(workbench_db, monkeypatch):
+    from contextlib import contextmanager
+    from investment_assistant.workbench import repository, service
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+    monkeypatch.setattr(service, 'connection', connection)
+    _pool_week_seed(workbench_db,
+                    tier_rows=[{'ticker': 'NVDA', 'tier': 'extended', 'sector_etf': None}],
+                    candidate_days=[date(2026, 10, 20)], plan_days=[(date(2026, 10, 20), 'extended')])
+    out = service.generate_weekly(date(2026, 10, 19), now=NOW + timedelta(days=2))
+    assert out['calc_version'] == 'review-3'
+    row = out['stats']['by_pool']['extended']['trend_reclaim']
+    assert (row['triggers'], row['plans']) == (1, 1)
+
+
+def test_tier_change_midweek_uses_signal_date_tier(workbench_db, monkeypatch):
+    from contextlib import contextmanager
+    from investment_assistant.workbench import repository, service
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+    monkeypatch.setattr(service, 'connection', connection)
+    monday = date(2026, 10, 19)
+    repository.insert_pool_tiers(workbench_db, [{'ticker': 'NVDA', 'tier': 'extended', 'sector_etf': None}],
+                                 session=monday, now=NOW)
+    repository.insert_pool_tiers(workbench_db, [{'ticker': 'NVDA', 'tier': 'core', 'sector_etf': None}],
+                                 session=date(2026, 10, 21), now=NOW + timedelta(days=1))
+    _pool_week_seed(workbench_db, tier_rows=[], candidate_days=[date(2026, 10, 20), date(2026, 10, 22)],
+                    plan_days=[(date(2026, 10, 20), 'extended'), (date(2026, 10, 22), 'core')])
+    out = service.generate_weekly(monday, now=NOW + timedelta(days=2))
+    by_pool = out['stats']['by_pool']
+    assert by_pool['extended']['trend_reclaim']['triggers'] == 1
+    assert by_pool['core']['trend_reclaim']['triggers'] == 1
+
+
+def test_old_review2_snapshot_unchanged(workbench_db, monkeypatch):
+    from contextlib import contextmanager
+    from investment_assistant.workbench import repository, service
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+    monkeypatch.setattr(service, 'connection', connection)
+    old = repository.insert_weekly_review(workbench_db, date(2026, 10, 12), 'review-2', {'units': 7}, '', None)
+    _pool_week_seed(workbench_db,
+                    tier_rows=[{'ticker': 'NVDA', 'tier': 'core', 'sector_etf': None}],
+                    candidate_days=[date(2026, 10, 20)], plan_days=[(date(2026, 10, 20), 'core')])
+    out = service.generate_weekly(date(2026, 10, 19), now=NOW + timedelta(days=2))
+    assert out['calc_version'] == 'review-3'
+    again = repository.weekly_head(workbench_db, date(2026, 10, 12))
+    assert again['id'] == old['id'] and again['calc_version'] == 'review-2' and again['stats'] == {'units': 7}

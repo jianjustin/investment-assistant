@@ -709,12 +709,35 @@ def generate_weekly(week_start: date, *, notes: str = '', supersedes_id=None, no
             if plan['signal_date'] > week_end:
                 continue
             ticker_bars = repository.read_bars(conn, plan['ticker'], session, cutoff_at=now, limit=400)
-            plan_outcomes.append({**plan, 'outcome': _plan_shadow_module.simulate(
-                plan, ticker_bars, spy_bars, splits=repository.split_events(conn, plan['ticker']))})
+            # Pool of a plan: the frozen context tier first, else the tier recorded on its signal date.
+            plan_outcomes.append({**plan, 'pool': review.pool_of(
+                (plan.get('inputs') or {}).get('context', {}).get('pool_tier'),
+                repository.pool_entry_at(conn, plan['ticker'], plan['signal_date'], cutoff_at=now)),
+                'rule_ids': [c['rule_id'] for c in repository.unit_candidates(conn, plan['ticker'], plan['signal_date'])
+                             if c['action'] == 'buy'],
+                'outcome': _plan_shadow_module.simulate(
+                    plan, ticker_bars, spy_bars, splits=repository.split_events(conn, plan['ticker']))})
+        triggers = []
+        for group in repository.open_candidate_groups(conn, since=week_start):
+            if group['signal_date'] > week_end:
+                continue
+            for cand in group['candidates']:
+                if cand['action'] != 'buy':
+                    continue
+                triggers.append({'pool': review.pool_of(
+                    None, repository.pool_entry_at(conn, group['ticker'], group['signal_date'], cutoff_at=now)),
+                    'rule_id': cand['rule_id']})
+        for head in [h for h in heads if h['signal_date'] <= week_end]:
+            for cand in repository.unit_candidates(conn, head['ticker'], head['signal_date']):
+                if cand['action'] != 'buy':
+                    continue
+                triggers.append({'pool': review.pool_of(
+                    None, repository.pool_entry_at(conn, head['ticker'], head['signal_date'], cutoff_at=now)),
+                    'rule_id': cand['rule_id']})
         stats = review.weekly_stats(week_start, units, outcomes, repository.list_trades(conn), segments=segments,
                                     undecided=undecided,
                                     entry_opens={k: v.get('entry_price') for k, v in outcomes.items()},
-                                    plan_outcomes=plan_outcomes,
+                                    plan_outcomes=plan_outcomes, by_pool=review.pool_summary(triggers, plan_outcomes),
                                     discipline=_week_discipline(conn, session, now))
         stats['generated_at'] = now.isoformat()
         return review.save_weekly(conn, week_start, stats, notes=notes, supersedes_id=supersedes_id)

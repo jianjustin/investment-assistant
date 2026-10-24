@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from investment_assistant.data.calendar import add_trading_days, trading_days_between
 from investment_assistant.workbench import ledger, repository
 
-CALC_VERSION = 'review-2'
+CALC_VERSION = 'review-3'
 WINDOWS = (5, 10, 20)
 NY = ZoneInfo('America/New_York')
 
@@ -126,10 +126,51 @@ def _plan_summary(plan_outcomes: list[dict[str, Any]], week_start: date, week_en
     return out
 
 
+def pool_of(context_tier: str | None, entry: dict | None) -> str:
+    """Pool of a plan: the frozen context tier wins, else the tier recorded at the signal date.
+
+    Only 'extended' lands in the extended pool; unknown and legacy (P1) plans count as core.
+    """
+    tier = context_tier or (entry or {}).get('tier')
+    return 'extended' if tier == 'extended' else 'core'
+
+
+def pool_summary(triggers: list[dict], plan_outcomes: list[dict]) -> dict:
+    """Per pool and buy rule: trigger count, plan count, expired, filled and R stats.
+
+    A plan counts once for each of its buy rules; `filled` covers open and closed outcomes.
+    """
+    rows: dict[tuple, dict] = {}
+
+    def row(pool: str, rule_id: str) -> dict:
+        return rows.setdefault((pool, rule_id), {'triggers': 0, 'plans': 0, 'expired': 0, 'filled': 0, 'r': []})
+
+    for trigger in triggers:
+        row(trigger['pool'], trigger['rule_id'])['triggers'] += 1
+    for plan in plan_outcomes:
+        outcome = plan.get('outcome') or {}
+        for rule_id in plan.get('rule_ids') or []:
+            r = row(plan['pool'], rule_id)
+            r['plans'] += 1
+            if outcome.get('status') == 'expired':
+                r['expired'] += 1
+            if outcome.get('status') in ('open', 'closed'):
+                r['filled'] += 1
+            if outcome.get('r') is not None:
+                r['r'].append(outcome['r'])
+    out: dict[str, dict] = {}
+    for (pool, rule_id), r in rows.items():
+        out.setdefault(pool, {})[rule_id] = {
+            'triggers': r['triggers'], 'plans': r['plans'], 'expired': r['expired'], 'filled': r['filled'],
+            'r_mean': statistics.fmean(r['r']) if r['r'] else None,
+            'r_median': statistics.median(r['r']) if r['r'] else None}
+    return out
+
+
 def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[Any, dict[str, Any]],
                  trades: list[dict[str, Any]], *, segments: list[dict[str, Any]], undecided: int,
                  entry_opens: dict[Any, float], plan_outcomes: list[dict[str, Any]] | None = None,
-                 discipline: dict[str, Any] | None = None) -> dict[str, Any]:
+                 discipline: dict[str, Any] | None = None, by_pool: dict | None = None) -> dict[str, Any]:
     """Snapshot for units whose signal_date falls in the week; values are excess returns vs SPY."""
     week_end = week_start + timedelta(days=6)
     by_rule: dict[str, list] = {}
@@ -162,6 +203,7 @@ def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[A
         'unsignaled_trades': unsignaled,
         'closed_trades': segments,
         'plans': _plan_summary(plan_outcomes or [], week_start, week_start + timedelta(days=6)),
+        'by_pool': by_pool or {},
         'discipline': discipline or {},
         'note': '描述性统计，样本小且重叠，不代表规则有效。',
     }
