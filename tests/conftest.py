@@ -14,6 +14,11 @@ def isolate_unit_tests_from_local_database(monkeypatch):
     monkeypatch.delenv('INVESTMENT_ASSISTANT_DATABASE_URL', raising=False)
     monkeypatch.setenv('SCHEDULER_ENABLED', '0')
     monkeypatch.setenv('WORKBENCH_LLM_PROVIDER', 'off')  # tests never call a real model
+    # A test-triggered load_dotenv() can still import keys from .env mid-session
+    # (e.g. FRED_API_KEY); agent keys and FRED must never reach the test process.
+    monkeypatch.delenv('FRED_API_KEY', raising=False)
+    monkeypatch.delenv('ZHIPU_API_KEY', raising=False)
+    monkeypatch.delenv('WORKBENCH_AGENT_PROVIDER', raising=False)
 
 
 @pytest.fixture()
@@ -23,7 +28,7 @@ def client():
 
 WORKBENCH_MIGRATIONS = ('002_watchlist_items.sql', '006_job_reports.sql', '007_scheduled_jobs.sql',
                         '011_filings.sql', '016_us_workbench.sql', '017_trade_plans.sql',
-                        '018_pool_and_market_context.sql')
+                        '018_pool_and_market_context.sql', '019_agent_track.sql')
 
 
 @pytest.fixture

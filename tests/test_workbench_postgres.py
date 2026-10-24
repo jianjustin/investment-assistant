@@ -539,3 +539,83 @@ def test_backcheck_makes_no_network_calls(workbench_db, monkeypatch):
     assert record['params']['tickers'] == ['NVDA']
     assert record['stats']['all']['ticker_sessions'] == 260 - 200
     assert repository.list_backchecks(workbench_db, 10)[0]['id'] == record['id']
+
+
+def _agent_run(conn, plan_id=None, **overrides):
+    import json
+    values = {'id': uuid.uuid4(), 'ticker': 'NVDA', 'signal_date': date(2026, 10, 21), 'pool': 'main',
+              'attempt': 1, 'agent_version': 'agent-1', 'provider': 'zhipu', 'model': 'glm-5.3',
+              'cutoff_at': NOW, 'status': 'rejected', 'reason': 'malformed', 'output': None, 'counter': None,
+              'plan_id': plan_id, 'input_tokens': 0, 'output_tokens': 0,
+              'started_at': NOW, 'finished_at': NOW}
+    values.update(overrides)
+    cols, marks, params = [], [], []
+    for key, value in values.items():
+        cols.append(key)
+        if key in ('output', 'counter'):
+            marks.append('%s::jsonb')
+            params.append(json.dumps(value) if value is not None else None)
+        else:
+            marks.append('%s')
+            params.append(value)
+    return conn.execute(f"INSERT INTO agent_runs ({', '.join(cols)}) VALUES ({', '.join(marks)}) RETURNING id",
+                        params).fetchone()[0]
+
+
+def _tool_call(conn, run_id, seq=1, **overrides):
+    import json
+    values = {'run_id': run_id, 'seq': seq, 'phase': 'propose', 'tool': 'get_price_bars',
+              'args': {}, 'result': {'ref': 'call:1', 'data': {}}, 'result_sha256': 'a' * 64, 'called_at': NOW}
+    values.update(overrides)
+    cols, marks, params = [], [], []
+    for key, value in values.items():
+        cols.append(key)
+        if key in ('args', 'result'):
+            marks.append('%s::jsonb')
+            params.append(json.dumps(value))
+        else:
+            marks.append('%s')
+            params.append(value)
+    conn.execute(f"INSERT INTO agent_tool_calls ({', '.join(cols)}) VALUES ({', '.join(marks)})", params)
+
+
+def test_agent_plan_kind_allowed(workbench_db):
+    assert _plan(workbench_db, kind='agent', plan_version='agent-1')
+
+
+def test_agent_plan_unique_per_unit(workbench_db):
+    import psycopg
+    _plan(workbench_db, kind='agent', plan_version='agent-1')
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        _plan(workbench_db, kind='agent', plan_version='agent-1')
+    workbench_db.rollback()
+    assert _plan(workbench_db)  # rule 计划不受 agent 部分唯一索引影响
+
+
+def test_agent_run_ok_requires_plan(workbench_db):
+    import psycopg
+    plan_id = _plan(workbench_db, kind='agent', plan_version='agent-1')
+    assert _agent_run(workbench_db, status='ok', reason=None, plan_id=plan_id, output={'action': 'buy'})
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _agent_run(workbench_db, status='ok', reason=None)  # ok 无 plan_id
+
+
+def test_agent_run_reason_required(workbench_db):
+    import psycopg
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _agent_run(workbench_db, status='rejected', reason=None)
+
+
+def test_tool_call_seq_unique(workbench_db):
+    import psycopg
+    run_id = _agent_run(workbench_db)
+    _tool_call(workbench_db, run_id, seq=1)
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        _tool_call(workbench_db, run_id, seq=1)
+
+
+def test_missing_tables_lists_019(workbench_db):
+    from investment_assistant.workbench import repository
+    assert repository.missing_tables(workbench_db) == []
+    workbench_db.execute('DROP TABLE agent_tool_calls')
+    assert 'agent_tool_calls' in repository.missing_tables(workbench_db)

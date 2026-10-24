@@ -62,7 +62,7 @@ def _tx():
         with connection() as conn:
             missing = repository.missing_tables(conn)
             if missing:
-                raise Unavailable('工作台数据表未就绪（需执行迁移 016–018）：' + ', '.join(missing))
+                raise Unavailable('工作台数据表未就绪（需执行迁移 016–019）：' + ', '.join(missing))
             try:
                 yield conn
                 conn.commit()

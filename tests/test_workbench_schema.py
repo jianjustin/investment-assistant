@@ -86,3 +86,25 @@ def test_018_is_additive():
     assert 'ALTER TABLE' not in upper
     assert 'DROP ' not in upper
     assert 'TRUNCATE' not in upper
+
+
+def test_019_only_widens_trade_plans():
+    assert [p.name for p in Path('migrations').glob('019_*.sql')] == ['019_agent_track.sql']
+    code_019 = re.sub(r'--[^\n]*', '', Path('migrations/019_agent_track.sql').read_text(encoding='utf-8'))
+    for table in ['agent_runs', 'agent_tool_calls']:
+        assert f'CREATE TABLE IF NOT EXISTS {table} (' in code_019, table
+    alters = re.findall(r'ALTER TABLE (\w+)([^;]*);', code_019, re.IGNORECASE)
+    assert alters
+    for table, body in alters:
+        assert table == 'trade_plans', table
+        assert 'trade_plans_kind_check' in body, body
+    upper = code_019.upper()
+    assert 'UPDATE ' not in upper
+    assert 'DELETE ' not in upper
+
+
+def test_agent_dependencies_importable():
+    from langchain_openai import ChatOpenAI
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from langgraph.graph import StateGraph
+    assert StateGraph is not None and PostgresSaver is not None and ChatOpenAI is not None
