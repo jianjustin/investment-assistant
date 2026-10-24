@@ -148,3 +148,8 @@ def test_early_take_ignores_highs_before_the_buy():
     trades = [trade('b1', price=100, executed=at(D1)), trade('s1', side='sell', price=105, executed=at(sell_day))]
     out = evaluate(trades, bars=bars, segments=[segment(closed=sell_day)], session=add_trading_days(sell_day, 20))
     assert 'early_take' in out['trades'][0]['flags']
+
+
+def test_discipline_track_agent():
+    out = evaluate([trade('b1')], plans={'p1': plan(kind='agent')})
+    assert out['trades'][0]['track'] == 'agent'

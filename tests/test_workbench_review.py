@@ -207,3 +207,28 @@ def test_weekly_stats_carries_by_pool():
                                 by_pool={'core': {'trend_reclaim': {'triggers': 1}}})
     assert stats['by_pool'] == {'core': {'trend_reclaim': {'triggers': 1}}}
     assert review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], undecided=0, entry_opens={})['by_pool'] == {}
+
+
+def test_weekly_plan_summary_has_agent_kind():
+    week = date(2026, 9, 28)
+    plan_outcomes = [
+        {'kind': 'rule', 'signal_date': date(2026, 9, 29), 'outcome': {'status': 'open', 'r': 2.0}},
+        {'kind': 'agent', 'signal_date': date(2026, 9, 30), 'outcome': {'status': 'closed', 'r': 1.5}},
+    ]
+    disc = {'trades': [], 'counts': {'chase': 0, 'early_take': 0, 'held_loser': 0, 'unplanned': 0},
+            'immature': {'early_take': 0, 'held_loser': 0}, 'planned_buys': 1, 'compliance_rate': 1.0}
+    stats = review.weekly_stats(week, [], {}, [], segments=[], undecided=0, entry_opens={},
+                                plan_outcomes=plan_outcomes, discipline=disc)
+    assert stats['plans']['agent'] == {'count': 1, 'expired': 0, 'r_mean': 1.5, 'r_median': 1.5}
+
+
+def test_pool_summary_ignores_agent_plans():
+    triggers = [{'pool': 'core', 'rule_id': 'trend_reclaim'}]
+    plan_outcomes = [
+        {'pool': 'core', 'rule_ids': ['trend_reclaim'], 'outcome': {'status': 'open', 'r': 1.0}},
+        {'pool': 'core', 'rule_ids': ['trend_reclaim'], 'kind': 'agent',
+         'outcome': {'status': 'open', 'r': 5.0}},
+    ]
+    out = review.pool_summary(triggers, plan_outcomes)
+    assert out['core']['trend_reclaim'] == {'triggers': 1, 'plans': 1, 'expired': 0, 'filled': 1,
+                                            'r_mean': 1.0, 'r_median': 1.0}

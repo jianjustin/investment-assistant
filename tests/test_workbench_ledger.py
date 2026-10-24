@@ -261,3 +261,37 @@ def test_own_plan_gets_context(workbench_db, cids):
     assert ctx['pool_tier'] == 'unknown'      # no pool_tiers rows in this schema
     assert ctx['regime'] is None and ctx['sector'] is None
     assert 'regime_unavailable' in plan['warnings']
+
+
+# --- agent plans as an execution track (P3 §9) ---
+
+def test_accept_with_agent_plan(workbench_db, cids):
+    agent = rule_plan_row(workbench_db, kind='agent', plan_version='agent-1')
+    out = ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(agent['id'])), now=NOW)
+    assert out['record']['plan_id'] == agent['id']
+
+
+def test_rule_invalid_agent_ok_allows_agent_plan(workbench_db, cids):
+    rule_plan_row(workbench_db, status='invalid', invalid_reasons=['earnings_in_validity'])
+    agent = rule_plan_row(workbench_db, kind='agent', plan_version='agent-1')
+    out = ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(agent['id'])), now=NOW)
+    assert out['record']['plan_id'] == agent['id']
+
+
+def test_agent_plan_of_other_unit_rejected(workbench_db, cids):
+    other = rule_plan_row(workbench_db, kind='agent', plan_version='agent-1', ticker='AMD',
+                          signal_date=date(2026, 10, 20))
+    with pytest.raises(ledger.LedgerError):
+        ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(other['id'])), now=NOW)
+
+
+def test_agent_invalid_and_rule_invalid_only_own(workbench_db, cids):
+    rule_plan_row(workbench_db, status='invalid', invalid_reasons=['earnings_in_validity'])
+    agent = rule_plan_row(workbench_db, kind='agent', plan_version='agent-1', status='invalid',
+                          invalid_reasons=['earnings_in_validity'])
+    _unit_bar(workbench_db)
+    with pytest.raises(ledger.LedgerError):
+        ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(agent['id'])), now=NOW)
+    out = ledger.record_decision(workbench_db, decision_payload(
+        cids, own_plan={'request_id': str(uuid.uuid4()), **own_levels()}), now=NOW)
+    assert out['record']['plan_id'] != agent['id']

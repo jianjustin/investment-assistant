@@ -184,16 +184,21 @@ def record_decision(conn, payload: dict[str, Any], *, now: datetime) -> dict[str
 
 
 def _checked_plan_id(conn, rec: dict[str, Any], rule: dict[str, Any] | None):
-    """spec §5.3: what an accept of a buy unit must carry, and what plan_id may point to."""
+    """spec §5.3 + P3 §9: an accept of a buy unit carries the unit's ok rule plan,
+    its ok agent plan, or own levels — and plan_id may point at nothing else."""
     needs_plan = rec['decision'] == 'accept' and rec['proposed_action'] == 'buy'
-    if needs_plan and rule is not None:
-        if rule['status'] == 'ok':
-            if rec['plan_id'] is None and rec['own_plan'] is None:
-                raise LedgerError('采纳买入必须携带规则计划（plan_id）或自定价位（own_plan）')
-            if rec['plan_id'] is not None and rec['plan_id'] != rule['id']:
-                raise LedgerError('plan_id 必须指向该单元当前规则计划，或改用自定价位')
-        elif rec['plan_id'] is not None:
-            raise LedgerError('规则计划已作废，只能采纳自定价位（own_plan）')
+    if needs_plan:
+        allowed = []
+        if rule is not None and rule['status'] == 'ok':
+            allowed.append(rule['id'])
+        agent = repository.agent_plan(conn, rec['ticker'], rec['signal_date'])
+        if agent is not None and agent['status'] == 'ok':
+            allowed.append(agent['id'])
+        has_any_plan = rule is not None or agent is not None
+        if rec['plan_id'] is None and rec['own_plan'] is None and has_any_plan:
+            raise LedgerError('采纳买入必须携带规则计划（plan_id）或自定价位（own_plan）')
+        if rec['plan_id'] is not None and rec['plan_id'] not in allowed:
+            raise LedgerError('plan_id 必须指向该单元可用的规则计划或 Agent 计划，或改用自定价位')
     if rec['plan_id'] is not None:
         linked = repository.plan_by_id(conn, rec['plan_id'])
         if linked is None or linked['ticker'] != rec['ticker'] or linked['signal_date'] != rec['signal_date']:
