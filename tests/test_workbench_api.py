@@ -202,3 +202,20 @@ def test_push_route_forces(client, monkeypatch):
     monkeypatch.setattr(service, 'push', push)
     resp = client.post('/api/workbench/push')
     assert resp.status_code == 200 and seen['force'] is True and resp.json()['sent'] is True
+
+
+def test_backcheck_route_runs_and_lists(client, monkeypatch):
+    from investment_assistant.workbench import service
+    seen = {}
+
+    def run_backcheck(*, now, tickers=None):
+        seen['tickers'] = tickers
+        return {'id': 'b1', 'calc_version': 'backcheck-1', 'stats': {'all': {'triggers': 0}}}
+    monkeypatch.setattr(service, 'run_backcheck', run_backcheck)
+    monkeypatch.setattr(service, 'list_backchecks', lambda limit=10: [{'id': 'b1', 'calc_version': 'backcheck-1'}])
+    resp = client.post('/api/workbench/backchecks', json={'tickers': ['NVDA', 'MU']})
+    assert resp.status_code == 200 and resp.json()['id'] == 'b1'
+    assert seen['tickers'] == ['NVDA', 'MU']
+    listing = client.get('/api/workbench/backchecks')
+    assert listing.status_code == 200
+    assert listing.json() == {'backchecks': [{'id': 'b1', 'calc_version': 'backcheck-1'}]}

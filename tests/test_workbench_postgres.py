@@ -513,3 +513,29 @@ def test_old_review2_snapshot_unchanged(workbench_db, monkeypatch):
     assert out['calc_version'] == 'review-3'
     again = repository.weekly_head(workbench_db, date(2026, 10, 12))
     assert again['id'] == old['id'] and again['calc_version'] == 'review-2' and again['stats'] == {'units': 7}
+
+
+def test_backcheck_makes_no_network_calls(workbench_db, monkeypatch):
+    from contextlib import contextmanager
+    from investment_assistant.workbench import bars, earnings, macro, news, repository, service
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+    monkeypatch.setattr(service, 'connection', connection)
+
+    def boom(*a, **kw):
+        raise AssertionError('network call during backcheck')
+    monkeypatch.setattr(bars, 'fetch_history', boom)
+    monkeypatch.setattr(news, 'fetch_yfinance', boom)
+    monkeypatch.setattr(earnings, 'fetch_next', boom)
+    monkeypatch.setattr(macro, 'fetch_series', boom)
+    workbench_db.execute("INSERT INTO watchlist_items (ticker, status, tags) VALUES ('NVDA', 'active', '{}')")
+    for i in range(260):
+        _bar(workbench_db, price_date=date(2026, 1, 5) + timedelta(days=i), close=100 + i, high=102 + i,
+             low=99 + i, open=100 + i, adj_close=100 + i)
+    record = service.run_backcheck(now=NOW)
+    assert record['calc_version'] == 'backcheck-1'
+    assert record['params']['tickers'] == ['NVDA']
+    assert record['stats']['all']['ticker_sessions'] == 260 - 200
+    assert repository.list_backchecks(workbench_db, 10)[0]['id'] == record['id']

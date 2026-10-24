@@ -604,6 +604,21 @@ def latest_regime(conn, *, on_or_before: date, cutoff_at: datetime) -> dict[str,
                 (on_or_before, REGIME_VERSION, cutoff_at))
 
 
+_BACKCHECK_COLUMNS = 'id, calc_version, params, stats, created_at'
+
+
+def insert_backcheck(conn, calc_version: str, params: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:
+    """Freeze one backcheck run; rows are never rewritten."""
+    return _one(conn, 'INSERT INTO rule_backchecks (calc_version, params, stats) '
+                      f'VALUES (%s, %s::jsonb, %s::jsonb) RETURNING {_BACKCHECK_COLUMNS}',
+                (calc_version, _canonical(params), _canonical(stats)))
+
+
+def list_backchecks(conn, limit: int) -> list[dict[str, Any]]:
+    return _all(conn, f'SELECT {_BACKCHECK_COLUMNS} FROM rule_backchecks ORDER BY created_at DESC LIMIT %s',
+                (limit,))
+
+
 def pool_latest(conn) -> dict[str, dict[str, Any]]:
     """Each ticker's newest pool_tiers row: {'tier', 'sector_etf'}."""
     with conn.cursor(row_factory=dict_row) as cur:

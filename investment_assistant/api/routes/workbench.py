@@ -45,6 +45,16 @@ def instrument(ticker: str):
     return _call(service.instrument, ticker, now=_now())
 
 
+@router.get('/api/workbench/backchecks')
+def backchecks(limit: int = 10):
+    return {'backchecks': _call(service.list_backchecks, limit=limit)}
+
+
+@router.post('/api/workbench/backchecks')
+def run_backcheck(payload: dict[str, Any] = Body(default_factory=dict)):
+    return _call(service.run_backcheck, now=_now(), tickers=payload.get('tickers'))
+
+
 @router.post('/api/workbench/decisions')
 def decide(payload: dict[str, Any] = Body(default_factory=dict)):
     return _call(service.decide, payload, now=_now())

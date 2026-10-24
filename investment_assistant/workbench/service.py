@@ -466,6 +466,36 @@ def today(*, now: datetime) -> dict[str, Any]:
             'holdings': holdings, 'market': market}
 
 
+def run_backcheck(*, now: datetime, tickers: list[str] | None = None) -> dict[str, Any]:
+    """Replay stored data through the current rules; reads only, never collects."""
+    from investment_assistant.workbench import backcheck as backcheck_module
+    from investment_assistant.workbench import plan_shadow as shadow_module
+
+    with _tx() as conn:
+        symbols = (pool_module.Pool.all_core(tickers).tickers if tickers is not None
+                   else pool_module.from_watchlist(list_watchlist_items(conn)).tickers)
+        spy_bars = repository.read_bars(conn, BENCHMARK, bars.latest_closed_session(now), cutoff_at=now, limit=2000)
+        replays = []
+        for ticker in symbols:
+            ticker_bars = repository.read_bars(conn, ticker, bars.latest_closed_session(now), cutoff_at=now,
+                                               limit=2000)
+            first_day = ticker_bars[0]['price_date'] if ticker_bars else date(2026, 1, 1)
+            replays.append(backcheck_module.replay(
+                ticker, ticker_bars, repository.read_filings(conn, ticker, since=first_day, cutoff_at=now),
+                spy_bars, splits=repository.split_events(conn, ticker)))
+        stats = backcheck_module.summarize(replays)
+        params = {'tickers': list(symbols), 'rule_version': rules.RULE_VERSION,
+                  'plan_version': plans.PLAN_VERSION, 'shadow_version': shadow_module.SHADOW_VERSION,
+                  'bars': 'stored current revisions'}
+        return repository.insert_backcheck(conn, backcheck_module.CALC_VERSION, params, stats)
+
+
+def list_backchecks(limit: int = 10) -> list[dict[str, Any]]:
+    with _tx() as conn:
+        out = repository.list_backchecks(conn, limit)
+    return [{**row, 'id': str(row['id'])} for row in out]
+
+
 def decide(payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:
     with _tx() as conn:
         return ledger.record_decision(conn, payload, now=now)
