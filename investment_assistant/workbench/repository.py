@@ -568,7 +568,7 @@ def _regime_fingerprint(snap: dict[str, Any]) -> str:
     return json.dumps(compared, sort_keys=True, separators=(',', ':'), default=str)
 
 
-def store_regime(conn, snap: dict[str, Any]) -> dict[str, Any]:
+def store_regime(conn, snap: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
     """Insert a snapshot; same content returns the stored row, different content is a conflict."""
     from investment_assistant.workbench.regime import REGIME_VERSION
     existing = _one(conn, f'SELECT {_REGIME_COLUMNS} FROM market_regimes '
@@ -576,11 +576,14 @@ def store_regime(conn, snap: dict[str, Any]) -> dict[str, Any]:
     if existing is not None:
         stored = _regime_fingerprint(existing)
         return {'status': 'existing' if stored == _regime_fingerprint(snap) else 'conflict', 'record': existing}
-    placeholders = ', '.join(['%s'] * 7)
-    record = _one(conn, f'INSERT INTO market_regimes (session, calc_version, label, breadth, sectors, macro, inputs) '
-                        f'VALUES ({placeholders}) RETURNING {_REGIME_COLUMNS}',
-                  (snap['session'], REGIME_VERSION, snap['label'], json.dumps(snap['breadth']),
-                   json.dumps(snap['sectors']), json.dumps(snap['macro']), json.dumps(snap['inputs'])))
+    placeholders = ', '.join(['%s'] * (7 if now is None else 8))
+    params = [snap['session'], REGIME_VERSION, snap['label'], json.dumps(snap['breadth']),
+              json.dumps(snap['sectors']), json.dumps(snap['macro']), json.dumps(snap['inputs'])]
+    if now is not None:
+        params.append(now)
+    record = _one(conn, f'INSERT INTO market_regimes (session, calc_version, label, breadth, sectors, macro, inputs'
+                        f'{", created_at" if now is not None else ""}) '
+                        f'VALUES ({placeholders}) RETURNING {_REGIME_COLUMNS}', params)
     return {'status': 'inserted', 'record': record}
 
 

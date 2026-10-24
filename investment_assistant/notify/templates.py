@@ -1,10 +1,51 @@
 from datetime import date
 
 from investment_assistant.notify.message import Notification, NotifyField
+from investment_assistant.workbench.regime import LABEL_TEXT
 
 MAX_FIELD = 1024
 MAX_MESSAGE = 6000
 ACTIONS = {'buy': '买入', 'sell': '卖出', 'watch': '观察'}
+SOURCE_NAMES = {'bars': '日线', 'news': '资讯', 'earnings': '财报日期', 'sec': 'SEC', 'etf_bars': 'ETF 日线',
+                'fred': 'FRED', 'regime': '区制', 'budget': '耗时'}
+_SECTOR_STATE = {'strong': '强', 'weak': '弱', 'mixed': '分化'}
+
+
+def _market_environment(market: dict | None) -> str:
+    """One line block for the overview market field; absent snapshot or FRED says so plainly."""
+    if not market:
+        return '市场环境未生成'
+    breadth = market.get('breadth') or {}
+    lines = []
+    label = LABEL_TEXT.get(market.get('label'))
+    head = (f"区制 {label} · 站上 MA50 {breadth['pct_50']:.1%} · MA200 {breadth['pct_200']:.1%}"
+            f" · 新高 {breadth.get('new_highs', 0)} / 新低 {breadth.get('new_lows', 0)}"
+            if label is not None and breadth.get('pct_50') is not None and breadth.get('pct_200') is not None
+            else f"区制 {label or '未知'}")
+    lines.append(head)
+    sectors = market.get('sectors') or {}
+    if sectors:
+        parts = []
+        for etf, view in sectors.items():
+            if view is None:
+                parts.append(f"{etf} 数据不足")
+            else:
+                parts.append(f"{etf} {view['rs20']:+.1%} {_SECTOR_STATE.get(view.get('state'), '数据不足')}")
+        lines.append(' · '.join(parts))
+    macro = market.get('macro') or {}
+    if not any(view is not None for view in macro.values()):
+        lines.append('FRED 未配置')
+    else:
+        hy, curve = macro.get('BAMLH0A0HYM2'), macro.get('T10Y2Y')
+        parts = []
+        for name, view in (('HY OAS', hy), ('2s10s', curve)):
+            if view is None:
+                parts.append(f'{name} 无数据')
+            else:
+                change = f"{view['change']:+}" if view.get('change') is not None else '无变化'
+                parts.append(f"{name} {view['value']}（20 期 {change}）")
+        lines.append(' · '.join(parts))
+    return '\n'.join(lines)
 
 
 def _clip_field(fields: list[NotifyField], name: str, value: str) -> None:
@@ -92,9 +133,15 @@ def workbench_digest(digest: dict) -> list[Notification]:
     overview = digest.get('overview', {})
     lines = [f"交易日 {session}", f"新计划 {overview.get('new_plans', 0)} · 持仓 {overview.get('holdings', 0)}",
              f"待处理 {overview.get('pending', 0)} · 异常 {overview.get('errors', 0)}"]
+    if overview.get('extended_plans'):
+        lines.append(f"扩展池新计划 {overview['extended_plans']} 份（不推送）")
+    if overview.get('core_empty'):
+        lines.append('核心池为空，只推送持仓')
     if overview.get('last_push_failed'):
         lines.append('⚠️ 上次推送失败，请核对')
-    overview_msg = _fit_message(f"📊 工作台 · {session}", [NotifyField('概览', '\n'.join(lines))], _footer())
+    overview_fields = [NotifyField('概览', '\n'.join(lines)),
+                       NotifyField('市场环境', _market_environment(overview.get('market')))]
+    overview_msg = _fit_message(f"📊 工作台 · {session}", overview_fields, _footer())
 
     fields: list[NotifyField] = []
     plans = digest.get('plans') or []
@@ -107,8 +154,13 @@ def workbench_digest(digest: dict) -> list[Notification]:
         notes = '；'.join([*(f"提示 {w}" for w in p.get('warnings', [])),
                            *(f"作废 {r}" for r in p.get('invalid_reasons', []))])
         head = f"动作 {ACTIONS.get(p.get('action'), p.get('action'))} · {'、'.join(p.get('rule_ids') or [])} · {p.get('plan_version')}"
+        sector = p.get('sector')
+        sector_text = (f"行业 {sector['etf']} {_SECTOR_STATE.get(sector.get('state'), '数据不足')}"
+                       if sector else '行业 未映射')
+        context = f"区制 {LABEL_TEXT.get(p.get('regime_label'), '未知')} · 下次财报 {p.get('next_earnings') or '未知'} · {sector_text}"
         _clip_field(fields, p['ticker'], '；'.join(filter(None, [
             head,
+            context,
             f"区间 {p['entry_low']}–{p['entry_high']} · 止损 {p['stop']} · T1 {p['target1']}",
             f"仓位 {sizing}", funding, f"有效期 至 {p['valid_until']}", notes, p.get('evidence', ''),
             p.get('brief_summary') or '', p.get('contra') or '', p.get('url', '')])) or '—')
@@ -141,6 +193,9 @@ def workbench_digest(digest: dict) -> list[Notification]:
                 '\n'.join(f"{e['ticker']} 至 {e['valid_until']}" for e in expiring) or '无')
     errors = digest.get('errors') or []
     _clip_field(fields, f"异常 ({len(errors)})", '\n'.join(errors) or '无')
+    for source, items in (digest.get('errors_by_source') or {}).items():
+        if items:
+            _clip_field(fields, SOURCE_NAMES.get(source, source), '\n'.join(str(i) for i in items))
     pending_msg = _fit_message(f"⏳ 待处理与异常 · {session}", fields, _footer())
     return [overview_msg, plans_msg, holdings_msg, pending_msg]
 

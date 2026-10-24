@@ -37,10 +37,11 @@ def holding(ticker='NVDA', **over):
     return row
 
 
-def build(units=(), holdings=(), summary=None, last_push_failed=False):
+def build(units=(), holdings=(), summary=None, last_push_failed=False, extended_plans=0, market=None):
     return digest.build(session=SESSION, units=list(units), holdings=list(holdings),
                         summary=summary or {'errors': [], 'earnings': {}},
-                        last_push_failed=last_push_failed, public_url=URL)
+                        last_push_failed=last_push_failed, public_url=URL,
+                        extended_plans=extended_plans, market=market)
 
 
 def all_text(messages):
@@ -140,3 +141,102 @@ def test_closed_day_message():
     messages = templates.workbench_closed(date(2026, 10, 24))
     assert len(messages) == 1
     assert '纽约休市，未运行' in messages[0].title
+
+
+# --- P2: market context, extended count, errors by source ---
+
+def market_row(**over):
+    row = {'id': 'r1', 'session': SESSION, 'calc_version': 'regime-1', 'label': 'risk_off',
+           'breadth': {'tickers': 40, 'eligible_50': 40, 'above_50': 20, 'pct_50': 0.5,
+                       'eligible_200': 40, 'above_200': 12, 'pct_200': 0.3,
+                       'eligible_52w': 38, 'new_highs': 3, 'new_lows': 1},
+           'sectors': {'SMH': {'rs20': -0.12, 'rs60': -0.2, 'state': 'weak'},
+                       'XLK': {'rs20': 0.03, 'rs60': -0.01, 'state': 'mixed'},
+                       'QQQ': None},
+           'macro': {'BAMLH0A0HYM2': {'value': D('3.2'), 'obs_date': SESSION, 'change': D('0.1'),
+                                     'change_from': SESSION},
+                     'T10Y2Y': {'value': D('-0.1'), 'obs_date': SESSION, 'change': D('-0.05'),
+                                'change_from': SESSION}},
+           'inputs': {}, 'created_at': None}
+    row.update(over)
+    return row
+
+
+def ctx(**over):
+    context = {'context_version': 'context-1', 'pool_tier': 'core',
+               'regime': {'id': 'r1', 'label': 'risk_off'},
+               'sector': {'etf': 'SMH', 'rs20': -0.12, 'rs60': -0.2, 'state': 'weak'},
+               'next_earnings': date(2026, 11, 20)}
+    context.update(over)
+    return context
+
+
+def test_digest_market_field_text():
+    dg = build(market=market_row())
+    assert dg['overview']['market']['label'] == 'risk_off'
+    text = all_text(templates.workbench_digest(dg))
+    for needle in ('区制 防守', '站上 MA50 50.0%', 'MA200 30.0%', '新高 3 / 新低 1',
+                   'SMH -12.0% 弱', 'XLK +3.0% 分化', 'QQQ 数据不足',
+                   'HY OAS 3.2（20 期 +0.1）', '2s10s -0.1（20 期 -0.05）'):
+        assert needle in text, needle
+
+
+def test_digest_fred_not_configured_text():
+    market = market_row(macro={'BAMLH0A0HYM2': None, 'T10Y2Y': None})
+    assert 'FRED 未配置' in all_text(templates.workbench_digest(build(market=market)))
+    assert '市场环境未生成' in all_text(templates.workbench_digest(build(market=None)))
+
+
+def test_plan_line_has_regime_earnings_sector():
+    plan = plan_row()
+    plan['inputs'] = {'context': ctx()}
+    dg = build(units=[unit(plan=plan)])
+    assert dg['plans'][0]['regime_label'] == 'risk_off'
+    assert dg['plans'][0]['next_earnings'] == '2026-11-20'
+    text = all_text(templates.workbench_digest(dg))
+    assert '区制 防守' in text and '下次财报 2026-11-20' in text and '行业 SMH 弱' in text
+
+    bare = build(units=[unit(plan=plan_row())])
+    bare_text = all_text(templates.workbench_digest(bare))
+    assert '下次财报 未知' in bare_text and '行业 未映射' in bare_text
+
+
+def test_extended_count_in_overview():
+    dg = build(extended_plans=3)
+    assert dg['overview']['extended_plans'] == 3
+    assert '扩展池新计划 3 份（不推送）' in all_text(templates.workbench_digest(dg))
+    silent = build()
+    assert '扩展池新计划' not in all_text(templates.workbench_digest(silent))
+
+
+def test_core_empty_overview_text():
+    dg = build(summary={'errors': ['core_empty'], 'earnings': {}})
+    assert dg['overview']['core_empty'] is True
+    assert '核心池为空，只推送持仓' in all_text(templates.workbench_digest(dg))
+
+
+def test_errors_grouped_by_source():
+    summary = {'errors': ['MU bars: down', 'batch_over_budget: 2100.0'], 'earnings': {},
+               'sources': {'bars': ['MU'], 'news': [], 'earnings': [], 'sec': [], 'etf_bars': [], 'fred': [],
+                           'regime': []}}
+    dg = build(summary=summary)
+    assert dg['errors_by_source']['bars'] == ['MU']
+    assert dg['errors_by_source']['budget'] == ['batch_over_budget: 2100.0']
+    messages = templates.workbench_digest(dg)
+    names = {f.name for m in messages for f in m.fields}
+    assert '日线' in names and '耗时' in names and '资讯' not in names
+    text = all_text(messages)
+    assert 'MU' in text and 'batch_over_budget: 2100.0' in text
+
+
+def test_digest_limits_with_100_ticker_summary():
+    failed = [f'T{i:03d}' for i in range(100)]
+    summary = {'errors': [f'{t} bars: down' for t in failed], 'earnings': {},
+               'sources': {'bars': failed, 'news': failed, 'earnings': failed, 'sec': ['all'],
+                           'etf_bars': ['XLK'], 'fred': ['T10Y2Y'], 'regime': []}}
+    dg = build(summary=summary)
+    for message in templates.workbench_digest(dg):
+        for field in message.fields:
+            assert len(field.value) <= 1024
+        total = len(message.title) + sum(len(f.name) + len(f.value) for f in message.fields) + len(message.footer)
+        assert total <= 6000

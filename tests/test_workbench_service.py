@@ -570,3 +570,37 @@ def test_rerun_with_context_returns_existing_p1_plan(db):
     again = service.run_batch(now=NOW + timedelta(minutes=5), deps=deps(Sources()))
     assert again['plans']['NVDA'] == 'existing'
     assert again['conflicts'] == []
+
+
+# --- P2: today split, market block ---
+
+def test_today_splits_extended_units(db):
+    seed_watchlist(db, [('AAA', ['core']), ('NVDA', [])])
+    service.run_batch(now=NOW, deps=deps(Sources()))
+    view = service.today(now=NOW)
+    assert [u['ticker'] for u in view['units']] == ['AAA']
+    assert [u['ticker'] for u in view['extended_units']] == ['NVDA']
+    ext = view['extended_units'][0]
+    assert set(ext) >= {'ticker', 'signal_date', 'proposed_action', 'rule_ids', 'plan'}
+    assert ext['proposed_action'] == 'buy' and ext['plan'] is not None
+
+
+def test_held_extended_stays_in_main_list(db):
+    from investment_assistant.workbench import ledger
+    seed_watchlist(db, [('AAA', ['core']), ('NVDA', [])])
+    ledger.record_trade(db, {'request_id': str(uuid.uuid4()), 'ticker': 'NVDA', 'side': 'buy', 'quantity': '10',
+                             'price': '101.5', 'fee': '1', 'executed_at': '2026-10-10T14:00:00+00:00'},
+                        now=datetime(2026, 10, 10, 15, tzinfo=UTC))
+    service.run_batch(now=NOW, deps=deps(Sources()))
+    view = service.today(now=NOW)
+    assert 'NVDA' in [u['ticker'] for u in view['units']]
+    assert 'NVDA' not in [u['ticker'] for u in view['extended_units']]
+
+
+def test_today_market_block(db):
+    seed_watchlist(db, [(f'T{i:02d}', []) for i in range(25)])
+    service.run_batch(now=NOW, deps=deps(Sources()))
+    view = service.today(now=NOW)
+    assert view['market']['session'] == SESSION
+    assert view['market']['calc_version'] == 'regime-1'
+    assert view['market']['label'] in ('risk_on', 'neutral', 'risk_off', 'insufficient')

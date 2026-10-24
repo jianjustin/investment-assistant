@@ -343,7 +343,7 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
                           for s in macro_module.MACRO_SERIES}
             snap = regime_module.snapshot(session=session, pool_bars=pool_bars, etf_bars=etf_read,
                                           spy_bars=spy_read, macro_rows=macro_read)
-            out = repository.store_regime(conn, snap)
+            out = repository.store_regime(conn, snap, now=now)
         summary['regime'] = {'status': out['status'], 'label': snap['label']}
         if out['status'] == 'conflict':
             summary['conflicts'].append({'ticker': None, 'rule_id': 'market_regime',
@@ -439,10 +439,12 @@ def today(*, now: datetime) -> dict[str, Any]:
     session = bars.latest_closed_session(now)
     with _tx() as conn:
         units = []
+        extended_units = []
         for group in repository.open_candidate_groups(conn, since=session - timedelta(days=OPEN_UNIT_DAYS)):
             ticker, signal_date = group['ticker'], group['signal_date']
             book = _book(conn, ticker)
-            unit = synthesis.synthesize(ticker, signal_date, group['candidates'], holding=book['position'] is not None,
+            held = book['position'] is not None
+            unit = synthesis.synthesize(ticker, signal_date, group['candidates'], holding=held,
                                         market_status=repository.market_status(conn, signal_date), now=now)
             since = signal_date - timedelta(days=NEWS_LOOKBACK_DAYS)
             unit.update(
@@ -451,9 +453,17 @@ def today(*, now: datetime) -> dict[str, Any]:
                 plan=repository.rule_plan(conn, ticker, signal_date),
                 filings=repository.read_filings(conn, ticker, since=since, cutoff_at=now),
                 news=repository.read_news(conn, ticker, cutoff_at=now, since=_midnight(since), limit=20))
-            units.append(unit)
+            # The tier as of the signal date decides the list, not today's tier.
+            if _unit_is_extended(conn, ticker, signal_date, held=held, now=now):
+                extended_units.append({'ticker': ticker, 'signal_date': signal_date,
+                                       'proposed_action': unit['proposed_action'],
+                                       'rule_ids': unit['rule_ids'], 'plan': unit['plan']})
+            else:
+                units.append(unit)
         holdings = _holdings(conn, session, now=now)
-    return {'session': session, 'units': units, 'holdings': holdings}
+        market = repository.latest_regime(conn, on_or_before=session, cutoff_at=now)
+    return {'session': session, 'units': units, 'extended_units': extended_units,
+            'holdings': holdings, 'market': market}
 
 
 def decide(payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:
@@ -524,7 +534,9 @@ def push(*, now: datetime, force: bool, summary: dict[str, Any] | None = None, n
         payload = digest_module.build(
             session=session, units=view['units'], holdings=view.get('holdings', []), summary=summary or {},
             last_push_failed=_last_push_failed(conn, session),
-            public_url=load_config().workbench.public_url)
+            public_url=load_config().workbench.public_url,
+            extended_plans=sum(1 for u in view.get('extended_units', []) if u.get('plan') is not None),
+            market=view.get('market'))
     out = notifier.send_notifications('workbench', templates.workbench_digest(payload), notify_cfg, client=client)
     return {'session': session.isoformat(), **out}
 
