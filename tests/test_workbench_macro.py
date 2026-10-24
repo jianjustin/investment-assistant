@@ -79,3 +79,22 @@ def test_constants():
 def test_redact_empty_secret_is_noop():
     assert macro.redact('plain api_key=SECRET123', None) == 'plain api_key=SECRET123'
     assert macro.redact('a SECRET123 b SECRET123', 'SECRET123') == 'a *** b ***'
+
+
+def test_shared_http_log_redacts_key(monkeypatch, caplog):
+    import logging
+
+    import requests as requests_module
+    from investment_assistant.data import http as http_module
+    monkeypatch.setattr(http_module.time, 'sleep', lambda _s: None)
+
+    def broken_get(url, **kwargs):
+        raise requests_module.RequestException(
+            'Max retries exceeded with url: /fred/series/observations?api_key=SECRET123&file_type=json')
+    monkeypatch.setattr(http_module.requests, 'get', broken_get)
+    caplog.set_level(logging.WARNING, logger='investment_assistant.data.http')
+    with pytest.raises(RuntimeError) as exc:
+        macro.fetch_series('T10Y2Y', start=START, end=END, api_key='SECRET123')  # default fetcher path
+    assert 'SECRET123' not in caplog.text
+    assert '***' in caplog.text
+    assert 'SECRET123' not in str(exc.value)

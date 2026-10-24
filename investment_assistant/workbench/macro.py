@@ -29,8 +29,10 @@ def redact(text: str, secret: str | None) -> str:
     return text
 
 
-def _default_fetcher(url: str, *, params: dict) -> tuple[dict | None, dict]:
-    return get_json(url, params=params)
+def _default_fetcher(url: str, *, params: dict, api_key: str | None) -> tuple[dict | None, dict]:
+    # The shared http layer logs request failures; scrub the key there too, not
+    # only from the exception we raise (spec §5.1: the key never reaches logs).
+    return get_json(url, params=params, redact=lambda text: redact(text, api_key))
 
 
 def fetch_series(series_id: str, *, start: date, end: date, api_key: str | None,
@@ -38,7 +40,7 @@ def fetch_series(series_id: str, *, start: date, end: date, api_key: str | None,
     """Fetch one series as [{'obs_date', 'value'}], oldest first, '.' values skipped."""
     if not api_key:
         raise NotConfigured('FRED 未配置：缺少环境变量 FRED_API_KEY')
-    fetch = fetcher or _default_fetcher
+    fetch = fetcher or (lambda url, *, params: _default_fetcher(url, params=params, api_key=api_key))
     params = {'series_id': series_id, 'api_key': api_key, 'file_type': 'json',
               'observation_start': start.isoformat(), 'observation_end': end.isoformat()}
     try:

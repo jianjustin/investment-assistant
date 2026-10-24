@@ -205,11 +205,14 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
     started = clock()
     # Pool read and tier sync share one transaction; a cap failure leaves no collection behind.
     with _tx() as conn:
+        explicit = pool is not None or tickers is not None
         if pool is None:
             pool = (pool_module.Pool.all_core(tickers) if tickers is not None
                     else pool_module.from_watchlist(list_watchlist_items(conn)))
         watchlist = list(pool.tickers)
-        tier_changes = _sync_pool(conn, pool, session, now)
+        # Explicit tickers/pool is a manual override: it never rewrites tier
+        # history, or a one-off run would mark every other ticker removed.
+        tier_changes = [] if explicit else _sync_pool(conn, pool, session, now)
         # Holdings join the batch even off the pool: plan stops and earnings reminders need their data.
         held = [t for t in sorted({r['ticker'] for r in repository.list_trades(conn) if r['voided_at'] is None})
                 if t not in watchlist]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -22,14 +22,20 @@ def get_json(
     timeout: int = 30,
     max_retries: int = 3,
     backoff_seconds: float = 1.0,
+    redact: Callable[[str], str] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """GET JSON with retries. `redact` scrubs secrets (e.g. an API key in the
+    URL) from both the log lines and the returned error text."""
+    def _clean(text: str) -> str:
+        return redact(text) if redact else text
+
     last: dict[str, Any] = {"ok": False, "error": "unknown", "status_code": None}
     for attempt in range(max_retries + 1):
         try:
             resp = requests.get(url, params=params, headers=headers, timeout=timeout)
         except requests.RequestException as exc:
-            last = {"ok": False, "error": f"network: {exc}", "status_code": None}
-            logger.warning("http get network error (attempt %s): %s", attempt + 1, exc)
+            last = {"ok": False, "error": _clean(f"network: {exc}"), "status_code": None}
+            logger.warning("http get network error (attempt %s): %s", attempt + 1, _clean(str(exc)))
             if attempt < max_retries:
                 time.sleep(_backoff(attempt, backoff_seconds))
                 continue
@@ -39,8 +45,9 @@ def get_json(
                 return resp.json(), {"ok": True, "error": None, "status_code": 200}
             except ValueError as exc:
                 return None, {"ok": False, "error": f"bad json: {exc}", "status_code": 200}
-        last = {"ok": False, "error": f"http {resp.status_code}: {resp.text[:300]}", "status_code": resp.status_code}
-        logger.warning("http get error (attempt %s): %s", attempt + 1, last["error"])
+        last = {"ok": False, "error": _clean(f"http {resp.status_code}: {resp.text[:300]}"),
+                "status_code": resp.status_code}
+        logger.warning("http get error (attempt %s): %s", attempt + 1, _clean(last["error"]))
         if resp.status_code in _RETRYABLE and attempt < max_retries:
             time.sleep(_backoff(attempt, backoff_seconds))
             continue

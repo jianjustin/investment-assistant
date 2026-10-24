@@ -604,3 +604,13 @@ def test_today_market_block(db):
     assert view['market']['session'] == SESSION
     assert view['market']['calc_version'] == 'regime-1'
     assert view['market']['label'] in ('risk_on', 'neutral', 'risk_off', 'insufficient')
+
+
+def test_manual_tickers_override_does_not_rewrite_tiers(db):
+    from investment_assistant.workbench import repository
+    seed_watchlist(db, [('AAA', ['core']), ('BBB', [])])
+    service.run_batch(now=NOW, deps=deps(Sources()))
+    service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=5), deps=deps(Sources()))
+    assert db.execute("SELECT count(*) FROM pool_tiers WHERE tier = 'removed'").fetchone()[0] == 0
+    assert repository.pool_latest(db) == {'AAA': {'tier': 'core', 'sector_etf': None},
+                                          'BBB': {'tier': 'extended', 'sector_etf': None}}
