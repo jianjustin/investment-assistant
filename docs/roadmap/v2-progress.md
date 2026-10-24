@@ -8,7 +8,7 @@
 | 阶段 | 状态 | 下一步 |
 | --- | --- | --- |
 | P1 规则计划与推送 | `engineering_done`；真实库已迁移 017、服务已重载，页面与接口已检查；推送暂关（待你确认后开启）；`user_acceptance_pending` | 确认后开启 `workbench` 推送；出现第一个买入单元时核对计划价位与推送内容 |
-| P2 观察池扩展与市场环境 | `engineering_done`；验收复核修复已提交；真实库已迁移 018，8 只美股全部标为核心，服务已重载，手动批处理与页面已检查；`FRED_API_KEY` 未配置；`user_acceptance_pending` | 10-27（周二）06:30 定时运行后核对推送中的市场环境字段与计划行；需要利差时配置 `FRED_API_KEY`；扩大观察池（≥ 20 只有 200 根 K 线）后区制才会脱离「样本不足」 |
+| P2 观察池扩展与市场环境 | `engineering_done`；验收复核修复已提交；真实库已迁移 018，8 只美股全部标为核心，服务已重载，手动批处理与页面已检查；`FRED_API_KEY` 已配置并采集成功；`user_acceptance_pending` | 10-27（周二）06:30 定时运行后核对推送中的市场环境字段（含 HY OAS、2s10s）与计划行；扩大观察池（≥ 20 只有 200 根 K 线）后区制才会脱离「样本不足」 |
 | P3 Agent 轨道 | 未开工 | 依赖 P1、P2 |
 | P4 复盘扩展 | 未开工 | 依赖 P1，三方对比依赖 P3 |
 
@@ -54,3 +54,4 @@ v2 新增：
 | 2026-10-24 | `signals` webhook 已配置，强制推送验证送达 | `POST /api/workbench/push` 返回 `sent: true`、4 条消息、频道 `signals`（交易日 2026-10-23，当日无买入计划）；Discord 接口已接受，频道内显示待你确认 |
 | 2026-10-24 | P2 工程完成（Task 1–11：迁移 018 四张新表、pool/macro/regime/backcheck 模块、批处理接池与环境、计划 context 冻结、今日与推送扩展、review-3 分池、上线前检查、前端与文档） | 端到端场景 `tests/test_workbench_scenarios.py::test_pool_and_context_end_to_end`；[使用文档](../us-workbench.md) P2 三节；各任务提交见 [P2 实施计划](../superpowers/plans/2026-10-23-p2-pool-and-market-context.md) ledger |
 | 2026-10-24 | P2 运行验收（部分） | 复核修复 `69715a5`（分池只计规则计划、FRED 状态文案、扩展池计划状态、历史检查同日多规则）；备份 `.local/us-workbench/backups/investment_assistant-before-018-20261024-104613.dump`（sha256 `99c110dd…`）；迁移 018 已执行，四张新表建好且为空、旧表未动；观察名单 8 只 active 美股经写入接口加 `core` 标签（原标签保留）；`web/dist` 先备份到 `.local/us-workbench/dist-backup-20261024-104707` 再构建；服务重载后手动批处理成功（`pool` 核心 8 / 扩展 0、`pool_tiers` 8 行、SMH/XLK/QQQ 日线各 290 根、FRED `not_configured`、区制快照 `inserted` 标签「样本不足」（MA200 合格样本 8 < 20）、`sources` 全空、总耗时 19.7 秒、未推送）；「今日」市场环境卡片与「设置 → 关注列表」（美股池 8/100 · 核心 8/15）正常。未覆盖：P2 推送内容（下次定时运行 10-27）、真实 FRED、扩展池、100 只规模耗时 |
+| 2026-10-24 | 配置 `FRED_API_KEY`（写入 `.env`），服务重载后手动批处理 | FRED 直连验证可用；批处理 `macro`：BAMLH0A0HYM2 写入 86 条（至 10-22）、T10Y2Y 写入 84 条（至 10-23），`sources.fred` 为空、无错误；运行报告与服务日志均不含密钥。10-23 区制快照已在 FRED 未配置时写入，本次按设计记为 `conflict`（`market_regime`）不覆盖，所以「今日」卡片在下一个交易日快照前仍显示「FRED 未配置」 |
