@@ -320,3 +320,40 @@ def test_monthly_ignores_stop_events_outside_the_month(workbench_db, monkeypatch
 
     review = service.generate_monthly(date(2026, 10, 1), now=datetime(2026, 11, 20, 22, 30, tzinfo=UTC))
     assert review['stats']['discipline']['counts']['held_loser'] == 0  # 11 月的止损事件不算 10 月
+
+
+def test_pool_tier_check(workbench_db):
+    import psycopg
+    with pytest.raises(psycopg.errors.CheckViolation):
+        workbench_db.execute("INSERT INTO pool_tiers (ticker, tier, effective_session, recorded_at) "
+                             "VALUES ('NVDA', 'x', '2026-10-21', %s)", [NOW])
+
+
+def test_regime_unique_per_session_version(workbench_db):
+    import psycopg
+    sql = ("INSERT INTO market_regimes (session, calc_version, label, breadth, sectors, macro, inputs) "
+           "VALUES ('2026-10-21', 'regime-1', 'neutral', '{}', '{}', '{}', '{}')")
+    workbench_db.execute(sql)
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        workbench_db.execute(sql)
+
+
+def test_regime_label_check(workbench_db):
+    import psycopg
+    with pytest.raises(psycopg.errors.CheckViolation):
+        workbench_db.execute("INSERT INTO market_regimes (session, calc_version, label, breadth, sectors, macro, inputs) "
+                             "VALUES ('2026-10-21', 'regime-1', 'risky', '{}', '{}', '{}', '{}')")
+
+
+def test_macro_value_required(workbench_db):
+    import psycopg
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        workbench_db.execute("INSERT INTO macro_observations (series_id, obs_date, value, fetched_at) "
+                             "VALUES ('BAMLH0A0HYM2', '2026-10-21', NULL, %s)", [NOW])
+
+
+def test_missing_tables_lists_018(workbench_db):
+    from investment_assistant.workbench import repository
+    assert repository.missing_tables(workbench_db) == []
+    workbench_db.execute('DROP TABLE market_regimes')
+    assert 'market_regimes' in repository.missing_tables(workbench_db)

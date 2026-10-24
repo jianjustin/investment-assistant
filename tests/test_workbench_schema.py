@@ -68,3 +68,21 @@ def test_017_is_additive():
 def test_017_plan_uniqueness():
     assert "ON trade_plans (ticker, signal_date, plan_version) WHERE kind = 'rule'" in FLAT_017
     assert 'UNIQUE (request_id)' in FLAT_017
+
+
+def test_only_one_018_migration():
+    assert [p.name for p in Path('migrations').glob('018_*.sql')] == ['018_pool_and_market_context.sql']
+
+
+def test_018_is_additive():
+    SQL_018 = Path('migrations/018_pool_and_market_context.sql').read_text(encoding='utf-8')
+    CODE_018 = re.sub(r'--[^\n]*', '', SQL_018)
+    for table in ['pool_tiers', 'macro_observations', 'market_regimes', 'rule_backchecks']:
+        assert f'CREATE TABLE IF NOT EXISTS {table} (' in CODE_018, table
+    assert 'UNIQUE (session, calc_version)' in CODE_018
+    upper = CODE_018.upper()
+    assert 'UPDATE ' not in upper.replace('ON CONFLICT', '')
+    assert 'DELETE ' not in upper
+    assert 'ALTER TABLE' not in upper
+    assert 'DROP ' not in upper
+    assert 'TRUNCATE' not in upper

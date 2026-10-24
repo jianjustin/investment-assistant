@@ -527,7 +527,8 @@ def market_status(conn, signal_date: date) -> str | None:
 
 WORKBENCH_TABLES = ('price_bars', 'news_items', 'news_item_tickers', 'signal_candidates', 'signal_briefs',
                     'signal_decisions', 'trades', 'weekly_reviews', 'filings', 'trade_plans', 'earnings_dates',
-                    'account_snapshots', 'cash_flows', 'monthly_reviews')
+                    'account_snapshots', 'cash_flows', 'monthly_reviews', 'watchlist_items', 'pool_tiers',
+                    'macro_observations', 'market_regimes', 'rule_backchecks')
 
 
 def last_push(conn, *, session: date | None = None) -> dict[str, Any] | None:
