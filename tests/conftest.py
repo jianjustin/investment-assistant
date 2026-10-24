@@ -51,3 +51,41 @@ def workbench_db():
             conn.rollback()
             conn.execute(f'DROP SCHEMA {schema} CASCADE')
             conn.commit()
+
+
+@pytest.fixture
+def scripted_model():
+    """Factory for a fake chat model: bind_tools returns itself, replies come in
+    order, every invocation's messages are recorded on .seen, each reply carries
+    usage_metadata, and running out of replies raises AssertionError."""
+    from langchain_core.language_models import BaseChatModel
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
+
+    class ScriptedModel(BaseChatModel):
+        responses: list = []
+        seen: list = []
+        index: int = 0
+
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            self.seen.append(list(messages))
+            if self.index >= len(self.responses):
+                raise AssertionError('scripted model ran out of responses')
+            message = self.responses[self.index]
+            self.index += 1
+            return ChatResult(generations=[ChatGeneration(message=message)])
+
+        @property
+        def _llm_type(self):
+            return 'scripted-test'
+
+    def make(responses):
+        for message in responses:
+            if not message.usage_metadata:
+                message.usage_metadata = {'input_tokens': 10, 'output_tokens': 5, 'total_tokens': 15}
+        return ScriptedModel(responses=list(responses))
+
+    return make
