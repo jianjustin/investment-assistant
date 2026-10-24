@@ -410,3 +410,28 @@ def test_read_macro_as_of_cutoff(workbench_db):
                                            cutoff_at=NOW + timedelta(days=2))
     assert as_of_next_day[0]['value'] == Decimal('0.2')
     assert repository.read_macro(workbench_db, 'T10Y2Y', end_date=date(2026, 10, 19), cutoff_at=NOW + timedelta(days=2)) == []
+
+
+def test_store_regime_existing_then_conflict(workbench_db):
+    from investment_assistant.workbench import repository
+    snap = {'session': date(2026, 10, 21), 'calc_version': 'regime-1', 'label': 'neutral',
+            'breadth': {'tickers': 2}, 'sectors': {}, 'macro': {},
+            'inputs': {'tickers': ['A', 'B'], 'etfs': [], 'series': []}}
+    first = repository.store_regime(workbench_db, snap)
+    assert first['status'] == 'inserted'
+    assert first['record']['label'] == 'neutral'
+    again = repository.store_regime(workbench_db, snap)
+    assert again['status'] == 'existing'
+    assert again['record']['id'] == first['record']['id']
+    changed = {**snap, 'label': 'risk_on', 'breadth': {'tickers': 3}}
+    conflict = repository.store_regime(workbench_db, changed)
+    assert conflict['status'] == 'conflict'
+    assert conflict['record']['id'] == first['record']['id']
+    assert conflict['record']['label'] == 'neutral'  # never overwritten
+    far = NOW + timedelta(days=365)  # created_at uses the server clock, later than the fake NOW
+    assert repository.regime_for(workbench_db, date(2026, 10, 21), cutoff_at=far)['id'] == first['record']['id']
+    assert repository.regime_for(workbench_db, date(2026, 10, 21), cutoff_at=NOW) is None
+    assert repository.regime_for(workbench_db, date(2026, 10, 22), cutoff_at=far) is None
+    assert repository.latest_regime(workbench_db, on_or_before=date(2026, 10, 22), cutoff_at=far)['id'] == \
+        first['record']['id']
+    assert repository.latest_regime(workbench_db, on_or_before=date(2026, 10, 20), cutoff_at=far) is None

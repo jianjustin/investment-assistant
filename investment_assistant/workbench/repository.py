@@ -560,6 +560,47 @@ def read_macro(conn, series_id: str, *, end_date: date, cutoff_at: datetime, lim
     return [{'obs_date': r[0], 'value': r[1]} for r in reversed(rows)]
 
 
+_REGIME_COLUMNS = 'id, session, calc_version, label, breadth, sectors, macro, inputs, created_at'
+
+
+def _regime_fingerprint(snap: dict[str, Any]) -> str:
+    compared = {k: snap[k] for k in ('label', 'breadth', 'sectors', 'macro')}
+    return json.dumps(compared, sort_keys=True, separators=(',', ':'), default=str)
+
+
+def store_regime(conn, snap: dict[str, Any]) -> dict[str, Any]:
+    """Insert a snapshot; same content returns the stored row, different content is a conflict."""
+    from investment_assistant.workbench.regime import REGIME_VERSION
+    existing = _one(conn, f'SELECT {_REGIME_COLUMNS} FROM market_regimes '
+                         'WHERE session = %s AND calc_version = %s', (snap['session'], snap['calc_version']))
+    if existing is not None:
+        stored = _regime_fingerprint(existing)
+        return {'status': 'existing' if stored == _regime_fingerprint(snap) else 'conflict', 'record': existing}
+    placeholders = ', '.join(['%s'] * 7)
+    record = _one(conn, f'INSERT INTO market_regimes (session, calc_version, label, breadth, sectors, macro, inputs) '
+                        f'VALUES ({placeholders}) RETURNING {_REGIME_COLUMNS}',
+                  (snap['session'], REGIME_VERSION, snap['label'], json.dumps(snap['breadth']),
+                   json.dumps(snap['sectors']), json.dumps(snap['macro']), json.dumps(snap['inputs'])))
+    return {'status': 'inserted', 'record': record}
+
+
+def regime_for(conn, session: date, *, cutoff_at: datetime) -> dict[str, Any] | None:
+    """The regime-1 snapshot of that session, as visible by the cutoff."""
+    from investment_assistant.workbench.regime import REGIME_VERSION
+    return _one(conn, f'SELECT {_REGIME_COLUMNS} FROM market_regimes '
+                      'WHERE session = %s AND calc_version = %s AND created_at <= %s',
+                (session, REGIME_VERSION, cutoff_at))
+
+
+def latest_regime(conn, *, on_or_before: date, cutoff_at: datetime) -> dict[str, Any] | None:
+    """The newest regime-1 snapshot at or before the date, visible by the cutoff."""
+    from investment_assistant.workbench.regime import REGIME_VERSION
+    return _one(conn, f'SELECT {_REGIME_COLUMNS} FROM market_regimes '
+                      'WHERE session <= %s AND calc_version = %s AND created_at <= %s '
+                      'ORDER BY session DESC, created_at DESC LIMIT 1',
+                (on_or_before, REGIME_VERSION, cutoff_at))
+
+
 def pool_latest(conn) -> dict[str, dict[str, Any]]:
     """Each ticker's newest pool_tiers row: {'tier', 'sector_etf'}."""
     with conn.cursor(row_factory=dict_row) as cur:
