@@ -136,7 +136,28 @@ def add_watchlist_item(payload: dict[str, Any]) -> dict[str, Any]:
     if 'expected_updated_at' in fields and not fields['expected_updated_at']:
         raise ValueError('编辑必须提供有效的expected_updated_at')
     with connect(database_url) as conn:
+        _validate_pool_write(conn, ticker, fields)
         return upsert_watchlist_item(conn, ticker=ticker, **fields)
+
+
+def _validate_pool_write(conn, ticker: str, fields: dict[str, Any]) -> None:
+    """Pool caps and sector tags are checked before the write, on the would-be result."""
+    from investment_assistant.ashare.domain import is_cn_symbol
+    if is_cn_symbol(ticker):
+        return
+    rows = list_watchlist_items(conn, include_archived=True)
+    existing = next((r for r in rows if r['ticker'] == ticker), None)
+    status = fields.get('status') or (existing or {}).get('status') or 'active'
+    if status != 'active':
+        return  # only rows that are active US stocks after the write join the pool
+    merged = dict(existing) if existing else {'ticker': ticker, 'thesis': None, 'tags': []}
+    merged['ticker'] = ticker
+    merged['status'] = status
+    if 'tags' in fields:
+        merged['tags'] = fields['tags']
+    result = [merged if r['ticker'] == ticker else r for r in rows] if existing else rows + [merged]
+    from investment_assistant.workbench.pool import from_watchlist
+    from_watchlist(result)
 
 
 def delete_watchlist_item(ticker: str) -> dict[str, Any]:

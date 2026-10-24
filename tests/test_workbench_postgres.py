@@ -357,3 +357,26 @@ def test_missing_tables_lists_018(workbench_db):
     assert repository.missing_tables(workbench_db) == []
     workbench_db.execute('DROP TABLE market_regimes')
     assert 'market_regimes' in repository.missing_tables(workbench_db)
+
+
+def test_pool_entry_at_respects_effective_session_and_cutoff(workbench_db):
+    from datetime import timedelta
+    from investment_assistant.workbench import repository
+    monday, wednesday, friday = date(2026, 10, 19), date(2026, 10, 21), date(2026, 10, 23)
+    assert repository.pool_latest(workbench_db) == {}
+    assert repository.insert_pool_tiers(
+        workbench_db, [{'ticker': 'NVDA', 'tier': 'extended', 'sector_etf': None}], session=monday, now=NOW) == 1
+    assert repository.insert_pool_tiers(
+        workbench_db, [{'ticker': 'NVDA', 'tier': 'core', 'sector_etf': 'SMH'}], session=wednesday,
+        now=NOW + timedelta(days=4)) == 1
+    assert repository.pool_latest(workbench_db) == {'NVDA': {'tier': 'core', 'sector_etf': 'SMH'}}
+    assert repository.pool_entry_at(workbench_db, 'NVDA', monday, cutoff_at=NOW + timedelta(days=1)) == \
+        {'tier': 'extended', 'sector_etf': None}
+    assert repository.pool_entry_at(workbench_db, 'NVDA', date(2026, 10, 20), cutoff_at=NOW + timedelta(days=1)) == \
+        {'tier': 'extended', 'sector_etf': None}
+    assert repository.pool_entry_at(workbench_db, 'NVDA', wednesday, cutoff_at=NOW + timedelta(days=5)) == \
+        {'tier': 'core', 'sector_etf': 'SMH'}
+    # The Wednesday row was recorded Friday; a Thursday cutoff cannot see it yet.
+    assert repository.pool_entry_at(workbench_db, 'NVDA', wednesday, cutoff_at=NOW + timedelta(days=2)) == \
+        {'tier': 'extended', 'sector_etf': None}
+    assert repository.pool_entry_at(workbench_db, 'MU', wednesday, cutoff_at=NOW + timedelta(days=5)) is None

@@ -531,6 +531,37 @@ WORKBENCH_TABLES = ('price_bars', 'news_items', 'news_item_tickers', 'signal_can
                     'macro_observations', 'market_regimes', 'rule_backchecks')
 
 
+def pool_latest(conn) -> dict[str, dict[str, Any]]:
+    """Each ticker's newest pool_tiers row: {'tier', 'sector_etf'}."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute('SELECT DISTINCT ON (ticker) ticker, tier, sector_etf FROM pool_tiers '
+                    'ORDER BY ticker, effective_session DESC, recorded_at DESC, id DESC')
+        return {row['ticker']: {'tier': row['tier'], 'sector_etf': row['sector_etf']}
+                for row in cur.fetchall()}
+
+
+def insert_pool_tiers(conn, rows: list[dict[str, Any]], *, session: date, now: datetime) -> int:
+    """Append tier change rows; callers only pass rows that actually changed."""
+    if not rows:
+        return 0
+    with conn.cursor() as cur:
+        cur.executemany('INSERT INTO pool_tiers (ticker, tier, sector_etf, effective_session, recorded_at) '
+                        'VALUES (%s, %s, %s, %s, %s)',
+                        [(r['ticker'], r['tier'], r['sector_etf'], session, now) for r in rows])
+    return len(rows)
+
+
+def pool_entry_at(conn, ticker: str, day: date, *, cutoff_at: datetime) -> dict[str, Any] | None:
+    """The tier in force on `day` as known by `cutoff_at`; removed rows count too."""
+    row = conn.execute('SELECT tier, sector_etf FROM pool_tiers '
+                       'WHERE ticker = %s AND effective_session <= %s AND recorded_at <= %s '
+                       'ORDER BY effective_session DESC, recorded_at DESC, id DESC LIMIT 1',
+                       (ticker, day, cutoff_at)).fetchone()
+    if row is None:
+        return None
+    return {'tier': row[0], 'sector_etf': row[1]}
+
+
 def last_push(conn, *, session: date | None = None) -> dict[str, Any] | None:
     """The newest recorded push result for the workbench task, optionally for one session."""
     if conn.execute("SELECT to_regclass('job_reports')").fetchone()[0] is None:
