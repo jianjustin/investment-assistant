@@ -1,5 +1,6 @@
 """Batch + read model against a disposable schema; all market data below is synthetic."""
 import json
+import uuid
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 
@@ -34,8 +35,10 @@ def frame(ticker, end):
 
 
 class Sources:
-    def __init__(self, fail=()):
+    def __init__(self, fail=(), fail_news=(), fail_earnings=()):
         self.fail = set(fail)
+        self.fail_news = set(fail_news)
+        self.fail_earnings = set(fail_earnings)
         self.calls = []
 
     def bars(self, ticker, start, end_exclusive):
@@ -45,8 +48,15 @@ class Sources:
         return frame(ticker, end_exclusive - timedelta(days=1))
 
     def news(self, ticker):
+        if ticker in self.fail_news:
+            raise RuntimeError('news down')
         return [{'content': {'title': f'{ticker} headline', 'pubDate': '2026-10-22T12:00:00Z',
                              'canonicalUrl': {'url': f'https://news.example.com/{ticker}'}}}]
+
+    def earnings(self, ticker, **_):
+        if ticker in self.fail_earnings:
+            raise RuntimeError('earnings down')
+        return {'Earnings Date': [date(2027, 2, 18)]}
 
     def discover(self, tickers, start, end):
         return [{'ticker': 'NVDA', 'form': '8-K', 'filing_date': '2026-10-22', 'items': ['8.01'],
@@ -65,7 +75,7 @@ def db(workbench_db, monkeypatch):
 def deps(sources, brief_client=None, earnings=None):
     return service.Deps(bar_fetcher=sources.bars, news_fetcher=sources.news, filing_source=sources,
                         brief_client=brief_client or (lambda **_: (None, {'error': 'no key'})),
-                        earnings_fetcher=earnings or (lambda t: {'Earnings Date': [date(2027, 2, 18)]}))
+                        earnings_fetcher=earnings or sources.earnings)
 
 
 def test_batch_collects_evaluates_and_briefs(db):
@@ -97,7 +107,7 @@ def test_one_ticker_failure_does_not_block_others(db):
 
 def test_too_many_tickers_is_an_error_not_a_truncation(db):
     with pytest.raises(ValueError):
-        service.run_batch(tickers=[f'T{i}' for i in range(11)], now=NOW, deps=deps(Sources()))
+        service.run_batch(tickers=[f'T{i}' for i in range(101)], now=NOW, deps=deps(Sources()))
 
 
 def test_scheduled_run_skips_when_new_york_day_was_not_a_session(db):
@@ -339,6 +349,11 @@ def test_push_failure_recorded_not_raised(db):
     assert out['sent'] is False and out['reason'].startswith('send_failed')
 
 
+def seed_watchlist(db, rows):
+    for ticker, tags in rows:
+        db.execute("INSERT INTO watchlist_items (ticker, status, tags) VALUES (%s, 'active', %s)", [ticker, tags])
+
+
 def _task_run(trigger, moment=NOW, task_deps=None):
     from investment_assistant.config import AssistantConfig
     from investment_assistant.tasks import workbench as workbench_task
@@ -348,6 +363,7 @@ def _task_run(trigger, moment=NOW, task_deps=None):
 
 
 def test_scheduled_run_pushes_once_per_session(db, monkeypatch):
+    seed_watchlist(db, [('NVDA', ['core'])])
     calls = []
 
     def fake_push(*, now, force, summary=None, notify_cfg=None, client=None):
@@ -361,6 +377,8 @@ def test_scheduled_run_pushes_once_per_session(db, monkeypatch):
 
 
 def test_manual_run_does_not_push(db, monkeypatch):
+    seed_watchlist(db, [('NVDA', ['core'])])
+
     def boom(**_):
         raise AssertionError('manual run must not push')
 
@@ -380,3 +398,155 @@ def test_closed_day_pushes_closed_message(db, monkeypatch):
     result = _task_run('scheduled', moment=datetime(2026, 10, 24, 22, 30, tzinfo=UTC))
     assert closed and result['summary']['status'] == 'skipped'
     assert result['summary']['push']['sent'] is True
+
+
+# --- P2: pool, ETF/FRED collection, regime snapshot, extended units ---
+
+def recording_deps(sources):
+    calls = []
+
+    def brief_client(**kw):
+        calls.append(kw['user_payload'].get('ticker'))
+        return (None, {'error': 'no key'})
+    d = deps(sources, brief_client=brief_client)
+    return d, calls
+
+
+def test_batch_reads_pool_from_watchlist(db):
+    seed_watchlist(db, [('AAA', ['core']), ('BBB', ['core', 'sector:SMH']), ('CCC', []), ('DDD', []), ('EEE', [])])
+    summary = service.run_batch(now=NOW, deps=deps(Sources()))
+    assert summary['pool']['core'] == 2 and summary['pool']['extended'] == 3 and summary['pool']['holdings'] == 0
+    assert len(summary['pool']['changes']) == 5
+    assert db.execute('SELECT count(*) FROM pool_tiers').fetchone()[0] == 5
+
+
+def test_rerun_appends_no_tier_changes(db):
+    seed_watchlist(db, [('AAA', ['core']), ('CCC', [])])
+    service.run_batch(now=NOW, deps=deps(Sources()))
+    again = service.run_batch(now=NOW + timedelta(minutes=5), deps=deps(Sources()))
+    assert again['pool']['changes'] == []
+    assert db.execute('SELECT count(*) FROM pool_tiers').fetchone()[0] == 2
+
+
+def test_pool_over_limit_fails_batch(db):
+    seed_watchlist(db, [(f'T{i:03d}', []) for i in range(101)])
+    sources = Sources()
+    with pytest.raises(ValueError, match='100'):
+        service.run_batch(now=NOW, deps=deps(sources))
+    assert sources.calls == []
+
+
+def test_core_empty_runs_and_reports(db):
+    seed_watchlist(db, [('CCC', []), ('DDD', [])])
+    summary = service.run_batch(now=NOW, deps=deps(Sources()))
+    assert summary['pool']['core'] == 0
+    assert 'core_empty' in summary['errors']
+    assert set(summary['tickers']) == {'CCC', 'DDD'}
+
+
+def test_etf_bars_collected_and_isolated(db):
+    class FailingXLK(Sources):
+        def bars(self, ticker, start, end_exclusive):
+            if ticker == 'XLK':
+                raise RuntimeError('etf down')
+            return super().bars(ticker, start, end_exclusive)
+    summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(FailingXLK()))
+    assert summary['etfs']['XLK'].startswith('error:')
+    assert summary['etfs']['SMH'].startswith('inserted ')
+    assert summary['sources']['etf_bars'] == ['XLK']
+    assert summary['tickers']['NVDA']['error'] is None
+
+
+def test_fred_not_configured(db, monkeypatch):
+    monkeypatch.delenv('FRED_API_KEY', raising=False)
+    called = []
+
+    def macro_fetcher(url, *, params):
+        called.append(params)
+        return ({'observations': []}, {'ok': True})
+    summary = service.run_batch(tickers=['NVDA'], now=NOW,
+                                deps=service.Deps(bar_fetcher=Sources().bars, news_fetcher=Sources().news,
+                                                  filing_source=Sources(), brief_client=lambda **_: (None, {'error': 'x'}),
+                                                  earnings_fetcher=Sources().earnings, macro_fetcher=macro_fetcher))
+    assert summary['macro'] == {'BAMLH0A0HYM2': 'not_configured', 'T10Y2Y': 'not_configured'}
+    assert summary['sources']['fred'] == []
+    assert called == []
+
+
+def test_fred_error_in_sources(db, monkeypatch):
+    monkeypatch.setenv('FRED_API_KEY', 'SECRET123')
+
+    def macro_fetcher(url, *, params):
+        raise RuntimeError(f'FRED down api_key=SECRET123 url={url}')
+    summary = service.run_batch(tickers=['NVDA'], now=NOW,
+                                deps=service.Deps(bar_fetcher=Sources().bars, news_fetcher=Sources().news,
+                                                  filing_source=Sources(), brief_client=lambda **_: (None, {'error': 'x'}),
+                                                  earnings_fetcher=Sources().earnings, macro_fetcher=macro_fetcher))
+    assert sorted(summary['sources']['fred']) == ['BAMLH0A0HYM2', 'T10Y2Y']
+    assert 'SECRET123' not in json.dumps(summary)
+    assert all(v.startswith('error:') for v in summary['macro'].values())
+
+
+def test_regime_snapshot_written(db):
+    seed_watchlist(db, [(f'T{i:02d}', []) for i in range(25)])
+    summary = service.run_batch(now=NOW, deps=deps(Sources()))
+    assert db.execute('SELECT count(*) FROM market_regimes').fetchone()[0] == 1
+    assert summary['regime']['label'] != 'insufficient'
+    assert summary['regime']['status'] == 'inserted'
+    assert summary['sources']['regime'] == []
+
+
+def test_extended_unit_has_plan_but_no_brief(db):
+    seed_watchlist(db, [('AAA', ['core']), ('NVDA', [])])   # NVDA extended, triggers trend_reclaim
+    d, calls = recording_deps(Sources())
+    summary = service.run_batch(now=NOW, deps=d)
+    assert summary['plans']['NVDA'] == 'inserted'
+    assert 'NVDA' not in summary['briefs']
+    assert 'NVDA' not in calls
+    assert 'AAA' in calls  # core ticker still gets its model brief
+
+
+def test_held_extended_ticker_gets_brief(db):
+    from investment_assistant.workbench import ledger
+    seed_watchlist(db, [('AAA', ['core']), ('NVDA', [])])
+    ledger.record_trade(db, {'request_id': str(uuid.uuid4()), 'ticker': 'NVDA', 'side': 'buy', 'quantity': '10',
+                             'price': '101.5', 'fee': '1', 'executed_at': '2026-10-10T14:00:00+00:00'},
+                        now=datetime(2026, 10, 10, 15, tzinfo=UTC))
+    d, calls = recording_deps(Sources())
+    summary = service.run_batch(now=NOW, deps=d)
+    assert summary['plans']['NVDA'] == 'inserted'
+    assert summary['briefs']['NVDA'] == 'fallback'
+    assert 'NVDA' in calls
+
+
+def test_sources_distinguish_failures(db):
+    seed_watchlist(db, [('AAA', []), ('BBB', []), ('CCC', [])])
+    summary = service.run_batch(now=NOW, deps=deps(Sources(fail={'AAA'}, fail_news={'BBB'}, fail_earnings={'CCC'})))
+    assert summary['sources']['bars'] == ['AAA']
+    assert summary['sources']['news'] == ['BBB']
+    assert summary['sources']['earnings'] == ['CCC']
+    assert summary['sources']['sec'] == []
+    assert summary['sources']['etf_bars'] == []
+    assert summary['sources']['fred'] == []
+
+
+def test_100_tickers_complete_with_timings(db):
+    seed_watchlist(db, [(f'T{i:03d}', []) for i in range(100)])
+    summary = service.run_batch(now=NOW, deps=deps(Sources()))
+    assert len(summary['tickers']) == 100
+    assert all(isinstance(v, (int, float)) for v in summary['timings'].values())
+    assert set(summary['timings']) == {'collect', 'regime', 'rules', 'total'}
+    assert not any('batch_over_budget' in e for e in summary['errors'])
+
+
+def test_over_budget_recorded(db):
+    tick = {'t': 0.0}
+
+    def clock():
+        tick['t'] += 1000.0
+        return tick['t']
+    seed_watchlist(db, [('AAA', ['core'])])
+    summary = service.run_batch(now=NOW, deps=service.Deps(
+        bar_fetcher=Sources().bars, news_fetcher=Sources().news, filing_source=Sources(),
+        brief_client=lambda **_: (None, {'error': 'x'}), earnings_fetcher=Sources().earnings, clock=clock))
+    assert any(e.startswith('batch_over_budget') for e in summary['errors'])

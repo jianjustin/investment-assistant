@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time as _time_module
 from contextlib import contextmanager
 from decimal import Decimal
 from dataclasses import dataclass
@@ -11,15 +12,19 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from investment_assistant.data.calendar import is_trading_day
-from investment_assistant.db import connect
+from investment_assistant.db import connect, list_watchlist_items
 from investment_assistant.workbench import (account, bars, briefs, earnings, exits, ledger, monthly, news,
                                                plans, positions, repository, review, rules, synthesis)
+from investment_assistant.workbench import macro as macro_module
+from investment_assistant.workbench import pool as pool_module
+from investment_assistant.workbench import regime as regime_module
 from investment_assistant.workbench import discipline as _discipline_module
 from investment_assistant.workbench import plan_shadow as _plan_shadow_module
 
 NY = ZoneInfo('America/New_York')
 BENCHMARK = 'SPY'
-MAX_TICKERS = 10
+ETF_TICKERS = pool_module.SECTOR_ETFS
+BATCH_BUDGET_S = 1800
 HISTORY_DAYS = 420          # calendar days fetched; covers MA200 plus look-backs
 FILING_LOOKBACK_DAYS = 10
 NEWS_LOOKBACK_DAYS = 7
@@ -38,6 +43,8 @@ class Deps:
     filing_source: Any = None           # object with discover(tickers, start_iso, end_iso)
     brief_client: Callable | None = None
     earnings_fetcher: Callable | None = None
+    macro_fetcher: Callable | None = None
+    clock: Callable[[], float] | None = None
 
 
 def connection():
@@ -87,15 +94,6 @@ def _filing_events(conn, ticker: str, session: date, cutoff_at: datetime) -> tup
         events.append({'id': f"news:{item['id']}", 'form': '8-K', 'items': None,
                        'filing_date': seen.astimezone(NY).date(), 'accepted_at': item['published_at']})
     return events, rows
-
-
-def _validate_tickers(tickers: list[str]) -> list[str]:
-    cleaned = list(dict.fromkeys(t.strip().upper() for t in tickers if t and t.strip()))
-    if not cleaned:
-        raise ValueError('股票池为空')
-    if len(cleaned) > MAX_TICKERS:
-        raise ValueError(f'股票池 {len(cleaned)} 只，超过上限 {MAX_TICKERS}；请先缩减观察名单')
-    return cleaned
 
 
 def exposure(conn, session: date, *, cutoff_at: datetime, ticker: str) -> dict[str, Decimal]:
@@ -155,50 +153,112 @@ def _generate_rule_plan(conn, ticker: str, session: date, ticker_bars: list[dict
         summary['conflicts'].append({'ticker': ticker, 'rule_id': 'rule_plan', 'id': str(out['record']['id'])})
 
 
-def run_batch(*, tickers: list[str], now: datetime, deps: Deps | None = None, skip_non_trading: bool = False,
-              run_id: str | None = None) -> dict[str, Any]:
-    """Collect -> rules -> units -> briefs for the latest settled session. Idempotent per session."""
+def _sync_pool(conn, pool_: pool_module.Pool, session: date, now: datetime) -> list[dict[str, Any]]:
+    """Append tier changes against the newest recorded state, effective this session."""
+    changes = pool_module.tier_changes(pool_, repository.pool_latest(conn))
+    repository.insert_pool_tiers(conn, changes, session=session, now=now)
+    return changes
+
+
+def _unit_is_extended(conn, ticker: str, signal_date: date, *, held: bool, now: datetime) -> bool:
+    """Extended-pool unit: the signal-date tier is extended and the ticker is not held."""
+    if held:
+        return False
+    entry = repository.pool_entry_at(conn, ticker, signal_date, cutoff_at=now)
+    return entry is not None and entry['tier'] == 'extended'
+
+
+def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_module.Pool | None = None,
+              deps: Deps | None = None, skip_non_trading: bool = False, run_id: str | None = None) -> dict[str, Any]:
+    """Collect -> market context -> rules -> units -> briefs for the latest settled session. Idempotent per session.
+
+    The batch runs over the tiered watch pool read from the watchlist (holdings
+    join regardless of tier); explicit tickers build an all-core pool for tests
+    and manual overrides.
+    """
     deps = deps or Deps()
-    watchlist = _validate_tickers(tickers)
+    clock = deps.clock or _time_module.monotonic
     ny_date = now.astimezone(NY).date()
     if skip_non_trading and not is_trading_day(ny_date):
         return {'status': 'skipped', 'reason': 'not a trading day in New York', 'ny_date': ny_date.isoformat()}
     session = bars.latest_closed_session(now)
-    # Holdings join the batch even off the watchlist: plan stops and earnings reminders need their data.
-    # The size cap only ever applies to the watchlist.
+    started = clock()
+    # Pool read and tier sync share one transaction; a cap failure leaves no collection behind.
     with _tx() as conn:
+        if pool is None:
+            pool = (pool_module.Pool.all_core(tickers) if tickers is not None
+                    else pool_module.from_watchlist(list_watchlist_items(conn)))
+        watchlist = list(pool.tickers)
+        tier_changes = _sync_pool(conn, pool, session, now)
+        # Holdings join the batch even off the pool: plan stops and earnings reminders need their data.
         held = [t for t in sorted({r['ticker'] for r in repository.list_trades(conn) if r['voided_at'] is None})
                 if t not in watchlist]
-    tickers = [*watchlist, *held]
-    summary: dict[str, Any] = {'session': session.isoformat(), 'cutoff_at': now.isoformat(), 'tickers': {},
-                               'benchmark': {}, 'filings': {}, 'earnings': {}, 'plans': {},
-                               'conflicts': [], 'errors': [], 'briefs': {}}
+    all_tickers = [*watchlist, *held]
+    summary: dict[str, Any] = {
+        'session': session.isoformat(), 'cutoff_at': now.isoformat(), 'tickers': {}, 'benchmark': {},
+        'filings': {}, 'earnings': {}, 'plans': {}, 'conflicts': [], 'errors': [], 'briefs': {},
+        'pool': {'core': len(pool.core), 'extended': len(pool.extended), 'holdings': len(held),
+                 'changes': tier_changes},
+        'etfs': {}, 'macro': {}, 'regime': None,
+        'sources': {'bars': [], 'news': [], 'earnings': [], 'sec': [], 'etf_bars': [], 'fred': [], 'regime': []},
+        'timings': {}}
+    if not pool.core:
+        summary['errors'].append('core_empty')
 
-    for ticker in [BENCHMARK, *tickers]:
+    t_collect = clock()
+    # SPY and the industry ETFs collect bars only; news and earnings stay per-stock.
+    for ticker in [BENCHMARK, *ETF_TICKERS]:
+        try:
+            frame_ = bars.fetch_history(ticker, session - timedelta(days=HISTORY_DAYS), session,
+                                        fetcher=deps.bar_fetcher)
+            rows_, skipped_ = bars.normalize_history(frame_)
+            with _tx() as conn:
+                counts = repository.store_bars(conn, ticker, rows_, now=now)
+            if ticker == BENCHMARK:
+                summary['benchmark'] = {'bars': counts, 'skipped_bars': [d.isoformat() for d in skipped_],
+                                        'news': None, 'candidates': [], 'skips': [], 'error': None}
+            else:
+                summary['etfs'][ticker] = f"inserted {counts['inserted']}"
+        except Unavailable:
+            raise
+        except Exception as exc:
+            if ticker == BENCHMARK:
+                summary['benchmark'] = {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [],
+                                        'skips': [], 'error': f'bars: {exc}'}
+                summary['sources']['bars'].append(ticker)
+                summary['errors'].append(f'{ticker} bars: {exc}')
+            else:
+                summary['etfs'][ticker] = f'error: {exc}'
+                summary['sources']['etf_bars'].append(ticker)
+                summary['errors'].append(f'{ticker} etf_bars: {exc}')
+
+    for ticker in all_tickers:
         entry: dict[str, Any] = {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [], 'skips': [],
                                  'error': None}
         problems = []
         try:
-            frame = bars.fetch_history(ticker, session - timedelta(days=HISTORY_DAYS), session, fetcher=deps.bar_fetcher)
-            rows, skipped = bars.normalize_history(frame)
+            frame_ = bars.fetch_history(ticker, session - timedelta(days=HISTORY_DAYS), session,
+                                        fetcher=deps.bar_fetcher)
+            rows_, skipped = bars.normalize_history(frame_)
             with _tx() as conn:
-                entry['bars'] = repository.store_bars(conn, ticker, rows, now=now)
+                entry['bars'] = repository.store_bars(conn, ticker, rows_, now=now)
             entry['skipped_bars'] = [d.isoformat() for d in skipped]
         except Unavailable:
             raise
         except Exception as exc:
             problems.append(f'bars: {exc}')
-        if ticker != BENCHMARK:
-            try:
-                raw = news.fetch_yfinance(ticker, fetcher=deps.news_fetcher)
-                items, bad = news.normalize_yfinance(raw, ticker=ticker)
-                with _tx() as conn:
-                    entry['news'] = {**repository.store_news(conn, [(i, [ticker]) for i in items], now=now),
-                                     'fetched': len(raw), 'skipped': bad}
-            except Unavailable:
-                raise
-            except Exception as exc:
-                problems.append(f'news: {exc}')
+            summary['sources']['bars'].append(ticker)
+        try:
+            raw = news.fetch_yfinance(ticker, fetcher=deps.news_fetcher)
+            items, bad = news.normalize_yfinance(raw, ticker=ticker)
+            with _tx() as conn:
+                entry['news'] = {**repository.store_news(conn, [(i, [ticker]) for i in items], now=now),
+                                 'fetched': len(raw), 'skipped': bad}
+        except Unavailable:
+            raise
+        except Exception as exc:
+            problems.append(f'news: {exc}')
+            summary['sources']['news'].append(ticker)
         try:
             row = earnings.fetch_next(ticker, fetcher=deps.earnings_fetcher, today=ny_date)
             with _tx() as conn:
@@ -208,20 +268,19 @@ def run_batch(*, tickers: list[str], now: datetime, deps: Deps | None = None, sk
         except Exception as exc:  # 采集失败不写库，也不冒充无财报
             summary['earnings'][ticker] = f'error: {exc}'
             summary['errors'].append(f'{ticker} earnings: {exc}')
+            summary['sources']['earnings'].append(ticker)
         if problems:
             entry['error'] = '; '.join(problems)
             summary['errors'].extend(f'{ticker} {p}' for p in problems)
-        if ticker == BENCHMARK:
-            summary['benchmark'] = entry
-        else:
-            summary['tickers'][ticker] = entry
+        summary['tickers'][ticker] = entry
 
     try:
         source = deps.filing_source
         if source is None:
             from investment_assistant.filings.monitor_source import EdgarSource
             source = EdgarSource(SEC_EVIDENCE_DIR)
-        metas = source.discover(tickers, (session - timedelta(days=FILING_LOOKBACK_DAYS)).isoformat(), session.isoformat())
+        metas = source.discover(all_tickers, (session - timedelta(days=FILING_LOOKBACK_DAYS)).isoformat(),
+                                session.isoformat())
         with _tx() as conn:
             summary['filings'] = {**repository.store_news(conn, news.filing_news(metas), now=now),
                                   'acceptance_filled': repository.fill_filing_acceptance(conn, metas)}
@@ -230,14 +289,62 @@ def run_batch(*, tickers: list[str], now: datetime, deps: Deps | None = None, sk
     except Exception as exc:
         summary['filings'] = {'error': str(exc)}
         summary['errors'].append(f'SEC listings: {exc}')
+        summary['sources']['sec'] = ['all']
 
-    for ticker in tickers:
+    # FRED: no key means not_configured, no request, no rows.
+    api_key = os.environ.get('FRED_API_KEY')
+    for series_id in macro_module.MACRO_SERIES:
+        try:
+            if not api_key:
+                summary['macro'][series_id] = 'not_configured'
+            else:
+                rows_ = macro_module.fetch_series(
+                    series_id, start=session - timedelta(days=macro_module.MACRO_LOOKBACK_DAYS), end=session,
+                    api_key=api_key, fetcher=deps.macro_fetcher)
+                with _tx() as conn:
+                    summary['macro'][series_id] = repository.store_macro(conn, series_id, rows_, now=now)
+        except Unavailable:
+            raise
+        except Exception as exc:
+            summary['macro'][series_id] = f'error: {exc}'
+            summary['sources']['fred'].append(series_id)
+            summary['errors'].append(f'{series_id} fred: {exc}')
+    summary['timings']['collect'] = round(clock() - t_collect, 1)
+
+    # Market context sits between collection and rules; pool bars exclude off-pool holdings.
+    t_regime = clock()
+    try:
+        with _tx() as conn:
+            pool_bars = {t: b for t in watchlist
+                         if (b := repository.read_bars(conn, t, session, cutoff_at=now, limit=300))}
+            etf_read = {etf: repository.read_bars(conn, etf, session, cutoff_at=now) for etf in ETF_TICKERS}
+            spy_read = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now)
+            macro_read = {s: repository.read_macro(conn, s, end_date=session, cutoff_at=now)
+                          for s in macro_module.MACRO_SERIES}
+            snap = regime_module.snapshot(session=session, pool_bars=pool_bars, etf_bars=etf_read,
+                                          spy_bars=spy_read, macro_rows=macro_read)
+            out = repository.store_regime(conn, snap)
+        summary['regime'] = {'status': out['status'], 'label': snap['label']}
+        if out['status'] == 'conflict':
+            summary['conflicts'].append({'ticker': None, 'rule_id': 'market_regime',
+                                         'id': str(out['record']['id'])})
+    except Unavailable:
+        raise
+    except Exception as exc:
+        summary['regime'] = f'error: {exc}'
+        summary['sources']['regime'] = ['all']
+        summary['errors'].append(f'regime: {exc}')
+    summary['timings']['regime'] = round(clock() - t_regime, 1)
+
+    t_rules = clock()
+    for ticker in all_tickers:
         entry = summary['tickers'][ticker]
         try:
             with _tx() as conn:
                 ticker_bars = repository.read_bars(conn, ticker, session, cutoff_at=now)
                 events, filing_rows = _filing_events(conn, ticker, session, now)
                 book = _book(conn, ticker)
+                extended = _unit_is_extended(conn, ticker, session, held=book['position'] is not None, now=now)
                 _, plan_state = _position_plan_state(conn, ticker, book, ticker_bars, session, now=now)
                 result = rules.evaluate(ticker, session, ticker_bars, events, book['position'], plan_state=plan_state)
                 inserted = 0
@@ -254,7 +361,8 @@ def run_batch(*, tickers: list[str], now: datetime, deps: Deps | None = None, sk
                     if group and repository.decision_head(conn, ticker, session) is None else None
                 if unit is not None and unit['proposed_action'] == 'buy' and 'conflict' not in unit['labels']:
                     _generate_rule_plan(conn, ticker, session, ticker_bars, summary, now=now)
-                needs_brief = group and repository.decision_head(conn, ticker, session) is None and (
+                # Extended units plan and shadow but never reach the model brief.
+                needs_brief = not extended and group and repository.decision_head(conn, ticker, session) is None and (
                     inserted or repository.latest_brief(conn, ticker, session) is None)
                 if needs_brief:
                     recent = repository.read_news(conn, ticker, cutoff_at=now,
@@ -267,6 +375,10 @@ def run_batch(*, tickers: list[str], now: datetime, deps: Deps | None = None, sk
         except Exception as exc:
             entry['error'] = '; '.join(filter(None, [entry['error'], f'rules: {exc}']))
             summary['errors'].append(f'{ticker} rules: {exc}')
+    summary['timings']['rules'] = round(clock() - t_rules, 1)
+    summary['timings']['total'] = round(clock() - started, 1)
+    if summary['timings']['total'] > BATCH_BUDGET_S:
+        summary['errors'].append(f"batch_over_budget: {summary['timings']['total']}")
     return summary
 
 

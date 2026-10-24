@@ -83,7 +83,7 @@ def test_task_is_registered_with_scheduler():
     assert scheduler.REGISTRY['workbench'] is workbench.run
 
 
-def test_task_reports_partial_failures_without_notifying(monkeypatch):
+def test_scheduled_task_uses_db_pool(monkeypatch):
     from investment_assistant.config import AssistantConfig
     from investment_assistant.tasks import workbench
     recorded = {}
@@ -92,13 +92,18 @@ def test_task_reports_partial_failures_without_notifying(monkeypatch):
         recorded.update(task=task, notify=notify, trigger_source=trigger_source, summary=fn())
         return {'status': 'ok'}
     monkeypatch.setattr(workbench, 'run_task', run_task)
-    monkeypatch.setattr(workbench.service, 'run_batch',
-                        lambda *, tickers, now, deps, skip_non_trading: {'tickers': tickers, 'skip': skip_non_trading})
+
+    def run_batch(**kw):
+        recorded.update(batch_kwargs=kw)
+        return {'pool': {'core': 2, 'extended': 3, 'holdings': 0, 'changes': []}}
+    monkeypatch.setattr(workbench.service, 'run_batch', run_batch)
     monkeypatch.setattr(workbench.service, 'push',
                         lambda **_: {'session': '2026-10-22', 'sent': True, 'messages': 4})
     workbench.run(AssistantConfig(watchlist=['NVDA', '688008.SH']), now=datetime(2026, 10, 22, 22, tzinfo=UTC))
     assert recorded['task'] == 'workbench' and recorded['notify'] is False
-    assert recorded['summary'] == {'tickers': ['NVDA'], 'skip': True,
+    assert 'tickers' not in recorded['batch_kwargs']
+    assert recorded['batch_kwargs']['skip_non_trading'] is True
+    assert recorded['summary'] == {'pool': {'core': 2, 'extended': 3, 'holdings': 0, 'changes': []},
                                    'push': {'session': '2026-10-22', 'sent': True, 'messages': 4}}
 
 

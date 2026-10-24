@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from investment_assistant.ashare.domain import us_only
 from investment_assistant.config import AssistantConfig, load_config
 from investment_assistant.tasks._harness import run_task
 from investment_assistant.workbench import service
@@ -15,7 +14,8 @@ def run(config: AssistantConfig | None = None, *, trigger_source: str = 'schedul
     moment = now or datetime.now(UTC)
     # Scheduled runs skip New York holidays; a manual run always targets the latest settled session.
     def batch() -> dict:
-        summary = service.run_batch(tickers=us_only(effective.watchlist), now=moment, deps=deps,
+        # The batch reads its tiered pool from the watchlist table; the config watchlist stays for other tasks.
+        summary = service.run_batch(now=moment, deps=deps,
                                     skip_non_trading=trigger_source == 'scheduled')
         if trigger_source != 'scheduled':
             return summary  # 手动运行不推送
