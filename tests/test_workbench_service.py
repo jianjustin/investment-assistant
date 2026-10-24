@@ -550,3 +550,23 @@ def test_over_budget_recorded(db):
         bar_fetcher=Sources().bars, news_fetcher=Sources().news, filing_source=Sources(),
         brief_client=lambda **_: (None, {'error': 'x'}), earnings_fetcher=Sources().earnings, clock=clock))
     assert any(e.startswith('batch_over_budget') for e in summary['errors'])
+
+
+def test_rerun_with_context_returns_existing_p1_plan(db):
+    from investment_assistant.config import load_config
+    seed_watchlist(db, [('NVDA', ['core'])])
+    service.run_batch(now=NOW, deps=deps(Sources()))  # stores bars and candidates
+    plan_id = db.execute("SELECT id FROM trade_plans WHERE kind = 'rule' AND ticker = 'NVDA'").fetchone()[0]
+    db.execute('DELETE FROM trade_plans WHERE id = %s', [plan_id])
+    with service._tx() as conn:
+        p1 = plans.build_rule_plan(
+            ticker='NVDA', signal_date=SESSION, bars=repository.read_bars(conn, 'NVDA', SESSION, cutoff_at=NOW),
+            earnings_row=repository.latest_earnings(conn, 'NVDA', cutoff_at=NOW),
+            snapshot=repository.snapshot_at(conn, SESSION, cutoff_at=NOW),
+            exposure=service.exposure(conn, SESSION, cutoff_at=NOW, ticker='NVDA'),
+            params=load_config().workbench)
+        assert repository.store_plan(conn, p1)['status'] == 'inserted'
+        assert 'context' not in p1['inputs']
+    again = service.run_batch(now=NOW + timedelta(minutes=5), deps=deps(Sources()))
+    assert again['plans']['NVDA'] == 'existing'
+    assert again['conflicts'] == []

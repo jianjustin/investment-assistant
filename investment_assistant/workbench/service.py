@@ -133,6 +133,26 @@ def _position_plan_state(conn, ticker: str, book: dict[str, Any], ticker_bars: l
     return plan, state
 
 
+def plan_context(conn, ticker: str, session: date, *, now: datetime) -> dict[str, Any]:
+    """Market context frozen into a plan: tier at the signal date, regime, sector, earnings."""
+    entry = repository.pool_entry_at(conn, ticker, session, cutoff_at=now)
+    tier = entry['tier'] if entry and entry['tier'] in ('core', 'extended') else 'unknown'
+    regime_row = repository.regime_for(conn, session, cutoff_at=now)
+    sector = None
+    if entry and entry.get('sector_etf'):
+        snap_sector = (regime_row or {}).get('sectors', {}).get(entry['sector_etf'])
+        sector = ({'etf': entry['sector_etf'], 'rs20': snap_sector['rs20'], 'rs60': snap_sector['rs60'],
+                   'state': snap_sector['state']} if snap_sector is not None
+                  else {'etf': entry['sector_etf'], 'rs20': None, 'rs60': None, 'state': None})
+    earnings = repository.latest_earnings(conn, ticker, cutoff_at=now)
+    next_earnings = (earnings['earnings_date'] if earnings and earnings['status'] == 'known'
+                     and earnings['earnings_date'] and earnings['earnings_date'] >= session else None)
+    return {'context_version': plans.CONTEXT_VERSION, 'pool_tier': tier,
+            'regime': ({'id': str(regime_row['id']), 'label': regime_row['label']}
+                       if regime_row is not None else None),
+            'sector': sector, 'next_earnings': next_earnings}
+
+
 def _generate_rule_plan(conn, ticker: str, session: date, ticker_bars: list[dict[str, Any]], summary: dict[str, Any],
                         *, now: datetime) -> None:
     """Build and store the rule plan for a fresh buy unit; record skip/conflict in the summary."""
@@ -143,7 +163,7 @@ def _generate_rule_plan(conn, ticker: str, session: date, ticker_bars: list[dict
         earnings_row=repository.latest_earnings(conn, ticker, cutoff_at=now),
         snapshot=repository.snapshot_at(conn, session, cutoff_at=now),
         exposure=exposure(conn, session, cutoff_at=now, ticker=ticker),
-        params=load_config().workbench)
+        params=load_config().workbench, context=plan_context(conn, ticker, session, now=now))
     if 'skip' in plan:
         summary['plans'][ticker] = f"skip: {plan['skip']}"
         return

@@ -215,7 +215,8 @@ def _record_own_plan(conn, rec: dict[str, Any], rule: dict[str, Any] | None, *, 
         earnings_row=repository.latest_earnings(conn, rec['ticker'], cutoff_at=now),
         snapshot=repository.snapshot_at(conn, rec['signal_date'], cutoff_at=now),
         exposure=_service.exposure(conn, rec['signal_date'], cutoff_at=now, ticker=rec['ticker']),
-        params=load_config().workbench)
+        params=load_config().workbench,
+        context=_service.plan_context(conn, rec['ticker'], rec['signal_date'], now=now))
     plan = {**plan, 'request_id': rec['own_plan']['request_id'], 'request_hash': request_hash(plan)}
     existing = repository.plan_by_request(conn, plan['request_id'])
     if existing is not None:

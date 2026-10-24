@@ -248,3 +248,16 @@ def test_plan_id_must_belong_to_the_unit(workbench_db, cids):
     other = rule_plan_row(workbench_db, ticker='MU')
     with pytest.raises(ledger.LedgerError):
         ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(other['id'])), now=NOW)
+
+
+def test_own_plan_gets_context(workbench_db, cids):
+    rule_plan_row(workbench_db)
+    _unit_bar(workbench_db)
+    out = ledger.record_decision(workbench_db, decision_payload(
+        cids, own_plan={'request_id': str(uuid.uuid4()), **own_levels()}), now=NOW)
+    plan = repository.plan_by_id(workbench_db, out['record']['plan_id'])
+    ctx = plan['inputs']['context']
+    assert ctx['context_version'] == 'context-1'
+    assert ctx['pool_tier'] == 'unknown'      # no pool_tiers rows in this schema
+    assert ctx['regime'] is None and ctx['sector'] is None
+    assert 'regime_unavailable' in plan['warnings']

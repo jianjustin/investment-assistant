@@ -195,3 +195,78 @@ def test_own_plan_sizes_from_own_entry_not_signal_close():
     assert plan['sizing']['shares'] == 181          # floor(1000 / 5.5)
     assert plan['sizing']['status'] == 'sized'
     assert 'no_room' not in plan['warnings']
+
+
+# --- P2: market context frozen into plans ---
+
+CONTEXT = {'context_version': 'context-1', 'pool_tier': 'core',
+           'regime': {'id': 'r1', 'label': 'risk_off'},
+           'sector': {'etf': 'SMH', 'rs20': -0.01, 'rs60': -0.02, 'state': 'weak'},
+           'next_earnings': date(2026, 11, 20)}
+
+
+def test_context_flags():
+    assert plans.CONTEXT_VERSION == 'context-1'
+    assert plans.context_flags(None) == []
+    assert plans.context_flags({'regime': {'id': 'r', 'label': 'neutral'}, 'sector': None}) == []
+    assert plans.context_flags({'regime': None, 'sector': None}) == ['regime_unavailable']
+    assert plans.context_flags({'regime': {'id': 'r', 'label': 'risk_off'}, 'sector': None}) == ['regime_risk_off']
+    assert plans.context_flags({'regime': {'id': 'r', 'label': 'neutral'},
+                                'sector': {'etf': 'SMH', 'rs20': None, 'rs60': None, 'state': 'weak'}}) == \
+        ['sector_weak']
+
+
+def test_context_none_keeps_p1_output():
+    bars = _bars()
+    snap = _snapshot()
+    without = plans.build_rule_plan(ticker='NVDA', signal_date=date(2026, 10, 21), bars=bars, earnings_row=None,
+                                    snapshot=snap, exposure=_exposure(), params=PARAMS)
+    explicit = plans.build_rule_plan(ticker='NVDA', signal_date=date(2026, 10, 21), bars=bars, earnings_row=None,
+                                     snapshot=snap, exposure=_exposure(), params=PARAMS, context=None)
+    assert without == explicit
+    assert 'context' not in without['inputs']
+    assert not [w for w in without['warnings'] if w.startswith(('regime_', 'sector_'))]
+
+
+def test_context_frozen_in_inputs():
+    plan = plans.build_rule_plan(ticker='NVDA', signal_date=date(2026, 10, 21), bars=_bars(), earnings_row=None,
+                                 snapshot=_snapshot(), exposure=_exposure(), params=PARAMS, context=CONTEXT)
+    assert plan['inputs']['context'] == CONTEXT
+
+
+def test_risk_off_warns():
+    plan = plans.build_rule_plan(ticker='NVDA', signal_date=date(2026, 10, 21), bars=_bars(), earnings_row=None,
+                                 snapshot=_snapshot(), exposure=_exposure(), params=PARAMS, context=CONTEXT)
+    assert 'regime_risk_off' in plan['warnings']
+
+
+def test_regime_missing_warns_unavailable():
+    ctx = {**CONTEXT, 'regime': None}
+    plan = plans.build_rule_plan(ticker='NVDA', signal_date=date(2026, 10, 21), bars=_bars(), earnings_row=None,
+                                 snapshot=_snapshot(), exposure=_exposure(), params=PARAMS, context=ctx)
+    assert 'regime_unavailable' in plan['warnings']
+
+
+def test_weak_sector_warns():
+    plan = plans.build_rule_plan(ticker='NVDA', signal_date=date(2026, 10, 21), bars=_bars(), earnings_row=None,
+                                 snapshot=_snapshot(), exposure=_exposure(), params=PARAMS, context=CONTEXT)
+    assert 'sector_weak' in plan['warnings']
+
+
+def test_context_does_not_change_levels_or_sizing():
+    snap = _snapshot()
+    plain = plans.build_rule_plan(ticker='NVDA', signal_date=date(2026, 10, 21), bars=_bars(), earnings_row=None,
+                                  snapshot=snap, exposure=_exposure(), params=PARAMS)
+    with_ctx = plans.build_rule_plan(ticker='NVDA', signal_date=date(2026, 10, 21), bars=_bars(), earnings_row=None,
+                                     snapshot=snap, exposure=_exposure(), params=PARAMS, context=CONTEXT)
+    for key in ('ref_price', 'atr', 'entry_low', 'entry_high', 'stop', 'target1', 'sizing', 'status',
+                'valid_from', 'valid_until', 'invalid_reasons'):
+        assert with_ctx[key] == plain[key]
+
+
+def test_own_plan_freezes_context_too():
+    own = plans.build_own_plan(rule_plan=None, levels=plans.rule_levels(Decimal('100'), Decimal('2')),
+                               ticker='NVDA', signal_date=date(2026, 10, 21), bars=_bars(), earnings_row=None,
+                               snapshot=_snapshot(), exposure=_exposure(), params=PARAMS, context=CONTEXT)
+    assert own['inputs']['context'] == CONTEXT
+    assert 'regime_risk_off' in own['warnings'] and 'sector_weak' in own['warnings']

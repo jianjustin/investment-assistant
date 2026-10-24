@@ -15,6 +15,7 @@ from investment_assistant.config import WorkbenchConfig
 from investment_assistant.data.calendar import add_trading_days
 
 PLAN_VERSION = 'plan-1'
+CONTEXT_VERSION = 'context-1'
 ENTRY_ATR = Decimal('0.5')
 STOP_ATR = Decimal('2')
 TARGET_ATR = Decimal('4')
@@ -150,9 +151,32 @@ def _inputs(bars: list[dict[str, Any]], earnings_row: dict[str, Any] | None,
     }
 
 
+def context_flags(context: dict | None) -> list[str]:
+    """Advisory flags from frozen market context; never affect levels or sizing."""
+    if not context:
+        return []
+    flags: list[str] = []
+    regime = context.get('regime')
+    if regime is None:
+        flags.append('regime_unavailable')
+    elif regime.get('label') == 'risk_off':
+        flags.append('regime_risk_off')
+    sector = context.get('sector')
+    if sector and sector.get('state') == 'weak':
+        flags.append('sector_weak')
+    return flags
+
+
+def _freeze_inputs(inputs: dict[str, Any], context: dict | None) -> dict[str, Any]:
+    """Context is frozen verbatim into inputs; no context keeps the P1 shape exactly."""
+    if context is None:
+        return inputs
+    return {**inputs, 'context': context}
+
+
 def build_rule_plan(*, ticker: str, signal_date: date, bars: list[dict[str, Any]], earnings_row: dict[str, Any] | None,
                     snapshot: dict[str, Any] | None, exposure: dict[str, Any],
-                    params: WorkbenchConfig) -> dict[str, Any]:
+                    params: WorkbenchConfig, context: dict | None = None) -> dict[str, Any]:
     """The rule plan for a buy unit; {'skip': 'atr_unavailable'} when the bars cannot price it."""
     atr = _freeze(atr14(bars)) if (raw := atr14(bars)) is not None else None
     if atr is None or atr <= 0:
@@ -173,15 +197,15 @@ def build_rule_plan(*, ticker: str, signal_date: date, bars: list[dict[str, Any]
         'plan_version': PLAN_VERSION, 'ref_price': ref_price, 'atr': atr, **levels,
         'trail_atr_multiple': TRAIL_ATR_MULTIPLE, 'valid_from': valid_from, 'valid_until': valid_until,
         'sizing': sizing, 'status': 'invalid' if invalid_reasons else 'ok',
-        'invalid_reasons': invalid_reasons, 'warnings': warnings,
-        'inputs': _inputs(bars, earnings_row, snapshot, exposure),
+        'invalid_reasons': invalid_reasons, 'warnings': [*warnings, *context_flags(context)],
+        'inputs': _freeze_inputs(_inputs(bars, earnings_row, snapshot, exposure), context),
     }
 
 
 def build_own_plan(*, rule_plan: dict[str, Any] | None, levels: dict[str, Decimal], ticker: str,
                    signal_date: date, bars: list[dict[str, Any]], earnings_row: dict[str, Any] | None,
                    snapshot: dict[str, Any] | None, exposure: dict[str, Any],
-                   params: WorkbenchConfig) -> dict[str, Any]:
+                   params: WorkbenchConfig, context: dict | None = None) -> dict[str, Any]:
     """A user-confirmed variant; rule-plan invalid reasons demote to warnings (spec §4.5)."""
     valid_from, valid_until = validity(signal_date)
     invalid, warnings = earnings_flags(earnings_row, signal_date=signal_date, valid_from=valid_from,
@@ -202,6 +226,6 @@ def build_own_plan(*, rule_plan: dict[str, Any] | None, levels: dict[str, Decima
         'plan_version': PLAN_VERSION, 'ref_price': ref_price, 'atr': atr, **levels,
         'trail_atr_multiple': TRAIL_ATR_MULTIPLE, 'valid_from': valid_from, 'valid_until': valid_until,
         'sizing': sizing, 'status': 'ok', 'invalid_reasons': [],
-        'warnings': [*warnings, *invalid, *size_invalid],
-        'inputs': _inputs(bars, earnings_row, snapshot, exposure),
+        'warnings': [*warnings, *invalid, *size_invalid, *context_flags(context)],
+        'inputs': _freeze_inputs(_inputs(bars, earnings_row, snapshot, exposure), context),
     }
