@@ -531,6 +531,35 @@ WORKBENCH_TABLES = ('price_bars', 'news_items', 'news_item_tickers', 'signal_can
                     'macro_observations', 'market_regimes', 'rule_backchecks')
 
 
+def store_macro(conn, series_id: str, rows: list[dict[str, Any]], *, now: datetime) -> dict[str, int]:
+    """Append observations; the same date with a different value appends a revision."""
+    counts = {'inserted': 0, 'unchanged': 0}
+    with conn.cursor() as cur:
+        for row in rows:
+            cur.execute('SELECT value FROM macro_observations '
+                        'WHERE series_id = %s AND obs_date = %s ORDER BY fetched_at DESC LIMIT 1',
+                        (series_id, row['obs_date']))
+            latest = cur.fetchone()
+            if latest is not None and latest[0] == row['value']:
+                counts['unchanged'] += 1
+                continue
+            cur.execute('INSERT INTO macro_observations (series_id, obs_date, value, fetched_at) '
+                        'VALUES (%s, %s, %s, %s)', (series_id, row['obs_date'], row['value'], now))
+            counts['inserted'] += 1
+    return counts
+
+
+def read_macro(conn, series_id: str, *, end_date: date, cutoff_at: datetime, limit: int = 60) -> list[dict[str, Any]]:
+    """Per obs_date the newest row fetched by the cutoff, oldest first, at most `limit` dates."""
+    with conn.cursor() as cur:
+        cur.execute('SELECT DISTINCT ON (obs_date) obs_date, value FROM macro_observations '
+                    'WHERE series_id = %s AND obs_date <= %s AND fetched_at <= %s '
+                    'ORDER BY obs_date DESC, fetched_at DESC LIMIT %s',
+                    (series_id, end_date, cutoff_at, limit))
+        rows = cur.fetchall()
+    return [{'obs_date': r[0], 'value': r[1]} for r in reversed(rows)]
+
+
 def pool_latest(conn) -> dict[str, dict[str, Any]]:
     """Each ticker's newest pool_tiers row: {'tier', 'sector_etf'}."""
     with conn.cursor(row_factory=dict_row) as cur:

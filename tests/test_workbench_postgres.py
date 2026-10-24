@@ -380,3 +380,33 @@ def test_pool_entry_at_respects_effective_session_and_cutoff(workbench_db):
     assert repository.pool_entry_at(workbench_db, 'NVDA', wednesday, cutoff_at=NOW + timedelta(days=2)) == \
         {'tier': 'extended', 'sector_etf': None}
     assert repository.pool_entry_at(workbench_db, 'MU', wednesday, cutoff_at=NOW + timedelta(days=5)) is None
+
+
+def test_store_macro_revision_appends(workbench_db):
+    from decimal import Decimal
+    from investment_assistant.workbench import repository
+    rows = [{'obs_date': date(2026, 10, 20), 'value': Decimal('3.1')},
+            {'obs_date': date(2026, 10, 21), 'value': Decimal('3.2')}]
+    assert repository.store_macro(workbench_db, 'BAMLH0A0HYM2', rows, now=NOW) == {'inserted': 2, 'unchanged': 0}
+    assert repository.store_macro(workbench_db, 'BAMLH0A0HYM2', rows, now=NOW) == {'inserted': 0, 'unchanged': 2}
+    revised = [{'obs_date': date(2026, 10, 20), 'value': Decimal('3.15')}]
+    assert repository.store_macro(workbench_db, 'BAMLH0A0HYM2', revised, now=NOW + timedelta(hours=1)) == \
+        {'inserted': 1, 'unchanged': 0}
+    read = repository.read_macro(workbench_db, 'BAMLH0A0HYM2', end_date=date(2026, 10, 23), cutoff_at=NOW + timedelta(hours=2))
+    assert [(r['obs_date'], r['value']) for r in read] == \
+        [(date(2026, 10, 20), Decimal('3.15')), (date(2026, 10, 21), Decimal('3.2'))]
+
+
+def test_read_macro_as_of_cutoff(workbench_db):
+    from decimal import Decimal
+    from investment_assistant.workbench import repository
+    repository.store_macro(workbench_db, 'T10Y2Y', [{'obs_date': date(2026, 10, 20), 'value': Decimal('0.1')}],
+                           now=NOW)
+    repository.store_macro(workbench_db, 'T10Y2Y', [{'obs_date': date(2026, 10, 20), 'value': Decimal('0.2')}],
+                           now=NOW + timedelta(days=1))
+    as_of_now = repository.read_macro(workbench_db, 'T10Y2Y', end_date=date(2026, 10, 23), cutoff_at=NOW + timedelta(hours=1))
+    assert as_of_now[0]['value'] == Decimal('0.1')
+    as_of_next_day = repository.read_macro(workbench_db, 'T10Y2Y', end_date=date(2026, 10, 23),
+                                           cutoff_at=NOW + timedelta(days=2))
+    assert as_of_next_day[0]['value'] == Decimal('0.2')
+    assert repository.read_macro(workbench_db, 'T10Y2Y', end_date=date(2026, 10, 19), cutoff_at=NOW + timedelta(days=2)) == []
