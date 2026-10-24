@@ -296,3 +296,79 @@ def test_plan_to_monthly_review_end_to_end(offline):
     assert stats['return']['status'] == 'ok' and stats['return']['return'] == pytest.approx(0.05)
     assert stats['tier'] == 'viable' and stats['review_flag'] == 'insufficient'
     assert stats['sensitivity']['approximate'] is True and len(stats['sensitivity']['rows']) == 4
+
+
+def test_pool_and_context_end_to_end(offline, monkeypatch):
+    from investment_assistant.config import NotifyConfig
+    from investment_assistant.workbench import repository
+
+    # 观察名单：2 只核心（SYNTH 带 sector:SMH）+ 25 只扩展
+    core = [('SYNTH', ['core', 'sector:SMH']), ('SYNB', ['core'])]
+    extended = [(f'X{i:02d}', []) for i in range(25)]
+    for ticker, tags in core + extended:
+        offline.execute("INSERT INTO watchlist_items (ticker, status, tags) VALUES (%s, 'active', %s)",
+                        [ticker, tags])
+    monkeypatch.setenv('FRED_API_KEY', 'SECRET123')
+
+    def fred(url, *, params):
+        series = params['series_id']
+        value = '3.2' if series == 'BAMLH0A0HYM2' else '0.1'
+        obs = [{'date': (S1 - timedelta(days=60 - i)).isoformat(), 'value': value} for i in range(61)]
+        return ({'observations': obs}, {'ok': True})
+    s = OfflineSources()
+    p2_deps = service.Deps(bar_fetcher=s.bars, news_fetcher=s.news, filing_source=s,
+                           brief_client=lambda **_: (None, {'error': 'no key'}),
+                           earnings_fetcher=lambda t: {'Earnings Date': []}, macro_fetcher=fred)
+
+    # 批处理：分层同步、ETF 日线、FRED、区制快照、核心与扩展各有带 context 的买入计划
+    batch = service.run_batch(now=evening(S1), deps=p2_deps)
+    assert batch['errors'] == []
+    assert batch['pool'] == {'core': 2, 'extended': 25, 'holdings': 0, 'changes': batch['pool']['changes']}
+    assert len(batch['pool']['changes']) == 27 and len(batch['etfs']) == 3
+    assert all(v.startswith('inserted ') for v in batch['etfs'].values())
+    assert batch['macro']['BAMLH0A0HYM2'] == {'inserted': 61, 'unchanged': 0}
+    assert batch['regime'] == {'status': 'inserted', 'label': 'risk_on'}
+    assert set(batch['briefs']) == {'SYNTH', 'SYNB'}                     # 扩展池不调解读
+    assert offline.execute('SELECT count(*) FROM market_regimes').fetchone()[0] == 1
+    assert offline.execute('SELECT count(*) FROM pool_tiers').fetchone()[0] == 27
+
+    view = service.today(now=evening(S1))
+    assert [u['ticker'] for u in view['units']] == ['SYNB', 'SYNTH']
+    assert len(view['extended_units']) == 25 and view['extended_units'][0]['plan'] is not None
+    assert view['market']['label'] == 'risk_on'
+    synth = unit_for(view, 'SYNTH')
+    ctx = synth['plan']['inputs']['context']
+    assert ctx['pool_tier'] == 'core' and ctx['regime']['label'] == 'risk_on'
+    assert ctx['sector'] == {'etf': 'SMH', 'rs20': 0.0, 'rs60': 0.0, 'state': 'mixed'} or ctx['sector']['etf'] == 'SMH'
+    assert ctx['next_earnings'] is None and 'regime_unavailable' not in synth['plan']['warnings']
+    x01 = next(u for u in view['extended_units'] if u['ticker'] == 'X01')
+    assert x01['plan']['inputs']['context']['pool_tier'] == 'extended'
+
+    # 推送（替身客户端）：只有核心计划，概览带市场环境与扩展池计数
+    spy = PushSpy()
+    push_out = service.push(now=evening(S1), force=False, summary=batch, notify_cfg=NotifyConfig(), client=spy)
+    assert push_out['sent'] is True
+    pushed = json.dumps(spy.payloads, ensure_ascii=False)
+    assert 'SYNTH' in pushed and 'X01' not in pushed
+    assert '区制 进攻' in pushed and '扩展池新计划 25 份（不推送）' in pushed
+    assert 'SECRET123' not in pushed
+
+    # 周中把一只扩展股标为核心：本周信号仍按信号日归扩展池（Review Focus 2）
+    wednesday = add_trading_days(S1, 1)
+    offline.execute("UPDATE watchlist_items SET tags = ARRAY['core'] WHERE ticker = 'X01'")
+    service.run_batch(now=evening(wednesday), deps=p2_deps)
+    assert repository.pool_entry_at(offline, 'X01', S1, cutoff_at=evening(wednesday)) == \
+        {'tier': 'extended', 'sector_etf': None}
+    assert repository.pool_entry_at(offline, 'X01', wednesday, cutoff_at=evening(wednesday))['tier'] == 'core'
+
+    week_start = add_trading_days(S1, -1)                               # Monday of the signal week
+    weekly = service.generate_weekly(week_start, now=evening(add_trading_days(S1, 2)))
+    assert weekly['calc_version'] == 'review-3'
+    by_pool = weekly['stats']['by_pool']
+    assert by_pool['extended']['trend_reclaim']['triggers'] == 25
+    assert by_pool['core']['trend_reclaim']['triggers'] == 1            # SYNTH；X01 仍归扩展池
+
+    # 历史检查：读库重放，可列出，不联网
+    record = service.run_backcheck(now=evening(S1))
+    assert record['calc_version'] == 'backcheck-1' and record['params']['tickers'][0] == 'SYNB'
+    assert len(repository.list_backchecks(offline, 10)) == 1

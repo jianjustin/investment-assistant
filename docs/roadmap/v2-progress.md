@@ -35,6 +35,7 @@ v2 新增：
 7. 开启工作台推送：在「设置」把任务 `workbench` 打开（10-23 为避免重载后自动推送而关闭）。（10-24：已打开，频道 `signals`。）
 8. 配置 Discord `signals` webhook：当前没有任何 webhook（库内设置与环境变量均为空），工作台推送会以 `send_failed` 记入运行报告。需在「设置 → 通知」填写后，用「测试」或「重新推送今日计划」验证。（10-24：已填写；强制推送成功，见阶段证据。）
 7. 审阅 P2 spec 与实施计划（11 个任务）。（10-23：已写，待审阅。）
+9. P2 工程完成：迁移 018、观察池分层、FRED 采集、区制快照、计划 context、今日/推送/周度分池、上线前检查、前端（提交 `9d67da2` 起见 P2 计划各任务提交）。`engineering_done`；`runtime_unverified`——未对真实库执行迁移 018、未配置真实 `FRED_API_KEY`、未扩大真实观察名单、未发真实推送，待 P2 验收时另行授权（执行迁移前 `pg_dump` 备份）。
 
 ## 阶段证据
 
@@ -51,3 +52,4 @@ v2 新增：
 | 2026-10-23 | P1 运行验收（部分） | 备份 `.local/us-workbench/backups/investment_assistant-before-017-20261023-202915.dump`（sha256 `8542b9d5…`）；迁移 017 已执行，5 张新表为空、`signal_decisions.plan_id` 已加，旧行未动；`web/dist` 先备份到 `.local/us-workbench/dist-backup-20261023-203002` 再构建；服务重载后手动批处理成功（9 只财报日期入库、无报错、未推送）；「今日」「复盘 → 资金 / 月度复盘」页面与新接口均正常。未覆盖：当日无买入单元，真实数据上的计划价位与持仓止损尚未出现；推送未开启 |
 | 2026-10-24 | 开启 `workbench` 推送（频道 `signals`） | 10-24 06:30 的定时运行仍为 `task_disabled`；下一次定时运行为 10-27（周二）06:30。`signals` webhook 未配置，推送尚不能送达 |
 | 2026-10-24 | `signals` webhook 已配置，强制推送验证送达 | `POST /api/workbench/push` 返回 `sent: true`、4 条消息、频道 `signals`（交易日 2026-10-23，当日无买入计划）；Discord 接口已接受，频道内显示待你确认 |
+| 2026-10-24 | P2 工程完成（Task 1–11：迁移 018 四张新表、pool/macro/regime/backcheck 模块、批处理接池与环境、计划 context 冻结、今日与推送扩展、review-3 分池、上线前检查、前端与文档） | 端到端场景 `tests/test_workbench_scenarios.py::test_pool_and_context_end_to_end`；[使用文档](../us-workbench.md) P2 三节；各任务提交见 [P2 实施计划](../superpowers/plans/2026-10-23-p2-pool-and-market-context.md) ledger |

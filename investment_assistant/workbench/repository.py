@@ -576,9 +576,12 @@ def store_regime(conn, snap: dict[str, Any], *, now: datetime | None = None) -> 
     if existing is not None:
         stored = _regime_fingerprint(existing)
         return {'status': 'existing' if stored == _regime_fingerprint(snap) else 'conflict', 'record': existing}
+    def _dumps(value: Any) -> str:
+        return json.dumps(value, default=str)  # macro values arrive as Decimal
+
     placeholders = ', '.join(['%s'] * (7 if now is None else 8))
-    params = [snap['session'], REGIME_VERSION, snap['label'], json.dumps(snap['breadth']),
-              json.dumps(snap['sectors']), json.dumps(snap['macro']), json.dumps(snap['inputs'])]
+    params = [snap['session'], REGIME_VERSION, snap['label'], _dumps(snap['breadth']),
+              _dumps(snap['sectors']), _dumps(snap['macro']), _dumps(snap['inputs'])]
     if now is not None:
         params.append(now)
     record = _one(conn, f'INSERT INTO market_regimes (session, calc_version, label, breadth, sectors, macro, inputs'

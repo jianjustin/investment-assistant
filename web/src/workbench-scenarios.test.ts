@@ -79,3 +79,29 @@ it('shows the rule plan and accepts with own levels', async () => {
   expect(decisions[0].own_plan).toMatchObject({ entry_low: '123.5', entry_high: '126.5', stop: '118', target1: '136' })
   expect(decisions[0].own_plan.request_id).toBeTruthy()
 })
+
+it('shows the market context card and the collapsed extended pool', async () => {
+  const contextPlan = { ...plan, ticker: 'X01', inputs: { context: {
+    context_version: 'context-1', pool_tier: 'extended', regime: { id: 'r1', label: 'risk_off' },
+    sector: null, next_earnings: null } } }
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (String(url) === '/api/workbench/today')
+      return json({ session: '2026-09-01', units: [], holdings: [],
+        extended_units: [{ ticker: 'X01', signal_date: '2026-09-01', proposed_action: 'buy',
+                           rule_ids: ['trend_reclaim'], plan: contextPlan }],
+        market: { id: 'r1', session: '2026-09-01', calc_version: 'regime-1', label: 'risk_off',
+                  breadth: { tickers: 27, eligible_50: 27, above_50: 27, pct_50: 1, eligible_200: 27,
+                             above_200: 20, pct_200: 0.74, eligible_52w: 27, new_highs: 5, new_lows: 0 },
+                  sectors: { SMH: null, XLK: null, QQQ: null },
+                  macro: { BAMLH0A0HYM2: null, T10Y2Y: null }, inputs: {}, created_at: '2026-09-01T22:30:00Z' } })
+    return json({})
+  }))
+  render(App)
+  expect(await screen.findByText(/市场环境/)).toBeTruthy()
+  expect(screen.getByText('防守')).toBeTruthy()
+  expect(screen.getByText(/MA200 74\.0%/)).toBeTruthy()
+  expect(screen.getByText('FRED 未配置')).toBeTruthy()
+  expect(await screen.findByText(/扩展池（只影子跟踪）/)).toBeTruthy()
+  expect(document.querySelector('details')?.open).toBe(false)
+  expect(document.querySelector('details')?.textContent).toContain('X01')
+})

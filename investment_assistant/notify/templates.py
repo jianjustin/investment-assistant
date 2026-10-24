@@ -42,7 +42,8 @@ def _market_environment(market: dict | None) -> str:
             if view is None:
                 parts.append(f'{name} 无数据')
             else:
-                change = f"{view['change']:+}" if view.get('change') is not None else '无变化'
+                # JSONB round-trips the FRED Decimals as strings; format numerically either way.
+                change = f"{float(view['change']):+}" if view.get('change') is not None else '无变化'
                 parts.append(f"{name} {view['value']}（20 期 {change}）")
         lines.append(' · '.join(parts))
     return '\n'.join(lines)

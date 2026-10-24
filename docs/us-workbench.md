@@ -7,11 +7,12 @@
 ## 上线前提
 
 1. 对目标数据库执行迁移 `016_us_workbench.sql`（新增 8 张表、`filings` 两个可空列、一个调度任务）。未迁移时，所有工作台接口返回 503，页面显示「数据库未就绪」，不会显示成空列表，也不会自动迁移。
-2. 观察名单（配置 `watchlist`）中的美股不超过 10 只；超过时批处理报错，不会静默截断。
+2. 工作台标的来自数据库观察名单（`watchlist_items` 中 `active` 的美股即观察池，上限 100 只、核心池上限 15 只；配置 `watchlist` 不再被工作台读取，其他任务照旧）。超过上限时写入与批处理都会报错，不会静默截断。
 2a. P1 起需再执行迁移 `017_trade_plans.sql`（新增 5 张表与 `signal_decisions.plan_id`，只追加不回填）；未迁移时计划相关接口与推送同样返回 503。执行前先 `pg_dump` 备份。
 2b. 配置新增 `workbench` 段：`risk_pct`（单笔风险，默认 0.01）、`single_cap`（单票上限 0.25）、`total_cap`（总持仓上限 1.0）、`public_url`（推送链接前缀，默认 `http://localhost:8787`）、`return_tiers`（月度收益分档，默认 `[0.20, 0.10, 0.0]`）。示例见 `config/investment-assistant.example.json`；改参数不需要新 `plan_version`，参数会冻结进每份计划。
 3. LLM 解读由 `WORKBENCH_LLM_PROVIDER` 选择：默认 `codex`，通过本机 Codex CLI 使用已登录的 ChatGPT 套餐（只读沙箱、不保存会话、单次约 20 秒）；`deepseek` 需要 `DEEPSEEK_API_KEY`；`off` 关闭。调用失败时退回规则版解读。可用 `WORKBENCH_CODEX_MODEL` 指定模型。
 4. `SEC_USER_AGENT`（含联系邮箱）用于 SEC 列表；列表失败只记入运行报告。
+2c. P2 起需再执行迁移 `018_pool_and_market_context.sql`（新增 `pool_tiers`、`macro_observations`、`market_regimes`、`rule_backchecks` 四张表，只追加）；执行前先 `pg_dump` 备份。配置环境变量 `FRED_API_KEY`（FRED 官方 API 密钥；未配置时运行报告记「未配置」，不写库、不发请求）。在「设置 → 观察名单」为打算重点跟踪的美股勾选「核心」、按需选行业 ETF（SMH/XLK/QQQ）。
 
 ## 每日流程
 
@@ -63,6 +64,27 @@
 - **验证入口**：运行报告 `tickers.<T>.candidates` 中出现 `plan_stop`/`plan_target`；页面「今日」持仓区块。
 - **验证示例**：持仓某股触及 T1 次日，运行报告出现 `plan_target` 候选；「今日」持仓行显示「止损 …（移动）· 已触 T1」。
 
+## 观察池与分层
+
+- **功能**：观察池 = 观察名单中 `active` 的美股（≤ 100 只），带 `core` 标签的为核心池（≤ 15 只），其余为扩展池；`sector:<ETF>` 标签把个股映射到行业 ETF（SMH/XLK/QQQ）。批处理 = 观察池 ∪ 当前持仓：持仓股不论分层都按核心池对待（推送、解读），但不在观察池中的持仓不计入市场广度。每次批处理把分层变更追加进 `pool_tiers`（`effective_session` 为本次交易日）；某股某日的分层按「`effective_session <= 该日` 且 `recorded_at <= 截止时间` 的最新一行」还原。扩展池单元照常生成规则计划与影子跟踪（仓位照算），但不调用 LLM 解读、不进「今日」待决定列表、不推送；「今日」在底部折叠区只读显示。周度复盘（`review-3`）分池统计：按信号日的分层归池，不看现在的分层。
+- **手动入口**：页面「设置 → 观察名单」美股行的「核心」勾选与「行业 ETF」下拉（写成标签；表头显示「美股池 n/100 · 核心 m/15」）；写入时超限或标签不规范返回 400 且不改观察名单。
+- **验证入口**：运行报告 `summary.pool`（`core/extended/holdings/changes`）；表 `pool_tiers`；页面「今日」扩展池折叠区与「复盘 → 周度复盘」分池表。
+- **验证示例**：在「设置 → 观察名单」给某美股勾选「核心」，次日运行报告 `pool.changes` 出现一条 `tier: core`；周中改分层的股票在当周周度复盘中仍按信号日分层归池。
+
+## 市场环境
+
+- **功能**：每次批处理在采集之后、规则之前生成市场环境快照（`regime-1`，表 `market_regimes`）：池内广度（当日有 K 线的观察池股票，`adj_close` 口径：站上 MA50/MA200 占比、52 周新高/新低）、区制标签（MA200 合格样本 < 20 为「样本不足」；占比 ≥ 60% 且 MA50 占比 ≥ 50% 为「进攻」；< 40% 且 < 30% 为「防守」；其余「中性」）、行业 ETF 相对 SPY 的 20/60 日强弱（rs20/rs60，弱/强/分化/数据不足）、FRED 利差背景（`BAMLH0A0HYM2` HY OAS 与 `T10Y2Y`，各 120 天，含 20 个观测前变化；值为 `.` 跳过；修订追加）。区制只作提示：每份计划把 `context`（分层、区制、行业、下次财报日）冻结进 `inputs.context`，防守区制、快照失败、行业弱势分别追加提示 `regime_risk_off` / `regime_unavailable` / `sector_weak`，不改价位、仓位与有效性（`plan_version` 仍为 `plan-1`）。FRED 密钥只取环境变量，任何日志与错误文本中出现即替换为 `***`。
+- **手动入口**：页面「今日」顶部「市场环境」卡片（区制、广度、行业强弱、利差或「FRED 未配置」）；计划卡片上的「区制 · 下次财报 · 行业」一行；推送概览的「市场环境」字段与「扩展池新计划 N 份（不推送）」。
+- **验证入口**：运行报告 `summary.regime`（`inserted/existing/conflict` 与标签）、`summary.etfs`、`summary.macro`、`summary.sources`（按数据源列失败：日线/资讯/财报日期/SEC/ETF 日线/FRED/区制）、`summary.timings`（collect/regime/rules/total 秒数；总耗时 > 1800 秒记 `batch_over_budget`）；表 `market_regimes`、`macro_observations`；页面「今日」。
+- **验证示例**：批处理运行报告中 `regime: {status: inserted, label: risk_on}`、`macro.BAMLH0A0HYM2.inserted > 0`；「今日」市场环境卡片显示「市场环境 进攻 · 站上 MA50 …%」，新计划卡片显示「区制 进攻 · 下次财报 … · 行业 SMH 强」。
+
+## 上线前检查
+
+- **功能**：`backcheck-1`，新规则上线前手动运行，回答「触发是否过频、止损是否总被扫掉」。只读库里已存 K 线（当前修订）与 SEC 文件，不联网、不补采：每只股票前 200 根 K 线只做指标预热，评估区每个交易日以当时为止的 K 线运行现有规则（无持仓），买入候选按 `plan-1` 算价位、`plan-shadow-1` 模拟；`valid_until` 后不足 20 个交易日的信号计入触发数不计入结果。统计每条规则与合计：触发数、每 100 个股票日触发数、同日 ≥ 3 只齐触的日数、成交/过期数、5 个交易日内止损占比、到达 T1 占比、R 均值/中位数/四分位；标记 `too_frequent`（> 5/100 股票日）、`stops_swept`（成交 ≥ 10 且 5 日内止损 ≥ 50%）、`insufficient`（成交 < 10）。结果冻结进 `rule_backchecks`，页面注明「描述性检查，不调参，不代表规则有效」。
+- **手动入口**：页面「复盘 → 上线前检查」（列表与「运行历史检查」按钮）；API `GET/POST /api/workbench/backchecks`（body 可含 `tickers`）；命令行 `python -m investment_assistant.workbench.backcheck [--tickers A,B]`（默认当前观察池）。
+- **验证入口**：页面「复盘 → 上线前检查」的运行记录（时间、标的、触发/成交数、标记）；表 `rule_backchecks`。
+- **验证示例**：`python -m investment_assistant.workbench.backcheck` 打印记录 id 与 `stats.all` 的 JSON；页面「上线前检查」出现一条运行，标记为 `insufficient`（当前观察池历史成交不足 10 笔属正常）。
+
 ## 推送
 
 - **功能**：定时运行在批处理之后自动推送当日简报到 Discord（默认 `signals` 频道，可在设置中改或关）：概览、新计划、持仓、待处理与异常四条消息；无新计划也推送；同一交易日已成功推送则不再重复；纽约休市推一行「纽约休市，未运行」。字段值截断到 1024 字符、单条 ≤ 6000 字符，超出写「其余 N 条见系统」。推送失败只写入运行报告，不让批处理失败；下次推送附「上次推送失败」。手动运行批处理不推送。
@@ -87,7 +109,7 @@
 ## 已知限制
 
 - 免费资讯源覆盖与稳定性有限：yfinance 的 `Ticker.get_news` 已被 Yahoo 改为 404（yfinance 会静默返回空列表），现改用搜索接口；运行报告的 `news.fetched` 为 0 时说明资讯源再次失效。SEC 列表依赖 `SEC_USER_AGENT`。
-- 股票少于 10 只，信号稀少且同日重叠，统计结果没有推断意义。
+- 样本量小（观察池 100 只以内、重叠信号多），统计结果没有推断意义；上线前检查只是描述性统计。
 - 原有六个入口收在侧栏「更多」下，保持只读可用；新主线不写入、不回填旧的快照与评分表。
 
 ## 验证记录（2026-10-23）
