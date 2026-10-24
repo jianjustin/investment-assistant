@@ -113,3 +113,22 @@ describe('P1 endpoints', () => {
     ])
   })
 })
+
+describe('agent track', () => {
+  it('AGENT_REASON_TEXT covers every reason', async () => {
+    const { AGENT_REASON_TEXT } = await import('./workbench')
+    expect(Object.keys(AGENT_REASON_TEXT).sort()).toEqual(['checkpoint_unavailable', 'disabled',
+      'invalid_citation', 'level_check', 'malformed', 'max_attempts', 'model_error', 'not_configured',
+      'quota_exhausted', 'stage_budget', 'token_budget', 'tool_rounds_exceeded'].sort())
+  })
+
+  it('agent basis submits agent plan id', async () => {
+    const { decisionPayload } = await import('./workbench')
+    const agentPlan = { id: 'ap1', status: 'ok', kind: 'agent' as const }
+    const withBoth = { ...unit, plan: { id: 'p1', status: 'ok', kind: 'rule' },
+                       agent: { id: 'r1', status: 'ok', plan: agentPlan } }
+    expect(decisionPayload(withBoth as any, 'accept', 'r', 'req', null, 'agent')).toMatchObject({ plan_id: 'ap1' })
+    expect(decisionPayload(withBoth as any, 'accept', 'r', 'req', null, 'rule')).toMatchObject({ plan_id: 'p1' })
+    expect(decisionPayload(withBoth as any, 'accept', 'r', 'req', null, 'own')).toMatchObject({ plan_id: null })
+  })
+})

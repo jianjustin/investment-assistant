@@ -221,3 +221,24 @@ describe('P2 review views', () => {
     expect(await screen.findByText(/描述性检查/)).toBeTruthy()
   })
 })
+
+it('plan shadow and discipline label agent track', async () => {
+  respond = async (url: string, init?: RequestInit) => {
+    if (url.includes('/weekly-reviews')) return json({ reviews: [{
+      id: 'w1', week_start: '2026-10-19', calc_version: 'review-3', notes: '', supersedes_id: null,
+      created_at: '2026-10-24T01:00:00Z',
+      stats: { plans: { rule: { count: 2, expired: 1, r_mean: 1.0, r_median: 1.0 },
+                        own: { count: 0, expired: 0, r_mean: null, r_median: null },
+                        agent: { count: 1, expired: 0, r_mean: 2.5, r_median: 2.5 } },
+               discipline: { trades: [], counts: { chase: 0, early_take: 0, held_loser: 0, unplanned: 0 },
+                             immature: {}, planned_buys: 1, compliance_rate: 1 } } }] })
+    if (url.includes('/review/trades')) return json({ session: '2026-10-22', calc_version: 'review-1', closed: [], open: [] })
+    if (url === '/api/workbench/trades' && init?.method !== 'POST') return json({ trades: [trade] })
+    if (url.includes('/review/shadow')) return json({ session: '2026-10-22', since: '2026-07-24', calc_version: 'review-1', units: [] })
+    if (url.startsWith('/api/watchlist')) return json({ rows: [{ ticker: 'NVDA' }] })
+    return json({})
+  }
+  render(Review, { sub: 'weekly' })
+  expect(await screen.findByText(/Agent：1 · 已过期 0 · R 2\.5/)).toBeInTheDocument()
+  expect(screen.getByText(/规则：2 · 已过期 1/)).toBeInTheDocument()
+})

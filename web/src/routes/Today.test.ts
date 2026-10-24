@@ -293,3 +293,121 @@ describe('market context and extended pool', () => {
     expect(details.textContent).toContain('AMD')
   })
 })
+
+describe('agent track', () => {
+  const agentPlan = (overrides: Record<string, unknown> = {}) => ({
+    id: 'ap1', ticker: 'NVDA', signal_date: '2026-10-22', kind: 'agent', plan_version: 'agent-1', status: 'ok',
+    entry_low: 98.5, entry_high: 101.5, stop: 96, target1: 108, ref_price: 100, atr: 2,
+    valid_from: '2026-10-23', valid_until: '2026-10-27',
+    sizing: { status: 'sized', shares: 166, risk_amount: 1000, snapshot_as_of: '2026-10-20' },
+    invalid_reasons: [], warnings: [], ...overrides,
+  })
+
+  const agentOk = (overrides: Record<string, unknown> = {}) => ({
+    id: 'r1', status: 'ok', model: 'glm-5.3', agent_version: 'agent-1',
+    output: { action: 'buy', summary: '回踩修复放量',
+              levels: { entry_low: { value: '98.50', refs: ['call:1'] },
+                        entry_high: { value: '101.50', refs: ['call:1'] },
+                        stop: { value: '96.00', refs: ['call:1'] },
+                        target1: { value: '108.00', refs: ['call:1'] } },
+              thesis: [{ text: '放量突破 20 日线', refs: ['call:1'] }] },
+    counter: { status: 'ok', risks: [{ text: '财报临近', refs: ['call:1'] }], dropped: 0 },
+    plan: agentPlan(), input_tokens: 40, output_tokens: 20, created_at: '2026-10-22T23:00:00Z',
+    ...overrides,
+  })
+
+  const agentRejected = {
+    id: 'r2', status: 'rejected', reason: 'invalid_citation', created_at: '2026-10-22T23:00:00Z',
+  }
+
+  const toolCallDetail = () => ({
+    ...agentOk(), tool_calls: [
+      { seq: 1, phase: 'propose', tool: 'get_indicators', args: { ticker: 'NVDA' },
+        result: { ref: 'call:1', data: { last_close: 100 } },
+        result_sha256: 'abcd1234ef567890abcd1234ef567890abcd1234ef567890abcd1234ef567890',
+        called_at: '2026-10-22T22:31:00Z' }],
+  })
+
+  const todayWith = (units: any[], extended: any[] = []) =>
+    async () => json({ session: '2026-10-22', units, extended_units: extended, holdings: [] })
+
+  it('agent block shows action, levels, thesis refs and counter', async () => {
+    respond = todayWith([unit({ agent: agentOk() })])
+    render(Today)
+    expect(await screen.findByText('Agent 建议（glm-5.3 · agent-1）买入')).toBeInTheDocument()
+    expect(screen.getByText('入场区间 98.50–101.50 · 止损 96.00 · T1 108.00')).toBeInTheDocument()
+    expect(screen.getByText('建议 166 股')).toBeInTheDocument()
+    expect(screen.getByText('回踩修复放量')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'call:1' }).length).toBeGreaterThan(0)
+    expect(screen.getByText(/反方：/)).toBeInTheDocument()
+    expect(screen.getByText(/财报临近/)).toBeInTheDocument()
+  })
+
+  it('clicking a ref opens the tool call', async () => {
+    respond = async (url: string) =>
+      url.includes('/agent-runs/r1') ? json(toolCallDetail()) : await todayWith([unit({ agent: agentOk() })])()
+    render(Today)
+    await fireEvent.click((await screen.findAllByRole('button', { name: 'call:1' }))[0])
+    expect(await screen.findByText(/get_indicators/)).toBeInTheDocument()
+    expect(screen.getByText(/abcd1234/)).toBeInTheDocument()          // 哈希前 8 位
+    expect(screen.getByText(/ticker/)).toBeInTheDocument()            // 调用参数
+    expect(screen.getByRole('button', { name: /关闭/ })).toBeInTheDocument()
+  })
+
+  it('rejected agent shows reason and rerun button', async () => {
+    respond = todayWith([unit({ agent: agentRejected })])
+    render(Today)
+    expect(await screen.findByText('Agent 未给出建议')).toBeInTheDocument()
+    expect(screen.getByText('引用无效已作废')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重新运行 Agent' })).toBeInTheDocument()
+  })
+
+  it('rerun posts and refreshes', async () => {
+    respond = async (url: string, init?: RequestInit) => {
+      if (url === '/api/workbench/agent-runs' && init?.method === 'POST')
+        return json({ id: 'r3', status: 'ok', reason: null })
+      return await todayWith([unit({ agent: agentRejected })])()
+    }
+    render(Today)
+    await fireEvent.click(await screen.findByRole('button', { name: '重新运行 Agent' }))
+    await waitFor(() => expect(calls.some(c => c.url === '/api/workbench/agent-runs'
+      && c.init?.method === 'POST')).toBe(true))
+    const body = JSON.parse(String(calls.find(c => c.url === '/api/workbench/agent-runs')!.init!.body))
+    expect(body).toEqual({ ticker: 'NVDA', signal_date: '2026-10-22' })
+    await waitFor(() => expect(calls.filter(c => c.url === '/api/workbench/today').length).toBeGreaterThanOrEqual(2))
+  })
+
+  it('agent basis enabled only when agent plan ok', async () => {
+    respond = todayWith([unit({ plan: plan(), agent: { id: 'r', status: 'pass', model: 'glm-5.3',
+      output: { summary: '趋势不明' }, counter: null, plan: null, input_tokens: 5, output_tokens: 5,
+      created_at: 'c' } })])
+    const { unmount } = render(Today)
+    expect((await screen.findByLabelText(/Agent 建议/) as HTMLInputElement).disabled).toBe(true)
+    unmount()
+
+    respond = todayWith([unit({ plan: plan(), agent: agentOk() })])
+    render(Today)
+    expect((await screen.findByLabelText(/Agent 建议/) as HTMLInputElement).disabled).toBe(false)
+  })
+
+  it('rule invalid and agent ok defaults basis to agent', async () => {
+    respond = todayWith([unit({ plan: plan({ status: 'invalid', invalid_reasons: ['earnings_in_validity'] }),
+                               agent: agentOk() })])
+    render(Today)
+    expect((await screen.findByLabelText(/Agent 建议/) as HTMLInputElement).checked).toBe(true)
+    await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '按 Agent 建议执行' } })
+    await fireEvent.click(screen.getByRole('button', { name: '提交决定' }))
+    await waitFor(() => {
+      const post = calls.find(c => c.url === '/api/workbench/decisions')
+      expect(JSON.parse(String(post!.init!.body)).plan_id).toBe('ap1')
+    })
+  })
+
+  it('extended list shows agent status', async () => {
+    respond = todayWith([], [{ ticker: 'X01', signal_date: '2026-10-22', proposed_action: 'buy',
+                               rule_ids: ['trend_reclaim'], plan: null, agent_status: 'skipped: disabled' }])
+    render(Today)
+    await fireEvent.click(await screen.findByText(/扩展池/))
+    expect(await screen.findByText(/Agent skipped: disabled/)).toBeInTheDocument()
+  })
+})

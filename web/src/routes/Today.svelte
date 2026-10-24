@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { registerNavigationGuard } from '../lib/navigation-guard'
+  import Drawer from '../lib/components/Drawer.svelte'
   import * as wb from '../lib/workbench'
 
-  type Basis = 'rule' | 'own'
+  type Basis = wb.Basis
   type Draft = { choice: wb.Choice; reason: string; requestId: string; error: string; busy: boolean
                  basis: Basis; own: { entry_low: string; entry_high: string; stop: string; target1: string }
                  ownRequestId: string }
@@ -14,6 +15,8 @@
   let notice = $state('')
   let drafts = $state<Record<string, Draft>>({})
   let generation = 0
+  let callDrawer = $state<{ open: boolean; call: wb.AgentToolCall | null }>({ open: false, call: null })
+  let callError = $state('')
 
   const keyOf = (u: wb.Unit) => `${u.ticker}|${u.signal_date}`
 
@@ -26,7 +29,8 @@
       for (const u of next.units) {
         // Drafts survive reloads and failed submits; the request id stays the same until success.
         drafts[keyOf(u)] ??= { choice: 'accept', reason: '', requestId: wb.newRequestId(), error: '', busy: false,
-                                basis: u.plan != null && u.plan.status !== 'ok' ? 'own' : 'rule',
+                                basis: u.plan != null && u.plan.status !== 'ok'
+                                  ? (agentUsable(u) ? 'agent' : 'own') : 'rule',
                                 own: { entry_low: '', entry_high: '', stop: '', target1: '' },
                                 ownRequestId: wb.newRequestId() }
       }
@@ -39,7 +43,9 @@
     }
   }
 
-  const basisLocked = (u: wb.Unit) => u.plan != null && u.plan.status !== 'ok'   // 规则计划作废时只能自定
+  const basisLocked = (u: wb.Unit) => u.plan != null && u.plan.status !== 'ok'   // 规则计划作废时只能自定或 Agent
+  const agentUsable = (u: wb.Unit) => u.agent != null && 'plan' in u.agent
+    && u.agent.plan != null && u.agent.plan.status === 'ok'
   const ownReady = (draft: Draft) => draft.own.entry_low.trim() !== '' && wb.levelsError(draft.own) === null
 
   async function submit(u: wb.Unit) {
@@ -52,7 +58,7 @@
     try {
       const own = draft.choice === 'accept' && draft.basis === 'own'
         ? { request_id: draft.ownRequestId, ...draft.own } : null
-      await wb.postDecision(wb.decisionPayload(u, draft.choice, draft.reason, draft.requestId, own))
+      await wb.postDecision(wb.decisionPayload(u, draft.choice, draft.reason, draft.requestId, own, draft.basis))
       delete drafts[key]
       await load()
     } catch (e) {
@@ -66,6 +72,26 @@
     try {
       const run = await wb.runWorkbench()
       notice = `已提交批处理（${run.run_id}），完成后刷新本页查看。`
+    } catch (e) {
+      notice = wb.describeError(e)
+    }
+  }
+
+  async function showCall(u: wb.Unit, ref: string) {
+    callError = ''
+    try {
+      const detail = await wb.getAgentRun(u.agent!.id)
+      const seq = Number(ref.split(':')[1])
+      callDrawer = { open: true, call: detail.tool_calls.find(c => c.seq === seq) ?? null }
+    } catch (e) {
+      callError = wb.describeError(e)
+    }
+  }
+
+  async function rerunAgentNow(u: wb.Unit) {
+    try {
+      await wb.rerunAgent(u.ticker, u.signal_date)
+      await load()
     } catch (e) {
       notice = wb.describeError(e)
     }
@@ -214,15 +240,55 @@
         </div>
       {/if}
 
+      {#if u.agent}
+        {@const a = u.agent}
+        <div class="text-sm border-l-2 border-sky-400/50 pl-2 space-y-1">
+          {#if a.status === 'ok' || a.status === 'pass'}
+            <p class="font-medium">Agent 建议（{a.model} · {a.agent_version}）{a.status === 'ok' ? '买入' : '不建议买入'}</p>
+            {#if a.output?.levels}
+              <p>入场区间 {a.output.levels.entry_low.value}–{a.output.levels.entry_high.value} · 止损 {a.output.levels.stop.value} · T1 {a.output.levels.target1.value}</p>
+            {/if}
+            {#if a.plan?.sizing?.shares != null}
+              <p>建议 {a.plan.sizing.shares} 股</p>
+            {/if}
+            {#if a.output?.summary}<p>{a.output.summary}</p>{/if}
+            {#if a.output?.thesis?.length}
+              <ul class="list-disc ml-5 text-xs text-muted">
+                {#each a.output.thesis as t}
+                  <li>{t.text}（{#each t.refs as ref, i}{#if i}、{/if}<button class="underline" onclick={() => showCall(u, ref)}>{ref}</button>{/each}）</li>
+                {/each}
+              </ul>
+            {/if}
+            {#if a.counter?.risks?.length}
+              <p class="text-xs">反方：{#each a.counter.risks as risk, i}{#if i}；{/if}{risk.text}（{#each risk.refs as ref, j}{#if j}、{/if}<button class="underline" onclick={() => showCall(u, ref)}>{ref}</button>{/each}）{/each}</p>
+            {/if}
+            {#if a.plan?.status === 'invalid'}
+              <p class="text-red-600">Agent 计划已作废：{a.plan.invalid_reasons.join('、')}</p>
+            {/if}
+          {:else}
+            <p class="font-medium">Agent 未给出建议</p>
+            <p class="text-red-600">{wb.AGENT_REASON_TEXT[a.reason ?? ''] ?? a.reason}</p>
+            <button class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2"
+                    onclick={() => rerunAgentNow(u)}>重新运行 Agent</button>
+          {/if}
+          {#if callError}<p class="text-xs text-red-600">{callError}</p>{/if}
+        </div>
+      {/if}
+
       {#if draft}
         <form class="space-y-2" onsubmit={e => { e.preventDefault(); submit(u) }}>
-          {#if draft.choice === 'accept' && u.proposed_action === 'buy' && u.plan}
+          {#if draft.choice === 'accept' && u.proposed_action === 'buy' && (u.plan || agentUsable(u))}
             <fieldset class="flex gap-3 text-sm">
               <legend class="text-xs text-muted">执行依据</legend>
               <label class="flex items-center gap-1">
                 <input type="radio" name={`basis-${keyOf(u)}`} value="rule" bind:group={draft.basis}
                        disabled={basisLocked(u)} />
                 规则计划
+              </label>
+              <label class="flex items-center gap-1">
+                <input type="radio" name={`basis-${keyOf(u)}`} value="agent" bind:group={draft.basis}
+                       disabled={!agentUsable(u)} />
+                Agent 建议
               </label>
               <label class="flex items-center gap-1">
                 <input type="radio" name={`basis-${keyOf(u)}`} value="own" bind:group={draft.basis} />
@@ -270,11 +336,25 @@
         {#each view.extended_units as u (`${u.ticker}|${u.signal_date}`)}
           <li>{u.ticker} · {u.signal_date} · 建议{wb.ACTION_LABELS[u.proposed_action]} · {u.rule_ids.map(wb.ruleLabel).join('、')}
             {#if u.plan}· {u.plan.status === 'invalid' ? '已作废' : '有效'} · 入场 {u.plan.entry_low}–{u.plan.entry_high} · 止损 {u.plan.stop} · T1 {u.plan.target1} · 有效期至 {u.plan.valid_until}{/if}
+            {#if u.agent_status}· Agent {u.agent_status}{/if}
           </li>
         {/each}
       </ul>
     </details>
   {/if}
+
+  <Drawer open={callDrawer.open} onclose={() => callDrawer = { open: false, call: null }}>
+    {#if callDrawer.call}
+      {@const c = callDrawer.call}
+      <h2 class="font-semibold">工具调用 {c.ref ?? `call:${c.seq}`}</h2>
+      <p class="text-xs text-muted">工具 {c.tool} · 阶段 {c.phase === 'propose' ? '建议' : '反方'} · {wb.dateTime(c.called_at)}</p>
+      <p class="text-xs break-all">参数 {JSON.stringify(c.args)}</p>
+      <p class="text-xs break-all">哈希 {c.result_sha256.slice(0, 8)}</p>
+      <pre class="text-xs mt-2 whitespace-pre-wrap break-all">{JSON.stringify(c.result, null, 2)}</pre>
+    {:else}
+      <p class="text-sm text-muted">未找到该编号的工具调用</p>
+    {/if}
+  </Drawer>
 
   {#if view?.holdings?.length}
     <h2 class="font-semibold text-sm">持仓止损</h2>

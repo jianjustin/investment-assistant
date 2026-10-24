@@ -59,6 +59,28 @@ export interface PlanShadow {
   status: string; outcome: PlanShadowOutcome
 }
 export interface PlanShadowView { session: string; since: string; calc_version: string; plans: PlanShadow[] }
+export interface AgentItem { text: string; refs: string[] }
+export interface AgentOutput {
+  action: 'buy' | 'pass'; summary: string
+  levels: Record<'entry_low' | 'entry_high' | 'stop' | 'target1', { value: string; refs: string[] }> | null
+  thesis: AgentItem[]
+}
+export interface AgentRunOk {
+  id: string; status: 'ok' | 'pass'; model: string; agent_version: string
+  output: AgentOutput | null
+  counter: { status: string; risks: AgentItem[]; dropped: number } | null
+  plan: Plan | null; input_tokens: number; output_tokens: number; created_at: string
+}
+export interface AgentRunFailed {
+  id: string; status: 'rejected' | 'error' | 'skipped'; reason: string | null; created_at: string
+}
+export type AgentRun = AgentRunOk | AgentRunFailed
+export interface AgentToolCall {
+  seq: number; phase: 'propose' | 'counter'; tool: string
+  args: Record<string, unknown>; result: Record<string, unknown>
+  result_sha256: string; called_at: string
+}
+export type AgentRunDetail = (AgentRunOk | AgentRunFailed) & { tool_calls: AgentToolCall[] }
 export interface DisciplineTrade {
   trade_id: string; ticker: string; track: 'rule' | 'own' | null
   flags: string[]; immature: string[]; r: number | null
@@ -98,6 +120,7 @@ export interface MarketContext {
 }
 export interface ExtendedUnit {
   ticker: string; signal_date: string; proposed_action: Action; rule_ids: string[]; plan: Plan | null
+  agent_status: string | null
 }
 export interface BackcheckRow {
   triggers: number; ticker_sessions: number; per_100: number; max_per_ticker: number; cluster_days: number
@@ -176,6 +199,9 @@ export const postFlow = (body: object) => post<{ status: string; record: CashFlo
 export const voidFlow = (id: string, reason: string) => post<CashFlow>(`/api/workbench/account/flows/${id}/void`, { reason })
 export const getPlanShadow = (since?: string) =>
   request<PlanShadowView>(`/api/workbench/plans/shadow${since ? `?since=${since}` : ''}`)
+export const getAgentRun = (id: string) => request<AgentRunDetail>(`/api/workbench/agent-runs/${id}`)
+export const rerunAgent = (ticker: string, signalDate: string) =>
+  post<AgentRunOk | AgentRunFailed>('/api/workbench/agent-runs', { ticker, signal_date: signalDate })
 export const getDiscipline = () => request<DisciplineView>('/api/workbench/discipline')
 export const getMonthly = () => request<{ reviews: MonthlyReview[] }>('/api/workbench/monthly-reviews')
 export const postMonthly = (body: object) => post<MonthlyReview>('/api/workbench/monthly-reviews', body)
@@ -199,6 +225,7 @@ export function finalAction(proposed: Action, choice: Choice): FinalAction {
 }
 
 export interface OwnPlanInput { entry_low: string; entry_high: string; stop: string; target1: string }
+export type Basis = 'rule' | 'own' | 'agent'
 
 export function levelsError(input: OwnPlanInput): string | null {
   const [low, high, stop, target1] = [input.entry_low, input.entry_high, input.stop, input.target1].map(Number)
@@ -208,13 +235,20 @@ export function levelsError(input: OwnPlanInput): string | null {
 }
 
 export function decisionPayload(unit: Unit, choice: Choice, reason: string, requestId: string,
-                                ownPlan: ({ request_id: string } & OwnPlanInput) | null = null) {
+                                ownPlan: ({ request_id: string } & OwnPlanInput) | null = null,
+                                basis: Basis = 'rule') {
+  const agentPlan = unit.agent && 'plan' in (unit.agent ?? {}) ? unit.agent.plan : null
+  const planId = choice === 'accept' && !ownPlan
+    ? (basis === 'agent'
+         ? (agentPlan && agentPlan.status === 'ok' ? agentPlan.id : null)
+         : (basis === 'rule' && unit.plan && unit.plan.status === 'ok' ? unit.plan.id : null))
+    : null
   return {
     request_id: requestId, ticker: unit.ticker, signal_date: unit.signal_date, candidate_ids: unit.candidate_ids,
     brief_id: unit.brief && unit.brief.status !== 'error' ? unit.brief.id : null,
     proposed_action: unit.proposed_action, final_action: finalAction(unit.proposed_action, choice),
     decision: choice, reason: reason.trim(),
-    plan_id: choice === 'accept' && !ownPlan && unit.plan && unit.plan.status === 'ok' ? unit.plan.id : null,
+    plan_id: planId,
     own_plan: ownPlan,
   }
 }
@@ -231,6 +265,13 @@ export const SECTOR_STATE_LABELS: Record<string, string> = { strong: '强', weak
 export const TIER_LABELS: Record<string, string> = { excellent_plus: '非常优秀', excellent: '优秀', viable: '可行', attention: '需关注' }
 export const FLAG_LABELS: Record<string, string> = { chase: '追高', early_take: '过早止盈', held_loser: '死扛亏损', unplanned: '计划外' }
 export const CHOICE_LABELS: Record<Choice, string> = { accept: '采纳', reject: '否决', downgrade: '降级为观察' }
+export const KIND_TEXT: Record<string, string> = { rule: '规则', own: '自定', agent: 'Agent' }
+export const AGENT_REASON_TEXT: Record<string, string> = {
+  disabled: '已关闭', not_configured: '未配置', quota_exhausted: '额度用尽', token_budget: '超出 token 上限',
+  stage_budget: '超出时限', max_attempts: '已达重试上限', malformed: '输出格式无效',
+  invalid_citation: '引用无效已作废', level_check: '价位校验未通过', tool_rounds_exceeded: '工具调用超限',
+  model_error: '模型调用失败', checkpoint_unavailable: '状态库未就绪',
+}
 
 export const ruleLabel = (id: string) => RULE_LABELS[id] ?? id
 
