@@ -690,3 +690,89 @@ def fill_filing_acceptance(conn, metas: list[dict[str, Any]]) -> int:
             'OR (items IS NULL AND %s::text[] IS NOT NULL))',
             (accepted, meta.get('items'), accession, accepted, meta.get('items'))).rowcount
     return filled
+
+
+# ---------------------------------------------------------------- agent track (P3 §3)
+
+_AGENT_RUN_COLUMNS = ('id, ticker, signal_date, pool, attempt, agent_version, provider, model, cutoff_at, '
+                      'status, reason, output, counter, plan_id, input_tokens, output_tokens, '
+                      'started_at, finished_at, created_at')
+
+
+def insert_agent_run(conn, run: dict[str, Any], calls: list[dict[str, Any]]) -> dict[str, Any]:
+    """The run row and all its tool calls, in the caller's transaction (§3.3 order:
+    plan, run, calls; the plan is inserted by the service before this call)."""
+    record = _one(conn,
+                  'INSERT INTO agent_runs (id, ticker, signal_date, pool, attempt, agent_version, provider, '
+                  'model, cutoff_at, status, reason, output, counter, plan_id, input_tokens, output_tokens, '
+                  'started_at, finished_at) '
+                  'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s) '
+                  f'RETURNING {_AGENT_RUN_COLUMNS}',
+                  (run['id'], run['ticker'], run['signal_date'], run['pool'], run['attempt'],
+                   run['agent_version'], run['provider'], run['model'], run['cutoff_at'], run['status'],
+                   run['reason'],
+                   _plan_json(run['output']) if run.get('output') is not None else None,
+                   _plan_json(run['counter']) if run.get('counter') is not None else None,
+                   run.get('plan_id'), run['input_tokens'], run['output_tokens'],
+                   run['started_at'], run['finished_at']))
+    for c in calls:
+        conn.execute('INSERT INTO agent_tool_calls (run_id, seq, phase, tool, args, result, result_sha256, '
+                     'called_at) VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)',
+                     (run['id'], c['seq'], c['phase'], c['tool'], _plan_json(c['args']),
+                      _plan_json(c['result']), c['result_sha256'], c['called_at']))
+    return record
+
+
+def agent_runs_for(conn, ticker: str, signal_date: date) -> list[dict[str, Any]]:
+    return _all(conn, f'SELECT {_AGENT_RUN_COLUMNS} FROM agent_runs WHERE ticker = %s AND signal_date = %s '
+                      'ORDER BY created_at, id', (ticker.upper(), signal_date))
+
+
+def latest_agent_run(conn, ticker: str, signal_date: date) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_AGENT_RUN_COLUMNS} FROM agent_runs WHERE ticker = %s AND signal_date = %s '
+                      'ORDER BY created_at DESC, id DESC LIMIT 1', (ticker.upper(), signal_date))
+
+
+def agent_run_by_id(conn, run_id) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_AGENT_RUN_COLUMNS} FROM agent_runs WHERE id = %s', (run_id,))
+
+
+def agent_tool_calls(conn, run_id) -> list[dict[str, Any]]:
+    return _all(conn, 'SELECT id, run_id, seq, phase, tool, args, result, result_sha256, called_at '
+                      'FROM agent_tool_calls WHERE run_id = %s ORDER BY seq', (run_id,))
+
+
+def list_agent_runs(conn, since: date) -> list[dict[str, Any]]:
+    """Run rows for the API list view: no result payloads, but a tool-call count each."""
+    return _all(conn, 'SELECT r.id, r.ticker, r.signal_date, r.pool, r.attempt, r.agent_version, r.provider, '
+                      'r.model, r.cutoff_at, r.status, r.reason, r.plan_id, r.input_tokens, r.output_tokens, '
+                      'r.started_at, r.finished_at, r.created_at, '
+                      '(SELECT count(*) FROM agent_tool_calls c WHERE c.run_id = r.id) AS tool_calls '
+                      'FROM agent_runs r WHERE r.signal_date >= %s ORDER BY r.created_at, r.id', (since,))
+
+
+def agent_tokens_on(conn, ny_date: date) -> int:
+    """Tokens of runs whose started_at falls on that New York date (§4 daily cap)."""
+    row = conn.execute("SELECT COALESCE(sum(input_tokens + output_tokens), 0) FROM agent_runs "
+                       "WHERE (started_at AT TIME ZONE 'America/New_York')::date = %s", (ny_date,)).fetchone()
+    return int(row[0] or 0)
+
+
+def agent_plan(conn, ticker: str, signal_date: date) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_PLAN_COLUMNS} FROM trade_plans WHERE ticker = %s AND signal_date = %s '
+                      "AND kind = 'agent' ORDER BY created_at DESC LIMIT 1", (ticker.upper(), signal_date))
+
+
+def candidate_groups_since(conn, since: date) -> list[dict[str, Any]]:
+    """open_candidate_groups' shape, but decided units included (agent coverage needs them all)."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            'SELECT c.id, c.ticker, c.signal_date, c.action, c.rule_id, c.rule_version, c.inputs, c.created_at '
+            'FROM signal_candidates c WHERE c.signal_date >= %s '
+            'ORDER BY c.signal_date DESC, c.ticker, c.created_at, c.rule_id', (since,))
+        rows = cur.fetchall()
+    groups: dict[tuple, dict[str, Any]] = {}
+    for row in rows:
+        key = (row['ticker'], row['signal_date'])
+        groups.setdefault(key, {'ticker': key[0], 'signal_date': key[1], 'candidates': []})['candidates'].append(row)
+    return list(groups.values())

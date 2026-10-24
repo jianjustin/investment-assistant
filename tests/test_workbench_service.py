@@ -539,7 +539,7 @@ def test_100_tickers_complete_with_timings(db):
     summary = service.run_batch(now=NOW, deps=deps(Sources()))
     assert len(summary['tickers']) == 100
     assert all(isinstance(v, (int, float)) for v in summary['timings'].values())
-    assert set(summary['timings']) == {'collect', 'regime', 'rules', 'total'}
+    assert set(summary['timings']) == {'collect', 'regime', 'rules', 'agent', 'total'}
     assert not any('batch_over_budget' in e for e in summary['errors'])
 
 
@@ -618,3 +618,262 @@ def test_manual_tickers_override_does_not_rewrite_tiers(db):
     assert db.execute("SELECT count(*) FROM pool_tiers WHERE tier = 'removed'").fetchone()[0] == 0
     assert repository.pool_latest(db) == {'AAA': {'tier': 'core', 'sector_etf': None},
                                           'BBB': {'tier': 'extended', 'sector_etf': None}}
+
+
+# ---------------------------------------------------------------- agent stage (P3 §8)
+
+from contextlib import nullcontext                                              # noqa: E402
+from langchain_core.language_models import BaseChatModel                        # noqa: E402
+from langchain_core.messages import AIMessage                                   # noqa: E402
+from langgraph.checkpoint.memory import InMemorySaver                           # noqa: E402
+
+
+def _agent_settings(**overrides):
+    from investment_assistant.workbench.agent import model as agent_model_module
+    values = {'provider': 'zhipu', 'model': 'glm-5.3', 'base_url': 'https://agent.test/v4',
+              'api_key': 'sk-test', 'daily_tokens': None, 'config_error': None}
+    values.update(overrides)
+    return agent_model_module.AgentSettings(**values)
+
+
+def agent_deps(make, responses, *, settings=None, **overrides):
+    d = deps(Sources())
+    d.agent_model = make(responses)
+    d.agent_checkpointer = lambda: nullcontext(InMemorySaver())
+    d.agent_settings = settings or _agent_settings()
+    for key, value in overrides.items():
+        setattr(d, key, value)
+    return d
+
+
+def _tool_msg(name, args):
+    return AIMessage(content='', tool_calls=[{'name': name, 'args': args, 'id': f'{name}-1'}])
+
+
+def _agent_buy(ref='call:1'):
+    return json.dumps({'action': 'buy', 'summary': '回踩修复放量',
+                       'levels': {'entry_low': {'value': 98.5, 'refs': [ref]},
+                                  'entry_high': {'value': 101.5, 'refs': [ref]},
+                                  'stop': {'value': 96.0, 'refs': [ref]},
+                                  'target1': {'value': 108.0, 'refs': [ref]}},
+                       'thesis': [{'text': '突破 20 日线', 'refs': [ref]}]}, ensure_ascii=False)
+
+
+def _ok_responses(ticker='NVDA', ref='call:1'):
+    return [_tool_msg('get_indicators', {'ticker': ticker}), AIMessage(content=_agent_buy(ref)),
+            _tool_msg('get_news', {'days': 7}), AIMessage(content=json.dumps(
+                {'risks': [{'text': '财报临近', 'refs': [ref]}]}))]
+
+
+def test_agent_stage_after_rule_plans(db, scripted_model):
+    summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, []))
+    assert summary['plans']['NVDA'] == 'inserted'          # 规则计划先入库，不受 Agent 影响
+    runs = repository.agent_runs_for(db, 'NVDA', SESSION)
+    assert [(r['status'], r['reason']) for r in runs] == [('error', 'model_error')]
+    assert summary['agent']['runs'] == {'NVDA': 'error: model_error'}
+
+
+def test_agent_order_main_before_extended(db, scripted_model):
+    from investment_assistant.workbench import pool as pool_module
+    for ticker in ('CCC', 'DDD'):   # 分层记录：扩展池；DDD 另有持仓 → 主列表
+        db.execute("INSERT INTO pool_tiers (ticker, tier, effective_session, recorded_at) "
+                   "VALUES (%s, 'extended', %s, %s)", [ticker, SESSION - timedelta(days=1), NOW])
+    service.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'DDD', 'side': 'buy', 'quantity': '10',
+                       'price': '100.00', 'executed_at': '2026-09-20T15:00:00+00:00'}, now=NOW)
+    bad = json.dumps({'action': 'buy', 'summary': 'x',
+                      'levels': {k: {'value': v, 'refs': ['call:99']} for k, v in
+                                 (('entry_low', 98.5), ('entry_high', 101.5), ('stop', 96.0), ('target1', 108.0))},
+                      'thesis': [{'text': 't', 'refs': ['call:99']}]})
+    unit_replies = [_tool_msg('get_indicators', {'ticker': 'X'}), AIMessage(content=bad)]
+    summary = service.run_batch(pool=pool_module.Pool(core=('AAA', 'BBB'), extended=('CCC', 'DDD')),
+                                now=NOW, deps=agent_deps(scripted_model, unit_replies * 4))
+    assert list(summary['agent']['runs']) == ['AAA', 'BBB', 'DDD', 'CCC']   # 核心与持仓字母序，再扩展
+
+
+def test_agent_ok_writes_plan_run_calls(db, scripted_model):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    plan = repository.agent_plan(db, 'NVDA', SESSION)
+    assert plan['kind'] == 'agent' and plan['plan_version'] == 'agent-1'
+    run = repository.latest_agent_run(db, 'NVDA', SESSION)
+    assert run['status'] == 'ok' and str(run['plan_id']) == str(plan['id'])
+    calls = repository.agent_tool_calls(db, run['id'])
+    assert [(c['seq'], c['phase'], c['tool']) for c in calls] == \
+        [(1, 'propose', 'get_indicators'), (2, 'counter', 'get_news')]
+
+
+def test_existing_ok_or_pass_not_rerun(db, scripted_model):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    again = service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=5),
+                              deps=agent_deps(scripted_model, []))     # 无回复可用：重跑即抛错
+    assert len(repository.agent_runs_for(db, 'NVDA', SESSION)) == 1
+    assert again['agent']['runs'] == {}
+    assert again['plans']['NVDA'] == 'existing'
+
+
+def test_rerun_same_session_no_duplicate_plans(db, scripted_model):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=5),
+                      deps=agent_deps(scripted_model, []))
+    assert db.execute("SELECT count(*) FROM trade_plans WHERE kind = 'agent'").fetchone()[0] == 1
+
+
+def test_failed_unit_retried_until_max_attempts(db, scripted_model):
+    for i in range(3):   # 三次批处理均失败
+        service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=10 * i),
+                          deps=agent_deps(scripted_model, []))
+    assert [r['status'] for r in repository.agent_runs_for(db, 'NVDA', SESSION)] == ['error'] * 3
+    service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=40),
+                      deps=agent_deps(scripted_model, []))
+    runs = repository.agent_runs_for(db, 'NVDA', SESSION)
+    assert (runs[3]['status'], runs[3]['reason']) == ('skipped', 'max_attempts')   # 第四次只记一次
+    service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=50),
+                      deps=agent_deps(scripted_model, []))
+    assert len(repository.agent_runs_for(db, 'NVDA', SESSION)) == 4               # 第五次不再写
+
+
+class LateClock:
+    """First call is the batch start; everything after is past the agent deadline."""
+
+    def __init__(self):
+        self.first = True
+
+    def __call__(self):
+        if self.first:
+            self.first = False
+            return 0.0
+        return float(service.AGENT_DEADLINE_S)
+
+
+def test_stage_budget_skips_remaining(db, scripted_model):
+    service.run_batch(tickers=['NVDA'], now=NOW,
+                      deps=agent_deps(scripted_model, [], clock=LateClock()))
+    runs = repository.agent_runs_for(db, 'NVDA', SESSION)
+    assert [(r['status'], r['reason']) for r in runs] == [('skipped', 'stage_budget')]
+
+
+class _QuotaError(Exception):
+    status_code = 429
+
+    def __init__(self):
+        super().__init__('Error code: 429 - quota')
+        self.body = {'error': {'code': '1308', 'message': '已达到 5 小时的使用上限'}}
+
+
+class QuotaModel(BaseChatModel):
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        raise _QuotaError()
+
+    @property
+    def _llm_type(self):
+        return 'quota-test'
+
+
+def test_quota_exhausted_skips_rest(db, scripted_model):
+    d = agent_deps(scripted_model, [])
+    d.agent_model = QuotaModel()
+    summary = service.run_batch(tickers=['MU', 'NVDA'], now=NOW, deps=d)
+    assert summary['agent']['quota_exhausted'] is True
+    assert summary['agent']['runs'] == {'MU': 'error: quota_exhausted', 'NVDA': 'skipped: quota_exhausted'}
+    assert db.execute("SELECT count(*) FROM trade_plans WHERE kind = 'rule'").fetchone()[0] == 2
+    assert summary['plans'] == {'MU': 'inserted', 'NVDA': 'inserted'}   # 规则计划照常
+
+
+def test_not_configured_makes_no_model_call(db, scripted_model):
+    d = agent_deps(scripted_model, [])                     # 若被调用即抛错
+    d.agent_settings = _agent_settings(api_key=None)
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=d)
+    run = repository.latest_agent_run(db, 'NVDA', SESSION)
+    assert (run['status'], run['reason']) == ('skipped', 'not_configured')
+
+
+def test_disabled_provider(db, scripted_model):
+    d = agent_deps(scripted_model, [])
+    d.agent_settings = _agent_settings(provider='off')
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=d)
+    run = repository.latest_agent_run(db, 'NVDA', SESSION)
+    assert (run['status'], run['reason']) == ('skipped', 'disabled')
+
+
+def test_config_error_reported(db, scripted_model):
+    d = agent_deps(scripted_model, [])
+    d.agent_settings = _agent_settings(config_error='WORKBENCH_AGENT_DAILY_TOKENS 必须是正整数')
+    summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=d)
+    run = repository.latest_agent_run(db, 'NVDA', SESSION)
+    assert (run['status'], run['reason']) == ('skipped', 'not_configured')
+    assert any(str(e).startswith('agent_config:') for e in summary['errors'])
+
+
+def test_token_budget_skips(db, scripted_model):
+    d = agent_deps(scripted_model, _ok_responses('MU'))
+    d.agent_settings = _agent_settings(daily_tokens=10)    # 首个运行耗 60 token
+    summary = service.run_batch(tickers=['MU', 'NVDA'], now=NOW, deps=d)
+    assert repository.latest_agent_run(db, 'MU', SESSION)['status'] == 'ok'
+    nvda = repository.latest_agent_run(db, 'NVDA', SESSION)
+    assert (nvda['status'], nvda['reason']) == ('skipped', 'token_budget')
+
+
+class FlatSources(Sources):
+    """Constant prices: trend_reclaim never fires, ATR14 is 0 (rule plan skips)."""
+
+    def bars(self, ticker, start, end_exclusive):
+        if ticker == 'SPY':
+            return super().bars(ticker, start, end_exclusive)
+        days = [add_trading_days(SESSION, -(59 - i)) for i in range(60)]
+        index = pd.DatetimeIndex([pd.Timestamp(d, tz='America/New_York') for d in days])
+        return pd.DataFrame({'Open': [100.0] * 60, 'High': [100.0] * 60, 'Low': [100.0] * 60,
+                             'Close': [100.0] * 60, 'Adj Close': [100.0] * 60, 'Volume': [1000] * 60,
+                             'Stock Splits': [0.0] * 60}, index=index)
+
+
+def test_atr_skipped_unit_still_gets_agent(db, scripted_model):
+    db.execute("INSERT INTO signal_candidates (ticker, signal_date, action, rule_id, rule_version, inputs) "
+               "VALUES ('NVDA', %s, 'buy', 'trend_reclaim', '1', '{}')", [SESSION])
+    d = agent_deps(scripted_model, _ok_responses())
+    d.bar_fetcher, d.news_fetcher, d.filing_source, d.earnings_fetcher = \
+        (lambda *a, **k: FlatSources().bars(*a, **k), FlatSources().news, FlatSources(),
+         FlatSources().earnings)
+    summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=d)
+    assert summary['plans']['NVDA'].startswith('skip: atr')   # 规则计划因 ATR 跳过
+    run = repository.latest_agent_run(db, 'NVDA', SESSION)
+    assert run['status'] == 'ok'                              # Agent 照跑
+
+
+def test_checkpoint_unavailable(db, scripted_model):
+    import psycopg
+
+    def boom():
+        raise psycopg.OperationalError('checkpoint db down')
+
+    d = agent_deps(scripted_model, [])
+    d.agent_checkpointer = boom
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=d)
+    run = repository.latest_agent_run(db, 'NVDA', SESSION)
+    assert (run['status'], run['reason']) == ('error', 'checkpoint_unavailable')
+
+
+def test_summary_agent_keys(db, scripted_model):
+    summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    assert summary['agent'] == {'runs': {'NVDA': 'ok'}, 'tokens': {'input': 40, 'output': 20},
+                                'quota_exhausted': False}
+    assert 'agent' in summary['sources'] and 'agent' in summary['timings']
+
+
+def test_manual_run_conflict_and_not_buy(db, scripted_model):
+    service.run_batch(tickers=['NVDA'], now=NOW,
+                      deps=agent_deps(scripted_model, [], settings=_agent_settings(provider='off')))
+    breakdown = BreakdownSources()
+    service.run_batch(tickers=['AMD'], now=NOW, deps=service.Deps(
+        bar_fetcher=breakdown.bars, news_fetcher=breakdown.news, filing_source=breakdown,
+        brief_client=lambda **_: (None, {'error': 'no key'}), earnings_fetcher=breakdown.earnings,
+        agent_settings=_agent_settings(provider='off')))
+    with pytest.raises(ValueError):
+        service.run_agent('AMD', SESSION, now=NOW)              # sell 单元
+    with pytest.raises(ValueError):
+        service.run_agent('MU', SESSION, now=NOW)               # 不存在
+    run = service.run_agent('NVDA', SESSION, now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    assert run['status'] == 'ok' and run['plan_id'] is not None
+    with pytest.raises(service.AgentConflict):
+        service.run_agent('NVDA', SESSION, now=NOW, deps=agent_deps(scripted_model, []))

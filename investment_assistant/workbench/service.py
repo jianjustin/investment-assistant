@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import os
+import uuid
 import time as _time_module
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from decimal import Decimal
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -15,6 +16,9 @@ from investment_assistant.data.calendar import is_trading_day
 from investment_assistant.db import connect, list_watchlist_items
 from investment_assistant.workbench import (account, bars, briefs, earnings, exits, ledger, monthly, news,
                                                plans, positions, repository, review, rules, synthesis)
+from investment_assistant.workbench.agent import graph as agent_graph
+from investment_assistant.workbench.agent import model as agent_model
+from investment_assistant.workbench.agent import tools as agent_tools
 from investment_assistant.workbench import macro as macro_module
 from investment_assistant.workbench import pool as pool_module
 from investment_assistant.workbench import regime as regime_module
@@ -25,6 +29,8 @@ NY = ZoneInfo('America/New_York')
 BENCHMARK = 'SPY'
 ETF_TICKERS = pool_module.SECTOR_ETFS
 BATCH_BUDGET_S = 1800
+AGENT_DEADLINE_S = 1500     # no new agent unit starts after this many seconds since batch start (§8.1)
+AGENT_MAX_ATTEMPTS = 3      # a failed unit runs at most this many times per batch re-run cycle
 HISTORY_DAYS = 420          # calendar days fetched; covers MA200 plus look-backs
 FILING_LOOKBACK_DAYS = 10
 NEWS_LOOKBACK_DAYS = 7
@@ -45,6 +51,9 @@ class Deps:
     earnings_fetcher: Callable | None = None
     macro_fetcher: Callable | None = None
     clock: Callable[[], float] | None = None
+    agent_model: Any = None                 # scripted model in tests; built from settings when None
+    agent_checkpointer: Callable[[], Any] | None = None
+    agent_settings: Any = None              # AgentSettings; settings_from_env() when None
 
 
 def connection():
@@ -223,7 +232,8 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         'pool': {'core': len(pool.core), 'extended': len(pool.extended), 'holdings': len(held),
                  'changes': tier_changes},
         'etfs': {}, 'macro': {}, 'regime': None,
-        'sources': {'bars': [], 'news': [], 'earnings': [], 'sec': [], 'etf_bars': [], 'fred': [], 'regime': []},
+        'sources': {'bars': [], 'news': [], 'earnings': [], 'sec': [], 'etf_bars': [], 'fred': [],
+                    'regime': [], 'agent': []},
         'timings': {}}
     if not pool.core:
         summary['errors'].append('core_empty')
@@ -402,6 +412,7 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
             entry['error'] = '; '.join(filter(None, [entry['error'], f'rules: {exc}']))
             summary['errors'].append(f'{ticker} rules: {exc}')
     summary['timings']['rules'] = round(clock() - t_rules, 1)
+    _agent_stage(session, now=now, deps=deps, summary=summary, started=started, clock=clock)
     summary['timings']['total'] = round(clock() - started, 1)
     if summary['timings']['total'] > BATCH_BUDGET_S:
         summary['errors'].append(f"batch_over_budget: {summary['timings']['total']}")
@@ -897,3 +908,220 @@ def list_monthly(limit: int = 12) -> list[dict[str, Any]]:
 def list_weekly(limit: int = 20) -> list[dict[str, Any]]:
     with _tx() as conn:
         return review.list_weekly(conn, limit)
+
+
+# ---------------------------------------------------------------- agent track (P3 §8)
+
+def _read_only(fn):
+    """Run fn(conn) inside a pass-through transaction; agent tool reads only."""
+    with _tx() as conn:
+        return fn(conn)
+
+
+def _agent_units(conn, session: date, *, now: datetime) -> list[dict[str, Any]]:
+    """§8.1 1–2: this session's undecided, conflict-free buy units (ATR-skipped rule
+    plans included); main-list units first, then extended, each alphabetical."""
+    main: list[dict[str, Any]] = []
+    extended: list[dict[str, Any]] = []
+    for group in repository.candidate_groups_since(conn, session):
+        if group['signal_date'] != session:
+            continue
+        ticker = group['ticker']
+        if repository.decision_head(conn, ticker, group['signal_date']) is not None:
+            continue
+        book = _book(conn, ticker)
+        unit = synthesis.synthesize(ticker, group['signal_date'], group['candidates'],
+                                    holding=book['position'] is not None,
+                                    market_status=repository.market_status(conn, group['signal_date']), now=now)
+        if unit is None or unit['proposed_action'] != 'buy' or 'conflict' in unit['labels']:
+            continue
+        is_extended = _unit_is_extended(conn, ticker, group['signal_date'],
+                                        held=book['position'] is not None, now=now)
+        entry = repository.pool_entry_at(conn, ticker, group['signal_date'], cutoff_at=now)
+        item = {'ticker': ticker, 'signal_date': group['signal_date'],
+                'pool': 'extended' if is_extended else 'main',
+                'pool_tier': entry['tier'] if entry else 'core'}
+        (extended if is_extended else main).append(item)
+    main.sort(key=lambda u: u['ticker'])
+    extended.sort(key=lambda u: u['ticker'])
+    return main + extended
+
+
+def _agent_run_row(unit: dict, *, settings, attempt: int, now: datetime, status: str,
+                   run_id: str | None = None, reason: str | None = None, output: dict | None = None,
+                   counter: dict | None = None, plan_id=None, input_tokens: int = 0,
+                   output_tokens: int = 0) -> dict:
+    return {'id': run_id or str(uuid.uuid4()), 'ticker': unit['ticker'],
+            'signal_date': unit['signal_date'], 'pool': unit['pool'], 'attempt': attempt,
+            'agent_version': agent_graph.AGENT_VERSION, 'provider': settings.provider,
+            'model': settings.model, 'cutoff_at': now, 'status': status, 'reason': reason,
+            'output': output, 'counter': counter, 'plan_id': plan_id,
+            'input_tokens': input_tokens, 'output_tokens': output_tokens,
+            'started_at': now, 'finished_at': now}
+
+
+def _skip(unit: dict, reason: str, *, now: datetime, settings, attempt: int) -> dict:
+    """A skipped unit still gets its agent_runs row: every candidate has an answer or a reason."""
+    with _tx() as conn:
+        return repository.insert_agent_run(
+            conn, _agent_run_row(unit, settings=settings, attempt=attempt, now=now,
+                                 status='skipped', reason=reason), [])
+
+
+def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt: int) -> dict:
+    """One unit through the graph. Plan, run and calls share one transaction; a model
+    or checkpoint failure lands as this unit's error row and never propagates."""
+    from investment_assistant.config import load_config
+
+    run_id = str(uuid.uuid4())
+    ticker, signal_date = unit['ticker'], unit['signal_date']
+
+    def row(status: str, **kwargs) -> dict:
+        return _agent_run_row(unit, settings=settings, attempt=attempt, now=now, status=status,
+                              run_id=run_id, **kwargs)
+
+    def write(run_row: dict, calls: list[dict] | None = None) -> dict:
+        with _tx() as conn:
+            return repository.insert_agent_run(conn, run_row, calls or [])
+
+    try:
+        with _tx() as conn:
+            bars = repository.read_bars(conn, ticker, signal_date, cutoff_at=now)
+        last_close = Decimal(str(bars[-1]['close']))
+        ctx = agent_tools.ToolContext(ticker=ticker, session=signal_date, cutoff_at=now, read=_read_only)
+        with ExitStack() as stack:
+            try:
+                factory = deps.agent_checkpointer or (
+                    lambda: agent_model.checkpointer(os.environ.get('INVESTMENT_ASSISTANT_DATABASE_URL', '')))
+                checkpointer = stack.enter_context(factory())
+            except Exception:
+                return write(row('error', reason='checkpoint_unavailable'))
+            model_obj = deps.agent_model if deps.agent_model is not None else agent_model.chat_model(settings)
+            try:
+                result = agent_graph.run_unit(unit=unit, ctx=ctx, model=model_obj,
+                                              checkpointer=checkpointer, run_id=run_id,
+                                              last_close=last_close, now=lambda: now)
+            except Unavailable:
+                raise
+            except Exception as exc:
+                reason, _detail = agent_model.classify_error(exc, settings.api_key)
+                return write(row('error', reason=reason))
+        if result['status'] == 'ok':
+            with _tx() as conn:   # §3.3: plan, run, calls in one transaction
+                levels = {key: Decimal(item['value']) for key, item in result['output']['levels'].items()}
+                plan = plans.build_agent_plan(
+                    levels=levels, agent_run_id=run_id, model=settings.model, ticker=ticker,
+                    signal_date=signal_date, bars=bars,
+                    earnings_row=repository.latest_earnings(conn, ticker, cutoff_at=now),
+                    snapshot=repository.snapshot_at(conn, signal_date, cutoff_at=now),
+                    exposure=exposure(conn, signal_date, cutoff_at=now, ticker=ticker),
+                    params=load_config().workbench,
+                    context=plan_context(conn, ticker, signal_date, now=now))
+                stored = repository.store_plan(conn, plan)
+                return repository.insert_agent_run(
+                    conn, row('ok', plan_id=stored['record']['id'], output=result['output'],
+                              counter=result['counter'], input_tokens=result['input_tokens'],
+                              output_tokens=result['output_tokens']), result['calls'])
+        return write(row(result['status'], reason=result['reason'], output=result['output'],
+                         counter=result['counter'], input_tokens=result['input_tokens'],
+                         output_tokens=result['output_tokens']), result['calls'])
+    except Unavailable:
+        raise
+    except Exception as exc:   # the unexpected: this unit only, never the batch
+        reason, _ = agent_model.classify_error(exc, settings.api_key)
+        return write(row('error', reason=reason))
+
+
+def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str, Any],
+                 started: float, clock: Callable[[], float]) -> None:
+    """The agent track after all rule plans (§8.1): skip rules, then one unit at a time."""
+    t_agent = clock()
+    settings = deps.agent_settings if deps.agent_settings is not None else agent_model.settings_from_env()
+    if settings.config_error:
+        summary['errors'].append(f'agent_config: {settings.config_error}')
+    unavailable = agent_model.unavailable_reason(settings)
+    ny_date = now.astimezone(NY).date()
+    runs: dict[str, str] = {}
+    tokens = {'input': 0, 'output': 0}
+    quota_exhausted = False
+
+    def record(unit: dict, run: dict) -> None:
+        nonlocal quota_exhausted
+        runs[unit['ticker']] = run['status'] if run['status'] in ('ok', 'pass') \
+            else f"{run['status']}: {run['reason']}"
+        tokens['input'] += run['input_tokens'] or 0
+        tokens['output'] += run['output_tokens'] or 0
+        if run['status'] == 'error':
+            summary['sources']['agent'].append(unit['ticker'])
+            if run['reason'] == 'quota_exhausted':
+                quota_exhausted = True
+
+    with _tx() as conn:
+        units = _agent_units(conn, session, now=now)
+
+    for unit in units:
+        try:
+            with _tx() as conn:
+                prior = repository.agent_runs_for(conn, unit['ticker'], unit['signal_date'])
+            if any(r['status'] in ('ok', 'pass') for r in prior):
+                continue
+            if any(r['status'] == 'skipped' and r['reason'] == 'max_attempts' for r in prior):
+                continue
+            attempt = len(prior) + 1
+            if clock() - started >= AGENT_DEADLINE_S:
+                run = _skip(unit, 'stage_budget', now=now, settings=settings, attempt=attempt)
+            elif unavailable is not None:
+                run = _skip(unit, unavailable, now=now, settings=settings, attempt=attempt)
+            elif quota_exhausted:
+                run = _skip(unit, 'quota_exhausted', now=now, settings=settings, attempt=attempt)
+            elif len(prior) >= AGENT_MAX_ATTEMPTS:
+                run = _skip(unit, 'max_attempts', now=now, settings=settings, attempt=attempt)
+            elif settings.daily_tokens is not None:
+                with _tx() as conn:
+                    used = repository.agent_tokens_on(conn, ny_date)
+                if used >= settings.daily_tokens:
+                    run = _skip(unit, 'token_budget', now=now, settings=settings, attempt=attempt)
+                else:
+                    run = _run_agent_unit(unit, now=now, deps=deps, settings=settings, attempt=attempt)
+            else:
+                run = _run_agent_unit(unit, now=now, deps=deps, settings=settings, attempt=attempt)
+            record(unit, run)
+        except Unavailable:
+            raise
+        except Exception as exc:   # §2: an agent failure never drags the rule track
+            summary['errors'].append(f"{unit['ticker']} agent: {exc}")
+
+    summary['agent'] = {'runs': runs, 'tokens': tokens, 'quota_exhausted': quota_exhausted}
+    summary['timings']['agent'] = round(clock() - t_agent, 1)
+
+
+class AgentConflict(RuntimeError):
+    """The unit already has an ok/pass agent run."""
+
+
+def run_agent(ticker: str, signal_date: date, *, now: datetime, deps: Deps | None = None) -> dict[str, Any]:
+    """Manual single-unit run (§10.3): not a conflict-free buy unit -> ValueError,
+    already ok/pass -> AgentConflict; otherwise one run at the given cutoff."""
+    deps = deps or Deps()
+    settings = deps.agent_settings if deps.agent_settings is not None else agent_model.settings_from_env()
+    with _tx() as conn:
+        group = repository.unit_candidates(conn, ticker, signal_date)
+        if not group:
+            raise ValueError(f'{ticker} {signal_date} 没有候选，不是决策单元')
+        book = _book(conn, ticker)
+        unit = synthesis.synthesize(ticker, signal_date, group, holding=book['position'] is not None,
+                                    market_status=repository.market_status(conn, signal_date), now=now)
+        if unit is None or unit['proposed_action'] != 'buy' or 'conflict' in unit['labels']:
+            raise ValueError(f'{ticker} {signal_date} 不是无冲突的买入单元')
+        prior = repository.agent_runs_for(conn, ticker, signal_date)
+        if any(r['status'] in ('ok', 'pass') for r in prior):
+            raise AgentConflict(f'{ticker} {signal_date} 已有 Agent 建议')
+        extended = _unit_is_extended(conn, ticker, signal_date, held=book['position'] is not None, now=now)
+        entry = repository.pool_entry_at(conn, ticker, signal_date, cutoff_at=now)
+        agent_unit = {'ticker': unit['ticker'], 'signal_date': signal_date,
+                      'pool': 'extended' if extended else 'main',
+                      'pool_tier': entry['tier'] if entry else 'core'}
+    unavailable = agent_model.unavailable_reason(settings)
+    if unavailable is not None:
+        return _skip(agent_unit, unavailable, now=now, settings=settings, attempt=len(prior) + 1)
+    return _run_agent_unit(agent_unit, now=now, deps=deps, settings=settings, attempt=len(prior) + 1)

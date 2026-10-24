@@ -619,3 +619,20 @@ def test_missing_tables_lists_019(workbench_db):
     assert repository.missing_tables(workbench_db) == []
     workbench_db.execute('DROP TABLE agent_tool_calls')
     assert 'agent_tool_calls' in repository.missing_tables(workbench_db)
+
+
+def test_postgres_saver_setup_in_disposable_schema(workbench_db):
+    import os
+    from investment_assistant.workbench.agent import model
+    base = os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']
+    schema = f'cp_{uuid.uuid4().hex[:8]}'
+    workbench_db.execute(f'CREATE SCHEMA {schema}')
+    workbench_db.commit()   # setup_checkpoints uses its own connection: the schema must be visible
+    try:
+        model.setup_checkpoints(f'{base}?options=-csearch_path%3D{schema}')
+        workbench_db.execute(f'SET search_path TO {schema}')
+        assert workbench_db.execute("SELECT to_regclass('checkpoints')").fetchone()[0] is not None
+    finally:
+        workbench_db.rollback()
+        workbench_db.execute(f'DROP SCHEMA {schema} CASCADE')
+        workbench_db.commit()

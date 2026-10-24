@@ -60,3 +60,28 @@ def test_chat_model_points_at_base_url():
     m = model.chat_model(s)
     assert m.model_name == 'glm-5.3'
     assert m.openai_api_base == 'https://zhipu.example/v4'
+
+
+def test_cli_dispatch(monkeypatch, capsys):
+    import json as _json
+    import uuid as _uuid
+    from datetime import UTC, date, datetime
+    from investment_assistant.workbench.agent import __main__ as cli
+    from investment_assistant.workbench import service
+
+    monkeypatch.setenv('INVESTMENT_ASSISTANT_DATABASE_URL', 'postgresql://agent.test/db')
+    seen = {}
+    monkeypatch.setattr(model, 'setup_checkpoints', lambda url: seen.setdefault('setup', url))
+    assert cli.main(['setup']) == 0
+    assert seen['setup'] == 'postgresql://agent.test/db'
+    assert 'checkpoint tables ready' in capsys.readouterr().out
+
+    def fake_run_agent(ticker, signal_date, *, now, deps=None):
+        seen['run'] = (ticker, signal_date, isinstance(now, datetime))
+        return {'id': _uuid.uuid4(), 'status': 'ok', 'reason': None}
+
+    monkeypatch.setattr(service, 'run_agent', fake_run_agent)
+    assert cli.main(['run', '--ticker', 'nvda', '--date', '2026-10-21']) == 0
+    assert seen['run'] == ('NVDA', date(2026, 10, 21), True)
+    out = _json.loads(capsys.readouterr().out.strip())
+    assert out['status'] == 'ok' and out['reason'] is None and out['id']
