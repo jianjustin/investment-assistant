@@ -15,6 +15,7 @@ from investment_assistant.config import WorkbenchConfig
 from investment_assistant.data.calendar import add_trading_days
 
 PLAN_VERSION = 'plan-1'
+AGENT_VERSION = 'agent-1'   # the agent track's plan version; graph.py re-exports it
 CONTEXT_VERSION = 'context-1'
 ENTRY_ATR = Decimal('0.5')
 STOP_ATR = Decimal('2')
@@ -228,4 +229,34 @@ def build_own_plan(*, rule_plan: dict[str, Any] | None, levels: dict[str, Decima
         'sizing': sizing, 'status': 'ok', 'invalid_reasons': [],
         'warnings': [*warnings, *invalid, *size_invalid, *context_flags(context)],
         'inputs': _freeze_inputs(_inputs(bars, earnings_row, snapshot, exposure), context),
+    }
+
+
+def build_agent_plan(*, levels: dict[str, Decimal], agent_run_id: str, model: str, ticker: str,
+                     signal_date: date, bars: list[dict[str, Any]], earnings_row: dict[str, Any] | None,
+                     snapshot: dict[str, Any] | None, exposure: dict[str, Any],
+                     params: WorkbenchConfig, context: dict | None = None) -> dict[str, Any]:
+    """An ok agent suggestion becomes a plan: its four levels, sizing from the entry
+    band midpoint (like an own plan); no ATR freezes 0, so the trailing stop
+    degenerates to breakeven (spec §7)."""
+    valid_from, valid_until = validity(signal_date)
+    invalid, warnings = earnings_flags(earnings_row, signal_date=signal_date, valid_from=valid_from,
+                                       valid_until=valid_until)
+    atr = _freeze(atr14(bars)) if (raw := atr14(bars)) is not None else None
+    if atr is None:
+        atr = Decimal(0)
+    ref_price = _freeze(_dec(bars[-1]['close']))
+    entry_mid = (levels['entry_low'] + levels['entry_high']) / 2
+    sizing, size_invalid = size(snapshot=snapshot, ref_price=entry_mid, stop=levels['stop'],
+                                entry_high=levels['entry_high'], ticker_value=exposure['ticker_value'],
+                                total_value=exposure['total_value'], params=params)
+    invalid_reasons = [*invalid, *size_invalid]
+    inputs = _freeze_inputs(_inputs(bars, earnings_row, snapshot, exposure), context)
+    return {
+        'ticker': ticker, 'signal_date': signal_date, 'kind': 'agent', 'based_on_id': None,
+        'plan_version': AGENT_VERSION, 'ref_price': ref_price, 'atr': atr, **levels,
+        'trail_atr_multiple': TRAIL_ATR_MULTIPLE, 'valid_from': valid_from, 'valid_until': valid_until,
+        'sizing': sizing, 'status': 'invalid' if invalid_reasons else 'ok',
+        'invalid_reasons': invalid_reasons, 'warnings': [*warnings, *context_flags(context)],
+        'inputs': {**inputs, 'agent_run_id': agent_run_id, 'model': model},
     }

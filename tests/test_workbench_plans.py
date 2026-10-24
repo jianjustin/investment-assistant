@@ -270,3 +270,47 @@ def test_own_plan_freezes_context_too():
                                snapshot=_snapshot(), exposure=_exposure(), params=PARAMS, context=CONTEXT)
     assert own['inputs']['context'] == CONTEXT
     assert 'regime_risk_off' in own['warnings'] and 'sector_weak' in own['warnings']
+
+
+def _agent_levels(**overrides):
+    levels = {'entry_low': Decimal('98'), 'entry_high': Decimal('102'), 'stop': Decimal('94'),
+              'target1': Decimal('110')}
+    levels.update(overrides)
+    return levels
+
+
+def _agent_plan(**overrides):
+    args = {'levels': _agent_levels(), 'agent_run_id': 'run-1', 'model': 'glm-5.3', 'ticker': 'NVDA',
+            'signal_date': date(2026, 10, 21), 'bars': _bars(15), 'earnings_row': None,
+            'snapshot': _snapshot(), 'exposure': _exposure(), 'params': PARAMS}
+    args.update(overrides)
+    return plans.build_agent_plan(**args)
+
+
+def test_agent_plan_fields():
+    plan = _agent_plan()
+    assert plan['kind'] == 'agent' and plan['plan_version'] == 'agent-1' and plan['based_on_id'] is None
+    assert (plan['valid_from'], plan['valid_until']) == plans.validity(date(2026, 10, 21))
+    assert plan['inputs']['agent_run_id'] == 'run-1' and plan['inputs']['model'] == 'glm-5.3'
+    assert plan['status'] == 'ok' and plan['invalid_reasons'] == []
+    assert plan['ref_price'] == Decimal('100.000000') and plan['atr'] == Decimal('2.000000')
+    assert plan['entry_low'] == Decimal('98')   # levels land flat, like rule plans
+
+
+def test_agent_plan_sizes_from_entry_midpoint():
+    plan = _agent_plan(levels=_agent_levels(entry_low=Decimal('110'), entry_high=Decimal('120'),
+                                            stop=Decimal('104'), target1=Decimal('140')))
+    # 风险按入场区间中点 115 计：每股 115-104=11 → 1000/11=90 股（按信号收盘 100 会是负风险）
+    assert plan['sizing']['shares'] == 90 and plan['sizing']['applied_cap'] == 'risk'
+    assert plan['status'] == 'ok'
+
+
+def test_agent_plan_earnings_in_validity_invalid():
+    plan = _agent_plan(earnings_row=_earnings(date(2026, 10, 22)))
+    assert plan['status'] == 'invalid'
+    assert 'earnings_in_validity' in plan['invalid_reasons']
+
+
+def test_agent_plan_no_atr_uses_zero():
+    plan = _agent_plan(bars=_bars(14))
+    assert plan['atr'] == Decimal('0')
