@@ -27,8 +27,8 @@ def _agent_field(agent: dict[str, Any] | None) -> dict[str, Any] | None:
         'first_risk': risks[0].get('text') if risks and isinstance(risks[0], dict) else None,
         'entry_low': plan.get('entry_low'), 'entry_high': plan.get('entry_high'),
         'stop': plan.get('stop'), 'target1': plan.get('target1'),
-        'shares': sizing.get('shares'), 'plan_status': plan.get('status'),
-        'invalid_reasons': plan.get('invalid_reasons') or [],
+        'shares': sizing.get('shares'), 'sizing_status': sizing.get('status'),
+        'plan_status': plan.get('status'), 'invalid_reasons': plan.get('invalid_reasons') or [],
     }
 
 

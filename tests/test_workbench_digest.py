@@ -329,3 +329,13 @@ def test_digest_limits_with_agent_lines():
             assert len(field.value) <= 1024
         total = len(message.title) + sum(len(f.name) + len(f.value) for f in message.fields) + len(message.footer)
         assert total <= 6000
+
+
+def test_agent_line_without_snapshot_omits_shares():
+    no_equity = plan_row(kind='agent', plan_version='agent-1',
+                         sizing={'status': 'no_equity', 'shares': None, 'risk_amount': None,
+                                 'snapshot_as_of': None})
+    agent = {**agent_ok(), 'plan': no_equity}
+    text = all_text(templates.workbench_digest(build(units=[unit(plan=plan_row(), agent=agent)])))
+    assert 'None' not in text
+    assert '缺资金快照，无法计算' in text

@@ -232,8 +232,10 @@ def _agent_line(agent: dict | None) -> str:
     if not agent:
         return ''
     if agent['status'] == 'ok':
+        shares = (f"{agent['shares']} 股" if agent.get('shares') is not None
+                  else '缺资金快照，无法计算')   # same wording as the rule plan line
         line = (f"Agent（{agent['model']}）买入 · 区间 {agent['entry_low']}–{agent['entry_high']}"
-                f" · 止损 {agent['stop']} · T1 {agent['target1']} · {agent['shares']} 股；{agent['summary']}")
+                f" · 止损 {agent['stop']} · T1 {agent['target1']} · {shares}；{agent['summary']}")
         if agent.get('first_risk'):
             line += f"；反方：{agent['first_risk']}"
         voided = '；'.join(f"作废 {r}" for r in agent.get('invalid_reasons') or [])

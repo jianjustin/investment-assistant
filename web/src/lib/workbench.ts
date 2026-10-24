@@ -23,7 +23,7 @@ export interface NewsItem {
 }
 export interface Position { quantity: number; avg_cost: number; opened_at: string }
 export interface Plan {
-  id: string; ticker: string; signal_date: string; kind: 'rule' | 'own'; plan_version: string
+  id: string; ticker: string; signal_date: string; kind: 'rule' | 'own' | 'agent'; plan_version: string
   status: 'ok' | 'invalid'; entry_low: number; entry_high: number; stop: number; target1: number
   ref_price: number; atr: number; valid_from: string; valid_until: string
   sizing: { status: 'sized' | 'capped' | 'no_equity' | 'no_room'; shares: number | null
@@ -55,7 +55,7 @@ export interface PlanShadowOutcome {
   r: number | null; return: number | null; spy_return: number | null
 }
 export interface PlanShadow {
-  id: string; ticker: string; signal_date: string; kind: 'rule' | 'own'; plan_version: string
+  id: string; ticker: string; signal_date: string; kind: 'rule' | 'own' | 'agent'; plan_version: string
   status: string; outcome: PlanShadowOutcome
 }
 export interface PlanShadowView { session: string; since: string; calc_version: string; plans: PlanShadow[] }
@@ -82,7 +82,7 @@ export interface AgentToolCall {
 }
 export type AgentRunDetail = (AgentRunOk | AgentRunFailed) & { tool_calls: AgentToolCall[] }
 export interface DisciplineTrade {
-  trade_id: string; ticker: string; track: 'rule' | 'own' | null
+  trade_id: string; ticker: string; track: 'rule' | 'own' | 'agent' | null
   flags: string[]; immature: string[]; r: number | null
 }
 export interface DisciplineView {
@@ -140,6 +140,7 @@ export interface Unit {
   rule_ids: string[]; entry_passed: boolean; market_status: string | null; holding: boolean
   candidates: Candidate[]; brief: Brief | null; filings: Filing[]; news: NewsItem[]; position: Position | null
   plan: Plan | null
+  agent: AgentRun | null
 }
 export interface TodayView {
   session: string; units: Unit[]; extended_units: ExtendedUnit[]; holdings: Holding[]
@@ -237,7 +238,8 @@ export function levelsError(input: OwnPlanInput): string | null {
 export function decisionPayload(unit: Unit, choice: Choice, reason: string, requestId: string,
                                 ownPlan: ({ request_id: string } & OwnPlanInput) | null = null,
                                 basis: Basis = 'rule') {
-  const agentPlan = unit.agent && 'plan' in (unit.agent ?? {}) ? unit.agent.plan : null
+  const agent = unit.agent
+  const agentPlan = agent && 'plan' in agent ? agent.plan : null
   const planId = choice === 'accept' && !ownPlan
     ? (basis === 'agent'
          ? (agentPlan && agentPlan.status === 'ok' ? agentPlan.id : null)

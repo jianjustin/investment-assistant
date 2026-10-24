@@ -265,7 +265,7 @@
             {#if a.plan?.status === 'invalid'}
               <p class="text-red-600">Agent 计划已作废：{a.plan.invalid_reasons.join('、')}</p>
             {/if}
-          {:else}
+          {:else if a.status === 'rejected' || a.status === 'error' || a.status === 'skipped'}
             <p class="font-medium">Agent 未给出建议</p>
             <p class="text-red-600">{wb.AGENT_REASON_TEXT[a.reason ?? ''] ?? a.reason}</p>
             <button class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2"
@@ -346,7 +346,7 @@
   <Drawer open={callDrawer.open} onclose={() => callDrawer = { open: false, call: null }}>
     {#if callDrawer.call}
       {@const c = callDrawer.call}
-      <h2 class="font-semibold">工具调用 {c.ref ?? `call:${c.seq}`}</h2>
+      <h2 class="font-semibold">工具调用 call:{c.seq}</h2>
       <p class="text-xs text-muted">工具 {c.tool} · 阶段 {c.phase === 'propose' ? '建议' : '反方'} · {wb.dateTime(c.called_at)}</p>
       <p class="text-xs break-all">参数 {JSON.stringify(c.args)}</p>
       <p class="text-xs break-all">哈希 {c.result_sha256.slice(0, 8)}</p>

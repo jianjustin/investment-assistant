@@ -3,6 +3,7 @@ import {
   WorkbenchError, decisionPayload, describeError, finalAction, getAccount, getDiscipline, getMonthly,
   getPlanShadow, getToday, levelsError, pct, publishedText, pushToday, ruleLabel, timeline,
 } from './workbench'
+import type { DisciplineTrade, Plan, PlanShadow } from './workbench'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -10,6 +11,12 @@ const unit = {
   ticker: 'NVDA', signal_date: '2026-10-22', proposed_action: 'buy' as const, labels: [], candidate_ids: ['c1', 'c2'],
   rule_ids: ['trend_reclaim'], entry_passed: false, market_status: null, holding: false,
   candidates: [], brief: { id: 'b1', status: 'ok' as const }, filings: [], news: [], position: null,
+}
+
+const basePlan = {
+  id: 'p1', ticker: 'NVDA', signal_date: '2026-10-22', plan_version: 'plan-1', status: 'ok' as const,
+  entry_low: 98.5, entry_high: 101.5, stop: 94, target1: 112, ref_price: 100, atr: 2,
+  valid_from: '2026-10-23', valid_until: '2026-10-27', sizing: null, invalid_reasons: [], warnings: [],
 }
 
 describe('decision payload', () => {
@@ -124,11 +131,25 @@ describe('agent track', () => {
 
   it('agent basis submits agent plan id', async () => {
     const { decisionPayload } = await import('./workbench')
-    const agentPlan = { id: 'ap1', status: 'ok', kind: 'agent' as const }
-    const withBoth = { ...unit, plan: { id: 'p1', status: 'ok', kind: 'rule' },
-                       agent: { id: 'r1', status: 'ok', plan: agentPlan } }
-    expect(decisionPayload(withBoth as any, 'accept', 'r', 'req', null, 'agent')).toMatchObject({ plan_id: 'ap1' })
-    expect(decisionPayload(withBoth as any, 'accept', 'r', 'req', null, 'rule')).toMatchObject({ plan_id: 'p1' })
-    expect(decisionPayload(withBoth as any, 'accept', 'r', 'req', null, 'own')).toMatchObject({ plan_id: null })
+    const agentPlan: Plan = { ...basePlan, id: 'ap1', kind: 'agent' }
+    const withBoth = { ...unit, plan: { ...basePlan, kind: 'rule' as const },
+                       agent: { id: 'r1', status: 'ok' as const, model: 'glm-5.3', agent_version: 'agent-1',
+                                output: null, counter: null, plan: agentPlan, input_tokens: 0,
+                                output_tokens: 0, created_at: '2026-10-22T23:00:00Z' } }
+    expect(decisionPayload(withBoth, 'accept', 'r', 'req', null, 'agent')).toMatchObject({ plan_id: 'ap1' })
+    expect(decisionPayload(withBoth, 'accept', 'r', 'req', null, 'rule')).toMatchObject({ plan_id: 'p1' })
+    expect(decisionPayload(withBoth, 'accept', 'r', 'req', null, 'own')).toMatchObject({ plan_id: null })
+  })
+
+  it('plans, shadows and discipline trades carry the agent kind', async () => {
+    const wb = await import('./workbench')
+    const plan: Plan = { ...basePlan, kind: 'agent', plan_version: 'agent-1' }
+    const shadow: PlanShadow = { id: 's1', ticker: 'NVDA', signal_date: '2026-10-22', kind: 'agent',
+                                 plan_version: 'agent-1', status: 'ok', outcome: {
+                                   status: 'expired', fill_date: null, fill_price: null, legs: [], r: null,
+                                   return: null, spy_return: null } }
+    const trade: DisciplineTrade = { trade_id: 't1', ticker: 'NVDA', track: 'agent', flags: [],
+                                     immature: [], r: null }
+    expect([plan.kind, shadow.kind, trade.track]).toEqual(['agent', 'agent', 'agent'])
   })
 })

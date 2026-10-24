@@ -972,6 +972,23 @@ def _skip(unit: dict, reason: str, *, now: datetime, settings, attempt: int) -> 
                                  status='skipped', reason=reason), [])
 
 
+def _checkpoint_missing(exc: BaseException) -> bool:
+    """A missing checkpoint table (setup not run) is checkpoint_unavailable, not a model
+    error (spec §3.4); psycopg raises UndefinedTable, possibly wrapped in the chain."""
+    try:
+        import psycopg.errors
+        table_errors = (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn)
+    except ImportError:   # pragma: no cover - psycopg is a hard dependency in practice
+        return False
+    current, seen = exc, set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, table_errors):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt: int) -> dict:
     """One unit through the graph. Plan, run and calls share one transaction; a model
     or checkpoint failure lands as this unit's error row and never propagates."""
@@ -1008,6 +1025,8 @@ def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt:
             except Unavailable:
                 raise
             except Exception as exc:
+                if _checkpoint_missing(exc):
+                    return write(row('error', reason='checkpoint_unavailable'))
                 reason, _detail = agent_model.classify_error(exc, settings.api_key)
                 return write(row('error', reason=reason))
         if result['status'] == 'ok':

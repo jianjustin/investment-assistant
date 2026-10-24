@@ -939,3 +939,29 @@ def test_agent_run_detail_has_calls_and_hashes(db, scripted_model):
     assert all(len(c['result_sha256']) == 64 for c in detail['tool_calls'])
     with pytest.raises(LookupError):
         service.agent_run_detail(str(uuid.uuid4()))
+
+
+import psycopg                                                                    # noqa: E402
+
+
+class MissingCheckpointModel(BaseChatModel):
+    """First model call raises the error a PostgresSaver raises when the tables are missing."""
+
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        raise psycopg.errors.UndefinedTable('relation "checkpoints" does not exist')
+
+    @property
+    def _llm_type(self):
+        return 'missing-checkpoint'
+
+
+def test_checkpoint_table_missing_is_checkpoint_unavailable(db, scripted_model):
+    import psycopg
+    d = agent_deps(scripted_model, [])
+    d.agent_model = MissingCheckpointModel()
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=d)
+    run = repository.latest_agent_run(db, 'NVDA', SESSION)
+    assert (run['status'], run['reason']) == ('error', 'checkpoint_unavailable')
