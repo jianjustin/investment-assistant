@@ -17,6 +17,31 @@
   let generation = 0
   let callDrawer = $state<{ open: boolean; call: wb.AgentToolCall | null }>({ open: false, call: null })
   let callError = $state('')
+  let screenExpanded = $state(false)
+  let screenFull = $state<wb.ScreenReport | null>(null)
+  let screenError = $state('')
+
+  async function expandScreen() {
+    if (!view || !view.screen) return
+    screenExpanded = true
+    screenError = ''
+    try {
+      const out = await wb.getScreen(view.session, true)
+      screenFull = out.report
+    } catch (e) {
+      screenError = String((e as Error)?.message ?? e)
+    }
+  }
+
+  const REVIEW_FALLBACK: Record<string, string> = { conflict: '冲突 / 回避', watch: '等待触发' }
+
+  const reviewText = (t: wb.ScreenTrigger): string => {
+    if (t.review === 'plan' && t.plan) {
+      return `入场 ${t.plan.entry_low}–${t.plan.entry_high} · 止损 ${t.plan.stop} · T1 ${t.plan.target1} · 建议 ${t.plan.shares} 股`
+    }
+    if (t.review === 'invalid') return `作废 ${t.invalid_reasons.join('、')}`
+    return REVIEW_FALLBACK[t.review] ?? t.review
+  }
 
   const keyOf = (u: wb.Unit) => `${u.ticker}|${u.signal_date}`
 
@@ -155,6 +180,46 @@
   {#if notice}<p class="text-xs text-muted">{notice}</p>{/if}
 
   {#if view}
+    <section class="border border-border rounded p-3 bg-surface text-sm" aria-label="筛选">
+      {#if view.screen}
+        {@const sc = view.screen}
+        <h2 class="font-semibold">筛选 <span class="text-xs px-1.5 py-0.5 rounded bg-accent/10 text-accent">{sc.calc_version}</span></h2>
+        {#if sc.status === 'error'}
+          <p>筛选未运行：{sc.error}</p>
+          <p class="text-xs text-muted">沿用成员 {sc.members} 只</p>
+        {:else}
+          {@const counts = sc.counts ?? {}}
+          <p>范围 {counts.universe ?? 0} · 通过过滤 {(counts.trigger ?? 0) + (counts.setup ?? 0)}
+             · 今日入选 {(sc.selected ?? []).length}（触发 {counts.trigger ?? 0} / 形态 {counts.setup ?? 0}）
+             · 成员 {sc.members}/{sc.cap} · 移出 {(sc.removed ?? []).length}</p>
+          {#if sc.universe?.stale}<p class="text-xs text-muted">提示 universe_stale（范围文件超过 120 天）</p>{/if}
+          {#if (sc.flags ?? []).length}<p class="text-xs text-muted">提示 {(sc.flags ?? []).join('、')}</p>{/if}
+          <h3 class="mt-2 font-medium">今日触发 → 复核</h3>
+          <ul class="space-y-1">
+            {#each sc.triggers ?? [] as t (t.ticker)}
+              <li>{t.ticker} · {(t.rule_ids ?? []).join('、')} · RS {t.rs} · {reviewText(t)}</li>
+            {:else}
+              <li class="text-muted">今日无触发</li>
+            {/each}
+          </ul>
+          <h3 class="mt-2 font-medium">形态候选（等待触发）</h3>
+          <ul class="space-y-1">
+            {#each (screenExpanded && screenFull ? (screenFull.setups ?? []) : (sc.setups ?? [])) as s (s.ticker)}
+              <li>{s.ticker} · RS {s.rs} · ATR {s.atr_pct == null ? '—' : (s.atr_pct * 100).toFixed(2) + '%'}</li>
+            {:else}
+              <li class="text-muted">今日无形态候选</li>
+            {/each}
+          </ul>
+          {#if !screenExpanded && (sc.setups_more ?? 0) > 0}
+            <p class="text-xs text-muted">另 {sc.setups_more} 只 <button class="text-accent underline" onclick={expandScreen}>展开全部</button></p>
+          {/if}
+          {#if screenError}<p class="text-xs text-red-600">展开失败：{screenError}</p>{/if}
+        {/if}
+      {:else}
+        <h2 class="font-semibold">筛选 <span class="text-xs text-muted">今日无筛选记录</span></h2>
+      {/if}
+    </section>
+
     <section class="border border-border rounded p-3 bg-surface text-sm" aria-label="市场环境">
       {#if view.market}
         {@const m = view.market}
@@ -185,6 +250,7 @@
       <div class="flex flex-wrap items-center gap-2">
         <h2 class="font-semibold">{u.ticker} · {u.signal_date}</h2>
         <span class="text-xs px-1.5 py-0.5 rounded bg-accent/10 text-accent">建议{wb.ACTION_LABELS[u.proposed_action]}</span>
+        {#if u.source === 'screen'}<span title="筛选来源" class="text-xs px-1.5 py-0.5 rounded bg-sky-100 text-sky-800">筛选</span>{/if}
         {#each u.labels as label}<span class="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">{wb.UNIT_LABELS[label] ?? label}</span>{/each}
         {#if u.entry_passed}<span class="text-xs text-amber-700">已过入场时点（T+1 开盘）</span>{/if}
         {#if u.position}<span class="text-xs text-muted">持仓 {u.position.quantity} · 成本 {Number(u.position.avg_cost).toFixed(2)}</span>{/if}

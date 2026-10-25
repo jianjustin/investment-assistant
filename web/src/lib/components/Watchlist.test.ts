@@ -158,3 +158,23 @@ describe('pool tier controls', () => {
     expect(screen.queryByRole('combobox', { name: /行业 ETF 600519/ })).toBeNull()
   })
 })
+
+
+describe('watchlist · 筛选计数', () => {
+  it('header shows screen members', async () => {
+    const wb = await import('../workbench')
+    vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows } as any)
+    vi.spyOn(wb, 'getScreen').mockResolvedValue({ report: { members: 18, cap: 40 } } as any)
+    render(Watchlist)
+    expect(await screen.findByText(/筛选 18\/40/)).toBeInTheDocument()
+  })
+
+  it('hides the screen count without a report', async () => {
+    const wb = await import('../workbench')
+    vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows } as any)
+    vi.spyOn(wb, 'getScreen').mockResolvedValue({ report: null } as any)
+    render(Watchlist)
+    await screen.findByText('NVIDIA')
+    expect(screen.queryByText(/筛选/)).toBeNull()
+  })
+})

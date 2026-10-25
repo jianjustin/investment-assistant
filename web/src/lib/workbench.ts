@@ -146,14 +146,29 @@ export interface Backcheck {
 }
 export interface Unit {
   ticker: string; signal_date: string; proposed_action: Action; labels: string[]; candidate_ids: string[]
-  rule_ids: string[]; entry_passed: boolean; holding: boolean
+  rule_ids: string[]; entry_passed: boolean; holding: boolean; source?: 'watchlist' | 'screen' | null
   candidates: Candidate[]; brief: Brief | null; filings: Filing[]; news: NewsItem[]; position: Position | null
   plan: Plan | null
   agent: AgentRun | null
 }
+export interface ScreenTrigger {
+  ticker: string; rule_ids: string[]; rs: number | null
+  review: 'plan' | 'invalid' | 'conflict' | 'watch'
+  plan: { entry_low: string; entry_high: string; stop: string; target1: string; shares: number | null;
+          sizing_status: string | null } | null
+  invalid_reasons: string[]
+}
+export interface ScreenReport {
+  session: string; calc_version: string; status: string; error: string | null
+  universe: { name: string; as_of: string; stale: boolean }
+  counts: Record<string, number>; selected: string[]; members: number; cap: number
+  evicted: string[]; removed: string[]; flags: string[]
+  triggers: ScreenTrigger[]; setups: { ticker: string; rs: number | null; atr_pct: number | null; rank: number | null }[]
+  setups_more?: number; results?: unknown[]
+}
 export interface TodayView {
   session: string; units: Unit[]; extended_units: ExtendedUnit[]; holdings: Holding[]
-  market: MarketContext | null
+  market: MarketContext | null; screen: ScreenReport | null
 }
 export interface Decision {
   id: string; ticker: string; signal_date: string; proposed_action: Action; final_action: FinalAction
@@ -198,6 +213,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const post = <T>(path: string, body: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(body) })
 
 export const getToday = () => request<TodayView>('/api/workbench/today')
+export const getScreen = (session?: string, full = false) =>
+  request<{ report: ScreenReport | null }>(`/api/workbench/screen${session ? `?session=${encodeURIComponent(session)}` : '?'}${full ? `${session ? '&' : ''}full=1` : ''}`)
 export const getInstrument = (ticker: string) => request<InstrumentView>(`/api/workbench/instruments/${encodeURIComponent(ticker)}`)
 export const postDecision = (body: object) => post<{ status: string; record: Decision }>('/api/workbench/decisions', body)
 export const getTrades = () => request<{ trades: Trade[] }>('/api/workbench/trades')

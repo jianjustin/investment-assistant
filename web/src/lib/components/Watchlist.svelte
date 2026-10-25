@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import * as api from '../api'
+  import * as wb from '../workbench'
   import { datasetName, statusName } from '../us-research-format'
   import { isCore, sectorOf, withPoolTags, SECTOR_ETFS } from '../pool-tags'
   let rows = $state<any[]>([])
@@ -18,6 +19,8 @@
   let request = 0
   let usActive = $derived(rows.filter(row => row.market === 'US' && row.status === 'active'))
   let coreCount = $derived(usActive.filter(row => isCore(row.tags ?? [])).length)
+  let screenCount = $state<{ members: number; cap: number } | null>(null)
+
   async function load() {
     const current = ++request
     loading = true
@@ -25,6 +28,10 @@
       const result = await api.getWatchlist(true) as any
       if (current !== request) return false
       rows = result.rows ?? []
+      wb.getScreen().then((out: { report: { members: number; cap: number } | null }) => {
+        if (current === request) screenCount = out.report && out.report.members != null
+          ? { members: out.report.members, cap: out.report.cap } : null
+      }).catch(() => {})
       return true
     } catch (e) { if (current === request) error = String(e); return false }
     finally { if (current === request) loading = false }
@@ -68,7 +75,7 @@
   onMount(load)
 </script>
 <div class="watchlist">
-  <div class="toolbar"><h2>关注列表</h2><span class="pool-count">美股池 {usActive.length}/100 · 核心 {coreCount}/15</span><button onclick={() => edit()}>+ 添加</button></div>
+  <div class="toolbar"><h2>关注列表</h2><span class="pool-count">美股池 {usActive.length}/100 · 核心 {coreCount}/15{screenCount ? ` · 筛选 ${screenCount.members}/${screenCount.cap}` : ''}</span><button onclick={() => edit()}>+ 添加</button></div>
   {#if error}<p role="alert">{error}</p>{/if}
   {#if loading}<p>正在读取关注列表…</p>{/if}
   <div class="table-scroll"><table><thead><tr><th>代码 / 名称</th><th>市场</th><th>状态</th><th>论点 / 标签</th><th>观察池</th><th>报告期 / 覆盖</th><th>下一事件</th><th>操作</th></tr></thead><tbody>

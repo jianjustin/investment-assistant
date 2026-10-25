@@ -472,3 +472,63 @@ it('shows the model name on an interpret brief', async () => {
   expect(await screen.findByText('持仓回撤，趋势未坏')).toBeInTheDocument()
   expect(screen.getByText(/glm-5.3/)).toBeInTheDocument()
 })
+
+
+const screenReport = (over: Record<string, unknown> = {}) => ({
+  session: '2026-10-22', calc_version: 'screen-1', status: 'success', error: null,
+  universe: { name: 'nasdaq100', as_of: '2026-10-22', stale: false },
+  counts: { universe: 100, data_skipped: 0, illiquid: 0, earnings_soon: 0, no_setup: 74,
+            trigger: 2, setup: 12, selected: 14 },
+  selected: ['T1', 'T2', ...Array.from({ length: 12 }, (_, i) => `S${i}`)],
+  members: 20, cap: 40, evicted: [], removed: [], flags: [],
+  triggers: [
+    { ticker: 'T1', rule_ids: ['trend_reclaim'], rs: 0.12, review: 'plan',
+      plan: { entry_low: 98.5, entry_high: 101.5, stop: 94, target1: 112, shares: 166,
+              sizing_status: 'sized' }, invalid_reasons: [] },
+    { ticker: 'T2', rule_ids: ['volume_breakout'], rs: 0.1, review: 'invalid', plan: null,
+      invalid_reasons: ['earnings'] },
+  ],
+  setups: Array.from({ length: 10 }, (_, i) => ({ ticker: `S${i}`, rs: 0.05 - i * 0.001, atr_pct: 0.04, rank: 3 + i })),
+  setups_more: 2, ...over,
+})
+
+describe('今日 · 筛选卡片', () => {
+  it('renders the screen card', async () => {
+    const twelve = Array.from({ length: 12 }, (_, i) => ({ ticker: `S${i}`, rs: 0.05 - i * 0.001, atr_pct: 0.04, rank: 3 + i }))
+    respond = async (url) => json(url.includes('/api/workbench/today')
+      ? { session: '2026-10-22', units: [], holdings: [], screen: screenReport() }
+      : { report: screenReport({ setups: twelve, setups_more: 0 }) })
+    render(Today)
+    const card = await screen.findByRole('region', { name: '筛选' })
+    expect(card).toHaveTextContent('范围 100 · 通过过滤 14')
+    expect(card).toHaveTextContent('今日入选 14（触发 2 / 形态 12）')
+    expect(card).toHaveTextContent('成员 20/40')
+    expect(card).toHaveTextContent('T1')
+    expect(card).toHaveTextContent('入场 98.5–101.5 · 止损 94 · T1 112 · 建议 166 股')
+    expect(card).toHaveTextContent('作废 earnings')
+    expect(card).toHaveTextContent('S0')
+    expect(card).toHaveTextContent('另 2 只')
+    expect(screen.queryByText(/S10/)).toBeNull()
+    await fireEvent.click(screen.getByRole('button', { name: '展开全部' }))
+    await waitFor(() => expect(calls.some(c => c.url.includes('/api/workbench/screen') && c.url.includes('full=1'))).toBe(true))
+    expect(await screen.findByText(/S11/)).toBeInTheDocument()
+  })
+
+  it('screen units carry a badge', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [
+      unit({ ticker: 'U00', source: 'screen' }), unit({ ticker: 'NVDA', source: 'watchlist' })],
+      holdings: [], screen: null })
+    render(Today)
+    expect(await screen.findByRole('heading', { name: /U00/ })).toBeInTheDocument()
+    expect(screen.getByTitle('筛选来源')).toHaveTextContent('筛选')
+    expect(screen.getAllByTitle('筛选来源')).toHaveLength(1)
+  })
+
+  it('screen error is shown plainly', async () => {
+    respond = async () => json({ session: '2026-10-22', units: [], holdings: [],
+      screen: screenReport({ status: 'error', error: 'benchmark_missing', triggers: [], setups: [], setups_more: 0 }) })
+    render(Today)
+    expect(await screen.findByText('筛选未运行：benchmark_missing')).toBeInTheDocument()
+    expect(screen.getByText(/沿用成员 20 只/)).toBeInTheDocument()
+  })
+})
