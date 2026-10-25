@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | P1 规则计划与推送 | `engineering_done`；真实库已迁移 017、服务已重载，页面与接口已检查；推送暂关（待你确认后开启）；`user_acceptance_pending` | 确认后开启 `workbench` 推送；出现第一个买入单元时核对计划价位与推送内容 |
 | P2 观察池扩展与市场环境 | `engineering_done`；验收复核修复已提交；真实库已迁移 018，8 只美股全部标为核心，服务已重载，手动批处理与页面已检查；`FRED_API_KEY` 已配置并采集成功；`user_acceptance_pending` | 10-27（周二）06:30 定时运行后核对推送中的市场环境字段（含 HY OAS、2s10s）与计划行；扩大观察池（≥ 20 只有 200 根 K 线）后区制才会脱离「样本不足」 |
-| P3 Agent 轨道 | 工程完成并经验收复核修复（`engineering_done`，`runtime_unverified`） | 运行时验收另行授权：迁移 019、检查点建表、配置 `ZHIPU_API_KEY`、核对真实端点与额度错误码 |
+| P3 Agent 轨道 | `engineering_done`；验收复核修复已提交；真实库已迁移 019、检查点表已建，`ZHIPU_API_KEY` 已配置并用真实端点跑通一次只读试跑，服务已重载，手动批处理成功；`user_acceptance_pending` | 观察池出现无冲突买入单元后核对第一条真实 `agent_runs`、Agent 计划与推送 Agent 行；额度类错误码（1113/1308/1310）待真实遇到时按 `detail` 核对；退出条件需连续两周 `coverage.missing` 为空 |
 | P4 复盘扩展 | 未开工 | 依赖 P1，三方对比依赖 P3 |
 
 ## 起点（2026-10-23）
@@ -38,7 +38,7 @@ v2 新增：
 9. P2 工程完成：迁移 018、观察池分层、FRED 采集、区制快照、计划 context、今日/推送/周度分池、上线前检查、前端（提交 `9d67da2` 起见 P2 计划各任务提交）。`engineering_done`；`runtime_unverified`——未对真实库执行迁移 018、未配置真实 `FRED_API_KEY`、未扩大真实观察名单、未发真实推送，待 P2 验收时另行授权（执行迁移前 `pg_dump` 备份）。（10-24：验收复核修复 `69715a5`；迁移 018 已执行、观察名单 8 只美股标为核心、服务已重载，见阶段证据。）
 
 10. 审阅 P3 spec 与实施计划（11 个任务）。（10-24：已写，待审阅。）
-11. P3 工程完成（Task 1–11：迁移 019、Agent 工具层、建议校验与 Agent 计划、智谱模型接入、LangGraph 图、批处理 Agent 阶段与手动运行、决定与纪律、今日与接口、推送、前端、端到端场景与文档）。`engineering_done`；`runtime_unverified`——未对真实库执行迁移 019、未建真实检查点表、未配置真实 `ZHIPU_API_KEY`、未调用真实智谱接口、未发真实推送，待 P3 验收时另行授权（执行迁移前 `pg_dump` 备份）。（10-24：提交 `2a75616` 起见 P3 计划各任务提交；10-25：验收复核修复 `8390c1b`。）
+11. P3 工程完成（Task 1–11：迁移 019、Agent 工具层、建议校验与 Agent 计划、智谱模型接入、LangGraph 图、批处理 Agent 阶段与手动运行、决定与纪律、今日与接口、推送、前端、端到端场景与文档）。`engineering_done`；`runtime_unverified`——未对真实库执行迁移 019、未建真实检查点表、未配置真实 `ZHIPU_API_KEY`、未调用真实智谱接口、未发真实推送，待 P3 验收时另行授权（执行迁移前 `pg_dump` 备份）。（10-24：提交 `2a75616` 起见 P3 计划各任务提交；10-25：验收复核修复 `8390c1b`；迁移 019 已执行、检查点表已建、服务已重载，见阶段证据。）
 
 ## 阶段证据
 
@@ -61,3 +61,4 @@ v2 新增：
 | 2026-10-24 | P3 四项设计确认（智谱 `glm-5.3`、不设每日 token 上限但额度用尽即停 Agent 轨道、Agent 看不到规则价位、扩展池跑但排在后面），spec 与实施计划写成（11 个任务），待审阅 | [P3 spec](../superpowers/specs/2026-10-24-p3-agent-track-design.md)、[P3 实施计划](../superpowers/plans/2026-10-24-p3-agent-track.md) |
 | 2026-10-24 | P3 工程完成（Task 1–11 与终审修复，提交 `2a75616`…`2067af2`；全量后端 1332 在一次性库上通过、前端 234 与 svelte-check 通过） | 端到端场景 `tests/test_workbench_scenarios.py::test_agent_track_end_to_end` 与 `web/src/workbench-scenarios.test.ts`；[使用文档](../us-workbench.md)「Agent 轨道」一节与上线前提 2d/已知限制；未做：真实库迁移 019、检查点建表、`ZHIPU_API_KEY` 配置与真实接口核对（P3 验收时另行授权） |
 | 2026-10-25 | P3 验收复核修复（提交 `8390c1b`）：「今日」规则计划缺失或作废时执行依据可选 Agent 或自定价位，Agent 价位旁显示可展开的引用；推送概览 Agent 计数只算本交易日无冲突买入单元；`agent_runs` 新增 `detail` 列（迁移 019 内，尚未在真实库执行）保存 `error` 运行脱敏后的异常文本。全量后端 1336 在一次性库上通过、前端 237 与 svelte-check 通过 | 离线验收：本地桩接口 + 真实 `ChatOpenAI` + `PostgresSaver` 跑通建议/反方/额度 429 识别；未做：运行时验收（同上）。前端在 Node 26 下需 `NODE_OPTIONS=--no-experimental-webstorage` |
+| 2026-10-25 | P3 运行验收（部分） | 备份 `.local/us-workbench/backups/investment_assistant-before-019-20261025-095614.dump`（sha256 `e10804a4…`）；`psql --single-transaction` 执行迁移 019（未经 `migrate` 入口：`schema_migrations` 无 018/019 记录，入口会重跑 018），`agent_runs`/`agent_tool_calls` 建好且为空、`trade_plans_kind_check` 含 `agent`、部分唯一索引与 `detail` 列在，旧表行数不变；`agent setup` 建 `checkpoints` 等 4 张表；端点 `open.bigmodel.cn/api/coding/paas/v4` 与 `glm-5.3` 可用，错误密钥返回 401 且错误体为 `{error: {code, message}}`（与解析一致）；真实密钥只读试跑 NVDA 10-22（不写库、内存检查点）：`pass`，15 次工具调用无报错、引用均有效、约 100 秒、输入 20586 / 输出 6903 token、结果不含密钥；`web/dist` 先备份到 `.local/us-workbench/dist-backup-20261025-100647` 再构建；服务重载后 `/api/workbench/agent-runs` 200，手动批处理 `workbench-20261025020759-43abf8cb` 成功（session 10-23，核心 8、无买入单元，`summary.agent.runs` 为空、`sources` 全空、`timings.agent` 0.0、总耗时 28.6 秒、未推送）；手动运行接口对非买入单元返回 400。未覆盖：真实买入单元的 Agent 运行与写库、Agent 计划、推送 Agent 行、额度用尽 |
