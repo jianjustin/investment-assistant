@@ -78,22 +78,10 @@ export const getRawStatus = () => get<unknown>('/api/raw/status')
 export const getHealth = () => get<unknown>('/api/health')
 export const getServices = () => get<unknown>('/api/services')
 export const getOperations = () => get<unknown>('/api/operations')
-export const getMarketSignals = (limit = 90) => get<unknown>(`/api/market/signals?limit=${limit}`)
-export const getMarketSignalsLatest = () => get<unknown>('/api/market/signals/latest')
-export const getMarketSignalsTrend = (window = 30) => get<unknown>(`/api/market/signals/trend?window=${window}`)
-export const getTickerTrends = () => get<unknown>('/api/tickers/trends')
-export const scanTickerTrends = (body: object) => post<unknown>('/api/tickers/trends/scan', body)
-export const getStrategyScores = () => get<unknown>('/api/strategies/scores')
-export const runStrategyScores = (body: object) => post<unknown>('/api/strategies/scores/run', body)
-export const getMacroAnalysis = (window = 30) => get<unknown>(`/api/hermes/macro-analysis?window=${window}`)
-export const getHermes = () => get<unknown>('/api/hermes')
-export const getHermesAgents = () => get<unknown>('/api/hermes/agents')
 export const getWatchlist = (enriched = false) =>
   get<unknown>(`/api/watchlist${enriched ? '?enriched=true' : ''}`)
 export const addWatchlistItem = (body: object) => post<unknown>('/api/watchlist', body)
 export const deleteWatchlistItem = (ticker: string) => del<unknown>(`/api/watchlist/${ticker}`)
-export const runMacroLlm = (body: object) => post<{ run_id: string; status: string }>('/api/hermes/macro-analysis/run', body)
-export const runDecisionEvidence = (body: object) => post<{ run_id: string; status: string }>('/api/hermes/decision-evidence/run', body)
 export const getRun = (runId: string) => get<RunRecord>(`/api/runs/${runId}`)
 
 // jobs
@@ -127,28 +115,6 @@ export const testNotifyChannel = (body: object) =>
   post<{ ok: boolean; error?: string }>('/api/settings/notify/test', body)
 export const getEnvStatus = () => get<Record<string, boolean>>('/api/settings/env')
 
-// research
-export interface EventStudyDefinition {
-  definition: string
-  indicator?: string
-  period?: number
-  not_equivalent_to?: string
-  threshold?: number
-}
-export interface EventStudyKinds {
-  kinds: string[]
-  // Optional for compatibility with older kinds-only responses.
-  definitions?: Record<string, EventStudyDefinition>
-  unavailable?: Record<string, string>
-}
-export const getEventStudyKinds = () =>
-  get<EventStudyKinds>('/api/research/event-study/kinds', { errorDetails: true })
-export const getEventStudy = (kind: string, since?: string, asof?: string) =>
-  get<{ result: any; degraded: boolean; source: string }>(
-    `/api/research/event-study?kind=${kind}${since ? `&since=${since}` : ''}${asof ? `&asof=${asof}` : ''}`,
-    { errorDetails: true },
-  )
-
 // filings
 export interface FilingRecord {
   id: number
@@ -176,7 +142,7 @@ export const getFilingRecords = (
 }
 export const filingDownloadUrl = (id: number) => `/api/filings/records/${id}/download`
 
-// ticker ohlcv
+// ticker bars (chart payload shapes reuse these fields)
 export interface Bar {
   date: string
   open: number
@@ -185,16 +151,6 @@ export interface Bar {
   close: number
   volume: number
 }
-export interface OhlcvResponse {
-  ticker: string
-  bars: Bar[]
-  ma20: (number | null)[]
-  ma50: (number | null)[]
-  ma200: (number | null)[]
-}
-export const getTickerOhlcv = (ticker: string, days = 250) =>
-  get<OhlcvResponse>(`/api/tickers/${ticker}/ohlcv?days=${days}`)
-
 // US research values preserve explicit null, source versions and accounting basis.
 export interface ResearchSource { source_url?:string; source_locator?:string; source_hash?:string; concept?:string; accession?:string; filed?:string; start?:string; end?:string; [key:string]:unknown }
 export interface ResearchMetric { value:number|null; unit:string|null; basis:string|null; method:string; input_ids:(number|string)[]; sources:ResearchSource[]; missing_reason:string|null; [key:string]:any }

@@ -16,37 +16,13 @@
     },
   ]
 
-  // Earlier six entries stay reachable, folded under 更多.
+  // Shared-base entries stay reachable, folded under 更多.
   const legacy: NavItem[] = [
     {
       id: 'tools', label: '工具', icon: '🔧', children: [
         { id: 'tasks',   label: '任务中心' },
         { id: 'runs',    label: '运行记录' },
         { id: 'filings', label: 'SEC 文件' },
-      ],
-    },
-    {
-      id: 'data', label: '数据', icon: '📊', children: [
-        { id: 'signals', label: '信号总览' },
-        { id: 'trend',   label: '趋势分析' },
-        { id: 'filings', label: '财报' },
-        { id: 'us-research', label: '美股研究数据' },
-      ],
-    },
-    { id: 'technicals', label: '技术面趋势', icon: '📈' },
-    {
-      id: 'strategy', label: '策略', icon: '🎯', children: [
-        { id: 'scores',   label: '策略评分' },
-        { id: 'runs',     label: '运行历史' },
-        { id: 'event-study', label: '事件研究' },
-        { id: 'observation', label: '研究观察卡' },
-      ],
-    },
-    {
-      id: 'trade', label: '交易', icon: '🤖', children: [
-        { id: 'macro',    label: '宏观分析' },
-        { id: 'decision', label: '决策证据' },
-        { id: 'orders',   label: '交易指令' },
       ],
     },
     {

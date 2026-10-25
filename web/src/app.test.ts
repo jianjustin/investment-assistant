@@ -13,8 +13,6 @@ vi.mock('./lib/api', () => ({
   getHermes: vi.fn(async () => ({})),
   getHermesAgents: vi.fn(async () => ({ agents: [] })),
   getTickerTrends: vi.fn(async () => ({ rows: [] })),
-  getTickerOhlcv: vi.fn(async () => ({ ticker: '', bars: [], ma20: [], ma50: [], ma200: [] })),
-  getStrategyScores: vi.fn(async () => ({ rows: [] })),
   getWatchlist: vi.fn(async () => ({ rows: [] })),
   getOperations: vi.fn(async () => ({ operations: [] })),
   getServices: vi.fn(async () => ({})),
@@ -56,24 +54,18 @@ describe('app routing', () => {
 
   it('shows legacy entries under more when a legacy zone is open', async () => {
     location.hash = '#tools'
-    const { getAllByText } = render(App)
+    const { getAllByText, queryByText } = render(App)
     expect(getAllByText('工具').length).toBeGreaterThan(0)
-    expect(getAllByText('数据').length).toBeGreaterThan(0)
-    expect(getAllByText('策略').length).toBeGreaterThan(0)
-    expect(getAllByText('交易').length).toBeGreaterThan(0)
     expect(getAllByText('设置').length).toBeGreaterThan(0)
+    expect(queryByText('数据')).toBeNull()
+    expect(queryByText('策略')).toBeNull()
+    expect(queryByText('交易')).toBeNull()
   })
 
-  it('side nav has no A-share entry', async () => {
+  it('legacy data hash falls back to today', async () => {
     location.hash = '#data/us-research'
     const { getAllByText, queryByText } = render(App)
-    expect(getAllByText('美股研究数据').length).toBeGreaterThan(0)
-    expect(queryByText('A 股研究数据')).toBeNull()
-  })
-
-  it('renders data zone on #data hash', async () => {
-    location.hash = '#data'
-    const { getAllByText } = render(App)
-    expect(getAllByText('数据').length).toBeGreaterThan(0)
+    expect(getAllByText('今日').length).toBeGreaterThan(0)
+    expect(queryByText('数据')).toBeNull()
   })
 })

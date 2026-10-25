@@ -45,15 +45,15 @@ describe('Tools 任务中心', () => {
 
   it('clicking ? opens a modal with Chinese task description', async () => {
     vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
-      jobs: [{ name: 'scores', time_local: '18:00', enabled: true, next_run_at: null, last_run_at: null }],
+      jobs: [{ name: 'filings', time_local: '09:00', enabled: true, next_run_at: null, last_run_at: null }],
       degraded: false,
     })
     render(Tools, { props: { sub: 'tasks' } })
-    await screen.findByText('scores')
-    await fireEvent.click(screen.getByLabelText('scores 说明'))
-    // 弹窗解释评分构成（例如上升趋势 +30）
-    expect(await screen.findByText(/满分 100/)).toBeTruthy()
-    expect(screen.getByText(/不构成交易指令/)).toBeTruthy()
+    await screen.findByText('filings')
+    await fireEvent.click(screen.getByLabelText('filings 说明'))
+    // 弹窗解释任务目的与回补方式
+    expect(await screen.findByText(/SEC EDGAR/)).toBeTruthy()
+    expect(screen.getByRole('heading', { name: /filings · 任务说明/ })).toBeTruthy()
   })
 
   it('formats job times down to seconds', async () => {

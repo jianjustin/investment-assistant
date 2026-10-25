@@ -3,10 +3,6 @@
   import { applyTheme } from './lib/theme'
   import AppShell from './lib/components/AppShell.svelte'
   import Tools from './routes/Tools.svelte'
-  import Data from './routes/Data.svelte'
-  import Technicals from './routes/Technicals.svelte'
-  import Strategy from './routes/Strategy.svelte'
-  import Trade from './routes/Trade.svelte'
   import Settings from './routes/Settings.svelte'
   import Today from './routes/Today.svelte'
   import Instrument from './routes/Instrument.svelte'
@@ -40,14 +36,6 @@
     <Review {sub} />
   {:else if zone === 'tools'}
     <Tools {sub} />
-  {:else if zone === 'data'}
-    <Data {sub} />
-  {:else if zone === 'technicals'}
-    <Technicals {sub} />
-  {:else if zone === 'strategy'}
-    <Strategy {sub} />
-  {:else if zone === 'trade'}
-    <Trade {sub} />
   {:else if zone === 'settings'}
     <Settings {sub} />
   {/if}

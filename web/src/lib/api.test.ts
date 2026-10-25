@@ -59,16 +59,3 @@ describe('api client', () => {
   })
 })
 
-describe('getTickerOhlcv', () => {
-  it('requests the ohlcv path with days', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ ticker: 'AAPL', bars: [], ma20: [], ma50: [], ma200: [] }),
-    })
-    vi.stubGlobal('fetch', fetchMock)
-    const out = await api.getTickerOhlcv('AAPL', 120)
-    expect(fetchMock).toHaveBeenCalledWith('/api/tickers/AAPL/ohlcv?days=120', expect.anything())
-    expect(out.ticker).toBe('AAPL')
-    vi.unstubAllGlobals()
-  })
-})

@@ -12,9 +12,8 @@ def test_svelte_entrypoint_and_app_root():
 
 
 def test_svelte_route_views_exist():
-    # 5-layer IA: Tools/Data/Strategy/Trade/Settings (+ shared Placeholder).
-    # Old Dashboard/Market/Hermes/System/Watchlist routes were retired.
-    routes = ["Tools", "Data", "Strategy", "Trade", "Settings", "Placeholder"]
+    # v2 mainline routes: Today/Instrument/Review/Tools/Settings.
+    routes = ["Today", "Instrument", "Review", "Tools", "Settings"]
     for r in routes:
         path = Path(f"web/src/routes/{r}.svelte")
         assert path.exists(), str(path)
@@ -26,7 +25,7 @@ def test_svelte_shared_lib_exists():
         "web/src/lib/sse.ts",
         "web/src/lib/theme.ts",
         "web/src/lib/format.ts",
-        "web/src/lib/i18n.ts",
+        "web/src/lib/router.ts",
     ]
     for f in expected:
         assert Path(f).exists(), f
@@ -37,7 +36,6 @@ def test_svelte_components_exist():
         "web/src/lib/components/AppShell.svelte",
         "web/src/lib/components/SideNav.svelte",
         "web/src/lib/components/Skeleton.svelte",
-        "web/src/lib/components/DataTable.svelte",
         "web/src/lib/components/Drawer.svelte",
         "web/src/lib/components/StatusPill.svelte",
     ]
@@ -57,17 +55,17 @@ def test_svelte_chart_wrappers_exist():
 
 def test_api_client_exports_core_functions():
     api = Path("web/src/lib/api.ts").read_text(encoding="utf-8")
-    for fn in ["getStatus", "getMarketSignals", "getMacroAnalysis", "getHermes",
-               "getTickerTrends", "getStrategyScores", "getWatchlist",
-               "runMacroLlm", "runDecisionEvidence", "pollRun"]:
+    for fn in ["getStatus", "getHealth", "getWatchlist", "getUSResearch",
+               "syncUSResearch", "pollRun", "getFilingRecords"]:
         assert fn in api, f"missing: {fn}"
 
 
 def test_app_hash_router_covers_all_zones():
-    # Zone 联合与 parseHash 已抽到 lib/router.ts（technicals 页升为一级 zone）。
+    # v2.1.0: legacy zones (data/technicals/strategy/trade) are gone; parseHash falls back to today.
     router = Path("web/src/lib/router.ts").read_text(encoding="utf-8")
-    for zone in ["tools", "data", "strategy", "trade", "settings", "technicals"]:
-        assert zone in router, f"missing zone: {zone}"
+    assert "export type Zone = 'today' | 'instrument' | 'review' | 'tools' | 'settings'" in router
+    for zone in ["data", "technicals", "strategy", "trade"]:
+        assert f"'{zone}'" not in router, f"legacy zone still routed: {zone}"
     app = Path("web/src/app.svelte").read_text(encoding="utf-8")
     assert "hashchange" in app
     assert "parseHash" in app
