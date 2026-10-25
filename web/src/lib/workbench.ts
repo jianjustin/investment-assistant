@@ -11,6 +11,7 @@ export interface Candidate {
 export interface BriefItem { text: string; refs: string[] }
 export interface Brief {
   id: string; status: 'ok' | 'fallback' | 'error'; error?: string | null; created_at?: string
+  prompt_version?: string; model?: string | null
   output?: { summary: string; support: BriefItem[]; contra: BriefItem[]; conflicts: BriefItem[] }
 }
 export interface Filing {
@@ -94,8 +95,11 @@ export interface MonthlyReview {
   id: string; month: string; calc_version: string; stats: {
     month: string; return: { status: string; return: number | null; net_flow?: number | null }
     tier: string | null; spy: { return: number; excess: number } | null; review_flag: string
-    sensitivity: { approximate: boolean; rows: { risk_pct: number; return: number; max_drawdown: number }[] }
+    sensitivity: { approximate: boolean; count?: number; rows: { risk_pct: number; return: number; max_drawdown: number }[] }
     discipline: DisciplineView; plans: Record<string, { count: number; expired: number; r_mean: number | null; r_median: number | null }>
+    review?: { flag: string; compound: number | null; spy_compound: number | null;
+               months?: { month: string; return: number | null; spy_return: number | null }[] }
+    tracks?: { units: TrackRow[]; summary: TrackSummary } | null
     generated_at: string
   }; notes: string; supersedes_id: string | null; created_at: string
 }
@@ -306,4 +310,49 @@ export function timeline(view: InstrumentView): TimelineItem[] {
       text: `${t.side === 'buy' ? '买入' : '卖出'} ${t.quantity} @ ${t.price}${t.voided_at ? `（已作废：${t.void_reason}）` : ''}` })),
   ]
   return items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
+}
+
+
+// --- three-track comparison and review pushes (P4 design §4, §6) ---
+
+export type TrackStatus = 'missing' | 'not_executable' | 'pending' | 'expired' | 'open' | 'closed' | 'pass'
+  | 'not_executed' | 'no_plan'
+export interface TrackResult { status: TrackStatus; r: number | null }
+export interface RuleTrack extends TrackResult { plan_id: string | null }
+export interface AgentTrack extends TrackResult { run_id: string | null; run_status: string | null; run_reason: string | null; plan_id: string | null }
+export interface ActualTrack extends TrackResult {
+  decision_id: string | null; final_action: string | null; plan_id: string | null; plan_kind: 'rule' | 'agent' | 'own' | null
+  buy_trade_ids: string[]; open: boolean
+}
+export interface TrackRow {
+  ticker: string; signal_date: string; pool: 'core' | 'extended'
+  rule: RuleTrack; agent: AgentTrack; actual: ActualTrack
+}
+export interface TrackStats {
+  units: number; determined: number; pending: number; missing: number
+  mean: number | null; median: number | null; sum: number | null; wins: number
+  by_status: Record<string, number>; by_plan_kind?: Record<string, number>
+}
+export interface TrackSummary { all: Record<'rule' | 'agent' | 'actual', TrackStats>; core: Record<'rule' | 'agent' | 'actual', TrackStats>; extended: Record<'rule' | 'agent' | 'actual', TrackStats> }
+export interface TracksView { session: string; since: string; until: string; calc_version: string; units: TrackRow[]; summary: TrackSummary }
+export interface ReviewPush {
+  id: string; kind: 'weekly' | 'monthly' | 'monthly_reminder'; period: string; review_id: string | null
+  trigger_source: 'scheduled' | 'manual'; sent: boolean; messages: number; reason: string | null; created_at: string
+}
+
+export const TRACK_STATUS_TEXT: Record<TrackStatus, string> = {
+  missing: '缺失', not_executable: '计划作废', pending: '待定', expired: '到期未成交',
+  open: '未平仓', closed: '已平仓', pass: '不建议', not_executed: '未执行', no_plan: '无计划成交',
+}
+
+export const getTracks = (since?: string, until?: string) => request<TracksView>(
+  `/api/workbench/review/tracks${since || until ? `?${since ? `since=${since}` : ''}${since && until ? '&' : ''}${until ? `until=${until}` : ''}` : ''}`)
+export const getReviewPushes = () => request<{ pushes: ReviewPush[] }>('/api/workbench/review-pushes')
+export const postReviewPush = (kind: 'weekly' | 'monthly', period: string) =>
+  post<{ kind: string; period: string; sent: boolean; messages?: number; reason?: string }>(
+    '/api/workbench/review-pushes', { kind, period })
+
+export function rText(r: number | null): string {
+  if (r === null || !Number.isFinite(r)) return '—'
+  return `${r >= 0 ? '+' : ''}${r.toFixed(2)}R`
 }

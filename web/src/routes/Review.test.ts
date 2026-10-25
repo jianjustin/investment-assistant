@@ -242,3 +242,105 @@ it('plan shadow and discipline label agent track', async () => {
   expect(await screen.findByText(/Agent：1 · 已过期 0 · R 2\.5/)).toBeInTheDocument()
   expect(screen.getByText(/规则：2 · 已过期 1/)).toBeInTheDocument()
 })
+
+
+// --- three-track tab and review pushes (P4 §4, §6) ---
+
+const emptyStats = (units = 0, mean: number | null = null) => ({ units, determined: units, pending: 0, missing: 0,
+  mean, median: mean, sum: mean, wins: units, by_status: {} })
+const trackView = (() => {
+  const rule = emptyStats(1, 1.5)
+  const agent = emptyStats(1, 0.5)
+  const actual = { ...emptyStats(1, 0.75), by_status: { open: 1 }, by_plan_kind: { agent: 1 } }
+  const group = { rule, agent, actual }
+  const empty = { rule: emptyStats(), agent: emptyStats(), actual: { ...emptyStats(), by_plan_kind: {} } }
+  return {
+  session: '2026-10-23', since: '2026-07-25', until: '2026-10-23', calc_version: 'tracks-1',
+  units: [{ ticker: 'NVDA', signal_date: '2026-10-21', pool: 'core',
+            rule: { plan_id: 'p1', status: 'closed', r: 1.5 },
+            agent: { run_id: 'r1', run_status: 'ok', run_reason: null, plan_id: 'p2', status: 'open', r: 0.5 },
+            actual: { decision_id: 'd1', final_action: 'buy', plan_id: 'p2', plan_kind: 'agent',
+                      buy_trade_ids: ['t1'], status: 'open', r: 0.75, open: true } }],
+  summary: { all: group, core: group, extended: empty },
+  }
+})()
+
+it('tracks tab shows summary by pool and unit rows', async () => {
+  respond = async (url) => {
+    if (url.includes('/review/tracks')) return json(trackView)
+    return json({})
+  }
+  render(Review, { sub: 'tracks' })
+  expect(await screen.findByText('NVDA')).toBeInTheDocument()
+  expect(screen.getAllByText('核心池').length).toBeGreaterThan(0)
+  expect(screen.getAllByText('+1.50R').length).toBeGreaterThan(0)   // 汇总里的规则均值
+  expect(screen.getByText('NVDA')).toBeInTheDocument()
+  expect(screen.getAllByText(/未平仓/).length).toBeGreaterThan(0)  // 状态文案
+  expect(screen.getAllByText(/照Agent/).length).toBeGreaterThan(0)  // plan_kind
+})
+
+it('expands an agent run tool calls from a track row', async () => {
+  respond = async (url) => {
+    if (url.includes('/review/tracks')) return json(trackView)
+    if (url.includes('/agent-runs/r1')) return json({ id: 'r1', status: 'ok', model: 'glm-5.3', agent_version: 'agent-1',
+      output: null, counter: null, plan: null, input_tokens: 10, output_tokens: 5, created_at: '2026-10-21T22:00:00Z',
+      tool_calls: [{ seq: 1, phase: 'propose', tool: 'get_trigger', args: {}, result: { ref: 'call:1', data: {} },
+                     result_sha256: 'a'.repeat(64), called_at: '2026-10-21T22:00:01Z' }] })
+    return json({})
+  }
+  render(Review, { sub: 'tracks' })
+  await screen.findByText('NVDA')
+  await fireEvent.click(screen.getByRole('button', { name: 'r1' }))
+  await waitFor(() => expect(calls.some(c => c.url.includes('/agent-runs/r1'))).toBe(true))
+  expect(await screen.findByText(/get_trigger/)).toBeInTheDocument()
+})
+
+const weeklyWithTracks = { id: 'w1', week_start: '2026-10-19', calc_version: 'review-4', notes: '',
+                           supersedes_id: null, created_at: '2026-10-24T22:00:00Z',
+                           stats: { units: { decided: 1, undecided: 0 }, tracks: trackView.units === undefined ? undefined : { units: trackView.units, summary: trackView.summary } } }
+
+it('weekly card renders tracks when present and hides when absent', async () => {
+  const withTracks = { ...weeklyWithTracks, stats: { ...weeklyWithTracks.stats,
+    tracks: { units: trackView.units, summary: trackView.summary } } }
+  const without = { ...weeklyWithTracks, id: 'w2', stats: { ...weeklyWithTracks.stats, tracks: null } }
+  respond = async (url) => {
+    if (url.includes('/weekly-reviews')) return json({ reviews: [withTracks, without] })
+    return json({})
+  }
+  render(Review, { sub: 'weekly' })
+  await screen.findAllByText(/2026-10-19 周/)
+  expect(screen.getAllByText(/轨道对比/).length).toBeGreaterThanOrEqual(3)   // tab + 卡片块标题 + 缺失提示
+  expect(screen.getByText(/该快照无轨道对比/)).toBeInTheDocument()
+})
+
+it('monthly card shows review detail compound', async () => {
+  respond = async (url) => {
+    if (url.includes('/monthly-reviews')) return json({ reviews: [
+      { id: 'm1', month: '2026-10-01', calc_version: 'monthly-2', notes: '', supersedes_id: null,
+        created_at: '2026-11-01T22:00:00Z', stats: {
+          return: { status: 'ok', return: 0.05, net_flow: 0 }, tier: 'excellent',
+          spy: { return: 0.02, excess: 0.03 },
+          review: { flag: 'review', compound: -0.06, spy_compound: 0.02,
+                    months: [{ month: '2026-08-01', return: 0.01, spy_return: 0.01 }] },
+          sensitivity: { count: 2, rows: [] } } }] })
+    return json({})
+  }
+  render(Review, { sub: 'monthly' })
+  expect(await screen.findByText(/2026-10-01/)).toBeInTheDocument()
+  expect(screen.getByText(/3 个月复合/)).toBeInTheDocument()
+  expect(screen.getByText(/-6.00%/)).toBeInTheDocument()
+})
+
+it('push button posts and shows the latest push result', async () => {
+  respond = async (url, init) => {
+    if (url.includes('/weekly-reviews') && init?.method !== 'POST') return json({ reviews: [weeklyWithTracks] })
+    if (url.includes('/review-pushes') && init?.method === 'POST') return json({ kind: 'weekly', period: '2026-10-19', sent: true, messages: 1 })
+    if (url.includes('/review-pushes')) return json({ pushes: [] })
+    return json({})
+  }
+  render(Review, { sub: 'weekly' })
+  await screen.findByText(/2026-10-19 周/)
+  await fireEvent.click(screen.getByRole('button', { name: '推送到 Discord' }))
+  await waitFor(() => expect(calls.some(c => c.url.includes('/review-pushes') && c.init?.method === 'POST')).toBe(true))
+  expect(await screen.findByText('已推送')).toBeInTheDocument()
+})

@@ -202,8 +202,11 @@
           <p class="text-muted">尚无解读</p>
         {:else if u.brief.status === 'error'}
           <p class="text-red-600">解读无效，已隐藏：{u.brief.error}</p>
+        {:else if u.brief.prompt_version === 'agent-1'}
+          <p class="text-xs text-muted">解读见 Agent 建议</p>
         {:else}
           {#if u.brief.status === 'fallback'}<p class="text-xs text-muted">规则版解读（LLM 未参与：{u.brief.error}）</p>{/if}
+          {#if u.brief.model}<p class="text-xs text-muted">模型 {u.brief.model}</p>{/if}
           <p>{u.brief.output?.summary}</p>
           {#each [['支持', u.brief.output?.support], ['反证', u.brief.output?.contra], ['冲突与缺口', u.brief.output?.conflicts]] as [title, items]}
             {#if Array.isArray(items) && items.length}

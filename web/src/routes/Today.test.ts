@@ -452,3 +452,24 @@ describe('agent track', () => {
     expect(await screen.findByText(/Agent skipped: disabled/)).toBeInTheDocument()
   })
 })
+
+
+// --- interpret briefs (P4 §7.5) ---
+
+it('collapses an agent-1 brief to a pointer line', async () => {
+  respond = async () => json({ session: '2026-10-22', units: [unit({
+    brief: { id: 'b1', status: 'ok', prompt_version: 'agent-1', model: 'glm-5.3',
+             output: { summary: '回踩修复后放量上行', support: [], contra: [], conflicts: [] } } })], holdings: [] })
+  render(Today)
+  expect(await screen.findByText('解读见 Agent 建议')).toBeInTheDocument()
+  expect(screen.queryByText('回踩修复后放量上行')).not.toBeInTheDocument()
+})
+
+it('shows the model name on an interpret brief', async () => {
+  respond = async () => json({ session: '2026-10-22', units: [unit({
+    brief: { id: 'b1', status: 'ok', prompt_version: 'agent-brief-1', model: 'glm-5.3',
+             output: { summary: '持仓回撤，趋势未坏', support: [], contra: [], conflicts: [] } } })], holdings: [] })
+  render(Today)
+  expect(await screen.findByText('持仓回撤，趋势未坏')).toBeInTheDocument()
+  expect(screen.getByText(/glm-5.3/)).toBeInTheDocument()
+})

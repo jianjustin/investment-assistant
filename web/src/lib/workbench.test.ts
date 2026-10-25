@@ -153,3 +153,22 @@ describe('agent track', () => {
     expect([plan.kind, shadow.kind, trade.track]).toEqual(['agent', 'agent', 'agent'])
   })
 })
+
+
+// --- three-track comparison and review pushes (P4 design §4, §6) ---
+
+import { rText, TRACK_STATUS_TEXT } from './workbench'
+
+it('TRACK_STATUS_TEXT covers every status', () => {
+  expect(Object.keys(TRACK_STATUS_TEXT).sort()).toEqual(['closed', 'expired', 'missing', 'no_plan',
+    'not_executable', 'not_executed', 'open', 'pass', 'pending'].sort())
+  expect(TRACK_STATUS_TEXT.missing).toBe('缺失')
+  expect(TRACK_STATUS_TEXT.not_executed).toBe('未执行')
+})
+
+it('rText formats sign and null', () => {
+  expect(rText(1.5)).toBe('+1.50R')
+  expect(rText(-0.25)).toBe('-0.25R')
+  expect(rText(0)).toBe('+0.00R')
+  expect(rText(null)).toBe('—')
+})

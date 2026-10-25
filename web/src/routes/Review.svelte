@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import * as wb from '../lib/workbench'
+  import Drawer from '../lib/components/Drawer.svelte'
 
   let { sub }: { sub?: string } = $props()
-  const TABS = [['trades', '交易与持仓'], ['shadow', '对照组'], ['weekly', '周度复盘'],
+  const TABS = [['trades', '交易与持仓'], ['shadow', '对照组'], ['tracks', '轨道对比'], ['weekly', '周度复盘'],
                  ['monthly', '月度复盘'], ['account', '资金'], ['backchecks', '上线前检查']] as const
   let tab = $derived(TABS.some(([id]) => id === sub) ? sub! : 'trades')
 
@@ -15,6 +16,9 @@
   let monthly = $state<wb.MonthlyReview[] | null>(null)
   let account = $state<wb.AccountView | null>(null)
   let backchecks = $state<wb.Backcheck[] | null>(null)
+  let tracks = $state<wb.TracksView | null>(null)
+  let callDrawer = $state<{ open: boolean; call: wb.AgentToolCall | null }>({ open: false, call: null })
+  let pushResults = $state<Record<string, string>>({})
   let backcheckNote = $state('')
   let backcheckError = $state('')
 
@@ -30,6 +34,35 @@
     copy.setDate(copy.getDate() - ((copy.getDay() + 6) % 7))
     return copy.toISOString().slice(0, 10)
   }
+  function summaryRows(view: wb.TracksView): { pool: string; track: string; s: wb.TrackStats }[] {
+    const out: { pool: string; track: string; s: wb.TrackStats }[] = []
+    const pools: [string, Record<'rule' | 'agent' | 'actual', wb.TrackStats>][] = [
+      ['全部', view.summary.all], ['核心池', view.summary.core], ['扩展池', view.summary.extended]]
+    for (const [pool, group] of pools)
+      for (const [track, s] of [['规则', group.rule], ['Agent', group.agent], ['实际', group.actual]] as [string, wb.TrackStats][])
+        out.push({ pool, track, s })
+    return out
+  }
+
+  async function openRun(runId: string) {
+    const detail = await wb.getAgentRun(runId)
+    callDrawer = { open: true, call: detail.tool_calls[0] ?? null }
+  }
+
+  async function push(kind: string, period: string) {
+    const key = kind + ':' + period
+    pushResults[key] = '推送中…'
+    pushResults = pushResults
+    try {
+      const out = await wb.postReviewPush(kind as any, period)
+      pushResults[key] = out.sent ? '已推送' : ('未推送：' + (out.reason ?? '未知原因'))
+      pushResults = pushResults
+    } catch (e) {
+      pushResults[key] = wb.describeError(e)
+      pushResults = pushResults
+    }
+  }
+
   let weekStart = $state(monday())
   let weekNotes = $state('')
   let weekError = $state('')
@@ -44,6 +77,8 @@
         shadow = decided
       } else if (which === 'shadow') {
         shadow = await wb.getShadow()
+      } else if (which === 'tracks') {
+        tracks = await wb.getTracks()
       } else if (which === 'monthly') {
         monthly = (await wb.getMonthly()).reviews
       } else if (which === 'account') {
@@ -279,6 +314,39 @@
     </table>
   {/if}
 
+  {#if tab === 'tracks' && !error}
+    {#if tracks}
+      <p class="text-xs text-muted">同一批买入单元的三条轨道（R 按各自计划的止损计）；自 {tracks.since} 至 {tracks.until}，口径 {tracks.calc_version}。</p>
+      <table class="text-xs w-full">
+        <thead><tr class="text-left text-muted"><th>池</th><th>轨道</th><th>单元</th><th>已定</th><th>待定</th><th>缺失</th><th>均值</th><th>中位</th><th>合计</th><th>盈利</th></tr></thead>
+        <tbody>
+          {#each summaryRows(tracks) as row}
+            <tr><td>{row.pool}</td><td>{row.track}</td><td>{row.s.units}</td><td>{row.s.determined}</td><td>{row.s.pending}</td><td>{row.s.missing}</td>
+                <td>{wb.rText(row.s.mean)}</td><td>{wb.rText(row.s.median)}</td><td>{wb.rText(row.s.sum)}</td><td>{row.s.wins}</td></tr>
+          {/each}
+        </tbody>
+      </table>
+      <table class="text-sm w-full mt-3">
+        <thead><tr class="text-left text-xs text-muted"><th>标的</th><th>信号日</th><th>池</th><th>规则</th><th>Agent</th><th>实际</th></tr></thead>
+        <tbody>
+          {#each tracks.units as u (u.ticker + u.signal_date)}
+            <tr>
+              <td><a class="text-accent" href={`#instrument/${u.ticker}`}>{u.ticker}</a></td>
+              <td>{u.signal_date}</td>
+              <td>{u.pool === 'core' ? '核心' : '扩展'}</td>
+              <td>{wb.TRACK_STATUS_TEXT[u.rule.status]} {wb.rText(u.rule.r)}{#if u.rule.plan_id} · <a class="text-accent" href={`#instrument/${u.ticker}`}>计划 {String(u.rule.plan_id).slice(0, 8)}</a>{/if}</td>
+              <td>{wb.TRACK_STATUS_TEXT[u.agent.status]} {wb.rText(u.agent.r)}{#if u.agent.run_id} · <button class="text-accent underline" onclick={() => openRun(u.agent.run_id!)}>{String(u.agent.run_id).slice(0, 8)}</button>{/if}</td>
+              <td>{wb.TRACK_STATUS_TEXT[u.actual.status]} {wb.rText(u.actual.r)}{#if u.actual.plan_kind} · 照{wb.KIND_TEXT[u.actual.plan_kind]}{/if}</td>
+            </tr>
+          {:else}<tr><td colspan="6" class="text-muted">窗口内没有可比单元</td></tr>{/each}
+        </tbody>
+      </table>
+
+    {:else}
+      <p class="text-sm text-muted">加载中…</p>
+    {/if}
+  {/if}
+
   {#if tab === 'weekly' && weekly && !error}
     <form class="flex flex-wrap items-end gap-2 text-sm border border-border rounded p-3" onsubmit={generateWeekly}>
       <label class="flex flex-col">周一<input aria-label="周一" type="date" class="border border-border rounded px-2 py-1 bg-bg" bind:value={weekStart} /></label>
@@ -288,7 +356,10 @@
     </form>
     {#each weekly as r (r.id)}
       <article class="border border-border rounded p-3 text-sm space-y-2">
-        <h2 class="font-semibold">{r.stats.week?.start ?? r.week_start} 周 · 已决定 {r.stats.units?.decided ?? 0} · 未处理 {r.stats.units?.undecided ?? 0}</h2>
+        <h2 class="font-semibold">{r.stats.week?.start ?? r.week_start} 周 · 已决定 {r.stats.units?.decided ?? 0} · 未处理 {r.stats.units?.undecided ?? 0}
+          <button class="ml-2 px-2 py-0.5 rounded bg-accent text-white text-xs" onclick={() => push('weekly', r.week_start)}>推送到 Discord</button>
+          {#if pushResults['weekly:' + r.week_start]}<span class="text-xs text-muted">{pushResults['weekly:' + r.week_start]}</span>{/if}
+        </h2>
         <p class="text-xs text-muted">{r.stats.note} 口径 {r.calc_version} · 生成于 {wb.dateTime(r.created_at)}{r.supersedes_id ? ' · 更正版' : ''}</p>
         {#if r.notes}<p>{r.notes}</p>{/if}
         {#each [['按规则', r.stats.by_rule], ['按决定', r.stats.by_decision]] as [title, groups]}
@@ -331,6 +402,16 @@
             <li>{wb.KIND_TEXT[kind] ?? kind}：{p.count} · 已过期 {p.expired} · R {p.r_mean ?? '—'} / {p.r_median ?? '—'}</li>
           {/each}</ul>
         {/if}
+        {#if r.stats.tracks}
+          <p class="text-xs text-muted">轨道对比（单元 / 已定 / 均值 / 中位 / 合计）</p>
+          <ul>
+            {#each [['规则', r.stats.tracks.summary.all.rule], ['Agent', r.stats.tracks.summary.all.agent], ['实际', r.stats.tracks.summary.all.actual]] as [track, s]}
+              <li>{track}：{s.units} 单元 · 已定 {s.determined} · 均值 {wb.rText(s.mean)} · 中位 {wb.rText(s.median)} · 合计 {wb.rText(s.sum)}</li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="text-xs text-muted">轨道对比：该快照无轨道对比</p>
+        {/if}
         {#if r.stats.discipline}
           {@const d = r.stats.discipline}
           <p class="text-xs text-muted">纪律</p>
@@ -350,7 +431,10 @@
     </form>
     {#each monthly ?? [] as r (r.id)}
       <article class="border border-border rounded p-3 text-sm space-y-2">
-        <h2 class="font-semibold">{r.month} · {(r.stats.tier && wb.TIER_LABELS[r.stats.tier]) || '缺数据'}</h2>
+        <h2 class="font-semibold">{r.month} · {(r.stats.tier && wb.TIER_LABELS[r.stats.tier]) || '缺数据'}
+          <button class="ml-2 px-2 py-0.5 rounded bg-accent text-white text-xs" onclick={() => push('monthly', r.month)}>推送到 Discord</button>
+          {#if pushResults['monthly:' + r.month]}<span class="text-xs text-muted">{pushResults['monthly:' + r.month]}</span>{/if}
+        </h2>
         {#if r.stats.return?.status === 'ok'}
           <p>月度收益 {wb.pct(r.stats.return.return)} · 净出入金 {r.stats.return.net_flow ?? '—'}</p>
           {#if r.stats.spy}<p>SPY {wb.pct(r.stats.spy.return)} · 超额 {wb.pct(r.stats.spy.excess)}</p>{/if}
@@ -359,6 +443,16 @@
         {/if}
         {#if r.stats.review_flag === 'review'}<p class="text-red-600">流程复查：连续 3 个月亏损且跑输 SPY</p>
         {:else if r.stats.review_flag === 'insufficient'}<p class="text-xs text-muted">流程复查：样本不足（不足 3 个月）</p>{/if}
+        {#if r.stats.review}
+          {@const rv = r.stats.review}
+          <p class="text-xs text-muted">复查明细</p>
+          <ul class="text-xs">
+            {#each rv.months ?? [] as m}
+              <li>{String(m.month).slice(0, 7)}：本月 {wb.pct(m.return)} · SPY {wb.pct(m.spy_return)}</li>
+            {/each}
+          </ul>
+          <p class="text-xs">3 个月复合 {wb.pct(rv.compound)} · SPY {wb.pct(rv.spy_compound)}</p>
+        {/if}
         {#if r.stats.sensitivity?.rows?.length}
           <p class="text-xs text-muted">敏感性（近似）</p>
           <ul class="text-xs">{#each r.stats.sensitivity.rows as row}
@@ -454,4 +548,17 @@
       {/if}
     </section>
   {/if}
+
+  <Drawer open={callDrawer.open} onclose={() => callDrawer = { open: false, call: null }}>
+    {#if callDrawer.call}
+      {@const c = callDrawer.call}
+      <h2 class="font-semibold">工具调用 call:{c.seq}</h2>
+      <p class="text-xs text-muted">工具 {c.tool} · 阶段 {c.phase === 'propose' ? '建议' : '反方'} · {wb.dateTime(c.called_at)}</p>
+      <p class="text-xs break-all">参数 {JSON.stringify(c.args)}</p>
+      <p class="text-xs break-all">哈希 {c.result_sha256.slice(0, 8)}</p>
+      <pre class="text-xs mt-2 whitespace-pre-wrap break-all">{JSON.stringify(c.result, null, 2)}</pre>
+    {:else}
+      <p class="text-sm text-muted">未找到该编号的工具调用</p>
+    {/if}
+  </Drawer>
 </section>
