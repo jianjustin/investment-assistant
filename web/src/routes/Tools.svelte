@@ -6,11 +6,12 @@
   import { fmtTime } from '../lib/format'
   import Modal from '../lib/components/Modal.svelte'
   import FetchDateModal from '../lib/components/FetchDateModal.svelte'
+  import FilingRecords from '../lib/components/FilingRecords.svelte'
 
   const taskName = (name:string) => name === 'us-research' ? '美股研究' : name
   let { sub = 'tasks' }: { sub?: string } = $props()
   // 旧 hash（ops/results）一律回落到任务中心
-  const view = $derived(sub === 'runs' ? 'runs' : 'tasks')
+  const view = $derived(sub === 'runs' ? 'runs' : sub === 'filings' ? 'filings' : 'tasks')
 
   const JOB_HELP: Record<string, { goal: string; details: string[] }> = {
     metrics: {
@@ -188,8 +189,11 @@
 </div>
 {#if loadError}<p role="alert" class="mb-3 text-sm text-danger">{loadError}。当前数据已保留，可刷新重试。</p>{/if}
 
-{#if loading}
+{#if loading && view !== 'filings'}
   <Skeleton />
+{:else if view === 'filings'}
+  <h2 class="mb-3 text-lg font-semibold">SEC 文件</h2>
+  <FilingRecords />
 {:else if view === 'tasks'}
   <div class="space-y-4">
     {#if actionMsg}<p class="text-xs text-muted">{actionMsg}</p>{/if}

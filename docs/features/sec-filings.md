@@ -68,7 +68,7 @@
   .venv/bin/python -m investment_assistant.tasks.filings --from 2026-10-01 --to 2026-10-15
   ```
 
-- 页面：「工具 → 任务中心」运行或暂停 `filings`；「工具 → 运行记录」查看结果；「数据 → 财报」浏览已下载的文件。
+- 页面：「工具 → 任务中心」运行或暂停 `filings`；「工具 → 运行记录」查看结果；「工具 → SEC 文件」按股票、类型、日期筛选并浏览、下载已入库的文件。
 - API：`GET /api/filings/records`、`GET /api/filings/records/{id}/download`。
 - 验证：同一窗口连续跑两次，第二次新增下载为 0，通知事件和消息 ID 不变，既有报告的 SHA-256 不变。
 

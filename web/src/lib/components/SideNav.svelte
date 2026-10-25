@@ -22,6 +22,7 @@
       id: 'tools', label: '工具', icon: '🔧', children: [
         { id: 'tasks',   label: '任务中心' },
         { id: 'runs',    label: '运行记录' },
+        { id: 'filings', label: 'SEC 文件' },
       ],
     },
     {

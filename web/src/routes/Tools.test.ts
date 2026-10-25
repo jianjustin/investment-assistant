@@ -232,3 +232,31 @@ it('offers no ashares task', async () => {
   expect(container.querySelector('option[value="ashares"]')).toBeNull()
   expect(container.textContent).not.toContain('A 股')
 })
+
+describe('Tools · SEC 文件', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    vi.spyOn(api, 'getScheduledJobs').mockResolvedValue(scheduledJobs())
+  })
+
+  const record = {
+    id: 1, ticker: 'MU', form: '10-Q', filing_date: '2026-09-30',
+    file_path: 'MU-10-Q.htm', downloaded_at: '2026-10-01T10:00:00Z', created_at: '2026-10-01T10:00:00Z',
+  }
+
+  it('opens the SEC filings tab', async () => {
+    const get = vi.spyOn(api, 'getFilingRecords').mockResolvedValue({ records: [record], tickers: ['MU'] } as any)
+    render(Tools, { props: { sub: 'filings' } })
+    expect(await screen.findByRole('cell', { name: 'MU' })).toBeTruthy()
+    expect(get).toHaveBeenCalledWith({})
+    expect(screen.getByRole('columnheader', { name: '类型' })).toBeTruthy()
+  })
+
+  it('filters by ticker', async () => {
+    const get = vi.spyOn(api, 'getFilingRecords').mockResolvedValue({ records: [record], tickers: ['MU', 'NVDA'] } as any)
+    render(Tools, { props: { sub: 'filings' } })
+    await waitFor(() => expect(get).toHaveBeenCalled())
+    await fireEvent.change(screen.getByLabelText('按标的筛选'), { target: { value: 'NVDA' } })
+    await waitFor(() => expect(get).toHaveBeenCalledWith({ ticker: 'NVDA' }))
+  })
+})
