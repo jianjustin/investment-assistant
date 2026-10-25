@@ -246,3 +246,100 @@ def _agent_line(agent: dict | None) -> str:
         return f"Agent（{agent['model']}）不建议买入；{agent['summary']}"
     from investment_assistant.workbench.agent import REASON_TEXT
     return f"Agent 未给出建议（{REASON_TEXT.get(agent.get('reason'), agent.get('reason'))}）"
+
+
+# --- weekly / monthly review pushes (P4 §6.2) ---
+
+TIER_LABELS = {"excellent_plus": "非常优秀", "excellent": "优秀", "viable": "可行", "attention": "需关注"}
+
+
+def _r(value, suffix="R"):
+    return f"{value:+.2f}{suffix}" if value is not None else "—"
+
+
+def _track_lines(tracks):
+    if not tracks:
+        return "该快照无轨道对比"
+    lines = []
+    for label, key in (("规则", "rule"), ("Agent", "agent"), ("实际", "actual")):
+        s = tracks[key]
+        lines.append(f"""{label} {s["units"]} 单元 · 已定 {s["determined"]} · 均值 {_r(s["mean"])}"""
+                     f""" · 中位 {_r(s["median"])} · 合计 {_r(s["sum"])}""")
+    actual = tracks["actual"]
+    kinds = actual.get("by_plan_kind") or {}
+    by_status = actual.get("by_status") or {}
+    lines.append(f"""实际：未执行 {by_status.get("not_executed", 0)}（记 0R）· 未平仓 {by_status.get("open", 0)}"""
+                 f""" · 照规则 {kinds.get("rule", 0)} · 照 Agent {kinds.get("agent", 0)} · 照自定 {kinds.get("own", 0)}""")
+    return chr(10).join(lines)
+
+
+def _discipline_line(discipline):
+    if not discipline:
+        return "—"
+    rate = discipline.get("compliance_rate")
+    rate_text = f"{int(round(rate * 100))}%" if rate is not None else "—"
+    return (f"""追高 {discipline["chase"]} · 过早止盈 {discipline["early_take"]}"""
+            f""" · 死扛亏损 {discipline["held_loser"]} · 计划外 {discipline["unplanned"]}"""
+            f" · 合规率 {rate_text}")
+
+
+def _review_footer(payload):
+    return NotifyField("说明", f"""{payload["note"]} {payload["evidence"]}{chr(10)}{payload["url"]}""")
+
+
+def workbench_weekly(payload):
+    overview = payload["overview"]
+    fields = [NotifyField("概览", f"""已决定 {overview["decided"]} · 未处理 {overview["undecided"]}"""
+                                  f""" · 计划外交易 {overview["unsignaled"]} · 已平仓 {overview["closed"]}"""),
+              NotifyField("轨道对比", _track_lines(payload.get("tracks")))]
+    rules = payload.get("rules") or []
+    rule_text = chr(10).join(
+        f"""{"核心" if r["pool"] == "core" else "扩展"} {r["rule_id"]} 触发 {r["triggers"]}"""
+        f""" · 计划 {r["plans"]} · 成交 {r["filled"]} · 均值 {r["r_mean"]}R"""
+        for r in rules) or "本周无计划"
+    _clip_field(fields, "规则", rule_text)
+    _clip_field(fields, "纪律", _discipline_line(payload.get("discipline")))
+    fields.append(_review_footer(payload))
+    title = f"""📅 周度复盘 · {payload["start"]} – {payload["end"]}"""
+    return [_fit_message(title, fields, _footer())]
+
+
+def workbench_monthly(payload):
+    ret = payload.get("return") or {}
+    spy = payload.get("spy") or {}
+    if ret.get("status") == "ok" and ret.get("return") is not None:
+        tier = payload.get("tier") or "—"
+        tier_label = TIER_LABELS.get(tier, tier)
+        income = f"""本月 {ret["return"]:+.1%}（{tier_label}）"""
+        if spy.get("return") is not None:
+            income += f"""· SPY {spy["return"]:+.1%} · 超额 {spy.get("excess"):+.1%}"""
+    else:
+        income = "缺资金快照，无法计算"
+    review = payload.get("review") or {}
+    if review.get("flag") == "review":
+        flag_text = (f"""⚠️ 需复查：3 个月复合 {review.get("compound"):+.1%}"""
+                     f"""，SPY {review.get("spy_compound"):+.1%}""")
+    elif review.get("flag") == "ok":
+        flag_text = "正常"
+    else:
+        flag_text = "样本不足"
+    sensitivity = payload.get("sensitivity") or {}
+    lines = [f"""{row["risk_pct"]:.1%} 收益 {row["return"]:+.1%} · 回撤 {row["max_drawdown"]:.1%}"""
+             for row in sensitivity.get("rows") or []]
+    if sensitivity.get("count") is not None:
+        lines.append(f"共 {sensitivity[chr(99)+chr(111)+chr(117)+chr(110)+chr(116)]} 笔（近似，按平仓时间排序）")
+    fields = [NotifyField("收益", income),
+              NotifyField("流程复查", flag_text),
+              NotifyField("敏感性（近似）", chr(10).join(lines) or "—"),
+              NotifyField("轨道对比", _track_lines(payload.get("tracks"))),
+              NotifyField("纪律", _discipline_line(payload.get("discipline"))),
+              _review_footer(payload)]
+    return [_fit_message(f"🗓 月度复盘 · {payload[chr(109)+chr(111)+chr(110)+chr(116)+chr(104)]}", fields, _footer())]
+
+
+def workbench_review_reminder(payload):
+    fields = [NotifyField("待录入",
+                          f"""缺 {payload["month"]} 月末资金快照。录入后在「复盘 → 月度复盘」生成并推送。"""
+                          + chr(10) + payload["url"])]
+    title = f"""⏰ 月度复盘待录入 · {payload["month"]}"""
+    return [_fit_message(title, fields, _footer())]
