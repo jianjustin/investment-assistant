@@ -4,19 +4,26 @@
 
 ## 1. v1 遗留功能：合并或删除
 
-v2.0.0 原样保留了这些功能（清单见 [features/legacy](../features/legacy/README.md)），下一版逐项决定合并进工作台还是删除。
+2026-10-25 已逐项定下，排入 `v2.1.0`，设计见 [spec](../specs/2026-10-25-v2.1-legacy-consolidation-design.md)。v2.0.0 时的清单见 [features/legacy](../features/legacy/README.md)。
 
-| 功能 | 代码 / 表 / 任务 | 可能的去向 |
+| 功能 | 代码 / 表 / 任务 | 决定 |
 | --- | --- | --- |
-| Hermes 宏观分析、决策证据（DeepSeek） | `hermes/`、`services/hermes.py`；无表 | 与 Agent 轨道的解读重叠，候选删除；或把宏观判断并入市场环境 |
-| SPY/VIX 市场信号、趋势分析 | `market/`；`market_signals`；任务 `metrics` | 工作台已改用池内广度做区制，候选删除 |
-| 个股趋势快照、技术面趋势页 | `tickers/`；`ticker_signal_snapshots` | 「标的」页已经展示日线和候选，候选删除 |
-| 策略评分 | `strategies/`；`strategy_scores`；任务 `scores` | 已被规则 v1 取代，候选删除 |
-| 事件研究 | `research/event_study.py` 等；`event_studies`；任务 `event_study` | 与上线前检查（`backcheck-1`）重叠，候选合并 |
-| 美股财季数据、指引、研究观察卡 | `us_research/`、`research/cards.py`；`us_research_*`、`research_observation_cards*` | 候选作为「标的」页的基本面一栏并入，或删除 |
-| 「更多」下的旧六个入口 | `web/src/routes/` 中的 Data、Technicals、Strategy、Trade | 跟随上面各项的决定 |
+| Hermes 宏观分析、决策证据（DeepSeek） | `hermes/`、`services/hermes.py`；无表 | 删除；`run_log` 移到共享底座；去掉 `DEEPSEEK_API_KEY` |
+| SPY/VIX 市场信号、趋势分析 | `market/`；`market_signals`；任务 `metrics` | 删除；决策单元去掉 `market_status` |
+| 个股趋势快照、技术面趋势页 | `tickers/`；`ticker_signal_snapshots` | 删除；K 线 + MA20/50/200 + 成交量图并入「标的」页，改读 `price_bars` |
+| 策略评分 | `strategies/`；`strategy_scores`；任务 `scores` | 删除 |
+| 事件研究 | `research/event_study.py` 等；`event_studies`；任务 `event_study` | 删除；上线前检查升级为 `backcheck-2`，加触发后 5/10/20 日相对 SPY 的超额 |
+| 美股财季数据、指引、研究观察卡 | `us_research/`、`research/cards.py`；`us_research_*`、`research_observation_cards*` | 财季数据与指引并入「标的」页基本面一栏；观察卡删除 |
+| 「更多」下的旧入口 | `web/src/routes/` 中的 Data、Technicals、Strategy、Trade | 四个入口删除；SEC 文件记录移到「工具」；旧地址回落到「今日」 |
 
-删除时要一并考虑：对应表的去留（新增迁移，执行前备份）、`config.watchlist` 是否还有读者、`DEEPSEEK_API_KEY` 等环境变量。
+表的删除走迁移 022，真实库执行前 `pg_dump` 备份、单独授权；`config.watchlist` 仍有 SEC 下载器和关注列表兜底两个读者，保留。
+
+v2.1.0 之后的新候选（讨论中提出，暂不做）：
+
+| 项 | 说明 |
+| --- | --- |
+| Agent 工具 `get_fundamentals` | 让 Agent 读「标的」页同一份财季数据 |
+| K 线图标注候选与计划价位 | 在「标的」页图上画出规则候选、入场区间、止损、目标 |
 
 ## 2. v2 暂缓项
 
