@@ -49,3 +49,9 @@ def test_notify_defaults_include_workbench():
     cfg = _config_from_dict({})
     assert cfg.notify.task_channels["workbench"] == "signals"
     assert cfg.notify.task_enabled["workbench"] is True
+
+
+def test_review_task_notify_defaults():
+    cfg = _config_from_dict({})
+    assert cfg.notify.task_channels['workbench_review'] == 'signals'
+    assert cfg.notify.task_enabled['workbench_review'] is True

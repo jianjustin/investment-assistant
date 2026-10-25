@@ -108,3 +108,18 @@ def test_agent_dependencies_importable():
     from langgraph.checkpoint.postgres import PostgresSaver
     from langgraph.graph import StateGraph
     assert StateGraph is not None and PostgresSaver is not None and ChatOpenAI is not None
+
+
+def test_020_is_additive():
+    assert [p.name for p in Path('migrations').glob('020_*.sql')] == ['020_review_expansion.sql']
+    code_020 = re.sub(r'--[^\n]*', '', Path('migrations/020_review_expansion.sql').read_text(encoding='utf-8'))
+    alters = re.findall(r'ALTER TABLE (\w+)', code_020, re.IGNORECASE)
+    assert alters and set(alters) <= {'agent_runs', 'signal_briefs'}
+    inserts = re.findall(r'INSERT INTO (\w+)', code_020, re.IGNORECASE)
+    assert set(inserts) == {'scheduled_jobs'}
+    assert 'ON CONFLICT (name) DO NOTHING' in code_020
+    flat = re.sub(r'\s+', ' ', code_020)
+    assert "('workbench_review', '08:00', '1-7', 'Asia/Shanghai', FALSE)" in flat
+    upper = code_020.upper()
+    assert 'UPDATE ' not in upper
+    assert 'DELETE ' not in upper

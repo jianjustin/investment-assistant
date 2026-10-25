@@ -62,10 +62,12 @@ class NotifyConfig:
     })
     task_channels: dict[str, str] = field(
         default_factory=lambda: {"metrics": "daily", "filings": "earnings", "scores": "signals",
-                                 "workbench": "signals"}
+                                 "workbench": "signals",
+                                 "workbench_review": "signals"}
     )
     task_enabled: dict[str, bool] = field(
-        default_factory=lambda: {"metrics": True, "filings": True, "scores": True, "workbench": True}
+        default_factory=lambda: {"metrics": True, "filings": True, "scores": True, "workbench": True,
+                                  "workbench_review": True}
     )
 
 

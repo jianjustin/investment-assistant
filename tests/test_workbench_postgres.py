@@ -636,3 +636,68 @@ def test_postgres_saver_setup_in_disposable_schema(workbench_db):
         workbench_db.rollback()
         workbench_db.execute(f'DROP SCHEMA {schema} CASCADE')
         workbench_db.commit()
+
+
+def test_agent_run_mode_defaults_propose(workbench_db):
+    run_id = _agent_run(workbench_db)
+    mode = workbench_db.execute('SELECT mode FROM agent_runs WHERE id = %s', [run_id]).fetchone()[0]
+    assert mode == 'propose'
+
+
+def test_interpret_ok_without_plan_allowed(workbench_db):
+    assert _agent_run(workbench_db, mode='interpret', status='ok', reason=None, output={'summary': 's'})
+
+
+def test_propose_ok_without_plan_rejected(workbench_db):
+    import psycopg
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _agent_run(workbench_db, status='ok', reason=None)
+
+
+def test_interpret_pass_rejected(workbench_db):
+    import psycopg
+    with pytest.raises(psycopg.errors.CheckViolation):
+        _agent_run(workbench_db, mode='interpret', status='pass', reason=None)
+
+
+def test_old_ok_plan_constraint_dropped(workbench_db):
+    old_def = "(status = 'ok'::text) = (plan_id IS NOT NULL)"
+    count = workbench_db.execute(
+        "SELECT count(*) FROM pg_constraint WHERE conrelid = 'agent_runs'::regclass AND contype = 'c' "
+        'AND pg_get_constraintdef(oid) LIKE %s AND pg_get_constraintdef(oid) NOT LIKE %s',
+        [f'%{old_def}%', '%mode%']).fetchone()[0]
+    assert count == 0
+
+
+def test_brief_agent_run_fk(workbench_db):
+    import psycopg
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        workbench_db.execute(
+            'INSERT INTO signal_briefs (ticker, signal_date, model, prompt_version, cutoff_at, '
+            'input_refs, output, status, agent_run_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)',
+            ['NVDA', date(2026, 10, 21), 'glm-5.3', 'agent-brief-1', NOW, '[]', '{}', 'ok', uuid.uuid4()])
+    workbench_db.rollback()
+
+
+def test_review_push_reason_required(workbench_db):
+    import psycopg
+    workbench_db.execute(
+        'INSERT INTO review_pushes (kind, period, trigger_source, sent, messages, reason) '
+        "VALUES ('weekly', %s, 'manual', false, 0, 'send_failed: boom')", [date(2026, 10, 19)])
+    with pytest.raises(psycopg.errors.CheckViolation):
+        workbench_db.execute(
+            'INSERT INTO review_pushes (kind, period, trigger_source, sent, messages) '
+            "VALUES ('weekly', %s, 'manual', false, 0)", [date(2026, 10, 26)])
+    workbench_db.rollback()
+
+
+def test_review_job_inserted_disabled(workbench_db):
+    row = workbench_db.execute('SELECT time_local, weekday_mask, timezone, enabled '
+                               "FROM scheduled_jobs WHERE name = 'workbench_review'").fetchone()
+    assert row == ('08:00', '1-7', 'Asia/Shanghai', False)
+
+
+def test_missing_tables_lists_review_pushes(workbench_db):
+    from investment_assistant.workbench import repository
+    workbench_db.execute('DROP TABLE review_pushes')
+    assert 'review_pushes' in repository.missing_tables(workbench_db)
