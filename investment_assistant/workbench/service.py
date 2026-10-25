@@ -47,7 +47,6 @@ class Deps:
     bar_fetcher: Callable | None = None
     news_fetcher: Callable | None = None
     filing_source: Any = None           # object with discover(tickers, start_iso, end_iso)
-    brief_client: Callable | None = None
     earnings_fetcher: Callable | None = None
     macro_fetcher: Callable | None = None
     clock: Callable[[], float] | None = None
@@ -378,15 +377,12 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         try:
             with _tx() as conn:
                 ticker_bars = repository.read_bars(conn, ticker, session, cutoff_at=now)
-                events, filing_rows = _filing_events(conn, ticker, session, now)
+                events, _ = _filing_events(conn, ticker, session, now)
                 book = _book(conn, ticker)
-                extended = _unit_is_extended(conn, ticker, session, held=book['position'] is not None, now=now)
                 _, plan_state = _position_plan_state(conn, ticker, book, ticker_bars, session, now=now)
                 result = rules.evaluate(ticker, session, ticker_bars, events, book['position'], plan_state=plan_state)
-                inserted = 0
                 for cand in result['candidates']:
                     out = repository.store_candidate(conn, ticker, session, cand, run_id=run_id)
-                    inserted += out['status'] == 'inserted'
                     if out['status'] == 'conflict':
                         summary['conflicts'].append({'ticker': ticker, 'rule_id': cand.rule_id, 'id': str(out['id'])})
                 entry['candidates'] = [c.rule_id for c in result['candidates']]
@@ -397,15 +393,8 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
                     if group and repository.decision_head(conn, ticker, session) is None else None
                 if unit is not None and unit['proposed_action'] == 'buy' and 'conflict' not in unit['labels']:
                     _generate_rule_plan(conn, ticker, session, ticker_bars, summary, now=now)
-                # Extended units plan and shadow but never reach the model brief.
-                needs_brief = not extended and group and repository.decision_head(conn, ticker, session) is None and (
-                    inserted or repository.latest_brief(conn, ticker, session) is None)
-                if needs_brief:
-                    recent = repository.read_news(conn, ticker, cutoff_at=now,
-                                                  since=_midnight(session - timedelta(days=NEWS_LOOKBACK_DAYS)))
-                    brief = briefs.generate(unit, group, filing_rows, recent, cutoff_at=now, client=deps.brief_client)
-                    repository.store_brief(conn, brief)
-                    summary['briefs'][ticker] = brief['status']
+                # Briefs come from the agent stage only (P4 §7.3): propose for
+                # conflict-free buys, interpret for everything else on the main list.
         except Unavailable:
             raise
         except Exception as exc:
@@ -922,10 +911,13 @@ def _read_only(fn):
         return fn(conn)
 
 
-def _agent_units(conn, session: date, *, now: datetime) -> list[dict[str, Any]]:
-    """§8.1 1–2: this session's undecided, conflict-free buy units (ATR-skipped rule
-    plans included); main-list units first, then extended, each alphabetical."""
-    main: list[dict[str, Any]] = []
+def _session_units(conn, session: date, *, now: datetime) -> dict[str, list[dict[str, Any]]]:
+    """This session's undecided units in three groups (P4 §7.3): main-list
+    conflict-free buys (propose), other main-list units (interpret), extended
+    conflict-free buys (propose); each alphabetical, every item carrying its
+    candidates for the fallback brief."""
+    main_buy: list[dict[str, Any]] = []
+    main_other: list[dict[str, Any]] = []
     extended: list[dict[str, Any]] = []
     for group in repository.candidate_groups_since(conn, session):
         if group['signal_date'] != session:
@@ -937,40 +929,70 @@ def _agent_units(conn, session: date, *, now: datetime) -> list[dict[str, Any]]:
         unit = synthesis.synthesize(ticker, group['signal_date'], group['candidates'],
                                     holding=book['position'] is not None,
                                     market_status=repository.market_status(conn, group['signal_date']), now=now)
-        if unit is None or unit['proposed_action'] != 'buy' or 'conflict' in unit['labels']:
+        if unit is None:
             continue
+        conflict_free_buy = unit['proposed_action'] == 'buy' and 'conflict' not in unit['labels']
         is_extended = _unit_is_extended(conn, ticker, group['signal_date'],
                                         held=book['position'] is not None, now=now)
         entry = repository.pool_entry_at(conn, ticker, group['signal_date'], cutoff_at=now)
         item = {'ticker': ticker, 'signal_date': group['signal_date'],
                 'pool': 'extended' if is_extended else 'main',
-                'pool_tier': entry['tier'] if entry else 'core'}
-        (extended if is_extended else main).append(item)
-    main.sort(key=lambda u: u['ticker'])
-    extended.sort(key=lambda u: u['ticker'])
-    return main + extended
+                'pool_tier': entry['tier'] if entry else 'core',
+                'proposed_action': unit['proposed_action'], 'labels': unit['labels'],
+                'candidates': group['candidates']}
+        if is_extended:
+            if conflict_free_buy:
+                extended.append(item)
+        elif conflict_free_buy:
+            main_buy.append(item)
+        else:
+            main_other.append(item)
+    for bucket in (main_buy, main_other, extended):
+        bucket.sort(key=lambda u: u['ticker'])
+    return {'main_buy': main_buy, 'main_other': main_other, 'extended': extended}
+
+
+def _agent_units(conn, session: date, *, now: datetime) -> list[dict[str, Any]]:
+    """§8.1 1–2: this session's undecided, conflict-free buy units (ATR-skipped rule
+    plans included); main-list units first, then extended, each alphabetical."""
+    groups = _session_units(conn, session, now=now)
+    return groups['main_buy'] + groups['extended']
+
+
+def _interpret_units(conn, session: date, *, now: datetime) -> list[dict[str, Any]]:
+    """§7.1: this session's undecided main-list units that are not conflict-free
+    buys (sell, watch, conflicted); alphabetical. Extended units never interpret."""
+    return _session_units(conn, session, now=now)['main_other']
 
 
 def _agent_run_row(unit: dict, *, settings, attempt: int, now: datetime, status: str,
                    run_id: str | None = None, reason: str | None = None, detail: str | None = None,
                    output: dict | None = None,
                    counter: dict | None = None, plan_id=None, input_tokens: int = 0,
-                   output_tokens: int = 0) -> dict:
+                   output_tokens: int = 0, mode: str = 'propose') -> dict:
     return {'id': run_id or str(uuid.uuid4()), 'ticker': unit['ticker'],
             'signal_date': unit['signal_date'], 'pool': unit['pool'], 'attempt': attempt,
-            'agent_version': agent_graph.AGENT_VERSION, 'provider': settings.provider,
+            'mode': mode,
+            'agent_version': (agent_graph.INTERPRET_VERSION if mode == 'interpret'
+                              else agent_graph.AGENT_VERSION),
+            'provider': settings.provider,
             'model': settings.model, 'cutoff_at': now, 'status': status, 'reason': reason, 'detail': detail,
             'output': output, 'counter': counter, 'plan_id': plan_id,
             'input_tokens': input_tokens, 'output_tokens': output_tokens,
             'started_at': now, 'finished_at': now}
 
 
-def _skip(unit: dict, reason: str, *, now: datetime, settings, attempt: int) -> dict:
-    """A skipped unit still gets its agent_runs row: every candidate has an answer or a reason."""
+def _skip(unit: dict, reason: str, *, now: datetime, settings, attempt: int, mode: str = 'propose') -> dict:
+    """A skipped unit still gets its agent_runs row: every candidate has an answer or
+    a reason. A skipped main-list unit also gets its rule-only brief (§7.3)."""
+    run_row = _agent_run_row(unit, settings=settings, attempt=attempt, now=now,
+                             status='skipped', reason=reason, mode=mode)
     with _tx() as conn:
-        return repository.insert_agent_run(
-            conn, _agent_run_row(unit, settings=settings, attempt=attempt, now=now,
-                                 status='skipped', reason=reason), [])
+        record = repository.insert_agent_run(conn, run_row, [])
+        if unit['pool'] == 'main':
+            repository.store_brief(conn, briefs.for_run(run_row, [], unit=unit,
+                                                        candidates=unit['candidates']))
+        return record
 
 
 def _checkpoint_missing(exc: BaseException) -> bool:
@@ -1004,7 +1026,11 @@ def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt:
 
     def write(run_row: dict, calls: list[dict] | None = None) -> dict:
         with _tx() as conn:
-            return repository.insert_agent_run(conn, run_row, calls or [])
+            record = repository.insert_agent_run(conn, run_row, calls or [])
+            if unit['pool'] == 'main':   # §7.1: main-list brief in the run's transaction
+                repository.store_brief(conn, briefs.for_run(run_row, calls or [], unit=unit,
+                                                            candidates=unit['candidates']))
+            return record
 
     try:
         with _tx() as conn:
@@ -1043,13 +1069,67 @@ def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt:
                     params=load_config().workbench,
                     context=plan_context(conn, ticker, signal_date, now=now))
                 stored = repository.store_plan(conn, plan)
-                return repository.insert_agent_run(
-                    conn, row('ok', plan_id=stored['record']['id'], output=result['output'],
+                run_row = row('ok', plan_id=stored['record']['id'], output=result['output'],
                               counter=result['counter'], input_tokens=result['input_tokens'],
-                              output_tokens=result['output_tokens']), result['calls'])
+                              output_tokens=result['output_tokens'])
+                record = repository.insert_agent_run(conn, run_row, result['calls'])   # plan → run → calls
+                if unit['pool'] == 'main':                                             # → brief, one transaction
+                    repository.store_brief(conn, briefs.for_run(run_row, result['calls'], unit=unit,
+                                                                candidates=unit['candidates']))
+                return record
         return write(row(result['status'], reason=result['reason'], output=result['output'],
                          counter=result['counter'], input_tokens=result['input_tokens'],
                          output_tokens=result['output_tokens']), result['calls'])
+    except Unavailable:
+        raise
+    except Exception as exc:   # the unexpected: this unit only, never the batch
+        reason, detail = agent_model.classify_error(exc, settings.api_key)
+        return write(row('error', reason=reason, detail=detail))
+
+
+def _run_interpret_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt: int) -> dict:
+    """One unit through the interpret graph (§7.2); error classification mirrors
+    _run_agent_unit. The run (mode='interpret', no plan) and its brief share
+    one transaction; model exceptions become this unit's error row."""
+    run_id = str(uuid.uuid4())
+    ticker, signal_date = unit['ticker'], unit['signal_date']
+
+    def row(status: str, **kwargs) -> dict:
+        return _agent_run_row(unit, settings=settings, attempt=attempt, now=now, status=status,
+                              run_id=run_id, mode='interpret', **kwargs)
+
+    def write(run_row: dict, calls: list[dict] | None = None) -> dict:
+        with _tx() as conn:
+            record = repository.insert_agent_run(conn, run_row, calls or [])
+            repository.store_brief(conn, briefs.for_run(run_row, calls or [], unit=unit,
+                                                        candidates=unit['candidates']))
+            return record
+
+    try:
+        ctx = agent_tools.ToolContext(ticker=ticker, session=signal_date, cutoff_at=now, read=_read_only)
+        with ExitStack() as stack:
+            try:
+                factory = deps.agent_checkpointer or (
+                    lambda: agent_model.checkpointer(os.environ.get('INVESTMENT_ASSISTANT_DATABASE_URL', '')))
+                checkpointer = stack.enter_context(factory())
+            except Exception as exc:
+                _, detail = agent_model.classify_error(exc, settings.api_key)
+                return write(row('error', reason='checkpoint_unavailable', detail=detail))
+            model_obj = deps.agent_model if deps.agent_model is not None else agent_model.chat_model(settings)
+            try:
+                result = agent_graph.run_interpret(unit=unit, ctx=ctx, model=model_obj,
+                                                   checkpointer=checkpointer, run_id=run_id,
+                                                   now=lambda: now)
+            except Unavailable:
+                raise
+            except Exception as exc:
+                reason, detail = agent_model.classify_error(exc, settings.api_key)
+                if _checkpoint_missing(exc):
+                    reason = 'checkpoint_unavailable'
+                return write(row('error', reason=reason, detail=detail))
+        return write(row(result['status'], reason=result['reason'], output=result['output'],
+                         input_tokens=result['input_tokens'], output_tokens=result['output_tokens']),
+                     result['calls'])
     except Unavailable:
         raise
     except Exception as exc:   # the unexpected: this unit only, never the batch
@@ -1067,13 +1147,20 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
     unavailable = agent_model.unavailable_reason(settings)
     ny_date = now.astimezone(NY).date()
     runs: dict[str, str] = {}
+    briefs: dict[str, str] = {}
     tokens = {'input': 0, 'output': 0}
     quota_exhausted = False
 
     def record(unit: dict, run: dict) -> None:
         nonlocal quota_exhausted
-        runs[unit['ticker']] = run['status'] if run['status'] in ('ok', 'pass') \
-            else f"{run['status']}: {run['reason']}"
+        if run.get('mode', 'propose') == 'propose':    # 7.3: runs only records propose
+            runs[unit['ticker']] = run['status'] if run['status'] in ('ok', 'pass') else (
+                f"{run['status']}: {run['reason']}")
+        if unit['pool'] == 'main':
+            # 7.3: agent.briefs is the run view; the top-level briefs key carries the brief row's status
+            briefs[unit['ticker']] = run['status'] if run['status'] in ('ok', 'pass') else (
+                f"{run['status']}: {run['reason']}")
+            summary['briefs'][unit['ticker']] = brief_status(run)
         tokens['input'] += run['input_tokens'] or 0
         tokens['output'] += run['output_tokens'] or 0
         if run['status'] == 'error':
@@ -1081,42 +1168,69 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
             if run['reason'] == 'quota_exhausted':
                 quota_exhausted = True
 
-    with _tx() as conn:
-        units = _agent_units(conn, session, now=now)
+    def brief_status(run: dict) -> str:
+        mode, status = run.get('mode', 'propose'), run['status']
+        if mode == 'propose' and status in ('ok', 'pass'):
+            return 'ok'
+        if mode == 'interpret' and status == 'ok':
+            return 'ok'
+        if mode == 'interpret' and status == 'rejected':
+            return 'error'
+        return 'fallback'
 
-    for unit in units:
+    def run_one(unit: dict, mode: str, runner: Callable) -> None:
+        """The three shared gates (§7.3: deadline, provider, quota, token budget);
+        completion and attempts are counted per mode."""
         try:
             with _tx() as conn:
-                prior = repository.agent_runs_for(conn, unit['ticker'], unit['signal_date'])
-            if any(r['status'] in ('ok', 'pass') for r in prior):
-                continue
+                prior = repository.agent_runs_for(conn, unit['ticker'], unit['signal_date'], mode=mode)
+            done = ('ok', 'pass') if mode == 'propose' else ('ok',)
+            if any(r['status'] in done for r in prior):
+                return
             if any(r['status'] == 'skipped' and r['reason'] == 'max_attempts' for r in prior):
-                continue
+                return
             attempt = len(prior) + 1
             if clock() - started >= AGENT_DEADLINE_S:
-                run = _skip(unit, 'stage_budget', now=now, settings=settings, attempt=attempt)
+                run = _skip(unit, 'stage_budget', now=now, settings=settings, attempt=attempt, mode=mode)
             elif unavailable is not None:
-                run = _skip(unit, unavailable, now=now, settings=settings, attempt=attempt)
+                run = _skip(unit, unavailable, now=now, settings=settings, attempt=attempt, mode=mode)
             elif quota_exhausted:
-                run = _skip(unit, 'quota_exhausted', now=now, settings=settings, attempt=attempt)
+                run = _skip(unit, 'quota_exhausted', now=now, settings=settings, attempt=attempt, mode=mode)
             elif len(prior) >= AGENT_MAX_ATTEMPTS:
-                run = _skip(unit, 'max_attempts', now=now, settings=settings, attempt=attempt)
+                run = _skip(unit, 'max_attempts', now=now, settings=settings, attempt=attempt, mode=mode)
             elif settings.daily_tokens is not None:
                 with _tx() as conn:
                     used = repository.agent_tokens_on(conn, ny_date)
                 if used >= settings.daily_tokens:
-                    run = _skip(unit, 'token_budget', now=now, settings=settings, attempt=attempt)
+                    run = _skip(unit, 'token_budget', now=now, settings=settings, attempt=attempt, mode=mode)
                 else:
-                    run = _run_agent_unit(unit, now=now, deps=deps, settings=settings, attempt=attempt)
+                    run = runner(unit, attempt)
             else:
-                run = _run_agent_unit(unit, now=now, deps=deps, settings=settings, attempt=attempt)
+                run = runner(unit, attempt)
             record(unit, run)
         except Unavailable:
             raise
         except Exception as exc:   # §2: an agent failure never drags the rule track
             summary['errors'].append(f"{unit['ticker']} agent: {exc}")
 
-    summary['agent'] = {'runs': runs, 'tokens': tokens, 'quota_exhausted': quota_exhausted}
+    with _tx() as conn:
+        groups = _session_units(conn, session, now=now)
+
+    def propose(unit: dict, attempt: int) -> dict:
+        return _run_agent_unit(unit, now=now, deps=deps, settings=settings, attempt=attempt)
+
+    def interpret(unit: dict, attempt: int) -> dict:
+        return _run_interpret_unit(unit, now=now, deps=deps, settings=settings, attempt=attempt)
+
+    for unit in groups['main_buy']:          # §7.3: main propose, main interpret, extended propose
+        run_one(unit, 'propose', propose)
+    for unit in groups['main_other']:
+        run_one(unit, 'interpret', interpret)
+    for unit in groups['extended']:
+        run_one(unit, 'propose', propose)
+
+    summary['agent'] = {'runs': runs, 'briefs': briefs, 'tokens': tokens,
+                       'quota_exhausted': quota_exhausted}
     summary['timings']['agent'] = round(clock() - t_agent, 1)
 
 
@@ -1145,7 +1259,9 @@ def run_agent(ticker: str, signal_date: date, *, now: datetime, deps: Deps | Non
         entry = repository.pool_entry_at(conn, ticker, signal_date, cutoff_at=now)
         agent_unit = {'ticker': unit['ticker'], 'signal_date': signal_date,
                       'pool': 'extended' if extended else 'main',
-                      'pool_tier': entry['tier'] if entry else 'core'}
+                      'pool_tier': entry['tier'] if entry else 'core',
+                      'proposed_action': unit['proposed_action'], 'labels': unit['labels'],
+                      'candidates': group}
     unavailable = agent_model.unavailable_reason(settings)
     if unavailable is not None:
         return _skip(agent_unit, unavailable, now=now, settings=settings, attempt=len(prior) + 1)

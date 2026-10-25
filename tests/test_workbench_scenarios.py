@@ -317,7 +317,6 @@ def test_pool_and_context_end_to_end(offline, monkeypatch):
         return ({'observations': obs}, {'ok': True})
     s = OfflineSources()
     p2_deps = service.Deps(bar_fetcher=s.bars, news_fetcher=s.news, filing_source=s,
-                           brief_client=lambda **_: (None, {'error': 'no key'}),
                            earnings_fetcher=lambda t: {'Earnings Date': []}, macro_fetcher=fred)
 
     # 批处理：分层同步、ETF 日线、FRED、区制快照、核心与扩展各有带 context 的买入计划

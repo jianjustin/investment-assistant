@@ -49,7 +49,11 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
                 continue
             plan = ((u.get('agent') or {}).get('plan'))
         sizing = plan.get('sizing') or {}
-        output = (u.get('brief') or {}).get('output') or {}
+        # P4 §7.5: an agent-1 brief already sits in the agent line above; it is
+        # not repeated after the plan. Other briefs still attach.
+        brief = u.get('brief') or {}
+        brief_hidden = brief.get('prompt_version') == 'agent-1'
+        output = {} if brief_hidden else (brief.get('output') or {})
         snapshot_as_of = sizing.get('snapshot_as_of')
         context = (plan.get('inputs') or {}).get('context') or {}
         sector = context.get('sector') or None
@@ -73,7 +77,7 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
             'sector': sector,
             'evidence': EVIDENCE_TEXT,
             'brief_summary': output.get('summary'),
-            'contra': ' | '.join(item.get('text', '') for item in (output.get('contra') or [])
+            'contra': None if brief_hidden else ' | '.join(item.get('text', '') for item in (output.get('contra') or [])
                                  if isinstance(item, dict)),
             'url': f'{public_url.rstrip("/")}/today',
             'agent': agent_field,

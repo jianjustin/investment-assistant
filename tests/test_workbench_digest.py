@@ -350,3 +350,23 @@ def test_agent_line_without_snapshot_omits_shares():
     text = all_text(templates.workbench_digest(build(units=[unit(plan=plan_row(), agent=agent)])))
     assert 'None' not in text
     assert '缺资金快照，无法计算' in text
+
+
+# --- agent-1 briefs are not repeated in plan lines (P4 §7.5) ---
+
+def test_agent_brief_not_repeated_in_plan_line():
+    u = unit(plan=plan_row())
+    u['brief'] = {'status': 'ok', 'prompt_version': 'agent-1',
+                  'output': {'summary': '回踩修复放量', 'contra': [{'text': '财报临近', 'refs': ['call:1']}]}}
+    out = build(units=[u])
+    assert out['plans'][0]['brief_summary'] is None
+    assert out['plans'][0]['contra'] is None
+
+
+def test_legacy_brief_still_attached():
+    u = unit(plan=plan_row())
+    u['brief'] = {'status': 'ok', 'prompt_version': 'workbench-brief-1',
+                  'output': {'summary': '解读：量价配合。', 'contra': []}}
+    out = build(units=[u])
+    assert out['plans'][0]['brief_summary'] == '解读：量价配合。'
+    assert out['plans'][0]['contra'] == ''

@@ -72,9 +72,8 @@ def db(workbench_db, monkeypatch):
     return workbench_db
 
 
-def deps(sources, brief_client=None, earnings=None):
+def deps(sources, earnings=None):
     return service.Deps(bar_fetcher=sources.bars, news_fetcher=sources.news, filing_source=sources,
-                        brief_client=brief_client or (lambda **_: (None, {'error': 'no key'})),
                         earnings_fetcher=earnings or sources.earnings)
 
 
@@ -402,14 +401,16 @@ def test_closed_day_pushes_closed_message(db, monkeypatch):
 
 # --- P2: pool, ETF/FRED collection, regime snapshot, extended units ---
 
-def recording_deps(sources):
+def recording_deps(sources, monkeypatch):
+    """Deps plus a recorder of every brief write (which tickers get a brief)."""
     calls = []
+    real = repository.store_brief
 
-    def brief_client(**kw):
-        calls.append(kw['user_payload'].get('ticker'))
-        return (None, {'error': 'no key'})
-    d = deps(sources, brief_client=brief_client)
-    return d, calls
+    def recording(conn, brief):
+        calls.append(brief['ticker'])
+        return real(conn, brief)
+    monkeypatch.setattr(repository, 'store_brief', recording)
+    return deps(sources), calls
 
 
 def test_batch_reads_pool_from_watchlist(db):
@@ -466,7 +467,7 @@ def test_fred_not_configured(db, monkeypatch):
         return ({'observations': []}, {'ok': True})
     summary = service.run_batch(tickers=['NVDA'], now=NOW,
                                 deps=service.Deps(bar_fetcher=Sources().bars, news_fetcher=Sources().news,
-                                                  filing_source=Sources(), brief_client=lambda **_: (None, {'error': 'x'}),
+                                                  filing_source=Sources(),
                                                   earnings_fetcher=Sources().earnings, macro_fetcher=macro_fetcher))
     assert summary['macro'] == {'BAMLH0A0HYM2': 'not_configured', 'T10Y2Y': 'not_configured'}
     assert summary['sources']['fred'] == []
@@ -482,7 +483,7 @@ def test_fred_error_in_sources(db, monkeypatch):
         raise RuntimeError(f'FRED down api_key=SECRET123 url={url}')
     summary = service.run_batch(tickers=['NVDA'], now=NOW,
                                 deps=service.Deps(bar_fetcher=Sources().bars, news_fetcher=Sources().news,
-                                                  filing_source=Sources(), brief_client=lambda **_: (None, {'error': 'x'}),
+                                                  filing_source=Sources(),
                                                   earnings_fetcher=Sources().earnings, macro_fetcher=macro_fetcher))
     assert sorted(summary['sources']['fred']) == ['BAMLH0A0HYM2', 'T10Y2Y']
     assert 'SECRET123' not in json.dumps(summary)
@@ -500,9 +501,9 @@ def test_regime_snapshot_written(db):
     assert summary['sources']['regime'] == []
 
 
-def test_extended_unit_has_plan_but_no_brief(db):
+def test_extended_unit_has_plan_but_no_brief(db, monkeypatch):
     seed_watchlist(db, [('AAA', ['core']), ('NVDA', [])])   # NVDA extended, triggers trend_reclaim
-    d, calls = recording_deps(Sources())
+    d, calls = recording_deps(Sources(), monkeypatch)
     summary = service.run_batch(now=NOW, deps=d)
     assert summary['plans']['NVDA'] == 'inserted'
     assert 'NVDA' not in summary['briefs']
@@ -510,13 +511,13 @@ def test_extended_unit_has_plan_but_no_brief(db):
     assert 'AAA' in calls  # core ticker still gets its model brief
 
 
-def test_held_extended_ticker_gets_brief(db):
+def test_held_extended_ticker_gets_brief(db, monkeypatch):
     from investment_assistant.workbench import ledger
     seed_watchlist(db, [('AAA', ['core']), ('NVDA', [])])
     ledger.record_trade(db, {'request_id': str(uuid.uuid4()), 'ticker': 'NVDA', 'side': 'buy', 'quantity': '10',
                              'price': '101.5', 'fee': '1', 'executed_at': '2026-10-10T14:00:00+00:00'},
                         now=datetime(2026, 10, 10, 15, tzinfo=UTC))
-    d, calls = recording_deps(Sources())
+    d, calls = recording_deps(Sources(), monkeypatch)
     summary = service.run_batch(now=NOW, deps=d)
     assert summary['plans']['NVDA'] == 'inserted'
     assert summary['briefs']['NVDA'] == 'fallback'
@@ -552,7 +553,7 @@ def test_over_budget_recorded(db):
     seed_watchlist(db, [('AAA', ['core'])])
     summary = service.run_batch(now=NOW, deps=service.Deps(
         bar_fetcher=Sources().bars, news_fetcher=Sources().news, filing_source=Sources(),
-        brief_client=lambda **_: (None, {'error': 'x'}), earnings_fetcher=Sources().earnings, clock=clock))
+        earnings_fetcher=Sources().earnings, clock=clock))
     assert any(e.startswith('batch_over_budget') for e in summary['errors'])
 
 
@@ -901,8 +902,8 @@ def test_ok_and_skipped_runs_have_no_detail(db, scripted_model):
 
 def test_summary_agent_keys(db, scripted_model):
     summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
-    assert summary['agent'] == {'runs': {'NVDA': 'ok'}, 'tokens': {'input': 40, 'output': 20},
-                                'quota_exhausted': False}
+    assert summary['agent'] == {'runs': {'NVDA': 'ok'}, 'briefs': {'NVDA': 'ok'},
+                                'tokens': {'input': 40, 'output': 20}, 'quota_exhausted': False}
     assert 'agent' in summary['sources'] and 'agent' in summary['timings']
 
 
@@ -912,7 +913,7 @@ def test_manual_run_conflict_and_not_buy(db, scripted_model):
     breakdown = BreakdownSources()
     service.run_batch(tickers=['AMD'], now=NOW, deps=service.Deps(
         bar_fetcher=breakdown.bars, news_fetcher=breakdown.news, filing_source=breakdown,
-        brief_client=lambda **_: (None, {'error': 'no key'}), earnings_fetcher=breakdown.earnings,
+        earnings_fetcher=breakdown.earnings,
         agent_settings=_agent_settings(provider='off')))
     with pytest.raises(ValueError):
         service.run_agent('AMD', SESSION, now=NOW)              # sell 单元
@@ -1010,3 +1011,164 @@ def test_checkpoint_table_missing_is_checkpoint_unavailable(db, scripted_model):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=d)
     run = repository.latest_agent_run(db, 'NVDA', SESSION)
     assert (run['status'], run['reason']) == ('error', 'checkpoint_unavailable')
+
+
+# --- agent-produced briefs and the interpret group (P4 §7) ---
+
+def _interpret_reply(ref='call:1'):
+    return [_tool_msg('get_trigger', {}), AIMessage(content=json.dumps(
+        {'summary': '持仓回撤，趋势未坏', 'support': [{'text': '量能萎缩', 'refs': [ref]}],
+         'contra': [], 'conflicts': []}, ensure_ascii=False))]
+
+
+def _watch_candidate(db, ticker='WTCH'):
+    db.execute('INSERT INTO signal_candidates (ticker, signal_date, action, rule_id, rule_version, inputs) '
+               "VALUES (%s, %s, 'watch', 'watch_only', '1', '{}')", [ticker, SESSION])
+
+
+def _buy_candidate(db, ticker='WTCH', rule_id='manual_buy'):
+    db.execute('INSERT INTO signal_candidates (ticker, signal_date, action, rule_id, rule_version, inputs) '
+               "VALUES (%s, %s, 'buy', %s, '1', '{}')", [ticker, SESSION, rule_id])
+
+
+def _mixed_deps(make, responses, *, flat=(), **overrides):
+    """Deps whose bars are flat for the given tickers (no rule fires) and default otherwise."""
+    d = agent_deps(make, responses, **overrides)
+    sources = Sources()
+
+    def bars(ticker, start, end_exclusive):
+        if ticker in flat:
+            return FlatSources().bars(ticker, start, end_exclusive)
+        return sources.bars(ticker, start, end_exclusive)
+    d.bar_fetcher = bars
+    return d
+
+
+def test_rules_loop_writes_no_brief(db, monkeypatch):
+    monkeypatch.setattr(service, '_agent_stage', lambda *a, **k: None)
+    summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
+    assert db.execute('SELECT count(*) FROM signal_briefs').fetchone()[0] == 0
+    assert summary['briefs'] == {}
+
+
+def test_buy_unit_brief_derived_from_proposal(db, scripted_model):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    run = repository.latest_agent_run(db, 'NVDA', SESSION)
+    brief = repository.latest_brief(db, 'NVDA', SESSION)
+    assert brief['prompt_version'] == 'agent-1' and brief['status'] == 'ok'
+    assert brief['agent_run_id'] == run['id']
+    assert brief['output']['summary'] == '回踩修复放量'
+    assert brief['output']['contra'] == [{'text': '财报临近', 'refs': ['call:1']}]
+    assert [r['mode'] for r in repository.agent_runs_for(db, 'NVDA', SESSION)] == ['propose']
+
+
+def test_sell_and_watch_units_get_interpretations(db, scripted_model):
+    _watch_candidate(db)
+    d = _mixed_deps(scripted_model, _interpret_reply() * 2, flat=('WTCH',))
+    breakdown = BreakdownSources()
+    original = d.bar_fetcher
+    d.bar_fetcher = lambda ticker, start, end: (breakdown.bars(ticker, start, end)
+                                                if ticker == 'AMD' else original(ticker, start, end))
+    summary = service.run_batch(tickers=['AMD', 'WTCH'], now=NOW, deps=d)
+    for ticker in ('AMD', 'WTCH'):
+        runs = repository.agent_runs_for(db, ticker, SESSION, mode='interpret')
+        assert [r['status'] for r in runs] == ['ok']
+        brief = repository.latest_brief(db, ticker, SESSION)
+        assert brief['status'] == 'ok' and brief['prompt_version'] == 'agent-brief-1'
+    assert db.execute("SELECT count(*) FROM agent_runs WHERE mode = 'propose'").fetchone()[0] == 0
+
+
+def test_conflict_buy_unit_is_interpreted_not_proposed(db, scripted_model):
+    service.add_trade({'request_id': '6f1d1c1e-2222-4444-8888-000000000042', 'ticker': 'NVDA', 'side': 'buy',
+                       'quantity': '10', 'price': '137.00', 'executed_at': '2026-10-10T15:00:00+00:00'}, now=NOW)
+    summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _interpret_reply()))
+    runs = repository.agent_runs_for(db, 'NVDA', SESSION, mode='interpret')
+    assert [r['status'] for r in runs] == ['ok']
+    assert db.execute("SELECT count(*) FROM agent_runs WHERE mode = 'propose'").fetchone()[0] == 0
+    assert repository.latest_brief(db, 'NVDA', SESSION)['prompt_version'] == 'agent-brief-1'
+
+
+def test_agent_off_writes_rule_only_briefs(db, scripted_model):
+    seed_watchlist(db, [('AAA', ['core']), ('NVDA', [])])
+    d = agent_deps(scripted_model, [])
+    d.agent_settings = _agent_settings(provider='off')
+    summary = service.run_batch(now=NOW, deps=d)
+    rows = dict(db.execute('SELECT ticker, status FROM signal_briefs').fetchall())
+    errors = dict(db.execute('SELECT ticker, error FROM signal_briefs').fetchall())
+    assert rows == {'AAA': 'fallback'}              # 扩展池 NVDA 不写解读
+    assert errors == {'AAA': '已关闭'}
+    assert summary['briefs'] == {'AAA': 'fallback'}
+    assert db.execute("SELECT count(*) FROM agent_runs WHERE status = 'skipped'").fetchone()[0] == 2
+
+
+def test_stage_order_main_propose_interpret_extended(db, scripted_model):
+    from investment_assistant.workbench import pool as pool_module
+    _watch_candidate(db)
+    db.execute('INSERT INTO pool_tiers (ticker, tier, effective_session, recorded_at) '
+               "VALUES ('CCC', 'extended', %s, %s)", [SESSION - timedelta(days=1), NOW])
+    def unit_replies(ticker):
+        return [_tool_msg('get_indicators', {'ticker': ticker}), AIMessage(content=_agent_buy()),
+                AIMessage(content=json.dumps({'risks': []}))]
+    d = _mixed_deps(scripted_model, unit_replies('AAA') + _interpret_reply() + unit_replies('CCC'),
+                    flat=('WTCH',))
+    model = d.agent_model
+    service.run_batch(pool=pool_module.Pool(core=('AAA', 'WTCH'), extended=('CCC',)), now=NOW, deps=d)
+    tickers_seen = [m.content.split(' ')[1] for messages in model.seen for m in messages
+                    if m.type == 'human' and str(m.content).startswith('标的 ')]
+    # counter replies carry no unit human message, so a propose counts twice here
+    assert tickers_seen == ['AAA'] * 2 + ['WTCH'] * 2 + ['CCC'] * 2
+
+
+def test_quota_exhausted_skips_interpret_and_extended(db, scripted_model):
+    from investment_assistant.workbench import pool as pool_module
+    _watch_candidate(db)
+    db.execute('INSERT INTO pool_tiers (ticker, tier, effective_session, recorded_at) '
+               "VALUES ('CCC', 'extended', %s, %s)", [SESSION - timedelta(days=1), NOW])
+    d = _mixed_deps(scripted_model, [], flat=('WTCH',))
+    d.agent_model = QuotaModel()
+    summary = service.run_batch(pool=pool_module.Pool(core=('AAA', 'WTCH'), extended=('CCC',)), now=NOW, deps=d)
+    rows = db.execute('SELECT ticker, mode, status, reason FROM agent_runs ORDER BY created_at, id').fetchall()
+    assert rows == [('AAA', 'propose', 'error', 'quota_exhausted'),
+                    ('WTCH', 'interpret', 'skipped', 'quota_exhausted'),
+                    ('CCC', 'propose', 'skipped', 'quota_exhausted')]
+    assert summary['agent']['runs'] == {'AAA': 'error: quota_exhausted', 'CCC': 'skipped: quota_exhausted'}
+    assert summary['agent']['briefs'] == {'AAA': 'error: quota_exhausted', 'WTCH': 'skipped: quota_exhausted'}
+    assert summary['briefs'] == {'AAA': 'fallback', 'WTCH': 'fallback'}
+
+
+def test_interpret_ok_does_not_skip_propose(db, scripted_model):
+    _watch_candidate(db)
+    d = _mixed_deps(scripted_model, _interpret_reply(), flat=('WTCH',))
+    service.run_batch(tickers=['WTCH'], now=NOW, deps=d)
+    assert repository.latest_agent_run(db, 'WTCH', SESSION, mode='interpret')['mode'] == 'interpret'
+    _buy_candidate(db)
+    later = NOW + timedelta(minutes=10)
+    again = _mixed_deps(scripted_model, _ok_responses('WTCH'), flat=('WTCH',))
+    service.run_batch(tickers=['WTCH'], now=later, deps=again)
+    propose = repository.agent_runs_for(db, 'WTCH', SESSION)          # 默认只看 propose
+    assert [r['status'] for r in propose] == ['ok']
+    unit = next(u for u in service.today(now=later)['units'] if u['ticker'] == 'WTCH')
+    assert unit['agent']['status'] == 'ok'
+
+
+def test_attempts_counted_per_mode(db, scripted_model):
+    for i in range(3):   # propose 三次失败
+        service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=10 * i),
+                          deps=agent_deps(scripted_model, []))
+    assert [r['status'] for r in repository.agent_runs_for(db, 'NVDA', SESSION)] == ['error'] * 3
+    _watch_candidate(db)
+    d = _mixed_deps(scripted_model, _interpret_reply(), flat=('WTCH',))
+    summary = service.run_batch(tickers=['NVDA', 'WTCH'], now=NOW + timedelta(minutes=40), deps=d)
+    nvda = repository.agent_runs_for(db, 'NVDA', SESSION)
+    assert (nvda[3]['status'], nvda[3]['reason']) == ('skipped', 'max_attempts')   # propose 达上限
+    assert [r['status'] for r in repository.agent_runs_for(db, 'WTCH', SESSION, mode='interpret')] == ['ok']
+
+
+def test_agent_runs_coverage_ignores_interpret(db, scripted_model):
+    _watch_candidate(db)
+    d = _mixed_deps(scripted_model, _interpret_reply(), flat=('WTCH',))
+    service.run_batch(tickers=['WTCH'], now=NOW, deps=d)
+    _buy_candidate(db)
+    view = service.agent_runs(now=NOW)
+    assert view['coverage']['missing'] == [{'ticker': 'WTCH', 'signal_date': SESSION}]
+    assert any(r['mode'] == 'interpret' for r in view['runs'])
