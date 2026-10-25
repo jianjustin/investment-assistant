@@ -155,4 +155,4 @@ Phase 3  跨笔行为 + 三方对比 + 区制条件化 + LLM 校准：未落地
 
 落地方式：[05 C6](05-cross-cutting.md#c6--dod-检查清单模板) 提供 checklist 模板，每个实施 plan 的每个 task 收尾步骤引用。
 
-**存量状态**：事件研究前端入口与 [验证说明](../../features/legacy/event-study.md)已存在，原 Phase R 欠账在工程上已补齐。本轮仍需最终回归、真实 DB/HTTP/UI 与用户验收证据；不能把功能入口存在等同于研究 Gate 通过。
+**存量状态**：事件研究前端入口与 [验证说明](../../features/legacy/README.md)已存在，原 Phase R 欠账在工程上已补齐。本轮仍需最终回归、真实 DB/HTTP/UI 与用户验收证据；不能把功能入口存在等同于研究 Gate 通过。

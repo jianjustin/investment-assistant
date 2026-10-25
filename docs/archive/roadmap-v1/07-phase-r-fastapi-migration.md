@@ -47,7 +47,7 @@ Phase 2 闭环（[03](03-phase2-plan-execution-loop.md)）是表单密集型 CRU
 
 ## Phase R 收尾任务（DoD 存量欠账）
 
-以下两项原欠账已在工程上补齐。使用说明见 [事件研究](../../features/legacy/event-study.md)；本轮真实 HTTP/UI 验收仍待完成，不等于入口缺失：
+以下两项原欠账已在工程上补齐。使用说明见 [事件研究](../../features/legacy/README.md)；本轮真实 HTTP/UI 验收仍待完成，不等于入口缺失：
 
 1. 前端「策略」区加事件研究面板（调既有 `GET /api/research/event-study`），含手动触发入口。
 2. 文档补「事件研究：功能说明 + 如何验证示例」（CLI 与 API 两条路径）。

@@ -26,6 +26,7 @@
 | 019 | P3：`agent_runs`、`agent_tool_calls`；`trade_plans.kind` 放宽为含 `agent` | 主线 |
 | 020 | P4：`agent_runs.mode`、`signal_briefs.agent_run_id`、`review_pushes`；`workbench_review` 任务（北京 08:00，插入为关闭） | 主线 |
 | 021 | 删除 A 股：`cn_*` 两张表、CN 观察名单行、`CN:` 研究卡、`ashares` 任务行；`job_reports` 历史保留 | 共享 |
+| 022 | 删除 v1 遗留：`strategy_scores`、`ticker_signal_snapshots`、`market_signals`、`event_studies`、`research_observation_card_versions`、`research_observation_cards` 六张表与 `metrics`、`scores`、`event_study` 调度行；`job_reports` 历史与已冻结的 `backcheck-1` 记录保留 | 共享 |
 
 另需一次：`python -m investment_assistant.workbench.agent setup` 由 LangGraph `PostgresSaver.setup()` 建检查点表，不进本项目迁移。
 
@@ -52,6 +53,34 @@ psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=
 > 注意：真实库的 `schema_migrations` 只记录到 `017`，`018` 之后都是用 `psql` 手动执行的。不要对真实库运行 `migrate` 入口，否则它会把 `018` 之后的迁移重跑一遍。
 
 恢复备份：`pg_restore --clean --if-exists -d "$INVESTMENT_ASSISTANT_DATABASE_URL" <备份文件>`，执行前先停服务。
+
+### 022 的真实库执行（逐步手动，每步先征得用户同意）
+
+代码先上（提交合入并重启 LaunchAgent）之后才执行 022；期间 `scheduled_jobs` 里的 `metrics`、`scores` 行只会被记为 `unregistered job` 并照常重排。
+
+1. 只读预检：确认 `schema_migrations` 最大编号为 `017`；统计 6 张表行数；查 `pg_constraint`、`pg_depend` 确认 6 张表之外没有对象依赖它们。
+2. 全库备份：
+
+   ```bash
+   pg_dump -Fc "$INVESTMENT_ASSISTANT_DATABASE_URL" -f .local/us-workbench/backups/investment_assistant-before-022-<时间戳>.dump
+   ```
+
+3. 6 张表单独导出（便于单表恢复）：
+
+   ```bash
+   pg_dump -Fc "$INVESTMENT_ASSISTANT_DATABASE_URL" \
+     -t market_signals -t ticker_signal_snapshots -t strategy_scores -t event_studies \
+     -t research_observation_cards -t research_observation_card_versions \
+     -f .local/us-workbench/backups/investment_assistant-v1-legacy-tables-<时间戳>.dump
+   ```
+
+4. 执行（手动 psql，不走 `migrate` 入口）：
+
+   ```bash
+   psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=1 -f migrations/022_drop_v1_legacy.sql
+   ```
+
+5. 验证：6 张表的 `to_regclass` 都为 null；`scheduled_jobs` 无 `metrics`、`scores`、`event_study`，`workbench`、`workbench_review`、`filings` 行还在；手动跑一次工作台批处理成功。
 
 ## 一次性测试库
 

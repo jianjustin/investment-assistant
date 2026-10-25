@@ -1,12 +1,17 @@
-# v1 遗留功能
+# v1 遗留功能（已于 v2.1.0 删除）
 
-这些功能来自 roadmap v1，在 v2.0.0 中**保留、可用，但不再演进**，以后会逐项合并进工作台或删除，排期见 [backlog](../../roadmap/backlog.md)。前端入口都收在侧栏「更多」下面。
+roadmap v1 的遗留功能在 v2.1.0 统一收拢：没有价值的整体删除，仍有价值的并入工作台。**旧实现见 tag `v2.0.0`。**
 
-| 功能 | 文档 | 代码 | 定时任务 |
-| --- | --- | --- | --- |
-| Hermes 宏观分析与决策证据（DeepSeek） | [hermes.md](hermes.md) | `hermes/`、`services/hermes.py` | 无 |
-| SPY/VIX 市场信号、个股趋势、策略评分 | [strategy-and-signals.md](strategy-and-signals.md) | `market/`、`tickers/`、`strategies/`、`facts/` | `metrics`、`scores` |
-| 事件研究 | [event-study.md](event-study.md) | `research/event_study.py`、`research/event_sources.py` | `event_study`（无默认调度行） |
-| 美股财季数据、指引与研究观察卡 | [us-research.md](us-research.md) | `us_research/`、`research/cards.py` | 无（手动采集） |
+| 功能 | 去向 |
+| --- | --- |
+| Hermes 宏观分析、决策证据（DeepSeek） | 删除（`hermes/`、`services/hermes.py`、`/api/hermes/*`、「交易」页） |
+| SPY/VIX 市场信号 | 删除（`market/`、`market_signals` 表、`/api/market/*`、「数据 → 信号总览」；决策单元不再带 `market_status`） |
+| 个股趋势快照、「技术面趋势」页 | 删除（`tickers/`、`ticker_signal_snapshots` 表、`/api/tickers/*`）；K 线图（MA20/50/200 + 成交量）并入「标的」页 |
+| 策略评分 | 删除（`strategies/`、`strategy_scores` 表、`scores` 任务、`/api/strategies/*`、「策略 → 策略评分」） |
+| 事件研究 | 删除（`research/event_study.py`、`event_studies` 表、`event_study` 任务、`/api/research/event-study/*`）；上线前检查升级为 `backcheck-2`，增加信号后 5/10/20 日相对 SPY 的超额统计，见 [pool-and-context.md](../pool-and-context.md) |
+| 研究观察卡 | 删除（`research/cards.py`、`research_observation_cards` 表）；关注列表的「下一次事件」改读财报日 |
+| 美股财季数据、指引 | 并入「标的 → 基本面」，见 [fundamentals.md](../fundamentals.md) |
+| SEC 文件记录 | 移到「更多 → 工具 → SEC 文件」，见 [sec-filings.md](../sec-filings.md) |
+| 推送路由的 `metrics`、`scores` 与 `daily` 频道 | 删除；已存设置在读取时过滤，路由失效返回结构化错误 |
 
-与主线的关系：工作台不读这些模块写的表（`market_signals`、`ticker_signal_snapshots`、`strategy_scores`、`event_studies`），也不回填它们。v1 的 SPY/VIX 门控、评分和事件研究都没有通过 Phase 0 正式 Gate（全部 HOLD），不要把它们的输出当作交易指令。
+旧地址（`#data/...`、`#technicals/...`、`#strategy/...`、`#trade/...`）回落到「今日」。六张遗留表由[迁移 022](../../operations/migrations-and-backup.md) 删除，`job_reports` 历史行与已冻结的 `backcheck-1` 记录保留。
