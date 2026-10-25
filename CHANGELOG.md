@@ -2,6 +2,26 @@
 
 版本号与 roadmap 版本对应：`v2.x` 对应 [roadmap v2](docs/roadmap/v2-decision-loop.md)。
 
+## v2.2.0 — 2026-10-25
+
+纳指 100 每日筛选与任务中心自描述（[spec](docs/specs/2026-10-25-v2.2-screener-and-task-center-design.md)）。状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`（迁移 023 尚未在真实库执行）。
+
+### 新增
+
+- **每日筛选 `screen-1`**：每个交易日收盘后从纳指 100（`config/universes/nasdaq100.json`，手动维护）筛出波段候选——触发组（`trend_reclaim` / `volume_breakout` 当日触发）优先、形态组（趋势 + ATR 区间）按相对强弱补齐，每天 ≤ 20 只——自动进扩展池（`pool_tiers.source = screen`），用 `plan-1` 复核；有效计划的筛选单元进待决定列表、按主列表推送，页面与推送带「筛选」标记。成员上限 `min(40, 100 − 手动观察池数)`，保留期 10 个交易日，锁定（有效计划或持仓）不挤出。筛选写入 `screen_runs` / `screen_results`（重跑追加、读取取最新）；范围文件加载失败或 QQQ 缺当日数据时沿用成员、批处理继续。
+- **筛选报告**：推送第 5 条（概览 / 今日触发 → 复核 / 形态候选前 10 只）；「今日」筛选卡片（形态候选可展开全部）；`GET /api/workbench/screen`、`POST /api/workbench/screen/replay`（1–20 个交易日只读回放，不写表不推送）、`python -m investment_assistant.workbench.screen replay`。
+- **任务中心自描述与北京时间**：任务说明移到后端 `tasks/catalog.py`，随 `GET /api/jobs/scheduled` 的 `description` 下发（新增字段，前端删 `JOB_HELP`）；任务中心、运行记录、「设置 → 定时任务」的时间统一按 `Asia/Shanghai` 显示并标「北京」；`filings` 任务改为北京 09:30（周一至周五）。
+
+### 变更
+
+- **市场环境 `regime-2`**：广度样本改为纳指 100 范围 ∪ 手动观察池，脱离「样本不足」；阈值不变，旧快照保留 `regime-1`。
+- **复盘 `review-5`**：分池三分类——`core` / `screen`（`source = screen` 的计划）/ `extended`；旧计划按原规则归类。
+- **计划上下文 `context-2`**：`inputs.context` 增加 `source` 与 `screen`（`screen_run_id`、分组、RS、排名）。
+
+### 迁移
+
+- **023**：`screen_runs`、`screen_results`、`pool_tiers.source`（默认 `watchlist`，新增字段、不是不兼容变更）；`filings` 任务时区更新。真实库执行需单独授权（备份 + `psql --single-transaction`）。
+
 ## v2.1.0 — 2026-10-25
 
 v2 路线的收尾版：收拢 v1 遗留功能（[spec](docs/specs/2026-10-25-v2.1-legacy-consolidation-design.md)）。状态：`engineering_done`、`user_acceptance_pending`；迁移 022 已于 2026-10-25 在真实库手动执行（见 [operations/migrations-and-backup.md](docs/operations/migrations-and-backup.md)）。
