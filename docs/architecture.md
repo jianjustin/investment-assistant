@@ -36,7 +36,7 @@ api/routes/*      HTTP 薄封装：解析参数、映射错误码，不写业务
    ↓
 services/*、workbench/service.py      事务与用例
    ↓
-workbench/repository.py、us_research/repository.py、research/card_repository.py、db.py      SQL（调用方管理事务）
+workbench/repository.py、us_research/repository.py、db.py      SQL（调用方管理事务）
 tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、运行报告、通知）
 ```
 
@@ -67,7 +67,7 @@ tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、�
 | `tasks/scheduler.py`、`tasks/_harness.py`、`tasks/runner.py`、`tasks/run_log.py` | 调度线程、任务外壳、手动运行的后台执行、运行日志（JSONL） |
 | `notify/` | Discord（webhook 与 Bot）与邮件渠道、消息模板 |
 | `filings/` | SEC 下载器与 SEC 监控（正文事实、来源报告、历史去重） |
-| `data/` | 交易日历、HTTP 重试、行情读取、来源标注、美股代码校验（`identity.py`） |
+| `data/` | 交易日历、HTTP 重试、美股代码校验（`identity.py`） |
 | `services/watchlist.py`、`settings.py`、`jobs.py`、`status.py`、`health.py` | 观察名单（只认美股代码）、通知设置、任务与运行报告、系统状态 |
 | `db.py`、`migrate.py`、`config.py` | 连接池与通用 SQL、迁移入口、配置加载 |
 

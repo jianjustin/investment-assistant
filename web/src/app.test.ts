@@ -6,11 +6,6 @@ import App from './app.svelte'
 vi.mock('./lib/api', () => ({
   getStatus: vi.fn(async () => ({})),
   getRawStatus: vi.fn(async () => ({})),
-  getMarketSignals: vi.fn(async () => ({ rows: [], count: 0 })),
-  getMarketSignalsTrend: vi.fn(async () => ({ window: 30 })),
-  getMarketSignalsLatest: vi.fn(async () => ({})),
-  getMacroAnalysis: vi.fn(async () => ({ macro_state: 'offense', stance_label: '进攻' })),
-  getTickerTrends: vi.fn(async () => ({ rows: [] })),
   getWatchlist: vi.fn(async () => ({ rows: [] })),
   getOperations: vi.fn(async () => ({ operations: [] })),
   getServices: vi.fn(async () => ({})),
@@ -42,7 +37,7 @@ beforeEach(() => { location.hash = '' })
 afterEach(() => cleanup())
 
 describe('app routing', () => {
-  it('defaults to the today zone with workbench entries first and legacy entries under more', async () => {
+  it('defaults to the today zone with workbench entries first and the rest under more', async () => {
     const { getAllByText, getByRole } = render(App)
     expect(getAllByText('今日').length).toBeGreaterThan(0)
     expect(getAllByText('标的').length).toBeGreaterThan(0)
@@ -50,7 +45,7 @@ describe('app routing', () => {
     expect(getByRole('button', { name: /更多/ })).toBeInTheDocument()
   })
 
-  it('shows legacy entries under more when a legacy zone is open', async () => {
+  it('shows only tools and settings under more', async () => {
     location.hash = '#tools'
     const { getAllByText, queryByText } = render(App)
     expect(getAllByText('工具').length).toBeGreaterThan(0)

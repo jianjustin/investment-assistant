@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
 import Watchlist from './Watchlist.svelte'
-import SecurityPicker from './SecurityPicker.svelte'
 import * as api from '../api'
 const rows = [
   { ticker:'MU', market:'US', status:'active', thesis:'cycle', tags:['memory'], updated_at:'2026-10-16T00:00:00Z' },
@@ -84,19 +83,6 @@ describe('shared watchlist editor', () => {
     expect(screen.queryByRole('button', { name:'MU' })).toBeNull()
   })
 })
-describe('security picker', () => {
-  it('reads the enriched watchlist and refuses changes when beforeChange returns false', async () => {
-    const get = vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows } as any)
-    const onchange = vi.fn()
-    render(SecurityPicker, { value:'MU', onchange, beforeChange:() => false })
-    const select = await screen.findByRole('combobox', { name:'关注证券' })
-    await screen.findByText('NVDA NVIDIA')
-    await fireEvent.change(select, { target:{ value:'NVDA' } })
-    expect(get).toHaveBeenCalledWith(true)
-    expect(onchange).not.toHaveBeenCalled()
-  })
-})
-
 it('labels earnings events', async () => {
   vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows:[{...rows[0], next_event:{date:'2026-11-19', kind:'earnings', title:null}}] } as any)
   render(Watchlist)
@@ -104,30 +90,26 @@ it('labels earnings events', async () => {
   expect(screen.getByText('财报')).toBeInTheDocument()
 })
 
-it('shows persisted US coverage and a dated manual verification event in readable Chinese',async()=>{
- vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({rows:[{...rows[0],name:'Micron',latest_period:'2026-09-03',datasets:{financials:{status:'failed'}},next_event:{date:'2099-01-01',kind:'research_verification',title:'核对下一季毛利'}}]}),{status:200})))
+it('shows persisted US coverage in readable Chinese',async()=>{
+ vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({rows:[{...rows[0],name:'Micron',latest_period:'2026-09-03',datasets:{financials:{status:'failed'}},next_event:null}]}),{status:200})))
  try{
   render(Watchlist)
   await screen.findByText('Micron')
   expect(screen.getByText('标准财务: 来源失败')).toBeInTheDocument()
-  expect(screen.getByText('核对下一季毛利')).toBeInTheDocument()
+  expect(screen.getByText('尚无财报日')).toBeInTheDocument()
  }finally{vi.unstubAllGlobals()}
 })
 
 
-it('shows unsupported legacy identities for deletion and omits them from the picker',async()=>{
+it('shows unsupported legacy identities for deletion',async()=>{
  const legacy={ticker:'AAPL.US',market:null,status:'active',identity_error:'证券身份无效，请删除后使用完整有效代码重新添加'}
  vi.spyOn(api,'getWatchlist').mockResolvedValue({rows:[rows[0],legacy]} as any)
  const remove=vi.spyOn(api,'deleteWatchlistItem').mockResolvedValue({})
- const mounted=render(Watchlist)
+ render(Watchlist)
  await screen.findByText('AAPL.US')
  expect(screen.getByText(/证券身份无效/)).toBeInTheDocument()
  await fireEvent.click(screen.getAllByRole('button',{name:'删除'})[1])
  expect(remove).toHaveBeenCalledWith('AAPL.US')
- mounted.unmount()
- render(SecurityPicker,{value:'MU',onchange:vi.fn()})
- await screen.findByRole('option',{name:'MU'})
- expect(screen.queryByRole('option',{name:'AAPL.US'})).toBeNull()
 })
 
 describe('pool tier controls', () => {

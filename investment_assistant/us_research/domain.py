@@ -13,8 +13,6 @@ from pydantic import BaseModel, ConfigDict
 from investment_assistant.data.identity import stock_id
 
 
-# Separate attribution and investment scopes are intentional
-
 class StrictModel(BaseModel):
     """Strict payloads: no extra keys, no NaN. Inherited from the removed research cards."""
 
@@ -61,8 +59,6 @@ INSTANT = frozenset({'cash', 'investments', 'debt', 'long_term_debt', 'short_ter
                      'short_term_borrowings', 'receivables', 'inventory', 'shares', 'long_term_debt_total',
                      'debt_with_leases_noncurrent', 'debt_with_leases_current', 'long_term_debt_with_leases_total'})
 NON_ADDITIVE = INSTANT | {'eps_diluted', 'weighted_shares'}
-
-
 
 
 def finite(value):
