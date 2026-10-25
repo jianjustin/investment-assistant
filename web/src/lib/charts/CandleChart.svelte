@@ -8,6 +8,7 @@
   let chart: IChartApi | undefined
   let series: ISeriesApi<'Candlestick'> | undefined
   let lineSeries: ISeriesApi<'Line'>[] = []
+  let ro: ResizeObserver | undefined
 
   onMount(() => {
     const style = getComputedStyle(document.documentElement)
@@ -17,7 +18,7 @@
     series = chart.addCandlestickSeries({ upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down })
     series.setData(data)
     syncOverlays()
-    const ro = new ResizeObserver(() => chart?.applyOptions({ width: el.clientWidth }))
+    ro = new ResizeObserver(() => { if (el) chart?.applyOptions({ width: el.clientWidth }) })
     ro.observe(el)
   })
 
@@ -34,7 +35,11 @@
   $effect(() => { series?.setData(data) })
   $effect(() => { overlays; syncOverlays() })
 
-  onDestroy(() => { chart?.remove() })
+  onDestroy(() => {
+    ro?.disconnect()
+    chart?.remove()
+    chart = undefined
+  })
 </script>
 
 <div bind:this={el} style="width:100%;height:320px"></div>
