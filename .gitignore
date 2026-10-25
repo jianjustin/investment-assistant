@@ -28,6 +28,7 @@ logs/
 .vscode/
 web/node_modules/
 web/dist/
+node_modules/
 
 # git worktrees for parallel agent work
 .worktrees/
@@ -37,3 +38,7 @@ web/dist/
 
 config/local.json
 .local/
+
+# Claude Code local settings
+.claude/settings.local.json
+.claude/worktrees/
