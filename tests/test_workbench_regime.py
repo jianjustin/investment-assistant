@@ -12,7 +12,7 @@ def _bars(n, *, closes=None, end=SESSION):
 
 
 def test_constants():
-    assert regime.REGIME_VERSION == 'regime-1'
+    assert regime.REGIME_VERSION == 'regime-2'
     assert regime.MIN_ELIGIBLE_200 == 20
     assert regime.RS_WINDOWS == (20, 60)
     assert regime.LABEL_TEXT == {'risk_on': '进攻', 'neutral': '中性', 'risk_off': '防守', 'insufficient': '样本不足'}
@@ -112,7 +112,7 @@ def test_snapshot_shape():
                            etf_bars={'SMH': _bars(70), 'XLK': _bars(70), 'QQQ': _bars(60)},
                            spy_bars=spy,
                            macro_rows={'BAMLH0A0HYM2': [], 'T10Y2Y': []})
-    assert snap['calc_version'] == 'regime-1'
+    assert snap['calc_version'] == 'regime-2'
     assert snap['session'] == SESSION
     assert snap['label'] == 'risk_on'
     assert set(snap['sectors']) == {'SMH', 'XLK', 'QQQ'}

@@ -1,7 +1,8 @@
 """Pool breadth, regime label, sector strength and macro views (pure functions).
 
-Breadth uses adj_close over pool tickers with a bar on the session; the label
-is advisory only (spec §5.2) and never changes levels or sizing.
+Breadth uses adj_close over tickers with a bar on the session; the sample is the
+screening universe ∪ the manual watch pool; the label is advisory only
+(spec §5.2) and never changes levels or sizing.
 """
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ from datetime import date
 
 from investment_assistant.workbench.macro import MACRO_CHANGE_OBS
 
-REGIME_VERSION = 'regime-1'
+REGIME_VERSION = 'regime-2'
 MIN_ELIGIBLE_200 = 20
 MA_50_SAMPLES = 50
 MA_200_SAMPLES = 200

@@ -202,8 +202,19 @@ def _unit_is_extended(conn, ticker: str, signal_date: date, *, held: bool, now: 
     return entry is not None and entry['tier'] == 'extended'
 
 
+def _breadth_tickers(manual: pool_module.Pool, universe_: Any) -> tuple[list[str], list[str]]:
+    """Breadth sample and notes: the screening universe ∪ the manual pool, deduped.
+
+    A missing universe falls back to the manual pool alone and flags it. """
+    if universe_ is not None:
+        merged = sorted({*manual.tickers, *universe_.tickers})
+        return merged, []
+    return sorted(manual.tickers), ['regime_universe_missing']
+
+
 def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_module.Pool | None = None,
-              deps: Deps | None = None, skip_non_trading: bool = False, run_id: str | None = None) -> dict[str, Any]:
+              deps: Deps | None = None, skip_non_trading: bool = False, run_id: str | None = None,
+              breadth_tickers: list[str] | None = None) -> dict[str, Any]:
     """Collect -> market context -> rules -> units -> briefs for the latest settled session. Idempotent per session.
 
     The batch runs over the tiered watch pool read from the watchlist (holdings
@@ -353,7 +364,8 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
     t_regime = clock()
     try:
         with _tx() as conn:
-            pool_bars = {t: b for t in watchlist
+            breadth_sample = list(breadth_tickers) if breadth_tickers is not None else watchlist
+            pool_bars = {t: b for t in breadth_sample
                          if (b := repository.read_bars(conn, t, session, cutoff_at=now, limit=300))}
             etf_read = {etf: repository.read_bars(conn, etf, session, cutoff_at=now) for etf in ETF_TICKERS}
             spy_read = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now)

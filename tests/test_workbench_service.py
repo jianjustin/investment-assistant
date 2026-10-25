@@ -16,6 +16,15 @@ SESSION = date(2026, 10, 22)                         # Thursday
 NOW = datetime(2026, 10, 22, 22, 30, tzinfo=UTC)     # 18:30 New York
 
 
+def test_breadth_tickers_union_and_fallback():
+    from investment_assistant.workbench import pool as pool_module
+    from investment_assistant.workbench import universe as universe_module
+    manual = pool_module.Pool(core=('A', 'B'), extended=(), sectors={})
+    combined = universe_module.Universe('test', SESSION, 'test', ('B', 'C'))
+    assert service._breadth_tickers(manual, combined) == (['A', 'B', 'C'], [])
+    assert service._breadth_tickers(manual, None) == (['A', 'B'], ['regime_universe_missing'])
+
+
 def closes_for(ticker):
     if ticker == 'SPY':
         return [500.0] * 300
