@@ -93,3 +93,26 @@ def test_month_start_must_be_previous_month():
     out = monthly.month_return(date(2026, 11, 1),
                                [snap(date(2026, 7, 31), 100000), snap(date(2026, 11, 30), 130000)], [])
     assert out['status'] == 'missing_snapshot' and out['return'] is None
+
+
+# --- review detail (P4 §5) ---
+
+def test_review_detail_compounds():
+    import pytest
+    last_three = [{'month': '2026-08-01', 'return': 0.02, 'spy_return': 0.01},
+                  {'month': '2026-09-01', 'return': -0.05, 'spy_return': 0.01},
+                  {'month': '2026-10-01', 'return': 0.01, 'spy_return': 0.01}]
+    detail = monthly.review_detail(last_three)
+    assert detail['compound'] == pytest.approx(1.02 * 0.95 * 1.01 - 1)
+    assert detail['spy_compound'] == pytest.approx(1.01 ** 3 - 1)
+    assert detail['flag'] == 'review'
+    assert [m['month'] for m in detail['months']] == ['2026-08-01', '2026-09-01', '2026-10-01']
+    assert all(set(m) == {'month', 'return', 'spy_return'} for m in detail['months'])
+
+
+def test_review_detail_missing_month_nulls():
+    detail = monthly.review_detail([{'month': '2026-09-01', 'return': None, 'spy_return': None}])
+    assert detail['compound'] is None and detail['spy_compound'] is None
+    assert detail['flag'] == 'insufficient'
+    assert monthly.month_end_snapshot([{'id': 1, 'as_of': date(2026, 10, 31), 'recorded_at': datetime(2026, 11, 1, tzinfo=UTC),
+                                        'supersedes_id': None}], date(2026, 10, 1))['id'] == 1

@@ -10,12 +10,17 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
-MONTHLY_VERSION = 'monthly-1'
+MONTHLY_VERSION = 'monthly-2'
 SENSITIVITY_PCTS = (0.005, 0.01, 0.015, 0.02)
 
 
 def _month_end(month: date) -> date:
     return month.replace(day=calendar.monthrange(month.year, month.month)[1])
+
+
+def month_end_snapshot(snapshots: list[dict[str, Any]], month: date) -> dict[str, Any] | None:
+    """Public name for the month's last live snapshot (P4 §6.1 uses it for the push)."""
+    return _usable(snapshots, month)
 
 
 def _usable(snapshots: list[dict[str, Any]], month: date) -> dict[str, Any] | None:
@@ -62,6 +67,23 @@ def review_flag(last_three: list[dict[str, Any]]) -> str:
         spy_compound *= 1 + m['spy_return']
     compound, spy_compound = compound - 1, spy_compound - 1
     return 'review' if compound < 0 and compound < spy_compound else 'ok'
+
+
+def review_detail(last_three: list[dict[str, Any]]) -> dict[str, Any]:
+    """The three months behind the review flag: per-month returns plus compounds;
+    any missing month nulls both compounds rather than faking a number."""
+    months = [{'month': m.get('month'), 'return': m.get('return'), 'spy_return': m.get('spy_return')}
+              for m in last_three]
+    complete = (len(last_three) >= 3
+                and all(m.get('return') is not None and m.get('spy_return') is not None for m in last_three))
+    if not complete:
+        return {'flag': review_flag(last_three), 'months': months, 'compound': None, 'spy_compound': None}
+    compound = spy_compound = 1.0
+    for m in last_three:
+        compound *= 1 + m['return']
+        spy_compound *= 1 + m['spy_return']
+    return {'flag': review_flag(last_three), 'months': months,
+            'compound': compound - 1, 'spy_compound': spy_compound - 1}
 
 
 def sensitivity(rs: list[float], pcts: tuple[float, ...] = SENSITIVITY_PCTS) -> list[dict[str, Any]]:

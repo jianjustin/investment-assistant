@@ -276,7 +276,7 @@ def test_monthly_frozen_and_supersede(workbench_db, monkeypatch):
     monkeypatch.setattr(service, 'connection', connection)
     now = datetime(2026, 11, 1, 22, 30, tzinfo=UTC)
     first = service.generate_monthly(date(2026, 10, 1), notes='初版', now=now)
-    assert first['stats']['calc_version'] == 'monthly-1'
+    assert first['stats']['calc_version'] == 'monthly-2'   # P4 起带 review 明细与 tracks
     assert first['stats']['return']['status'] == 'missing_snapshot'
     with pytest.raises(ledger.Conflict):
         service.generate_monthly(date(2026, 10, 1), notes='重复生成', now=now)
@@ -471,7 +471,7 @@ def test_weekly_review3_has_by_pool(workbench_db, monkeypatch):
                     tier_rows=[{'ticker': 'NVDA', 'tier': 'extended', 'sector_etf': None}],
                     candidate_days=[date(2026, 10, 20)], plan_days=[(date(2026, 10, 20), 'extended')])
     out = service.generate_weekly(date(2026, 10, 19), now=NOW + timedelta(days=2))
-    assert out['calc_version'] == 'review-3'
+    assert out['calc_version'] == 'review-4'
     row = out['stats']['by_pool']['extended']['trend_reclaim']
     assert (row['triggers'], row['plans']) == (1, 1)
 
@@ -510,7 +510,7 @@ def test_old_review2_snapshot_unchanged(workbench_db, monkeypatch):
                     tier_rows=[{'ticker': 'NVDA', 'tier': 'core', 'sector_etf': None}],
                     candidate_days=[date(2026, 10, 20)], plan_days=[(date(2026, 10, 20), 'core')])
     out = service.generate_weekly(date(2026, 10, 19), now=NOW + timedelta(days=2))
-    assert out['calc_version'] == 'review-3'
+    assert out['calc_version'] == 'review-4'
     again = repository.weekly_head(workbench_db, date(2026, 10, 12))
     assert again['id'] == old['id'] and again['calc_version'] == 'review-2' and again['stats'] == {'units': 7}
 
@@ -737,3 +737,96 @@ def test_brief_round_trips_agent_run_id(workbench_db):
     repository.store_brief(workbench_db, brief)
     stored = repository.latest_brief(workbench_db, 'NVDA', date(2026, 10, 21))
     assert stored['agent_run_id'] == run_id and stored['status'] == 'ok'
+
+
+# --- ordered sensitivity, tracks and detail in monthly-2 (P4 §5) ---
+
+def _mt_plan(conn, ticker, day, stop, entry=None):
+    from decimal import Decimal as D
+    from investment_assistant.workbench import repository
+    entry = entry if entry is not None else D('100')
+    return repository.insert_plan(conn, {
+        'ticker': ticker, 'signal_date': day, 'kind': 'rule', 'based_on_id': None,
+        'plan_version': 'plan-1', 'ref_price': entry, 'atr': D('2'), 'entry_low': entry - D('1'),
+        'entry_high': entry + D('1'), 'stop': stop, 'target1': entry + D('8'),
+        'trail_atr_multiple': D('3'), 'valid_from': day, 'valid_until': day + timedelta(days=5),
+        'sizing': {}, 'status': 'ok', 'invalid_reasons': [], 'warnings': [], 'inputs': {},
+        'request_id': None, 'request_hash': None})
+
+
+def _mt_round_trip(conn, ticker, day, plan_id, *, sell_day, sell_price):
+    from decimal import Decimal as D
+    from investment_assistant.workbench import repository
+    decision = repository.insert_decision(conn, {
+        'request_id': uuid.uuid4(), 'ticker': ticker, 'signal_date': day, 'candidate_ids': [],
+        'brief_id': None, 'proposed_action': 'buy', 'final_action': 'buy', 'decision': 'accept',
+        'reason': '合成', 'supersedes_id': None, 'plan_id': plan_id}, 'h',
+        decided_at=datetime(2026, 10, 1, tzinfo=UTC))
+    repository.insert_trade(conn, {
+        'request_id': uuid.uuid4(), 'ticker': ticker, 'side': 'buy', 'quantity': D('10'),
+        'price': D('100'), 'fee': D('0'), 'executed_at': datetime(day.year, day.month, day.day, 15, tzinfo=UTC),
+        'decision_id': decision['id'], 'note': None}, 'h', recorded_at=datetime(day.year, day.month, day.day, 16, tzinfo=UTC))
+    repository.insert_trade(conn, {
+        'request_id': uuid.uuid4(), 'ticker': ticker, 'side': 'sell', 'quantity': D('10'),
+        'price': sell_price, 'fee': D('0'),
+        'executed_at': datetime(sell_day.year, sell_day.month, sell_day.day, 15, tzinfo=UTC),
+        'decision_id': None, 'note': None}, 'h',
+        recorded_at=datetime(sell_day.year, sell_day.month, sell_day.day, 16, tzinfo=UTC))
+
+
+def test_monthly_sensitivity_ordered_by_close_time(workbench_db, monkeypatch):
+    import pytest as _pytest
+    from contextlib import contextmanager
+    from investment_assistant.workbench import service
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+    monkeypatch.setattr(service, 'connection', connection)
+    from decimal import Decimal as D
+    # 平仓时间序：A(+2R) 10-05、B(−1R) 10-06、A(+2R) 10-07、B(−3R) 10-08。
+    # 按时间 [2, −1, 2, −3] 累计回撤 3R；monthly-1 的拼接序 [2, 2, −1, −3] 会得到 4R（低估被消除）。
+    plan_a = _mt_plan(workbench_db, 'A', date(2026, 10, 1), D('95'))
+    plan_b = _mt_plan(workbench_db, 'B', date(2026, 10, 1), D('90'))
+    _mt_round_trip(workbench_db, 'A', date(2026, 10, 1), plan_a['id'], sell_day=date(2026, 10, 5), sell_price=D('110'))
+    _mt_round_trip(workbench_db, 'B', date(2026, 10, 1), plan_b['id'], sell_day=date(2026, 10, 6), sell_price=D('90'))
+    _mt_round_trip(workbench_db, 'A', date(2026, 10, 2), plan_a['id'], sell_day=date(2026, 10, 7), sell_price=D('110'))
+    _mt_round_trip(workbench_db, 'B', date(2026, 10, 2), plan_b['id'], sell_day=date(2026, 10, 8), sell_price=D('70'))
+    stats = service.generate_monthly(date(2026, 10, 1), now=datetime(2026, 11, 20, 22, 30, tzinfo=UTC))['stats']
+    row = next(r for r in stats['sensitivity']['rows'] if r['risk_pct'] == 0.02)
+    assert row['max_drawdown'] == _pytest.approx(3 * 0.02)
+    assert stats['sensitivity']['count'] == 4
+
+
+def test_monthly_snapshot_has_tracks_and_detail(workbench_db, monkeypatch):
+    from contextlib import contextmanager
+    from investment_assistant.workbench import service
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+    monkeypatch.setattr(service, 'connection', connection)
+    from decimal import Decimal as D
+    plan = _mt_plan(workbench_db, 'NVDA', date(2026, 10, 1), D('95'))
+    _mt_round_trip(workbench_db, 'NVDA', date(2026, 10, 1), plan['id'],
+                   sell_day=date(2026, 10, 5), sell_price=D('110'))
+    stats = service.generate_monthly(date(2026, 10, 1), now=datetime(2026, 11, 20, 22, 30, tzinfo=UTC))['stats']
+    assert stats['calc_version'] == 'monthly-2'
+    assert 'units' in stats['tracks'] and 'summary' in stats['tracks']
+    assert set(stats['review']) >= {'flag', 'months', 'compound', 'spy_compound'}
+
+
+def test_monthly_missing_start_snapshot_stays_missing(workbench_db, monkeypatch):
+    from contextlib import contextmanager
+    from investment_assistant.workbench import repository, service
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+    monkeypatch.setattr(service, 'connection', connection)
+    repository.insert_snapshot(workbench_db, {
+        'request_id': uuid.uuid4(), 'as_of': date(2026, 10, 31).isoformat(), 'equity': '100000',
+        'note': None, 'supersedes_id': None}, 'h', recorded_at=datetime(2026, 11, 1, tzinfo=UTC))
+    stats = service.generate_monthly(date(2026, 10, 1), now=datetime(2026, 11, 20, 22, 30, tzinfo=UTC))['stats']
+    assert stats['return']['status'] == 'missing_snapshot'
+    assert stats['tier'] is None                      # 缺快照不写 0%

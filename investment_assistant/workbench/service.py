@@ -888,10 +888,10 @@ def generate_monthly(month: date, *, notes: str = '', supersedes_id=None, now: d
         for m in months:
             ret = monthly.month_return(m, snapshots, flows)
             if ret['status'] != 'ok':
-                per_month.append({'return': None, 'spy_return': None})
+                per_month.append({'month': m.isoformat(), 'return': None, 'spy_return': None})
                 continue
             spy_r = _spy_return_between(conn, ret['start']['as_of'], ret['end']['as_of'], now=now)
-            per_month.append({'return': ret['return'], 'spy_return': spy_r})
+            per_month.append({'month': m.isoformat(), 'return': ret['return'], 'spy_return': spy_r})
             if m == month:
                 spy_ret = spy_r
         ret = monthly.month_return(month, snapshots, flows)
@@ -900,7 +900,7 @@ def generate_monthly(month: date, *, notes: str = '', supersedes_id=None, now: d
         trades_by_id = {t['id']: t for t in trades}
         tickers = sorted({t['ticker'] for t in trades})
         plans_by_trade = repository.plan_for_buy_trades(conn, list(trades_by_id))
-        rs, segments_month, plan_outcomes = [], [], []
+        rs, segments_month, plan_outcomes = [], [], []   # rs: (closed_at, r), sorted below
         for ticker in tickers:
             book = _book(conn, ticker)
             splits = repository.split_events(conn, ticker)
@@ -916,7 +916,8 @@ def generate_monthly(month: date, *, notes: str = '', supersedes_id=None, now: d
                 stop = _discipline_module._at_basis(plan['stop'], plan['signal_date'], buy_day, splits)
                 entry, exit_ = seg['entry_cost_per_share'], seg['exit_price']
                 if entry != stop:
-                    rs.append(float((exit_ - entry) / (entry - stop)))
+                    # P4 §5: sensitivity orders by close time, not ticker order
+                    rs.append((seg['closed_at'], float((exit_ - entry) / (entry - stop))))
         spy_bars = repository.read_bars(conn, BENCHMARK, bars.latest_closed_session(now), cutoff_at=now, limit=400)
         for plan in repository.plans_since(conn, month):
             if plan['signal_date'] > month_end:
@@ -949,15 +950,19 @@ def generate_monthly(month: date, *, notes: str = '', supersedes_id=None, now: d
             stop_events=stop_events_month, segments=segments_month,
             session=bars.latest_closed_session(now))
 
+        rs = [r for _, r in sorted(rs, key=lambda item: item[0])]
+        track_rows = _track_rows(conn, month, month_end, session=bars.latest_closed_session(now), now=now)
         stats = {
             'calc_version': monthly.MONTHLY_VERSION, 'month': month.isoformat(), 'return': ret,
             'tier': monthly.tier(ret['return'], params.return_tiers) if ret['status'] == 'ok' else None,
             'spy': ({'return': spy_ret, 'excess': ret['return'] - spy_ret}
                     if ret['status'] == 'ok' and spy_ret is not None else None),
             'review_flag': monthly.review_flag(per_month),
-            'sensitivity': {'approximate': True, 'rows': monthly.sensitivity(rs)},
+            'review': monthly.review_detail(per_month),
+            'sensitivity': {'approximate': True, 'count': len(rs), 'rows': monthly.sensitivity(rs)},
             'discipline': disc,
             'plans': review._plan_summary(plan_outcomes, month, month_end),
+            'tracks': {'units': track_rows, 'summary': _tracks_module.summarize(track_rows)},
             'generated_at': now.isoformat(),
         }
         return repository.insert_monthly_review(conn, month, monthly.MONTHLY_VERSION, stats, notes, supersedes_id)
