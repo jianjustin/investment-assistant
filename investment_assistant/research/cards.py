@@ -1,6 +1,7 @@
 """Editable evidence cards; hypotheses and scenario arithmetic are never advice."""
 from __future__ import annotations
 
+import os
 from datetime import UTC, date, datetime
 from typing import Literal
 from urllib.parse import urlparse
@@ -8,16 +9,17 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from investment_assistant import db
-from investment_assistant.ashare import repository as repo
-from investment_assistant.ashare.domain import stock_id as cn_stock_id
+from investment_assistant.research import card_repository as repo
 from investment_assistant.us_research.domain import stock_id as us_stock_id
-from investment_assistant.ashare.service import connection
+
+stock_id = us_stock_id
 
 
-def stock_id(symbol):
-    if isinstance(symbol, str) and symbol.strip().upper().endswith(('.SH', '.SZ', '.BJ')):
-        return cn_stock_id(symbol)
-    return us_stock_id(symbol)
+def connection():
+    url = os.environ.get('INVESTMENT_ASSISTANT_DATABASE_URL')
+    if not url:
+        raise ValueError('未配置数据库，无法读写研究观察卡')
+    return db.connect(url)
 
 
 class StrictModel(BaseModel):
@@ -73,7 +75,6 @@ class Evidence(StrictModel):
 class Scenario(StrictModel):
     label: str = Field(max_length=200)
     method: Literal['analyst_assumption', 'mechanical_annualization', 'company_guidance']
-    profit_cny: float | None = None
     profit: float | None = None
     currency: str | None = Field(default=None, pattern=r'^[A-Z]{3}$')
 
@@ -86,11 +87,6 @@ class Scenario(StrictModel):
 
     @model_validator(mode='after')
     def currency_coherent(self):
-        if self.profit_cny is not None:
-            if self.currency not in (None, 'CNY') or (self.profit is not None and self.profit != self.profit_cny):
-                raise ValueError('profit_cny只能是CNY且须与profit一致')
-            self.profit = self.profit_cny
-            self.currency = 'CNY'
         if self.profit is not None and self.currency is None:
             raise ValueError('利润须指定币种')
         return self
@@ -133,9 +129,9 @@ class CardBody(StrictModel):
 
 
 def _observation(conn, sid, id_):
-    table = 'cn_observations' if sid.startswith('CN:') else 'us_research_observations'
     with conn.cursor() as cur:
-        cur.execute(f'SELECT payload,first_seen_at,disclosed_at,source_url FROM {table} WHERE id=%s AND security_id=%s', (id_, sid))
+        cur.execute('SELECT payload,first_seen_at,disclosed_at,source_url FROM us_research_observations '
+                    'WHERE id=%s AND security_id=%s', (id_, sid))
         row = cur.fetchone()
     if not row:
         raise ValueError('证据数据记录不属于当前证券或不存在')
@@ -207,32 +203,20 @@ def save(symbol, body, expected_version):
                     raise ValueError('关联SEC原文不属于所选美股')
         result = repo.save_card(conn, sid, payload, expected_version)
         conn.commit()
-    return _mapped(result)
-
-
-def _mapped(card):
-    if card is None:
-        return None
-    import copy
-    card = copy.deepcopy(card)
-    for scenario in card['body'].get('scenarios', []):
-        if scenario.get('profit_cny') is not None:
-            scenario.setdefault('profit', scenario['profit_cny'])
-            scenario.setdefault('currency', 'CNY')
-    return card
+    return result
 
 
 def get(symbol):
     with connection() as conn:
-        return _mapped(repo.get_card(conn, stock_id(symbol)))
+        return repo.get_card(conn, stock_id(symbol))
 
 
 def scenario_values(body):
     result = []
     for original in body.get('scenarios', []):
         s = dict(original)
-        profit = s.get('profit', s.get('profit_cny'))
-        currency = s.get('currency') or ('CNY' if s.get('profit_cny') is not None else None)
+        profit = s.get('profit')
+        currency = s.get('currency')
         value = profit * s['pe'] / s['shares'] if profit and profit > 0 and s.get('pe') and s.get('shares') else None
         result.append({**s, 'currency': currency, 'implied_value_per_share': value,
             'formula': f'情景每股价值=假设年度利润({currency or "币种待填"})×假设PE/假设股数；非目标价或买卖建议'})

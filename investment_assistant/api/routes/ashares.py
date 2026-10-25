@@ -1,10 +1,9 @@
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body
 
 from investment_assistant.ashare import cards, service
-from investment_assistant.ashare.repository import CardConflict
 from investment_assistant.config import load_config
 from investment_assistant.tasks import runner
 
@@ -42,22 +41,3 @@ def sync(payload: dict[str, Any] = Body(default_factory=dict)):
         start_date=payload.get('start'), end_date=payload.get('end'), datasets=datasets,
         retry_failed=bool(payload.get('retry_failed')), trigger_source='manual'))
     return {'run_id': run_id, 'status': 'pending'}
-
-
-@router.get('/api/research/observation-cards/{symbol}')
-def get_card(symbol: str):
-    return {'card': cards.get(symbol)}
-
-
-@router.put('/api/research/observation-cards/{symbol}')
-def save_card(symbol: str, payload: dict[str, Any] = Body(...)):
-    try:
-        result = cards.save(symbol, payload.get('body'), payload.get('expected_version'))
-        return {'card': result}
-    except CardConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@router.get('/api/research/us-references')
-def references():
-    return {'rows': cards.us_references()}

@@ -62,7 +62,7 @@ def _enrich(row, conn):
     if market == 'US':
         from investment_assistant.us_research import repository as us_repo
         from investment_assistant.us_research.domain import stock_id as us_stock_id
-        from investment_assistant.ashare.repository import get_card
+        from investment_assistant.research.card_repository import get_card
         sid = us_stock_id(row['ticker'])
         states = us_repo.states(conn, sid)
         financials = us_repo.read_rows(conn, sid, 'financials')

@@ -305,9 +305,8 @@ def view(ticker, *, as_of=None):
         rows = {ds: repo.read_rows(conn, sid, ds, as_of=cutoff) for ds in DATASETS}
         states = repo.states(conn, sid)
         guidance_records = repo.read_history(conn, sid, 'guidance', as_of=cutoff)
-        from investment_assistant.research.cards import _mapped
-        from investment_assistant.ashare.repository import get_card
-        card = _mapped(get_card(conn, sid)) if cutoff is None else None
+        from investment_assistant.research.card_repository import get_card
+        card = get_card(conn, sid) if cutoff is None else None
     from .guidance import comparisons
     statuses = []
     for ds in DATASETS:

@@ -1,4 +1,4 @@
-"""Card identity/version tests use only connection-local TEMP tables."""
+"""Research card tests; database cases use only connection-local TEMP tables."""
 import os
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -39,25 +39,8 @@ def card_db(monkeypatch):
         conn.rollback()
 
 
-def test_legacy_cny_is_mapped_without_mutating_stored_version(card_db):
-    import json
-    original = body(scenarios=[{'label':'base','method':'analyst_assumption','profit_cny':120,'pe':20,'shares':10,'period':'FY26','share_basis':'total'}])
-    card_db.execute("INSERT INTO research_observation_cards(security_id,version,body) VALUES('CN:stock:688008.SH',2,%s::jsonb)", (json.dumps(original),))
-    card_db.execute("INSERT INTO research_observation_card_versions(security_id,version,body) VALUES('CN:stock:688008.SH',2,%s::jsonb)", (json.dumps(original),))
-    card_db.commit()
-    result = cards().get('688008.SH')
-    assert result['version'] == 2
-    assert result['body']['scenarios'][0]['profit'] == 120
-    assert result['body']['scenarios'][0]['currency'] == 'CNY'
-    assert card_db.execute('SELECT body FROM research_observation_cards').fetchone()[0] == original
-    saved = cards().save('688008.SH', result['body'], 2)
-    assert saved['version'] == 3
-    assert saved['body']['scenarios'][0]['profit_cny'] == 120
-    assert card_db.execute('SELECT body FROM research_observation_card_versions WHERE version=2').fetchone()[0] == original
-
-
-@pytest.mark.parametrize('scenario', [dict(profit_cny=10,currency='USD'),dict(profit_cny=10,profit=11,currency='CNY'),dict(profit=10),dict(profit=float('inf'),currency='USD')])
-def test_currency_contradictions_and_missing_currency_rejected(scenario):
+@pytest.mark.parametrize('scenario', [dict(profit_cny=10,currency='CNY'),dict(profit=10),dict(profit=float('inf'),currency='USD')])
+def test_legacy_cny_field_and_missing_currency_rejected(scenario):
     with pytest.raises(ValueError):
         cards().Scenario(label='',method='analyst_assumption',period='',share_basis='',**scenario)
 
@@ -70,13 +53,12 @@ def test_usd_scenario_and_arbitrary_us_link_roundtrip(card_db):
     assert cards().get('SNDK')['body']['links'][0]['ticker'] == 'SNDK'
 
 
-def test_wrong_security_and_market_collision_evidence_rejected(card_db):
+def test_wrong_security_evidence_rejected(card_db):
     from investment_assistant.us_research import repository
     record = repository.store_rows(card_db,'US:stock:MU','financials',[{'natural_key':'r','payload':{'metric':'revenue','value':100,'unit':'USD','basis':'us-gaap:consolidated','start':'2026-01-01','end':'2026-03-31'},'source_url':'https://issuer.test/result'}])[0]
     evidence = [dict(claim='growth',stance='pending',observation_id=record['id'])]
-    for symbol in ('NVDA','688008.SH'):
-        with pytest.raises(ValueError,match='不属于'):
-            cards().save(symbol,body(evidence=evidence),0)
+    with pytest.raises(ValueError,match='不属于'):
+        cards().save('NVDA',body(evidence=evidence),0)
     saved = cards().save('MU',body(evidence=evidence),0)
     assert saved['body']['evidence'][0]['collected_at']
     assert cards().get('MU')['new_evidence_count'] == 0
@@ -168,3 +150,22 @@ def test_manual_sources_and_explicit_calculations_keep_their_authored_status(car
     assert [(e['method'],e['value'],e['observation_id']) for e in result['body']['evidence']] == [
         ('disclosed','mid-teens',None),('calculated',999,None),('analyst_assumption',999,None)]
     assert card_db.execute('SELECT count(*) FROM research_observation_card_versions').fetchone()[0] == 1
+
+
+def test_card_rejects_ashare_symbol():
+    with pytest.raises(ValueError):  # 688008.SH: not a valid US ticker
+        cards().stock_id('688008.SH')
+
+
+def test_card_storage_lives_in_research():
+    from investment_assistant.research import card_repository
+    assert callable(card_repository.get_card) and callable(card_repository.save_card)
+    assert issubclass(card_repository.CardConflict, ValueError)
+    for path in ('investment_assistant/research/cards.py', 'investment_assistant/research/card_repository.py'):
+        assert 'ashare' not in Path(path).read_text(encoding='utf-8')
+
+
+def test_card_routes_live_in_research_router():
+    from investment_assistant.api.routes import research
+    paths = {route.path for route in research.router.routes}
+    assert {'/api/research/observation-cards/{symbol}', '/api/research/us-references'} <= paths
