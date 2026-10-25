@@ -20,6 +20,7 @@
 | [review.md](features/review.md) | 影子跟踪、纪律、三方对比、周/月复盘、资金与月度收益、复盘推送 |
 | [pool-and-context.md](features/pool-and-context.md) | 观察池分层、市场环境（广度、区制、行业、FRED）、上线前检查 |
 | [sec-filings.md](features/sec-filings.md) | SEC 下载器与 SEC 监控 |
+| [fundamentals.md](features/fundamentals.md) | 「标的」页的基本面一栏：美股财季数据与公司指引 |
 | [legacy/](features/legacy/README.md) | v1 遗留：Hermes、市场信号与策略评分、事件研究、美股财季数据与研究观察卡 |
 
 ### 运维（operations/）

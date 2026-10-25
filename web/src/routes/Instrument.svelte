@@ -2,6 +2,7 @@
   import { onMount, untrack } from 'svelte'
   import { getWatchlist } from '../lib/api'
   import CandleChart from '../lib/charts/CandleChart.svelte'
+  import Fundamentals from '../lib/components/Fundamentals.svelte'
   import VolumeBars from '../lib/components/VolumeBars.svelte'
   import { toLineData } from '../lib/technicals'
   import * as wb from '../lib/workbench'
@@ -104,6 +105,7 @@
     {:else}
       <p class="text-xs text-muted">暂无日线，等下一次批处理采集</p>
     {/if}
+    <Fundamentals ticker={view.ticker} />
     <ol class="space-y-1 text-sm">
       {#each wb.timeline(view) as item}
         <li class="flex gap-2">

@@ -15,6 +15,12 @@ const chartBars = (ma: Partial<{ ma20: number | null; ma50: number | null; ma200
     price_date: date, open: 100 + i, high: 101 + i, low: 99 + i, close: 100.5 + i, volume: 1000,
     ma20: ma.ma20 ?? 100, ma50: ma.ma50 ?? 99, ma200: ma.ma200 ?? 98,
   }))
+const fundamentalsView = (ticker: string) => ({
+  ticker, security_id: `US:stock:${ticker}`, currency: 'USD',
+  financials: [{ period: '2026-04-01/2026-06-30', start: '2026-04-01', end: '2026-06-30', days: 91, metrics: {}, ttm: {}, warnings: [] }],
+  market: { bars: [], benchmarks: { SPY: [], QQQ: [] }, quote: {}, performance: { windows: {} }, limitations: [] },
+  valuation: {}, statuses: [], guidance: { records: [], comparisons: [], consensus: '未接入一致预期' }, filings: [], pit: {},
+})
 const view = (ticker: string, chart: { bars: unknown[]; adjustment: string } = { bars: chartBars(), adjustment: 'split_only' }) => ({
   ticker, session: '2026-10-22', bars: [], closed: [], chart,
   position: { quantity: 10, avg_cost: 100.1, opened_at: '2026-10-02T14:00:00Z' },
@@ -32,6 +38,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     urls.push(String(url))
     if (String(url).startsWith('/api/watchlist')) return json({ rows: [{ ticker: 'NVDA' }, { ticker: 'MU' }] })
+    if (String(url).startsWith('/api/us-research/')) return json(fundamentalsView(String(url).split('/')[3].split('?')[0]))
     return json(view(String(url).split('/').pop()!))
   }))
 })
@@ -99,4 +106,22 @@ it('shows an empty note without bars', async () => {
   render(Instrument, { sub: 'NVDA' })
   expect(await screen.findByText('暂无日线，等下一次批处理采集')).toBeInTheDocument()
   expect(urls.some(u => u.startsWith('/api/tickers/'))).toBe(false)
+})
+
+it('renders the fundamentals section', async () => {
+  render(Instrument, { sub: 'NVDA' })
+  expect(await screen.findByText('未接入一致预期')).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: '基本面' })).toBeInTheDocument()
+})
+
+it('keeps the instrument page when fundamentals fail', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => String(url).startsWith('/api/watchlist')
+    ? json({ rows: [{ ticker: 'NVDA' }] })
+    : String(url).startsWith('/api/us-research/') ? json({ error: 'down' }, 500)
+      : json(view(String(url).split('/').pop()!))))
+  render(Instrument, { sub: 'NVDA' })
+  expect(await screen.findByRole('heading', { name: /NVDA/ })).toBeInTheDocument()
+  expect(screen.getByTestId('instrument-chart')).toBeInTheDocument()
+  expect(screen.getByText(/趋势回踩修复/)).toBeInTheDocument()
+  expect(await screen.findByText(/加载失败/)).toBeInTheDocument()
 })
