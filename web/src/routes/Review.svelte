@@ -19,6 +19,7 @@
   let tracks = $state<wb.TracksView | null>(null)
   let callDrawer = $state<{ open: boolean; calls: wb.AgentToolCall[]; call: wb.AgentToolCall | null }>({ open: false, calls: [], call: null })
   let pushResults = $state<Record<string, string>>({})
+  let pushes = $state<wb.ReviewPush[]>([])
   let backcheckNote = $state('')
   let backcheckError = $state('')
 
@@ -49,6 +50,17 @@
     callDrawer = { open: true, calls: detail.tool_calls, call: detail.tool_calls[0] ?? null }
   }
 
+  // §8.2: the latest recorded attempt (scheduled or manual) beside each card's push button
+  async function loadPushes() {
+    try { pushes = (await wb.getReviewPushes()).pushes ?? [] } catch { pushes = [] }
+  }
+  function lastPushText(kind: string, period: string): string {
+    const p = pushes.find(x => x.kind === kind && x.period === period)   // newest first
+    if (!p) return ''
+    const outcome = p.sent ? '已推送' : '未推送：' + (p.reason ?? '未知原因')
+    return `最近推送 ${wb.dateTime(p.created_at)} · ${outcome} · ${p.trigger_source === 'scheduled' ? '定时' : '手动'}`
+  }
+
   async function push(kind: string, period: string) {
     const key = kind + ':' + period
     pushResults[key] = '推送中…'
@@ -57,6 +69,7 @@
       const out = await wb.postReviewPush(kind as any, period)
       pushResults[key] = out.sent ? '已推送' : ('未推送：' + (out.reason ?? '未知原因'))
       pushResults = pushResults
+      loadPushes()
     } catch (e) {
       pushResults[key] = wb.describeError(e)
       pushResults = pushResults
@@ -81,12 +94,14 @@
         tracks = await wb.getTracks()
       } else if (which === 'monthly') {
         monthly = (await wb.getMonthly()).reviews
+        loadPushes()
       } else if (which === 'account') {
         account = await wb.getAccount()
       } else if (which === 'backchecks') {
         backchecks = (await wb.getBackchecks()).backchecks
       } else {
         weekly = (await wb.getWeekly()).reviews
+        loadPushes()
       }
     } catch (e) {
       error = wb.describeError(e)
@@ -358,7 +373,8 @@
       <article class="border border-border rounded p-3 text-sm space-y-2">
         <h2 class="font-semibold">{r.stats.week?.start ?? r.week_start} 周 · 已决定 {r.stats.units?.decided ?? 0} · 未处理 {r.stats.units?.undecided ?? 0}
           <button class="ml-2 px-2 py-0.5 rounded bg-accent text-white text-xs" onclick={() => push('weekly', r.week_start)}>推送到 Discord</button>
-          {#if pushResults['weekly:' + r.week_start]}<span class="text-xs text-muted">{pushResults['weekly:' + r.week_start]}</span>{/if}
+          {#if pushResults['weekly:' + r.week_start]}<span class="text-xs text-muted">{pushResults['weekly:' + r.week_start]}</span>
+          {:else if lastPushText('weekly', r.week_start)}<span class="text-xs text-muted">{lastPushText('weekly', r.week_start)}</span>{/if}
         </h2>
         <p class="text-xs text-muted">{r.stats.note} 口径 {r.calc_version} · 生成于 {wb.dateTime(r.created_at)}{r.supersedes_id ? ' · 更正版' : ''}</p>
         {#if r.notes}<p>{r.notes}</p>{/if}
@@ -433,7 +449,8 @@
       <article class="border border-border rounded p-3 text-sm space-y-2">
         <h2 class="font-semibold">{r.month} · {(r.stats.tier && wb.TIER_LABELS[r.stats.tier]) || '缺数据'}
           <button class="ml-2 px-2 py-0.5 rounded bg-accent text-white text-xs" onclick={() => push('monthly', r.month)}>推送到 Discord</button>
-          {#if pushResults['monthly:' + r.month]}<span class="text-xs text-muted">{pushResults['monthly:' + r.month]}</span>{/if}
+          {#if pushResults['monthly:' + r.month]}<span class="text-xs text-muted">{pushResults['monthly:' + r.month]}</span>
+          {:else if lastPushText('monthly', r.month)}<span class="text-xs text-muted">{lastPushText('monthly', r.month)}</span>{/if}
         </h2>
         {#if r.stats.return?.status === 'ok'}
           <p>月度收益 {wb.pct(r.stats.return.return)} · 净出入金 {r.stats.return.net_flow ?? '—'}</p>

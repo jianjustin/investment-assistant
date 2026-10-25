@@ -1212,6 +1212,28 @@ def test_track_rows_trace_ids(db, scripted_model):
     assert mu['actual']['status'] == 'not_executed' and mu['actual']['r'] == 0.0
 
 
+def test_track_rows_keep_buys_after_decision_correction(db, scripted_model):
+    """A buy linked to an earlier decision in the chain still belongs to the unit."""
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    nvda_unit = next(u for u in service.today(now=NOW)['units'] if u['ticker'] == 'NVDA')
+    agent_plan = repository.agent_plan(db, 'NVDA', SESSION)
+    first = _decide(nvda_unit, 'buy', plan_id=agent_plan['id'])
+    trade = service.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'NVDA', 'side': 'buy',
+                               'quantity': '10', 'price': '100.00', 'fee': '1',
+                               'executed_at': '2026-10-22T15:00:00+00:00',
+                               'decision_id': str(first['id'])}, now=NOW)['record']
+    corrected = service.decide({
+        'request_id': str(uuid.uuid4()), 'ticker': 'NVDA', 'signal_date': SESSION.isoformat(),
+        'candidate_ids': [str(c) for c in nvda_unit['candidate_ids']],
+        'proposed_action': nvda_unit['proposed_action'], 'final_action': 'buy', 'decision': 'accept',
+        'reason': '更正理由', 'plan_id': str(agent_plan['id']), 'supersedes_id': str(first['id'])},
+        now=NOW + timedelta(minutes=5))['record']
+    actual = next(r for r in service.tracks(now=NOW)['units'] if r['ticker'] == 'NVDA')['actual']
+    assert actual['decision_id'] == str(corrected['id'])
+    assert actual['buy_trade_ids'] == [str(trade['id'])]
+    assert actual['status'] == 'open' and actual['r'] is not None
+
+
 def test_track_units_include_agent_only_unit(db, scripted_model):
     db.execute('INSERT INTO signal_candidates (ticker, signal_date, action, rule_id, rule_version, inputs) '
                "VALUES ('NVDA', %s, 'buy', 'trend_reclaim', '1', '{}')", [SESSION])

@@ -107,7 +107,7 @@ def test_weekly_lines():
     assert '已决定 2 · 未处理 1 · 计划外交易 1 · 已平仓 2' in text
     assert '实际 2 单元 · 已定 2 · 均值 +1.00R · 中位 +1.00R · 合计 +2.00R' in text
     assert '实际：未执行 1（记 0R）· 未平仓 1 · 照规则 1 · 照 Agent 1 · 照自定 0' in text
-    assert '核心 trend_reclaim 触发 3 · 计划 2 · 成交 1 · 均值 1.5R' in text
+    assert '核心 trend_reclaim 触发 3 · 计划 2 · 成交 1 · 均值 +1.50R' in text
     assert '追高 0 · 过早止盈 1 · 死扛亏损 0 · 计划外 0 · 合规率 90%' in text
     assert '描述性统计' in text and '#review/weekly' in text
 
@@ -209,6 +209,28 @@ def test_monthly_v1_snapshot_renders():
     assert len(messages) == 1
     text = chr(10).join(f.value for f in messages[0].fields)
     assert '该快照无轨道对比' in text and '2026-08' in messages[0].title
+
+
+def test_monthly_v1_review_flag_without_compounds():
+    """A monthly-1 snapshot carries only the flag: 'review' renders without the compound numbers."""
+    v1 = {'id': 4, 'month': date(2026, 8, 1), 'calc_version': 'monthly-1',
+          'stats': {'month': '2026-08', 'return': {'status': 'ok', 'return': -0.05},
+                    'tier': 'attention', 'spy': {'return': 0.01, 'excess': -0.06},
+                    'review_flag': 'review', 'sensitivity': {'rows': []}}}
+    text = chr(10).join(f.value for f in
+                        templates.workbench_monthly(review_digest.monthly(v1, public_url=URL))[0].fields)
+    assert '⚠️ 需复查：连续 3 个月复合亏损且跑输 SPY' in text
+    assert 'None' not in text
+
+
+def test_weekly_rule_mean_is_formatted():
+    stats = {**WEEKLY_REVIEW['stats'],
+             'by_pool': {'core': {'trend_reclaim': {'triggers': 3, 'plans': 3, 'expired': 0, 'filled': 3,
+                                                    'r_mean': 0.5333333333333333, 'r_median': 0.5}}}}
+    text = chr(10).join(f.value for f in templates.workbench_weekly(
+        review_digest.weekly({**WEEKLY_REVIEW, 'stats': stats}, public_url=URL))[0].fields)
+    assert '均值 +0.53R' in text
+    assert '0.5333' not in text
 
 
 def test_reminder_text():

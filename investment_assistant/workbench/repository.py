@@ -223,6 +223,13 @@ def decision_head(conn, ticker: str, signal_date: date) -> dict[str, Any] | None
                 'ORDER BY decided_at DESC LIMIT 1', (ticker, signal_date))
 
 
+def unit_decision_ids(conn, ticker: str, signal_date: date) -> set:
+    """Every decision id in the unit's chain, superseded ones included."""
+    rows = conn.execute('SELECT id FROM signal_decisions WHERE ticker = %s AND signal_date = %s',
+                        (ticker.upper(), signal_date)).fetchall()
+    return {row[0] for row in rows}
+
+
 def decision_heads(conn, *, since: date | None = None, ticker: str | None = None) -> list[dict[str, Any]]:
     clauses = ['NOT EXISTS (SELECT 1 FROM signal_decisions s WHERE s.supersedes_id = d.id)']
     params: list[Any] = []

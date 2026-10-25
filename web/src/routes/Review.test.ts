@@ -346,6 +346,22 @@ it('push button posts and shows the latest push result', async () => {
 })
 
 
+it('shows the latest recorded push beside each card', async () => {
+  respond = async (url, init) => {
+    if (url.includes('/weekly-reviews') && init?.method !== 'POST') return json({ reviews: [weeklyWithTracks] })
+    if (url.includes('/review-pushes')) return json({ pushes: [
+      { id: '2', kind: 'weekly', period: '2026-10-19', review_id: 'w1', trigger_source: 'scheduled', sent: false,
+        messages: 0, reason: 'task_disabled', created_at: '2026-10-24T00:00:00Z' },
+      { id: '1', kind: 'weekly', period: '2026-10-19', review_id: 'w1', trigger_source: 'manual', sent: true,
+        messages: 1, reason: null, created_at: '2026-10-23T00:00:00Z' }] })
+    return json({})
+  }
+  render(Review, { sub: 'weekly' })
+  await screen.findByText(/2026-10-19 周/)
+  expect(await screen.findByText(/最近推送 .* · 未推送：task_disabled · 定时/)).toBeInTheDocument()
+  expect(screen.queryByText(/· 手动/)).toBeNull()
+})
+
 it('expands the second tool call from a track row', async () => {
   respond = async (url) => {
     if (url.includes('/review/tracks')) return json(trackView)

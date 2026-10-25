@@ -753,9 +753,12 @@ def _track_rows(conn, since: date, until: date, *, session: date, now: datetime)
         chosen = (repository.plan_by_id(conn, decision['plan_id'])
                   if decision is not None and decision.get('plan_id') else None)
         book = _book(conn, ticker)
+        # A buy may link to any decision in the unit's chain: correcting a decision
+        # after the fill must not drop the fill from the actual track.
+        chain_ids = repository.unit_decision_ids(conn, ticker, signal_date) if decision is not None else set()
         buy_ids = ({t['id'] for t in repository.list_trades(conn, ticker)
                     if t.get('voided_at') is None and t['side'] == 'buy'
-                    and decision is not None and t.get('decision_id') == decision['id']})
+                    and t.get('decision_id') in chain_ids})
         actual = _tracks_module.actual_track(
             decision=decision, plan=chosen, buys=[{'id': tid} for tid in sorted(buy_ids, key=str)],
             segments=[s for s in book['closed'] if s['buy_trade_id'] in buy_ids],

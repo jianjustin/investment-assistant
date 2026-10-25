@@ -296,7 +296,7 @@ def workbench_weekly(payload):
     rule_lines = []
     for r in rules:
         mean = r.get("r_mean")
-        mean_text = f"{mean}R" if mean is not None else "—"      # 触发未成交：写 —，不写 NoneR
+        mean_text = _r(mean)                                       # 触发未成交：写 —，不写 NoneR
         pool_text = "核心" if r["pool"] == "core" else "扩展"
         rule_id, triggers, plans, filled = r["rule_id"], r["triggers"], r["plans"], r["filled"]
         rule_lines.append(f"{pool_text} {rule_id} 触发 {triggers}"
@@ -321,9 +321,12 @@ def workbench_monthly(payload):
     else:
         income = "缺资金快照，无法计算"
     review = payload.get("review") or {}
-    if review.get("flag") == "review":
-        flag_text = (f"""⚠️ 需复查：3 个月复合 {review.get("compound"):+.1%}"""
-                     f"""，SPY {review.get("spy_compound"):+.1%}""")
+    if review.get("flag") == "review" and review.get("compound") is not None \
+            and review.get("spy_compound") is not None:
+        flag_text = (f"""⚠️ 需复查：3 个月复合 {review["compound"]:+.1%}"""
+                     f"""，SPY {review["spy_compound"]:+.1%}""")
+    elif review.get("flag") == "review":                 # monthly-1 snapshots carry the flag only
+        flag_text = "⚠️ 需复查：连续 3 个月复合亏损且跑输 SPY"
     elif review.get("flag") == "ok":
         flag_text = "正常"
     else:
