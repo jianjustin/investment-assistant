@@ -687,14 +687,39 @@ def insert_screen_run(conn, run: dict[str, Any], results: list[dict[str, Any]]) 
     return record
 
 
-def latest_screen_run(conn, *, session: date | None, cutoff_at: datetime) -> dict[str, Any] | None:
-    """The newest run for one session, or overall, as known by `cutoff_at`."""
-    if session is not None:
-        return _one(conn, f'SELECT {_SCREEN_RUN_COLUMNS} FROM screen_runs '
-                          'WHERE session = %s AND created_at <= %s '
-                          'ORDER BY created_at DESC, id DESC LIMIT 1', (session, cutoff_at))
-    return _one(conn, f'SELECT {_SCREEN_RUN_COLUMNS} FROM screen_runs '
-                      'WHERE created_at <= %s ORDER BY created_at DESC, id DESC LIMIT 1', (cutoff_at,))
+def latest_screen_pick(conn, ticker: str, session: date, *,
+                       cutoff_at: datetime | None = None) -> dict[str, Any] | None:
+    """The ticker's newest selected row at or before `session`.
+
+    `cutoff_at` is None inside the batch: the rule-plan stage must read the run the
+    screen stage just wrote in this same pass, whose created_at is the database
+    clock and would postdate the batch's own cutoff. Outside readers pass it."""
+    sql = ('SELECT r.screen_run_id, r.screen_group, r.rs, r.rank FROM screen_results r '
+           'JOIN screen_runs s ON s.id = r.screen_run_id '
+           'WHERE r.ticker = %s AND r.selected AND s.session <= %s')
+    params: list[Any] = [ticker.upper(), session]
+    if cutoff_at is not None:
+        sql += ' AND r.created_at <= %s'
+        params.append(cutoff_at)
+    row = conn.execute(sql + ' ORDER BY r.created_at DESC, r.id DESC LIMIT 1', params).fetchone()
+    if row is None:
+        return None
+    return {'screen_run_id': row[0], 'group': row[1], 'rs': row[2], 'rank': row[3]}
+
+
+def latest_screen_run(conn, *, session: date | None, cutoff_at: datetime | None = None) -> dict[str, Any] | None:
+    """The newest run for one session, or overall.
+
+    `cutoff_at` is None inside the batch (report and replay read the run the screen
+    stage just wrote, whose database clock postdates the batch's own cutoff);
+    time-point readers pass it as before."""
+    where = 'WHERE session = %s' if session is not None else ''
+    params: list[Any] = [session] if session is not None else []
+    if cutoff_at is not None:
+        where = (where + ' AND' if where else 'WHERE') + ' created_at <= %s'
+        params.append(cutoff_at)
+    return _one(conn, f'SELECT {_SCREEN_RUN_COLUMNS} FROM screen_runs {where} '
+                      'ORDER BY created_at DESC, id DESC LIMIT 1', params)
 
 
 def screen_results(conn, screen_run_id) -> list[dict[str, Any]]:
@@ -704,19 +729,24 @@ def screen_results(conn, screen_run_id) -> list[dict[str, Any]]:
                       'ORDER BY rank NULLS LAST, ticker', (screen_run_id,))
 
 
-def screen_selected_since(conn, since: date, until: date, *, cutoff_at: datetime) -> dict[str, dict[str, Any]]:
-    """Latest-run-per-session picks in [since, until]: {ticker: {'session', 'rank'}} of the newest pick."""
+def screen_selected_since(conn, since: date, until: date, *,
+                          cutoff_at: datetime | None = None) -> dict[str, dict[str, Any]]:
+    """Latest-run-per-session picks in [since, until]: {ticker: {'session', 'rank'}} of the newest pick.
+
+    cutoff_at defaults to None for the batch's own reads (the session window already
+    bounds what is visible); time-point readers pass it."""
+    visible = ' AND s.created_at <= %(cutoff)s' if cutoff_at is not None else ''
     rows = conn.execute(
         'WITH latest AS ('
-        '  SELECT DISTINCT ON (session) session, id FROM screen_runs'
-        '   WHERE session BETWEEN %s AND %s AND created_at <= %s'
-        '   ORDER BY session, created_at DESC, id DESC),'
+        '  SELECT DISTINCT ON (session) session, id FROM screen_runs s'
+        '   WHERE s.session BETWEEN %(since)s AND %(until)s' + visible +
+        '   ORDER BY s.session, s.created_at DESC, s.id DESC),'
         ' picked AS ('
         '  SELECT r.ticker, l.session, r.rank FROM screen_results r JOIN latest l ON r.screen_run_id = l.id'
         '   WHERE r.selected)'
         ' SELECT DISTINCT ON (ticker) ticker, session, rank FROM picked'
         '  ORDER BY ticker, session DESC',
-        (since, until, cutoff_at)).fetchall()
+        {'since': since, 'until': until, 'cutoff': cutoff_at}).fetchall()
     return {row[0]: {'session': row[1], 'rank': row[2]} for row in rows}
 
 

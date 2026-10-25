@@ -22,6 +22,7 @@ from investment_assistant.workbench.agent import tools as agent_tools
 from investment_assistant.workbench import macro as macro_module
 from investment_assistant.workbench import pool as pool_module
 from investment_assistant.workbench import regime as regime_module
+from investment_assistant.workbench import screening
 from investment_assistant.workbench import discipline as _discipline_module
 from investment_assistant.workbench import plan_shadow as _plan_shadow_module
 from investment_assistant.workbench import review_digest
@@ -55,6 +56,8 @@ class Deps:
     agent_model: Any = None                 # scripted model in tests; built from settings when None
     agent_checkpointer: Callable[[], Any] | None = None
     agent_settings: Any = None              # AgentSettings; settings_from_env() when None
+    universe: Any = None                    # screening universe; universe.load() when both are None
+    universe_loader: Callable[[], Any] | None = None
 
 
 def connection():
@@ -172,12 +175,16 @@ def _generate_rule_plan(conn, ticker: str, session: date, ticker_bars: list[dict
     """Build and store the rule plan for a fresh buy unit; record skip/conflict in the summary."""
     from investment_assistant.config import load_config
 
+    entry = repository.pool_entry_at(conn, ticker, session, cutoff_at=now)
+    screen_ref = (screening.screen_ref(conn, ticker, session)
+                  if entry is not None and entry.get('source') == 'screen' else None)
     plan = plans.build_rule_plan(
         ticker=ticker, signal_date=session, bars=ticker_bars,
         earnings_row=repository.latest_earnings(conn, ticker, cutoff_at=now),
         snapshot=repository.snapshot_at(conn, session, cutoff_at=now),
         exposure=exposure(conn, session, cutoff_at=now, ticker=ticker),
-        params=load_config().workbench, context=plan_context(conn, ticker, session, now=now))
+        params=load_config().workbench,
+        context=plan_context(conn, ticker, session, now=now, screen_ref=screen_ref))
     if 'skip' in plan:
         summary['plans'][ticker] = f"skip: {plan['skip']}"
         return
@@ -195,11 +202,18 @@ def _sync_pool(conn, pool_: pool_module.Pool, session: date, now: datetime) -> l
 
 
 def _unit_is_extended(conn, ticker: str, signal_date: date, *, held: bool, now: datetime) -> bool:
-    """Extended-pool unit: the signal-date tier is extended and the ticker is not held."""
+    """Extended-pool unit: the signal-date tier is extended, the ticker is not held, and a screen
+    pick with a valid rule plan counts as a main-list unit (spec §7.2)."""
     if held:
         return False
     entry = repository.pool_entry_at(conn, ticker, signal_date, cutoff_at=now)
-    return entry is not None and entry['tier'] == 'extended'
+    if entry is None or entry['tier'] != 'extended':
+        return False
+    if entry.get('source') == 'screen':
+        plan = repository.rule_plan(conn, ticker, signal_date)
+        if plan is not None and plan['status'] == 'ok':
+            return False
+    return True
 
 
 def _breadth_tickers(manual: pool_module.Pool, universe_: Any) -> tuple[list[str], list[str]]:
@@ -228,34 +242,30 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         return {'status': 'skipped', 'reason': 'not a trading day in New York', 'ny_date': ny_date.isoformat()}
     session = bars.latest_closed_session(now)
     started = clock()
-    # Pool read and tier sync share one transaction; a cap failure leaves no collection behind.
+    # The first transaction only reads the manual pool and holdings: the screen
+    # stage runs between them and the merged pool's tier sync.
     with _tx() as conn:
         explicit = pool is not None or tickers is not None
         if pool is None:
             pool = (pool_module.Pool.all_core(tickers) if tickers is not None
                     else pool_module.from_watchlist(list_watchlist_items(conn)))
         watchlist = list(pool.tickers)
-        # Explicit tickers/pool is a manual override: it never rewrites tier
-        # history, or a one-off run would mark every other ticker removed.
-        tier_changes = [] if explicit else _sync_pool(conn, pool, session, now)
         # Holdings join the batch even off the pool: plan stops and earnings reminders need their data.
         held = [t for t in sorted({r['ticker'] for r in repository.list_trades(conn) if r['voided_at'] is None})
                 if t not in watchlist]
-    all_tickers = [*watchlist, *held]
     summary: dict[str, Any] = {
         'session': session.isoformat(), 'cutoff_at': now.isoformat(), 'tickers': {}, 'benchmark': {},
         'filings': {}, 'earnings': {}, 'plans': {}, 'conflicts': [], 'errors': [], 'briefs': {},
+        'screen': None,
         'pool': {'core': len(pool.core), 'extended': len(pool.extended), 'holdings': len(held),
-                 'changes': tier_changes},
+                 'screen': None, 'changes': []},
         'etfs': {}, 'macro': {}, 'regime': None,
         'sources': {'bars': [], 'news': [], 'earnings': [], 'sec': [], 'etf_bars': [], 'fred': [],
                     'regime': [], 'agent': []},
         'timings': {}}
-    if not pool.core:
-        summary['errors'].append('core_empty')
 
     t_collect = clock()
-    # SPY and the industry ETFs collect bars only; news and earnings stay per-stock.
+    # SPY and the industry ETFs collect bars only, before the screen stage: QQQ is its benchmark.
     for ticker in [BENCHMARK, *ETF_TICKERS]:
         try:
             frame_ = bars.fetch_history(ticker, session - timedelta(days=HISTORY_DAYS), session,
@@ -281,17 +291,41 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
                 summary['sources']['etf_bars'].append(ticker)
                 summary['errors'].append(f'{ticker} etf_bars: {exc}')
 
+    # The screen stage: Nasdaq-100 candidates join the extended pool with source 'screen'.
+    # Explicit tickers/pool stay a manual override and skip it entirely.
+    stage = None
+    if explicit:
+        summary['screen'] = {'status': 'skipped', 'reason': 'explicit_pool'}
+    else:
+        stage = screening.run_stage(session=session, now=now, manual=pool, held=held,
+                                    deps=deps, run_id=run_id)
+        summary['screen'] = stage['summary']
+        summary['sources']['bars'].extend(stage['fetch_failures'])
+        if stage['status'] == 'error':
+            summary['errors'].append(f"screen: {stage['summary']['error']}")
+        pool = pool_module.with_screen(pool, stage['members'])
+        with _tx() as conn:
+            tier_changes = _sync_pool(conn, pool, session, now)
+        summary['pool'] = {**summary['pool'], 'extended': len(pool.extended),
+                           'screen': len(stage['members']), 'changes': tier_changes}
+    all_tickers = [*pool.tickers, *held]
+    if not pool.core:
+        summary['errors'].append('core_empty')
+
     for ticker in all_tickers:
         entry: dict[str, Any] = {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [], 'skips': [],
                                  'error': None}
         problems = []
         try:
-            frame_ = bars.fetch_history(ticker, session - timedelta(days=HISTORY_DAYS), session,
-                                        fetcher=deps.bar_fetcher)
-            rows_, skipped = bars.normalize_history(frame_)
-            with _tx() as conn:
-                entry['bars'] = repository.store_bars(conn, ticker, rows_, now=now)
-            entry['skipped_bars'] = [d.isoformat() for d in skipped]
+            if ticker in (stage['fetched'] if stage is not None else ()):
+                entry['bars'] = 'collected_in_screen'   # news and earnings still collect below
+            else:
+                frame_ = bars.fetch_history(ticker, session - timedelta(days=HISTORY_DAYS), session,
+                                            fetcher=deps.bar_fetcher)
+                rows_, skipped = bars.normalize_history(frame_)
+                with _tx() as conn:
+                    entry['bars'] = repository.store_bars(conn, ticker, rows_, now=now)
+                entry['skipped_bars'] = [d.isoformat() for d in skipped]
         except Unavailable:
             raise
         except Exception as exc:
@@ -364,7 +398,13 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
     t_regime = clock()
     try:
         with _tx() as conn:
-            breadth_sample = list(breadth_tickers) if breadth_tickers is not None else watchlist
+            if breadth_tickers is not None:
+                breadth_sample = list(breadth_tickers)
+            elif stage is not None:
+                breadth_sample, breadth_notes = _breadth_tickers(pool, stage['universe'])
+                summary['errors'].extend(breadth_notes)
+            else:
+                breadth_sample = watchlist
             pool_bars = {t: b for t in breadth_sample
                          if (b := repository.read_bars(conn, t, session, cutoff_at=now, limit=300))}
             etf_read = {etf: repository.read_bars(conn, etf, session, cutoff_at=now) for etf in ETF_TICKERS}
@@ -471,7 +511,9 @@ def today(*, now: datetime) -> dict[str, Any]:
             unit = synthesis.synthesize(ticker, signal_date, group['candidates'], holding=held,
                                         now=now)
             since = signal_date - timedelta(days=NEWS_LOOKBACK_DAYS)
+            entry = repository.pool_entry_at(conn, ticker, signal_date, cutoff_at=now)
             unit.update(
+                source=entry.get('source') if entry else None,
                 candidates=group['candidates'], position=book['position'],
                 brief=_brief_view(repository.latest_brief(conn, ticker, signal_date)),
                 plan=repository.rule_plan(conn, ticker, signal_date),
@@ -491,7 +533,7 @@ def today(*, now: datetime) -> dict[str, Any]:
         holdings = _holdings(conn, session, now=now)
         market = repository.latest_regime(conn, on_or_before=session, cutoff_at=now)
     return {'session': session, 'units': units, 'extended_units': extended_units,
-            'holdings': holdings, 'market': market}
+            'holdings': holdings, 'market': market, 'screen': None}
 
 
 def run_backcheck(*, now: datetime, tickers: list[str] | None = None) -> dict[str, Any]:

@@ -17,6 +17,17 @@
 - 每次批处理把分层变化追加进 `pool_tiers`（`effective_session` 为本次交易日）。某只股票某一天属于哪一层，按「`effective_session <= 该日` 且 `recorded_at <= 截止时间`」的最新一行还原。
 - 超过上限时，写入观察名单和批处理都会报错，不会悄悄截断。
 
+## 每日筛选 `screen-1`
+
+每个交易日收盘后（嵌在 `workbench` 批处理里，ETF 采集之后、逐股采集之前）对纳指 100 跑一次：
+
+- **范围**：`config/universes/nasdaq100.json`（版本化文件、手动维护，`GOOGL` 留、`GOOG` 去）。已在手动观察名单里的股票不参加，它们本来就每天在跑。`as_of` 距批处理日超过 120 天记 `universe_stale`，照常运行。
+- **采集**：对范围内、不在观察池里的股票只采日线和财报日（复用现有增量采集与修订规则）；首次运行回补约 300 根日线。入选进池之后，按观察池流程补采资讯和 SEC 列表。
+- **过滤与排序**（`screen-1`，阈值固定不调参）：数据前置不通过的记跳过原因（不算过滤）；20 日平均成交额 ≥ 5000 万美元；财报排除窗口 5 个交易日；触发组（当日 `trend_reclaim` / `volume_breakout` 触发买入且无卖出候选）优先，形态组（收盘 > MA50 > MA200 且 ATR14/收盘 ∈ [2%, 6%]）按相对强弱 RS = ½(r20−r20(QQQ)) + ½(r60−r60(QQQ)) 补齐，每天新入选 ≤ 20 只。
+- **成员与轮换**：当天成员 = 今天入选 ∪ 保留期内（最近入选 ≤ 10 个交易日，含当天）∪ 锁定（有效计划或持仓），减去手动观察名单；上限 `min(40, 100 − 手动观察池数)`，超出按此优先级保留，挤出的记 `summary.screen.evicted`；锁定数超上限时全部保留并记 `screen_locked_over_cap`，当天不新增。范围内的规则只用来判断触发组，不写 `signal_candidates`；进池之后规则 v1 照常运行。
+- **分层**：筛选成员一律 `tier = extended`、`source = screen`，不占核心池名额；`tier_changes` 在 `tier`、`sector_etf`、`source` 任一变化时追加一行。手动加入观察名单的股票 `source` 翻回 `watchlist`；从名单删除后若仍在保留期，翻回 `screen`。
+- **出错**：范围文件加载失败或 QQQ 缺当日数据时 `screen.status = error`，成员只保留锁定和保留期内的（不新增），批处理继续；单只采集失败记 `summary.sources.bars` 与跳过原因；筛选步骤超过 600 秒记 `screen_over_budget`。结果与报告写进 `screen_runs` / `screen_results`（同一交易日重跑追加新行、读取取最新）。
+
 ## 市场环境 `regime-2`
 
 每次批处理在采集之后、规则之前，生成一份快照写入 `market_regimes`：
@@ -42,7 +53,7 @@
 - 页面：「设置 → 关注列表」（核心池勾选、行业 ETF 下拉，「下一事件」列显示今天及以后最近的财报日，表头显示「美股池 n/100 · 核心 m/15」；超限或标签不规范时返回 400，观察名单不变）；「今日」顶部的市场环境卡片，以及计划卡片上的「区制 · 下次财报 · 行业」一行；「复盘 → 上线前检查」。
 - API：`GET/POST /api/watchlist`、`DELETE /api/watchlist/{ticker}`、`GET /api/watchlist/resolve?symbol=`；`GET/POST /api/workbench/backchecks`（body 可以带 `tickers`）。
 - 命令行：`python -m investment_assistant.workbench.backcheck [--tickers A,B]`。
-- 运行报告：`summary.pool`（`core` / `extended` / `holdings` / `changes`）、`summary.regime`、`summary.etfs`、`summary.macro`（未配置 FRED 时记 `not_configured`）、`summary.timings`（总耗时 > 1800 秒时记 `batch_over_budget`）。
+- 运行报告：`summary.pool`（`core` / `extended` / `holdings` / `screen` / `changes`）、`summary.screen`（`status`、`selected`、`counts`、`skips`、`evicted`、`removed`、`flags`、`timing`）、`summary.regime`、`summary.etfs`、`summary.macro`（未配置 FRED 时记 `not_configured`）、`summary.timings`（总耗时 > 1800 秒时记 `batch_over_budget`）。
 - 验证一次：给某只股票勾选「核心」，下一次批处理的 `pool.changes` 里应出现一条 `tier: core`；运行报告里有 `regime: {status: inserted, label: …}`，配置了 FRED 时还有 `macro.BAMLH0A0HYM2.inserted > 0`。
 
 ## 已知限制

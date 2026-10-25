@@ -616,7 +616,7 @@ def test_today_market_block(db):
     service.run_batch(now=NOW, deps=deps(Sources()))
     view = service.today(now=NOW)
     assert view['market']['session'] == SESSION
-    assert view['market']['calc_version'] == 'regime-1'
+    assert view['market']['calc_version'] == 'regime-2'
     assert view['market']['label'] in ('risk_on', 'neutral', 'risk_off', 'insufficient')
 
 
@@ -626,8 +626,10 @@ def test_manual_tickers_override_does_not_rewrite_tiers(db):
     service.run_batch(now=NOW, deps=deps(Sources()))
     service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=5), deps=deps(Sources()))
     assert db.execute("SELECT count(*) FROM pool_tiers WHERE tier = 'removed'").fetchone()[0] == 0
-    assert repository.pool_latest(db) == {'AAA': {'tier': 'core', 'sector_etf': None},
-                                          'BBB': {'tier': 'extended', 'sector_etf': None}}
+    assert repository.pool_latest(db) == {'AAA': {'tier': 'core', 'sector_etf': None,
+                                                    'source': 'watchlist'},
+                                          'BBB': {'tier': 'extended', 'sector_etf': None,
+                                                  'source': 'watchlist'}}
 
 
 # ---------------------------------------------------------------- agent stage (P3 §8)
@@ -1265,7 +1267,7 @@ def test_weekly_snapshot_has_tracks(db, scripted_model):
     off = agent_deps(scripted_model, [], settings=_agent_settings(provider='off'))
     service.run_batch(tickers=['NVDA', 'MU'], now=NOW, deps=off)
     record = service.generate_weekly(SESSION - timedelta(days=SESSION.weekday()), now=NOW)
-    assert record['calc_version'] == 'review-4'
+    assert record['calc_version'] == 'review-5'
     stats = record['stats']
     assert stats['tracks']['summary']['all']['actual']['units'] == 2
     assert all('ticker' in row and row['rule'] and row['agent'] and row['actual']

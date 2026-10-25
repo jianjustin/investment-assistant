@@ -46,10 +46,12 @@ tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、�
 
 | 模块 | 做什么 | 依赖 |
 | --- | --- | --- |
-| `workbench/service.py` | 批处理编排（采集 → 环境 → 规则 → 计划 → Agent → 推送）与全部用例 | 下列模块、`repository` |
+| `workbench/service.py` | 批处理编排（采集 → 筛选 → 环境 → 规则 → 计划 → Agent → 推送）与全部用例 | 下列模块、`repository` |
 | `workbench/repository.py` | 工作台全部 SQL，只追加 | `db.py` |
 | `workbench/bars.py`、`news.py`、`earnings.py`、`macro.py` | 采集：日线、资讯标题、财报日、FRED | yfinance、SEC、FRED |
-| `workbench/pool.py`、`regime.py` | 观察池分层；池内广度、区制、行业强弱 | 纯函数 |
+| `workbench/universe.py`、`screen.py` | 纳指 100 范围文件；`screen-1` 过滤、排序、成员轮换（纯函数） | 纯函数 |
+| `workbench/screening.py` | 筛选阶段编排：采集范围日线、写 `screen_runs` / `screen_results`、成员并池 | `service`、`repository` |
+| `workbench/pool.py`、`regime.py` | 观察池分层与来源；范围 ∪ 手动池的广度、区制、行业强弱 | 纯函数 |
 | `workbench/rules.py`、`synthesis.py` | 规则 v1 候选；合成每股每日一个决策单元 | 纯函数 |
 | `workbench/plans.py` | ATR、计划价位、有效期、财报提示、按风险定仓 | 纯函数 |
 | `workbench/agent/` | Agent 轨道：工具层、LangGraph 图（提议 + 反方 / 解读）、引用校验、模型接入 | LangGraph、智谱、PostgresSaver |
@@ -84,8 +86,10 @@ tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、�
 ```mermaid
 flowchart TD
     subgraph batch["06:30 北京（周二至周六）· 任务 workbench"]
-        A["① 采集<br/>日线 / 资讯 / 财报日 / SEC 列表 / 行业 ETF / FRED"] --> B["② 市场环境<br/>池内广度 → 区制；行业强弱"]
-        B --> C["③ 规则 v1<br/>信号候选 → 决策单元"]
+        A["① 采集<br/>SPY / 行业 ETF 日线"] --> A2["① 筛选 screen-1<br/>纳指 100：范围日线 + 财报日 → 过滤排序 → 成员自动进扩展池"]
+        A2 --> B["① 采集（逐股）<br/>日线（筛选已采的跳过）/ 资讯 / 财报日 / SEC 列表 / FRED"]
+        B --> B2["② 市场环境<br/>范围 ∪ 手动池广度 → 区制；行业强弱"]
+        B2 --> C["③ 规则 v1<br/>信号候选 → 决策单元"]
         C --> D["④ 规则计划 plan-1<br/>ATR 止损 · 2R 目标 · 按风险定仓 · 超限作废"]
         D --> E["⑤ Agent 轨道<br/>提议 + 反方 · 引用校验 · token 预算；解读"]
         E --> F["⑥ 推送 Discord<br/>核心池 + 持仓"]
@@ -112,7 +116,7 @@ flowchart TD
 | --- | --- |
 | 共享底座 | `watchlist_items`、`scheduled_jobs`、`job_reports`、`notify_settings`、`filings` |
 | 工作台 · 采集 | `price_bars`、`news_items`、`news_item_tickers`、`earnings_dates`、`macro_observations` |
-| 工作台 · 信号 | `signal_candidates`、`signal_briefs`、`pool_tiers`、`market_regimes` |
+| 工作台 · 信号与筛选 | `signal_candidates`、`signal_briefs`、`pool_tiers`（含 `source`）、`market_regimes`、`screen_runs`、`screen_results` |
 | 工作台 · 计划与执行 | `trade_plans`、`signal_decisions`、`trades`、`account_snapshots`、`cash_flows` |
 | 工作台 · Agent | `agent_runs`、`agent_tool_calls`；LangGraph 检查点表由 `python -m investment_assistant.workbench.agent setup` 创建，不在迁移里 |
 | 工作台 · 复盘 | `weekly_reviews`、`monthly_reviews`、`rule_backchecks`、`review_pushes` |

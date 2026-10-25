@@ -11,11 +11,13 @@ import pytest
 
 from investment_assistant.data.calendar import add_trading_days
 from investment_assistant.workbench import ledger, service
+from investment_assistant.workbench.universe import Universe
 
 NY = ZoneInfo('America/New_York')
 S1 = add_trading_days(datetime(2026, 9, 1).date(), 0)          # buy signal session (Tuesday)
 S2 = add_trading_days(S1, 13)                                   # trend break session
 HISTORY = 299                                                   # sessions before S1
+EMPTY_UNIVERSE = Universe('empty', S1, 'test', ())              # 场景不跑筛选，空范围即可
 
 
 def evening(day):
@@ -81,7 +83,7 @@ def offline(workbench_db, monkeypatch):
 def deps():
     s = OfflineSources()
     return service.Deps(bar_fetcher=s.bars, news_fetcher=s.news, filing_source=s,   # default brief client
-                        earnings_fetcher=lambda t: {'Earnings Date': []})
+                        earnings_fetcher=lambda t: {'Earnings Date': []}, universe=EMPTY_UNIVERSE)
 
 
 def unit_for(view, ticker):
@@ -199,7 +201,7 @@ class P1Sources(OfflineSources):
 def p1_deps():
     source = P1Sources()
     return service.Deps(bar_fetcher=source.bars, news_fetcher=source.news, filing_source=source,
-                        earnings_fetcher=lambda t: {'Earnings Date': []})
+                        earnings_fetcher=lambda t: {'Earnings Date': []}, universe=EMPTY_UNIVERSE)
 
 
 class PushSpy:
@@ -317,12 +319,14 @@ def test_pool_and_context_end_to_end(offline, monkeypatch):
         return ({'observations': obs}, {'ok': True})
     s = OfflineSources()
     p2_deps = service.Deps(bar_fetcher=s.bars, news_fetcher=s.news, filing_source=s,
-                           earnings_fetcher=lambda t: {'Earnings Date': []}, macro_fetcher=fred)
+                           earnings_fetcher=lambda t: {'Earnings Date': []}, macro_fetcher=fred,
+                           universe=EMPTY_UNIVERSE)
 
     # 批处理：分层同步、ETF 日线、FRED、区制快照、核心与扩展各有带 context 的买入计划
     batch = service.run_batch(now=evening(S1), deps=p2_deps)
     assert batch['errors'] == []
-    assert batch['pool'] == {'core': 2, 'extended': 25, 'holdings': 0, 'changes': batch['pool']['changes']}
+    assert batch['pool'] == {'core': 2, 'extended': 25, 'holdings': 0, 'screen': 0,
+                             'changes': batch['pool']['changes']}
     assert len(batch['pool']['changes']) == 27 and len(batch['etfs']) == 3
     assert all(v.startswith('inserted ') for v in batch['etfs'].values())
     assert batch['macro']['BAMLH0A0HYM2'] == {'inserted': 61, 'unchanged': 0}
@@ -357,7 +361,7 @@ def test_pool_and_context_end_to_end(offline, monkeypatch):
     offline.execute("UPDATE watchlist_items SET tags = ARRAY['core'] WHERE ticker = 'X01'")
     service.run_batch(now=evening(wednesday), deps=p2_deps)
     assert repository.pool_entry_at(offline, 'X01', S1, cutoff_at=evening(wednesday)) == \
-        {'tier': 'extended', 'sector_etf': None}
+        {'tier': 'extended', 'sector_etf': None, 'source': 'watchlist'}
     assert repository.pool_entry_at(offline, 'X01', wednesday, cutoff_at=evening(wednesday))['tier'] == 'core'
 
     week_start = add_trading_days(S1, -1)                               # Monday of the signal week
@@ -565,7 +569,8 @@ def test_review_expansion_end_to_end(offline, scripted_model):
                                          api_key='sk-test', daily_tokens=None, config_error=None)
     deps = service.Deps(bar_fetcher=sources.bars, news_fetcher=sources.news, filing_source=sources,
                         earnings_fetcher=sources.earnings, agent_model=scripted_model(replies),
-                        agent_checkpointer=lambda: nullcontext(InMemorySaver()), agent_settings=settings)
+                        agent_checkpointer=lambda: nullcontext(InMemorySaver()), agent_settings=settings,
+                        universe=EMPTY_UNIVERSE)
 
     service.add_trade({'request_id': '00000000-0000-4000-8000-0000000000a1', 'ticker': 'POSN', 'side': 'buy',
                        'quantity': '10', 'price': '80.00', 'executed_at': '2026-08-10T15:00:00+00:00'},
@@ -591,7 +596,8 @@ def test_review_expansion_end_to_end(offline, scripted_model):
                       now=evening(D2))
     service.run_batch(tickers=['ALPHA', 'BETA', 'POSN'], now=evening(D3),
                       deps=service.Deps(bar_fetcher=sources.bars, news_fetcher=sources.news,
-                                        filing_source=sources, earnings_fetcher=sources.earnings))
+                                        filing_source=sources, earnings_fetcher=sources.earnings,
+                                        universe=EMPTY_UNIVERSE))
 
     class FakeClient:
         def __init__(self):
