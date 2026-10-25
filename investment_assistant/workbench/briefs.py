@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from investment_assistant.hermes.deepseek_client import DEFAULT_MODEL, request_json_completion_verbose
 from investment_assistant.workbench import codex_client
+from investment_assistant.workbench.agent import REASON_TEXT
 
 PROMPT_VERSION = 'workbench-brief-1'
 NY = ZoneInfo('America/New_York')
@@ -119,3 +120,40 @@ def generate(unit, candidates, filings, news, *, cutoff_at: datetime, client: Br
     if error:
         return {**brief, 'output': {}, 'status': 'error', 'error': error}
     return {**brief, 'output': output, 'status': 'ok', 'error': None}
+
+
+# --- brief rows built from agent runs (P4 design §7.1) ---
+# The model never writes a brief directly any more; for_run derives the row
+# from a propose or interpret run, and the rule-only line stays for fallback.
+
+
+def rule_summary(unit, candidates) -> dict[str, Any]:
+    """The rule-only summary, wording unchanged from the old fallback."""
+    return _fallback_summary(unit, candidates)
+
+
+def for_run(run: dict[str, Any], calls: list[dict[str, Any]], *, unit, candidates) -> dict[str, Any]:
+    """A signal_briefs row from one agent run (§7.1): propose ok/pass carries
+    thesis and counter risks, interpret ok carries its own checked output, a
+    rejected interpret hides content, everything else falls back to rules."""
+    brief = {'ticker': unit['ticker'], 'signal_date': unit['signal_date'], 'model': run['model'],
+             'prompt_version': run['agent_version'], 'cutoff_at': run['cutoff_at'],
+             'input_refs': sorted((f"call:{c['seq']}" for c in calls),
+                                  key=lambda ref: int(ref.rsplit(':', 1)[1])),
+             'agent_run_id': run['id']}
+    mode, status, reason = run['mode'], run['status'], run.get('reason')
+    if mode == 'propose' and status in ('ok', 'pass'):
+        output = run['output'] or {}
+        counter = run.get('counter') or {}
+        risks = counter.get('risks') if counter.get('status') == 'ok' else []
+        return {**brief, 'output': {'summary': output['summary'],
+                                    'support': output.get('thesis') or [],
+                                    'contra': risks or [],
+                                    'conflicts': []},
+                'status': 'ok', 'error': None}
+    if mode == 'interpret' and status == 'ok':
+        return {**brief, 'output': dict(run['output']), 'status': 'ok', 'error': None}
+    if mode == 'interpret' and status == 'rejected':
+        return {**brief, 'output': {}, 'status': 'error', 'error': REASON_TEXT[reason]}
+    return {**brief, 'output': rule_summary(unit, candidates), 'status': 'fallback',
+            'error': REASON_TEXT[reason]}

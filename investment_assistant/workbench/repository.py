@@ -166,10 +166,12 @@ def store_brief(conn, brief: dict[str, Any]):
         cur.execute(
             # clock_timestamp(): several briefs in one transaction must still order by creation.
             'INSERT INTO signal_briefs (ticker, signal_date, model, prompt_version, cutoff_at, input_refs, output, '
-            'status, error, created_at) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, clock_timestamp()) '
+            'status, error, agent_run_id, created_at) '
+            'VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, clock_timestamp()) '
             'RETURNING id',
             (brief['ticker'], brief['signal_date'], brief.get('model'), brief['prompt_version'], brief['cutoff_at'],
-             _canonical(brief['input_refs']), _canonical(brief['output']), brief['status'], brief.get('error')))
+             _canonical(brief['input_refs']), _canonical(brief['output']), brief['status'],
+             brief.get('error'), brief.get('agent_run_id')))
         return cur.fetchone()[0]
 
 
@@ -177,7 +179,7 @@ def latest_brief(conn, ticker: str, signal_date: date) -> dict[str, Any] | None:
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             'SELECT id, ticker, signal_date, model, prompt_version, cutoff_at, input_refs, output, status, error, '
-            'created_at FROM signal_briefs WHERE ticker = %s AND signal_date = %s '
+            'agent_run_id, created_at FROM signal_briefs WHERE ticker = %s AND signal_date = %s '
             'ORDER BY created_at DESC, id DESC LIMIT 1', (ticker.upper(), signal_date))
         return cur.fetchone()
 
@@ -694,7 +696,7 @@ def fill_filing_acceptance(conn, metas: list[dict[str, Any]]) -> int:
 
 # ---------------------------------------------------------------- agent track (P3 §3)
 
-_AGENT_RUN_COLUMNS = ('id, ticker, signal_date, pool, attempt, agent_version, provider, model, cutoff_at, '
+_AGENT_RUN_COLUMNS = ('id, ticker, signal_date, pool, attempt, mode, agent_version, provider, model, cutoff_at, '
                       'status, reason, detail, output, counter, plan_id, input_tokens, output_tokens, '
                       'started_at, finished_at, created_at')
 
@@ -703,13 +705,13 @@ def insert_agent_run(conn, run: dict[str, Any], calls: list[dict[str, Any]]) -> 
     """The run row and all its tool calls, in the caller's transaction (§3.3 order:
     plan, run, calls; the plan is inserted by the service before this call)."""
     record = _one(conn,
-                  'INSERT INTO agent_runs (id, ticker, signal_date, pool, attempt, agent_version, provider, '
+                  'INSERT INTO agent_runs (id, ticker, signal_date, pool, attempt, mode, agent_version, provider, '
                   'model, cutoff_at, status, reason, detail, output, counter, plan_id, input_tokens, output_tokens, '
                   'started_at, finished_at) '
-                  'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s) '
+                  'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s) '
                   f'RETURNING {_AGENT_RUN_COLUMNS}',
                   (run['id'], run['ticker'], run['signal_date'], run['pool'], run['attempt'],
-                   run['agent_version'], run['provider'], run['model'], run['cutoff_at'], run['status'],
+                   run.get('mode', 'propose'), run['agent_version'], run['provider'], run['model'], run['cutoff_at'], run['status'],
                    run['reason'], run.get('detail'),
                    _plan_json(run['output']) if run.get('output') is not None else None,
                    _plan_json(run['counter']) if run.get('counter') is not None else None,
@@ -723,14 +725,15 @@ def insert_agent_run(conn, run: dict[str, Any], calls: list[dict[str, Any]]) -> 
     return record
 
 
-def agent_runs_for(conn, ticker: str, signal_date: date) -> list[dict[str, Any]]:
+def agent_runs_for(conn, ticker: str, signal_date: date, mode: str = 'propose') -> list[dict[str, Any]]:
     return _all(conn, f'SELECT {_AGENT_RUN_COLUMNS} FROM agent_runs WHERE ticker = %s AND signal_date = %s '
-                      'ORDER BY created_at, id', (ticker.upper(), signal_date))
+                      'AND mode = %s ORDER BY created_at, id', (ticker.upper(), signal_date, mode))
 
 
-def latest_agent_run(conn, ticker: str, signal_date: date) -> dict[str, Any] | None:
+def latest_agent_run(conn, ticker: str, signal_date: date, mode: str = 'propose') -> dict[str, Any] | None:
     return _one(conn, f'SELECT {_AGENT_RUN_COLUMNS} FROM agent_runs WHERE ticker = %s AND signal_date = %s '
-                      'ORDER BY created_at DESC, id DESC LIMIT 1', (ticker.upper(), signal_date))
+                      'AND mode = %s ORDER BY created_at DESC, id DESC LIMIT 1',
+                (ticker.upper(), signal_date, mode))
 
 
 def agent_run_by_id(conn, run_id) -> dict[str, Any] | None:
@@ -744,7 +747,7 @@ def agent_tool_calls(conn, run_id) -> list[dict[str, Any]]:
 
 def list_agent_runs(conn, since: date) -> list[dict[str, Any]]:
     """Run rows for the API list view: no result payloads, but a tool-call count each."""
-    return _all(conn, 'SELECT r.id, r.ticker, r.signal_date, r.pool, r.attempt, r.agent_version, r.provider, '
+    return _all(conn, 'SELECT r.id, r.ticker, r.signal_date, r.pool, r.attempt, r.mode, r.agent_version, r.provider, '
                       'r.model, r.cutoff_at, r.status, r.reason, r.detail, r.plan_id, r.input_tokens, r.output_tokens, '
                       'r.started_at, r.finished_at, r.created_at, '
                       '(SELECT count(*) FROM agent_tool_calls c WHERE c.run_id = r.id) AS tool_calls '

@@ -701,3 +701,39 @@ def test_missing_tables_lists_review_pushes(workbench_db):
     from investment_assistant.workbench import repository
     workbench_db.execute('DROP TABLE review_pushes')
     assert 'review_pushes' in repository.missing_tables(workbench_db)
+
+
+# --- mode-filtered run queries and brief run links (P4 §3.1–3.2, §7) ---
+
+def test_latest_agent_run_filters_mode(workbench_db):
+    from investment_assistant.workbench import repository
+    propose_id = _agent_run(workbench_db, status='skipped', reason='disabled')
+    interpret_id = _agent_run(workbench_db, mode='interpret', status='ok', reason=None,
+                              output={'summary': 's'})
+    default = repository.latest_agent_run(workbench_db, 'NVDA', date(2026, 10, 21))
+    assert default['id'] == propose_id       # 后写的 interpret 运行不改变 propose 视图
+    interpret = repository.latest_agent_run(workbench_db, 'NVDA', date(2026, 10, 21), mode='interpret')
+    assert interpret['id'] == interpret_id
+
+
+def test_agent_runs_for_counts_per_mode(workbench_db):
+    from investment_assistant.workbench import repository
+    _agent_run(workbench_db)
+    _agent_run(workbench_db, status='skipped', reason='disabled')
+    _agent_run(workbench_db, mode='interpret', status='ok', reason=None, output={'summary': 'a'})
+    _agent_run(workbench_db, mode='interpret', status='ok', reason=None, output={'summary': 'b'})
+    propose = repository.agent_runs_for(workbench_db, 'NVDA', date(2026, 10, 21))
+    assert len(propose) == 2 and all(r['mode'] == 'propose' for r in propose)
+    interpret = repository.agent_runs_for(workbench_db, 'NVDA', date(2026, 10, 21), mode='interpret')
+    assert len(interpret) == 2 and all(r['mode'] == 'interpret' for r in interpret)
+
+
+def test_brief_round_trips_agent_run_id(workbench_db):
+    from investment_assistant.workbench import repository
+    run_id = _agent_run(workbench_db, mode='interpret', status='ok', reason=None, output={'summary': 's'})
+    brief = {'ticker': 'NVDA', 'signal_date': date(2026, 10, 21), 'model': 'glm-5.3',
+             'prompt_version': 'agent-brief-1', 'cutoff_at': NOW, 'input_refs': ['call:1'],
+             'output': {'summary': 's'}, 'status': 'ok', 'error': None, 'agent_run_id': run_id}
+    repository.store_brief(workbench_db, brief)
+    stored = repository.latest_brief(workbench_db, 'NVDA', date(2026, 10, 21))
+    assert stored['agent_run_id'] == run_id and stored['status'] == 'ok'
