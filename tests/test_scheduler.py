@@ -189,3 +189,7 @@ def test_scheduler_module_has_no_cli_main():
 def test_registry_has_workbench_review():
     from investment_assistant.tasks import scheduler
     assert scheduler.REGISTRY['workbench_review'] is not None
+
+
+def test_registry_has_no_ashares():
+    assert 'ashares' not in scheduler.REGISTRY

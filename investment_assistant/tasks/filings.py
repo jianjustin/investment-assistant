@@ -16,9 +16,8 @@ def _core(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> dict[str, Any]:
-    from investment_assistant.ashare.domain import us_only
     result = download_configured_filings(
-        us_only(config.watchlist), config.filings, start_date=start_date, end_date=end_date
+        config.watchlist, config.filings, start_date=start_date, end_date=end_date
     )
     return {
         "downloaded_count": result.get("downloaded_count", 0),

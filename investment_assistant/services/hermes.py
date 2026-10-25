@@ -20,9 +20,6 @@ def hermes_macro_analysis(query: dict[str, list[str]]) -> dict[str, Any]:
     watchlist = parse_csv(first(query, "watchlist"))
     if not watchlist:
         watchlist = current_watchlist()
-    from investment_assistant.ashare.domain import is_cn_symbol
-    if any(is_cn_symbol(t) for t in watchlist):
-        raise ValueError('美股SPY/VIX宏观规则不适用于A股；请使用A股研究观察卡')
     return analyze_macro_environment(rows, window=window, watchlist=watchlist)
 
 
@@ -33,9 +30,6 @@ def _macro_llm_job(payload: dict[str, Any]) -> dict[str, Any]:
     window = parse_int(str(payload.get("window")) if payload.get("window") is not None else None, default=30, minimum=5, maximum=90)
     model = str(payload.get("model") or config.model_default or "deepseek-v4-pro")
     watchlist = parse_payload_watchlist(payload.get("watchlist")) or current_watchlist()
-    from investment_assistant.ashare.domain import is_cn_symbol
-    if any(is_cn_symbol(t) for t in watchlist):
-        raise ValueError('美股SPY/VIX宏观规则不适用于A股；请使用A股研究观察卡')
     rows = market_signal_rows({"limit": [str(window)]})
     run_id = f"macro-llm-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
     analysis = analyze_macro_environment(rows, window=window, watchlist=watchlist, use_llm=True, model=model)

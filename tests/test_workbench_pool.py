@@ -39,10 +39,9 @@ def test_unknown_sector_rejected():
         pool.parse_tags(['sector:XLE'])
 
 
-def test_from_watchlist_skips_paused_archived_and_cn():
-    rows = (_rows(['AAPL'], tags=['core']) + _rows(['600519.SH'], tags=['core'])
-            + _rows(['MU'], status='paused') + _rows(['AMD'], status='archived', tags=['core'])
-            + _rows(['NVDA'], tags=['sector:smh']))
+def test_from_watchlist_skips_paused_and_archived():
+    rows = (_rows(['AAPL'], tags=['core']) + _rows(['MU'], status='paused')
+            + _rows(['AMD'], status='archived', tags=['core']) + _rows(['NVDA'], tags=['sector:smh']))
     p = pool.from_watchlist(rows)
     assert p.core == ('AAPL',)
     assert p.extended == ('NVDA',)
@@ -51,6 +50,13 @@ def test_from_watchlist_skips_paused_archived_and_cn():
     assert p.tier('AAPL') == 'core'
     assert p.tier('NVDA') == 'extended'
     assert p.tier('MU') is None
+
+
+def test_from_watchlist_skips_invalid_identity():
+    # 688008.SH: an invalid US code that may still sit in the table before migration 021 runs
+    rows = _rows(['AAPL'], tags=['core']) + _rows(['688008.SH'], tags=['core']) + _rows(['NVDA'])
+    p = pool.from_watchlist(rows)
+    assert p.core == ('AAPL',) and p.extended == ('NVDA',)
 
 
 def test_pool_limit_100():

@@ -8,8 +8,8 @@ router = APIRouter()
 
 
 @router.get("/api/watchlist")
-def list_items(market: str | None = None, enriched: bool = False):
-    rows = _watchlist.watchlist_rows(market, enriched=enriched) if market is not None or enriched else _watchlist.watchlist_rows()
+def list_items(enriched: bool = False):
+    rows = _watchlist.watchlist_rows(enriched=enriched) if enriched else _watchlist.watchlist_rows()
     return {"rows": rows, "count": len(rows)}
 
 

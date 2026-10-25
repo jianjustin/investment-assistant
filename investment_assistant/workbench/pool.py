@@ -1,6 +1,6 @@
 """Tiered watch pool parsed from the watchlist (pure functions).
 
-The pool is the active US rows of watchlist_items; the `core` tag marks the
+The pool is the active rows of watchlist_items with a valid US identity; the `core` tag marks the
 core pool, `sector:<ETF>` maps a ticker to its industry ETF. Tiers change
 over time, so the batch appends changes to pool_tiers instead of storing a
 current state.
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from investment_assistant.ashare.domain import is_cn_symbol
+from investment_assistant.us_research.domain import stock_id
 
 MAX_POOL = 100
 MAX_CORE = 15
@@ -70,8 +70,16 @@ def parse_tags(tags: list[str] | None) -> tuple[bool, str | None]:
     return is_core, sector
 
 
+def _valid_us(ticker: str) -> bool:
+    try:
+        stock_id(ticker)
+    except ValueError:
+        return False
+    return True
+
+
 def from_watchlist(rows: list[dict]) -> Pool:
-    """Build the pool from watchlist rows; paused, archived and CN rows are ignored."""
+    """Build the pool from watchlist rows; paused, archived and invalid-identity rows are ignored."""
     core: list[str] = []
     extended: list[str] = []
     sectors: dict[str, str] = {}
@@ -80,7 +88,7 @@ def from_watchlist(rows: list[dict]) -> Pool:
         if row.get('status') != 'active':
             continue
         ticker = row['ticker'].upper()
-        if is_cn_symbol(ticker) or ticker in seen:
+        if ticker in seen or not _valid_us(ticker):
             continue
         seen.add(ticker)
         is_core, sector = parse_tags(row.get('tags'))

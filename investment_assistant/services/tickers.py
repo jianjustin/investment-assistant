@@ -127,9 +127,6 @@ def run_ticker_trend_scan(payload: dict[str, Any]) -> dict[str, Any]:
     target_date = (date.fromisoformat(str(payload.get("date")))
                    if payload.get("date") else latest_completed_signal_date())
     tickers = parse_payload_watchlist(payload.get("tickers")) or current_watchlist()
-    from investment_assistant.ashare.domain import is_cn_symbol
-    if any(is_cn_symbol(t) for t in tickers):
-        raise ValueError('A股请使用A股研究页；不套用SPY/VIX规则')
     if not tickers:
         raise ValueError("tickers or active watchlist is required")
     run_id = f"manual-ticker-trends-{target_date.isoformat()}-{uuid.uuid4().hex[:8]}"
