@@ -147,7 +147,7 @@
         <label>年度利润<input type="number" bind:value={s.profit} /></label><label>币种<select bind:value={s.currency}><option>USD</option><option>EUR</option><option>HKD</option></select></label>
         <label>假设 PE<input type="number" min="0.01" step="0.1" bind:value={s.pe} /></label>
         <label>股数（股）<input type="number" min="1" bind:value={s.shares} /></label></div>
-        <label>股本口径<input bind:value={s.share_basis} placeholder="期末/加权平均/A+H总股本；日期" /></label>
+        <label>股本口径<input bind:value={s.share_basis} placeholder="期末/加权平均总股本；日期" /></label>
         <label>来源链接<input type="url" bind:value={s.source_url} /></label>
         <label>假设与限制<textarea rows="2" bind:value={s.note}></textarea></label>
         <div class="heading"><strong>情景值：{scenarioValue(s)} {s.currency ?? '币种待填'} / 股</strong><button onclick={() => body.scenarios = body.scenarios.filter((_: any, j: number) => j !== i)}>移除情景</button></div>

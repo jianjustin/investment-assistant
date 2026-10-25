@@ -48,3 +48,19 @@ it('shows 503 as database unavailable', async () => {
   render(Instrument, { sub: 'NVDA' })
   expect(await screen.findByText(/数据库未就绪/)).toBeInTheDocument()
 })
+
+it('skips invalid-identity watchlist rows when choosing the default ticker', async () => {
+  history.replaceState(null, '', '#instrument')
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    urls.push(String(url))
+    if (String(url).startsWith('/api/watchlist')) return json({ rows: [
+      { ticker: '688008.SH', market: null, identity_error: '证券身份无效，请删除后使用完整有效代码重新添加' },  // invalid US code
+      { ticker: 'MU', market: 'US' },
+    ] })
+    return json(view(String(url).split('/').pop()!))
+  }))
+  render(Instrument, {})
+  expect(await screen.findByRole('heading', { name: /MU/ })).toBeInTheDocument()
+  expect(urls.some(u => u.includes('/api/workbench/instruments/688008.SH'))).toBe(false)
+  expect(screen.queryByRole('option', { name: '688008.SH' })).toBeNull()
+})

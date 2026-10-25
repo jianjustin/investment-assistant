@@ -46,8 +46,9 @@
 
   onMount(async () => {
     try {
-      const rows = (await getWatchlist()) as { rows?: { ticker: string }[] }
-      tickers = (rows.rows ?? []).map(r => r.ticker)
+      const rows = (await getWatchlist()) as { rows?: { ticker: string; identity_error?: string }[] }
+      // Rows with an invalid identity stay listed in settings for deletion, never here.
+      tickers = (rows.rows ?? []).filter(r => !r.identity_error).map(r => r.ticker)
       if (!sub && tickers[0]) select(tickers[0])
     } catch {
       tickers = []

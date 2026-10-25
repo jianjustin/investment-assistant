@@ -8,7 +8,7 @@ Hermes 读取已入库的市场信号，生成结构化的宏观判断：当前�
 
 - **宏观分析**：基于最近 N 日（5–90，默认 30）的 `market_signals`，输出 `macro_state`（offense / cautious / defense）、`stance_label`、`summary`、`key_changes`、`growth_implications`、`watchlist_implications`、`next_checks`、`actions`。
 - **决策证据**：汇总信号、评分和上下文，生成一份证据包，异步运行。
-- **Agent 注册表**：保存自定义 agent 的配置（`id`、`name`、`role`、`system_prompt`、`data_sources`、`tools`、`enabled`），写入运行目录下的 `config/hermes-agents.json`。只保存配置，不执行任何命令。
+- **Agent 注册表**：保存自定义 agent 的配置（`id`、`name`、`role`、`system_prompt`、`data_sources`、`tools`、`enabled`），写入固定路径 `/opt/hermes-investment-assistant/config/hermes-agents.json`（不受 `INVESTMENT_ASSISTANT_RUNTIME_BASE` 影响）。只保存配置，不执行任何命令。
 
 ## 入口与验证
 

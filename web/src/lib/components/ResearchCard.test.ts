@@ -21,6 +21,7 @@ describe('research card editing', () => {
     await fireEvent.click(screen.getByRole('button',{name:'添加情景'}))
     expect((screen.getByLabelText('年度利润') as HTMLInputElement).value).toBe('')
     expect((screen.getByLabelText('币种') as HTMLSelectElement).value).toBe('USD')
+    expect(screen.getByLabelText('股本口径').getAttribute('placeholder')).toBe('期末/加权平均总股本；日期')
     await fireEvent.click(screen.getByRole('button',{name:'关联美股研究'}))
     await fireEvent.input(screen.getByLabelText('美股公司'),{target:{value:'RKLB'}})
     expect((screen.getByLabelText('美股公司') as HTMLInputElement).value).toBe('RKLB')

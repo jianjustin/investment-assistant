@@ -28,7 +28,7 @@ cd web && npm install && npm run build && cd ..
 | `INVESTMENT_ASSISTANT_DATABASE_URL` | 是 | PostgreSQL 连接串；缺失时大多数接口降级，调度线程不启动 |
 | `SEC_USER_AGENT` | 是 | `名字 邮箱`；SEC 列表、下载与监控都要用 |
 | `INVESTMENT_ASSISTANT_CONFIG` | 否 | 配置文件路径，本机为 `config/local.json` |
-| `INVESTMENT_ASSISTANT_RUNTIME_BASE` | 否 | 运行目录（运行日志等），默认 `/opt/hermes-investment-assistant`；本机为 `~/Library/Application Support/investment-assistant` |
+| `INVESTMENT_ASSISTANT_RUNTIME_BASE` | 否 | 运行日志所在目录，默认 `/opt/hermes-investment-assistant`；本机为 `~/Library/Application Support/investment-assistant` |
 | `FILINGS_REPORT_DIR` | SEC 监控需要 | SEC 正文报告输出目录 |
 | `SCHEDULER_ENABLED` | 否 | `0` 关闭调度线程；本机入口以 `.env` 中的值为准 |
 | `HERMES_DASHBOARD_PORT` | 否 | 端口，默认 `8787` |

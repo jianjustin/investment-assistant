@@ -40,12 +40,12 @@ curl -s http://127.0.0.1:8787/api/status
 | 用途 | 本机位置 |
 | --- | --- |
 | 服务日志 | `~/Library/Application Support/investment-assistant/logs/service.stdout.log`、`service.stderr.log` |
-| 运行目录（`INVESTMENT_ASSISTANT_RUNTIME_BASE`） | `~/Library/Application Support/investment-assistant` |
+| 运行日志目录（`INVESTMENT_ASSISTANT_RUNTIME_BASE`） | `~/Library/Application Support/investment-assistant` |
 | 配置文件（`INVESTMENT_ASSISTANT_CONFIG`） | `config/local.json` |
 | SEC 下载（`filings.output_dir`）与正文报告（`FILINGS_REPORT_DIR`） | 配置文件与 `.env` 中指定的目录 |
 | 迁移前备份、验收证据 | `.local/`（不入库） |
 
-`investment_assistant/runtime_paths.py` 里的 `/opt/...`、`/srv/...` 是未设置环境变量时的默认值。本机都通过上表中的环境变量和配置覆盖掉了。
+`investment_assistant/runtime_paths.py` 里的 `/opt/...`、`/srv/...` 是写死的默认值，只有其中一部分能覆盖：运行日志用 `INVESTMENT_ASSISTANT_RUNTIME_BASE`，配置文件用 `INVESTMENT_ASSISTANT_CONFIG`，SEC 下载目录用配置文件里的 `filings.output_dir`。v1 遗留的 Hermes agent 注册表固定在 `/opt/hermes-investment-assistant/config/hermes-agents.json`，不能覆盖。
 
 ## 运行状态从哪里看
 
