@@ -92,7 +92,10 @@
 grep -rnE '[Aa][Ss]hare|cnequity|is_cn_symbol|cn_observations|A ?股|\.(SH|SZ|BJ)\b' investment_assistant web/src tests scripts README.md
 ```
 
-唯一的例外：`tests/test_watchlist_api.py` 中「观察名单拒绝 A 股代码」的回归用例，需要用 `688008.SH` 作输入，这一处命中保留，并在旁边写一行注释说明原因。
+例外：
+
+- `investment_assistant/us_research/domain.py` 中拒绝交易所后缀的那一行，它是美股代码校验的一部分，不是 A 股功能。
+- `tests/` 中把 `688008.SH`、`TSLA.SH` 这类代码当作「无效美股代码」输入的用例，包括美股研究和观察名单原有的校验测试。但 `tests/` 里不能出现 `[Aa][Ss]hare|cnequity|is_cn_symbol|cn_observations|CN:stock|'CN'`。
 
 ### 4.4 迁移 `021_drop_ashare.sql`
 
