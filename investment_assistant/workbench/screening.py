@@ -61,16 +61,30 @@ def _collect(conn_factory, *, session: date, now: datetime, targets: list[str],
     return fetched, failures
 
 
-def _carryover_members(conn, *, session: date, now: datetime,
-                       manual: pool_module.Pool) -> tuple[str, ...]:
-    """Members for a failed run: the locked and retention-window tickers, nothing new."""
+def _pick_members(conn, *, session: date, now: datetime, manual: pool_module.Pool,
+                  selected_today: list[str]) -> tuple[tuple[str, ...], list[str], list[str]]:
+    """Members by spec §6.2 plus the hard pool cap: `100 - manual` outranks even locked
+    picks, so a full manual pool can never make with_screen raise and kill the batch."""
     recent = repository.screen_selected_since(
         conn, add_trading_days(session, -(screen.RETENTION_SESSIONS - 1)),
         add_trading_days(session, -1))
     locked = repository.locked_screen_tickers(conn, session, cutoff_at=now)
-    out = screen.members(selected_today=[], recent=recent, locked=locked,
-                         manual=set(manual.tickers), cap=screen.MAX_MEMBERS)
-    return out['members']
+    hard_cap = pool_module.MAX_POOL - len(manual.tickers)
+    picked = screen.members(selected_today=selected_today, recent=recent, locked=locked,
+                            manual=set(manual.tickers), cap=min(screen.MAX_MEMBERS, hard_cap))
+    members, evicted, flags = picked['members'], list(picked['evicted']), list(picked['flags'])
+    if len(members) > hard_cap > 0:   # locked picks beyond the pool cap: cap wins, flag it
+        flags.append('screen_locked_over_pool_cap')
+        evicted = list(members[hard_cap:]) + evicted
+        members = members[:hard_cap]
+    return members, evicted, flags
+
+
+def _carryover_members(conn, *, session: date, now: datetime,
+                       manual: pool_module.Pool) -> tuple[tuple[str, ...], list[str]]:
+    """Members for a failed run: the locked and retention-window tickers, nothing new."""
+    members, _, _ = _pick_members(conn, session=session, now=now, manual=manual, selected_today=[])
+    return members
 
 
 def _stamp(summary: dict[str, Any], clock) -> None:
@@ -116,7 +130,9 @@ def run_stage(*, session: date, now: datetime, manual: pool_module.Pool, held: l
         _stamp(summary, clock)
         try:
             with conn_factory() as conn:
-                members = _carryover_members(conn, session=session, now=now, manual=manual)
+                members, _, member_flags = _pick_members(
+                    conn, session=session, now=now, manual=manual, selected_today=[])
+                summary['flags'].extend(member_flags)
         except Exception:
             members = ()
         summary['members'] = list(members)
@@ -139,26 +155,23 @@ def run_stage(*, session: date, now: datetime, manual: pool_module.Pool, held: l
             earnings_by_ticker = {t: repository.latest_earnings(conn, t, cutoff_at=now) for t in targets}
             benchmark_bars = repository.read_bars(conn, screen.BENCHMARK, session,
                                                   cutoff_at=now, limit=300)
-            recent = repository.screen_selected_since(
-                conn, add_trading_days(session, -(screen.RETENTION_SESSIONS - 1)),
-                add_trading_days(session, -1))
-            locked = repository.locked_screen_tickers(conn, session, cutoff_at=now)
             previous = {t for t, row in repository.pool_latest(conn).items()
                         if row.get('source') == 'screen' and row['tier'] != 'removed'}
+            members, evicted, member_flags = _pick_members(
+                conn, session=session, now=now, manual=manual,
+                selected_today=summary['selected'])
         out = screen.evaluate(session=session, bars_by_ticker=bars_by_ticker,
                               benchmark_bars=benchmark_bars, earnings_by_ticker=earnings_by_ticker)
         summary['counts'] = out['counts']
         summary['skips'].update(out['skips'])
         summary['selected'] = [r['ticker'] for r in sorted(
             (r for r in out['results'] if r['selected']), key=lambda r: r['rank'])]
-        picked = screen.members(selected_today=summary['selected'], recent=recent, locked=locked,
-                                manual=set(manual.tickers),
-                                cap=min(screen.MAX_MEMBERS,
-                                        pool_module.MAX_POOL - len(manual.tickers)))
-        members = picked['members']
+        with conn_factory() as conn:
+            members, evicted, member_flags = _pick_members(
+                conn, session=session, now=now, manual=manual, selected_today=summary['selected'])
         summary['members'] = list(members)
-        summary['evicted'] = picked['evicted']
-        summary['flags'].extend(picked['flags'])
+        summary['evicted'] = evicted
+        summary['flags'].extend(member_flags)
         summary['removed'] = sorted(previous - set(members))
         _stamp(summary, clock)
         _persist(conn_factory, session=session, now=now, run_id=run_id, universe_=universe_,
@@ -233,7 +246,8 @@ def report(conn, session: date, *, now: datetime, full: bool = False) -> dict[st
         'cap': min(screen.MAX_MEMBERS, pool_module.MAX_POOL - manual),
         'evicted': summary.get('evicted') or [], 'removed': summary.get('removed') or [],
         'flags': flags, 'triggers': triggers,
-        'setups': setups[:10], 'setups_more': max(0, len(setups) - 10),
+        'setups': setups if full else setups[:10],
+        'setups_more': 0 if full else max(0, len(setups) - 10),
     }
     if full:
         out['results'] = stored

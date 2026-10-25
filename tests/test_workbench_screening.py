@@ -5,6 +5,7 @@ U00-U02 trigger trend_reclaim on S1, U03-U24 form the setup band with
 descending relative strength, U25-U29 fail the setup band; QQQ is flat.
 """
 import socket
+import sys
 from contextlib import contextmanager
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -344,3 +345,95 @@ def test_replay_bounds(offline):
     for n in (0, 21):
         with pytest.raises(ValueError):
             service.replay_screen(now=evening(S1), sessions=n)
+
+
+def test_report_full_keeps_all_setups(offline):
+    from investment_assistant.workbench import screening
+    seed_watchlist(offline)
+    service.run_batch(now=evening(S1), deps=make_deps())
+    with service.connection() as conn:
+        brief = screening.report(conn, S1, now=evening(S1))
+        full = screening.report(conn, S1, now=evening(S1), full=True)
+    assert len(brief['setups']) == 10 and brief['setups_more'] == len(full['setups']) - 10
+    assert len(full['setups']) > 10 and full['setups_more'] == 0
+    assert 'results' in full and 'results' not in brief
+
+
+def _small_universe():
+    """SYNTH plus six trigger stocks, all of which get valid plans (locked members)."""
+    return universe_module.Universe('test', S1, 'test', ('U00', 'U01', 'U02', 'U03', 'U04', 'U05', 'SYNTH'))
+
+
+def _all_six_trigger(monkeypatch):
+    """The default series makes U03-U05 setup stocks; this test needs all six to trigger
+    so each gets a valid plan and counts as a locked screen member the next day."""
+    real_series = _series
+
+    def trigger_series(ticker):
+        if ticker in ('U03', 'U04', 'U05'):
+            path = _trigger_path({'U03': 80.0, 'U04': 90.0, 'U05': 95.0}[ticker])
+            tail = path[S1]
+            for k in range(1, FORWARD + 1):
+                tail += 0.5
+                path[add_trading_days(S1, k)] = tail
+            return {d: (c, 0.0) for d, c in path.items()}
+        return real_series(ticker)
+
+    monkeypatch.setattr(sys.modules[__name__], '_series', trigger_series)
+
+
+def test_locked_over_pool_cap_keeps_batch_alive(offline, monkeypatch):
+    _all_six_trigger(monkeypatch)
+    # Day one: 94 manual + 6 trigger picks (cap 6) -> six locked picks with valid plans.
+    # Day two: one more manual row (95 total, hard cap 5) -> six locked picks no longer
+    # fit; the pool cap wins over "locked never crowded out" and the batch survives (spec §9.3).
+    seed_watchlist(offline, rows=[('SYNTH', ['core'])] + [(f'X{i:02d}', []) for i in range(93)])
+    deps = make_deps(universe=_small_universe())
+    first = service.run_batch(now=evening(S1), deps=deps)
+    assert first['screen']['status'] == 'success' and first['pool']['screen'] == 6
+    # trade_plans.created_at uses the database clock; pin it to the test timeline
+    # so day two's locked-member lookup can see day one's plans.
+    offline.execute("UPDATE trade_plans SET created_at = %s", [evening(S1)])
+    offline.commit()
+
+    offline.execute("INSERT INTO watchlist_items (ticker, status, tags) VALUES ('X93', 'active', '{}')")
+    offline.commit()
+    batch = service.run_batch(now=evening(add_trading_days(S1, 1)), deps=deps)
+    assert batch['screen']['status'] == 'success'
+    assert 'screen_locked_over_cap' in batch['screen']['flags']
+    assert 'screen_locked_over_pool_cap' in batch['screen']['flags']
+    assert batch['pool']['screen'] == 5                       # 100 - 95 manual
+    assert len(batch['screen']['members']) == 5
+    assert len(batch['screen']['evicted']) == 1               # the sixth locked pick
+    active = {t for t, row in repository.pool_latest(offline).items() if row['tier'] != 'removed'}
+    assert len(active) == 100
+    assert batch['errors'] == []
+
+
+def test_error_path_carryover_respects_pool_cap(offline, monkeypatch):
+    _all_six_trigger(monkeypatch)
+    # A failed screen after a full manual pool: carryover members must be capped
+    # against MAX_POOL too, not just MAX_MEMBERS.
+    seed_watchlist(offline, rows=[('SYNTH', ['core'])] + [(f'X{i:02d}', []) for i in range(93)])
+    deps = make_deps(universe=_small_universe())
+    service.run_batch(now=evening(S1), deps=deps)
+    offline.execute("UPDATE trade_plans SET created_at = %s", [evening(S1)])
+    offline.commit()
+
+    offline.execute("INSERT INTO watchlist_items (ticker, status, tags) VALUES ('X93', 'active', '{}')")
+    offline.commit()
+
+    def broken_loader():
+        raise universe_module.UniverseError('missing file')
+
+    day1 = add_trading_days(S1, 1)
+    batch = service.run_batch(now=evening(day1),
+                              deps=service.Deps(bar_fetcher=deps.bar_fetcher, news_fetcher=deps.news_fetcher,
+                                                filing_source=deps.filing_source,
+                                                earnings_fetcher=deps.earnings_fetcher,
+                                                universe_loader=broken_loader))
+    assert batch['screen']['status'] == 'error'
+    assert len(batch['screen']['members']) <= 5               # 100 - 95 manual
+    assert any(str(e).startswith('screen:') for e in batch['errors'])
+    active = {t for t, row in repository.pool_latest(offline).items() if row['tier'] != 'removed'}
+    assert len(active) <= 100
