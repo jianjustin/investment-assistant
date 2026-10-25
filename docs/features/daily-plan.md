@@ -61,7 +61,7 @@
 
 ## 入口与验证
 
-- 页面：「今日」（决策单元、计划卡片、Agent 建议、持仓止损、市场环境、「重新推送今日计划」）；「标的」（单只股票的日线、候选、计划与决定历史）。
+- 页面：「今日」（决策单元、计划卡片、Agent 建议、持仓止损、市场环境、「重新推送今日计划」）；「标的」（单只股票的 K 线图（MA20/50/200 与成交量，最多 250 根日线）、日线、候选、计划与决定历史）。
 - API：`GET /api/workbench/today`、`POST /api/workbench/decisions`（`plan_id` 与 `own_plan` 二选一）、`GET /api/workbench/instruments/{ticker}`、`GET/POST /api/workbench/trades`、`POST /api/workbench/trades/{id}/void`、`POST /api/workbench/push`。
 - 运行报告：`job_reports` 中 `workbench` 的 `summary`，包括 `tickers.<T>`（日线、资讯、候选、跳过原因）、`plans`（`inserted` / `existing` / `conflict` / `skip: 原因`）、`earnings`、`push`、`sources`（按数据源列出失败）、`timings`。
 - 验证一次：手动运行批处理后，运行报告里 `plans.<T> == "inserted"`；「今日」显示「入场区间 x–y · 止损 z · T1 w · 建议 N 股」和「证据：未验证」；点「重新推送今日计划」，页面提示「已推送 N 条」，`push.sent == true`。

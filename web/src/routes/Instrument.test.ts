@@ -2,9 +2,21 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/svelte'
 import Instrument from './Instrument.svelte'
 
+// CandleChart 依赖 canvas，jsdom 下 mock 掉
+vi.mock('../lib/charts/CandleChart.svelte', async () => {
+  // @ts-ignore – stub has no declaration file; only used in tests
+  const Stub = (await import('./__stub__.svelte')).default
+  return { default: Stub }
+})
+
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
-const view = (ticker: string) => ({
-  ticker, session: '2026-10-22', bars: [], closed: [],
+const chartBars = (ma: Partial<{ ma20: number | null; ma50: number | null; ma200: number | null }> = {}) =>
+  ['2026-10-20', '2026-10-21', '2026-10-22'].map((date, i) => ({
+    price_date: date, open: 100 + i, high: 101 + i, low: 99 + i, close: 100.5 + i, volume: 1000,
+    ma20: ma.ma20 ?? 100, ma50: ma.ma50 ?? 99, ma200: ma.ma200 ?? 98,
+  }))
+const view = (ticker: string, chart: { bars: unknown[]; adjustment: string } = { bars: chartBars(), adjustment: 'split_only' }) => ({
+  ticker, session: '2026-10-22', bars: [], closed: [], chart,
   position: { quantity: 10, avg_cost: 100.1, opened_at: '2026-10-02T14:00:00Z' },
   filings: [{ id: 1, form: '8-K', filing_date: '2026-10-20', accepted_at: null, items: ['2.02'] }],
   news: [{ id: 2, source: 'yfinance', title: '合成新闻', url: 'https://news.example.com/2', publisher: 'W',
@@ -63,4 +75,28 @@ it('skips invalid-identity watchlist rows when choosing the default ticker', asy
   expect(await screen.findByRole('heading', { name: /MU/ })).toBeInTheDocument()
   expect(urls.some(u => u.includes('/api/workbench/instruments/688008.SH'))).toBe(false)
   expect(screen.queryByRole('option', { name: '688008.SH' })).toBeNull()
+})
+
+it('renders the chart with three moving averages', async () => {
+  render(Instrument, { sub: 'NVDA' })
+  await screen.findByRole('heading', { name: /NVDA/ })
+  expect(screen.getByTestId('instrument-chart')).toBeInTheDocument()
+  expect(screen.getByText(/拆股调整、未分红调整/)).toBeInTheDocument()
+})
+
+it('renders candles without ma200 when history is short', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => String(url).startsWith('/api/watchlist')
+    ? json({ rows: [{ ticker: 'NVDA' }] })
+    : json(view(String(url).split('/').pop()!, { bars: chartBars({ ma200: null }), adjustment: 'split_only' }))))
+  render(Instrument, { sub: 'NVDA' })
+  expect(await screen.findByTestId('instrument-chart')).toBeInTheDocument()
+})
+
+it('shows an empty note without bars', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => String(url).startsWith('/api/watchlist')
+    ? json({ rows: [{ ticker: 'NVDA' }] })
+    : json(view(String(url).split('/').pop()!, { bars: [], adjustment: 'split_only' }))))
+  render(Instrument, { sub: 'NVDA' })
+  expect(await screen.findByText('暂无日线，等下一次批处理采集')).toBeInTheDocument()
+  expect(urls.some(u => u.startsWith('/api/tickers/'))).toBe(false)
 })

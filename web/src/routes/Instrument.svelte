@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte'
   import { getWatchlist } from '../lib/api'
+  import CandleChart from '../lib/charts/CandleChart.svelte'
+  import VolumeBars from '../lib/components/VolumeBars.svelte'
+  import { toLineData } from '../lib/technicals'
   import * as wb from '../lib/workbench'
 
   let { sub }: { sub?: string } = $props()
@@ -84,6 +87,22 @@
     {#if view.bars.length}
       {@const last = view.bars[view.bars.length - 1]}
       <p class="text-xs text-muted">最新日线 {last.price_date}：开 {last.open} · 收 {last.close}（拆股调整、未分红调整）</p>
+    {/if}
+    {#if view.chart.bars.length}
+      {@const chartBars = view.chart.bars.map(b => ({ date: b.price_date, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume }))}
+      <div data-testid="instrument-chart">
+        <CandleChart
+          data={chartBars.map(b => ({ time: b.date, open: b.open, high: b.high, low: b.low, close: b.close }))}
+          overlays={[
+            { color: '#22c55e', data: toLineData(chartBars, view.chart.bars.map(b => b.ma20)) },
+            { color: '#60a5fa', data: toLineData(chartBars, view.chart.bars.map(b => b.ma50)) },
+            { color: '#f59e0b', data: toLineData(chartBars, view.chart.bars.map(b => b.ma200)) },
+          ]} />
+        <VolumeBars bars={chartBars} days={250} />
+        <p class="text-xs text-muted">拆股调整、未分红调整 · <span style="color:#22c55e">MA20</span> · <span style="color:#60a5fa">MA50</span> · <span style="color:#f59e0b">MA200</span></p>
+      </div>
+    {:else}
+      <p class="text-xs text-muted">暂无日线，等下一次批处理采集</p>
     {/if}
     <ol class="space-y-1 text-sm">
       {#each wb.timeline(view) as item}

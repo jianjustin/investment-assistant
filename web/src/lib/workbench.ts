@@ -159,9 +159,14 @@ export interface Trade {
   executed_at: string; decision_id: string | null; note: string | null; recorded_at: string
   voided_at: string | null; void_reason: string | null
 }
+export interface ChartBar {
+  price_date: string; open: number; high: number; low: number; close: number; volume: number
+  ma20: number | null; ma50: number | null; ma200: number | null
+}
 export interface InstrumentView {
   ticker: string; session: string; bars: any[]; filings: Filing[]; news: NewsItem[]; candidates: Candidate[]
   decisions: Decision[]; trades: Trade[]; position: Position | null; closed: any[]
+  chart: { bars: ChartBar[]; adjustment: string }
 }
 export interface Window { status: 'mature' | 'immature'; exit_date?: string; return?: number; spy_return?: number; excess?: number; move?: number }
 export interface ShadowUnit extends Decision {
