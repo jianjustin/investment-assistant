@@ -75,4 +75,4 @@ curl -s -i localhost:8787/api/status | grep -i www-authenticate                 
 curl -su "jianjustin:<密码>" localhost:8787/api/status                          # 200
 ```
 
-密码为空 = 无认证模式（仅限本机使用）；公网绑定强制要求密码（fail-closed，见[部署文档](../deployment-sealos.md)）。
+密码为空 = 无认证模式（仅限本机使用）；公网绑定强制要求密码（fail-closed，见部署文档（已于 v2.0.0 删除））。

@@ -28,7 +28,7 @@
   curl -s "localhost:8787/api/research/event-study/kinds"               # 5 种 kind
   curl -s "localhost:8787/api/research/event-study?kind=rs_strong"      # {"result": ..., "source": "cache|computed"}
   ```
-- **调度**：任务 `event_study` 已注册但**无默认调度行**，需手动补（SQL 见[部署文档](../deployment-sealos.md#第-3-步部署调度器应用)）。
+- **调度**：任务 `event_study` 已注册但**无默认调度行**，需手动补（SQL 见部署文档（已于 v2.0.0 删除））。
 
 ## 3. 运行历史（runs）子页 — 当前状态说明
 

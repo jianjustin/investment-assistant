@@ -158,6 +158,6 @@ tests/test_us_guidance.py
 ## 来源与本机证据
 
 - [SEC 官方 EDGAR API 说明](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)：标准实体事实及实际财季对齐限制。
-- [A 股前一阶段验证](ashare-research.md)；[本轮设计](superpowers/specs/2026-10-16-cross-market-medium-term-research-design.md)；[本轮计划](superpowers/plans/2026-10-16-cross-market-medium-term-research.md)。当前交付状态以本报告为准，前一阶段的“只采集一只”等描述保留其历史语境。
+- A 股前一阶段验证（已于 v2.0.0 删除）；[本轮设计](archive/roadmap-v1/specs/2026-10-16-cross-market-medium-term-research-design.md)；[本轮计划](archive/roadmap-v1/plans/2026-10-16-cross-market-medium-term-research.md)。当前交付状态以本报告为准，前一阶段的“只采集一只”等描述保留其历史语境。
 - 主目录 `/Users/chenjianrui/workspaces/investment-assistant/.local/cross-market/` 下的 `verification.json`、`live-coverage.json`、`nvda-hand-evidence.json`、`nvda-hand-arithmetic.json`、`live-run-result.json`、`preservation-before.json`、`preservation-after.json`、`browser-validation.json`、`ashare-window-readback.json`；均为本机忽略产物，不进 Git 或云端。
 - 交付时归档的过程与审查证据：`/Users/chenjianrui/workspaces/investment-assistant/.local/cross-market/sdd-audit/2026-10-16-cross-market-medium-term-research/`，其中 `task-6-report.md` 保留阶段测试和最终来源记录，`progress.md` 保留当时的裁定。此次提交与清理的后续记录保存在 `.local/cross-market/main-integration/`，未改写原始审查记录；分支历史及工作树归档保留恢复能力。

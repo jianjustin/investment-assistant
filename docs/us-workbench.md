@@ -1,6 +1,6 @@
 # 美股投研工作台
 
-主线：**信息采集 → 信号（买入／卖出／观察）→ 按收益复盘**。设计见 [2026-10-23 设计文档](superpowers/specs/2026-10-23-us-research-workbench-design.md)，实施顺序见 [实施计划](superpowers/plans/2026-10-23-us-research-workbench.md)。
+主线：**信息采集 → 信号（买入／卖出／观察）→ 按收益复盘**。设计见 [2026-10-23 设计文档](specs/2026-10-23-us-research-workbench-design.md)，实施顺序见 [实施计划](plans/2026-10-23-us-research-workbench.md)。
 
 工作台只给出研究候选，不自动下单、不接券商。复盘只做描述性统计，不证明任何规则有效；Phase 0 正式 Gate 仍为 HOLD。
 
