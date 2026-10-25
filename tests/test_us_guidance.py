@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
-from test_cross_market_cards import card_db
+from test_research_cards import card_db
 
 
 def guidance():
