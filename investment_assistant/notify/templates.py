@@ -293,10 +293,15 @@ def workbench_weekly(payload):
                                   f""" · 计划外交易 {overview["unsignaled"]} · 已平仓 {overview["closed"]}"""),
               NotifyField("轨道对比", _track_lines(payload.get("tracks")))]
     rules = payload.get("rules") or []
-    rule_text = chr(10).join(
-        f"""{"核心" if r["pool"] == "core" else "扩展"} {r["rule_id"]} 触发 {r["triggers"]}"""
-        f""" · 计划 {r["plans"]} · 成交 {r["filled"]} · 均值 {r["r_mean"]}R"""
-        for r in rules) or "本周无计划"
+    rule_lines = []
+    for r in rules:
+        mean = r.get("r_mean")
+        mean_text = f"{mean}R" if mean is not None else "—"      # 触发未成交：写 —，不写 NoneR
+        pool_text = "核心" if r["pool"] == "core" else "扩展"
+        rule_id, triggers, plans, filled = r["rule_id"], r["triggers"], r["plans"], r["filled"]
+        rule_lines.append(f"{pool_text} {rule_id} 触发 {triggers}"
+                          f" · 计划 {plans} · 成交 {filled} · 均值 {mean_text}")
+    rule_text = chr(10).join(rule_lines) or "本周无计划"
     _clip_field(fields, "规则", rule_text)
     _clip_field(fields, "纪律", _discipline_line(payload.get("discipline")))
     fields.append(_review_footer(payload))
@@ -327,14 +332,16 @@ def workbench_monthly(payload):
     lines = [f"""{row["risk_pct"]:.1%} 收益 {row["return"]:+.1%} · 回撤 {row["max_drawdown"]:.1%}"""
              for row in sensitivity.get("rows") or []]
     if sensitivity.get("count") is not None:
-        lines.append(f"共 {sensitivity[chr(99)+chr(111)+chr(117)+chr(110)+chr(116)]} 笔（近似，按平仓时间排序）")
+        trade_count = sensitivity["count"]
+        lines.append(f"共 {trade_count} 笔（近似，按平仓时间排序）")
     fields = [NotifyField("收益", income),
               NotifyField("流程复查", flag_text),
               NotifyField("敏感性（近似）", chr(10).join(lines) or "—"),
               NotifyField("轨道对比", _track_lines(payload.get("tracks"))),
               NotifyField("纪律", _discipline_line(payload.get("discipline"))),
               _review_footer(payload)]
-    return [_fit_message(f"🗓 月度复盘 · {payload[chr(109)+chr(111)+chr(110)+chr(116)+chr(104)]}", fields, _footer())]
+    month = payload["month"]
+    return [_fit_message(f"🗓 月度复盘 · {month}", fields, _footer())]
 
 
 def workbench_review_reminder(payload):

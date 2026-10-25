@@ -344,3 +344,25 @@ it('push button posts and shows the latest push result', async () => {
   await waitFor(() => expect(calls.some(c => c.url.includes('/review-pushes') && c.init?.method === 'POST')).toBe(true))
   expect(await screen.findByText('已推送')).toBeInTheDocument()
 })
+
+
+it('expands the second tool call from a track row', async () => {
+  respond = async (url) => {
+    if (url.includes('/review/tracks')) return json(trackView)
+    if (url.includes('/agent-runs/r1')) return json({ id: 'r1', status: 'ok', model: 'glm-5.3', agent_version: 'agent-1',
+      output: null, counter: null, plan: null, input_tokens: 10, output_tokens: 5, created_at: '2026-10-21T22:00:00Z',
+      tool_calls: [
+        { seq: 1, phase: 'propose', tool: 'get_trigger', args: {}, result: { ref: 'call:1', data: {} },
+          result_sha256: 'a'.repeat(64), called_at: '2026-10-21T22:00:01Z' },
+        { seq: 2, phase: 'propose', tool: 'get_indicators', args: { ticker: 'NVDA' },
+          result: { ref: 'call:2', data: { last_close: 100 } },
+          result_sha256: 'b'.repeat(64), called_at: '2026-10-21T22:00:02Z' }] })
+    return json({})
+  }
+  render(Review, { sub: 'tracks' })
+  await screen.findByText('NVDA')
+  await fireEvent.click(screen.getByRole('button', { name: 'r1' }))
+  expect(await screen.findByText(/call:2/)).toBeInTheDocument()          // 第二个调用可达
+  await fireEvent.click(screen.getByRole('button', { name: 'call:2' }))
+  expect(await screen.findByText(/get_indicators/)).toBeInTheDocument()  // 点击后显示其详情
+})

@@ -17,7 +17,7 @@
   let account = $state<wb.AccountView | null>(null)
   let backchecks = $state<wb.Backcheck[] | null>(null)
   let tracks = $state<wb.TracksView | null>(null)
-  let callDrawer = $state<{ open: boolean; call: wb.AgentToolCall | null }>({ open: false, call: null })
+  let callDrawer = $state<{ open: boolean; calls: wb.AgentToolCall[]; call: wb.AgentToolCall | null }>({ open: false, calls: [], call: null })
   let pushResults = $state<Record<string, string>>({})
   let backcheckNote = $state('')
   let backcheckError = $state('')
@@ -46,7 +46,7 @@
 
   async function openRun(runId: string) {
     const detail = await wb.getAgentRun(runId)
-    callDrawer = { open: true, call: detail.tool_calls[0] ?? null }
+    callDrawer = { open: true, calls: detail.tool_calls, call: detail.tool_calls[0] ?? null }
   }
 
   async function push(kind: string, period: string) {
@@ -549,7 +549,10 @@
     </section>
   {/if}
 
-  <Drawer open={callDrawer.open} onclose={() => callDrawer = { open: false, call: null }}>
+  <Drawer open={callDrawer.open} onclose={() => callDrawer = { open: false, calls: [], call: null }}>
+    {#if callDrawer.calls.length}
+      <p class="text-xs mb-2">{#each callDrawer.calls as tc}<button class="text-accent underline mr-2" onclick={() => callDrawer = { ...callDrawer, call: tc }}>call:{tc.seq}</button>{/each}</p>
+    {/if}
     {#if callDrawer.call}
       {@const c = callDrawer.call}
       <h2 class="font-semibold">工具调用 call:{c.seq}</h2>

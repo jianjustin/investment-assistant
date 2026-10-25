@@ -231,3 +231,13 @@ def test_review_messages_within_discord_limits():
             assert len(field.value) <= 1024, field.name
         total = len(message.title) + sum(len(f.name) + len(f.value) for f in message.fields)
         assert total <= 6000
+
+
+def test_weekly_rule_line_without_mean_renders_dash():
+    """触发但未成交的规则行 r_mean 为 None：写 —，不写 NoneR。"""
+    rules = [{'pool': 'core', 'rule_id': 'trend_reclaim', 'triggers': 3, 'plans': 2,
+              'filled': 0, 'r_mean': None}]
+    payload = {**_weekly_payload(), 'rules': rules}
+    text = chr(10).join(f.value for f in templates.workbench_weekly(payload)[0].fields)
+    assert '均值 —' in text
+    assert 'None' not in text
