@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { fmtPct } from '../lib/format'
   import * as wb from '../lib/workbench'
   import Drawer from '../lib/components/Drawer.svelte'
 
@@ -550,16 +551,30 @@
       </div>
       {#if backcheckNote}<p class="text-xs text-muted">{backcheckNote}</p>{/if}
       {#if backchecks?.length}
-        <ul class="text-sm space-y-1">
-          {#each backchecks as b (b.id)}
-            <li class="border border-border rounded p-2 bg-surface">
-              {wb.dateTime(b.created_at)} · {b.calc_version} · 标的 {(b.params?.tickers as string[] | undefined)?.join('、') ?? '当前观察池'}
-              · 触发 {b.stats?.all?.triggers ?? 0} · 成交 {b.stats?.all?.filled ?? 0}
-              · 标记 {(b.stats?.all?.flags ?? []).join('、') || '无'}
-              <small class="block text-xs text-muted">{b.stats?.note}</small>
-            </li>
-          {/each}
-        </ul>
+        <div class="table-scroll"><table class="text-sm">
+          <thead><tr><th>时间</th><th>版本</th><th>标的</th><th>触发</th><th>成交</th><th>超额 5 日</th><th>超额 10 日</th><th>超额 20 日</th><th>标记</th></tr></thead>
+          <tbody>
+            {#each backchecks as b (b.id)}
+              <tr>
+                <td>{wb.dateTime(b.created_at)}</td>
+                <td>{b.calc_version}</td>
+                <td>{(b.params?.tickers as string[] | undefined)?.join('、') ?? '当前观察池'}</td>
+                <td>{b.stats?.all?.triggers ?? 0}</td>
+                <td>{b.stats?.all?.filled ?? 0}</td>
+                {#each (['5', '10', '20'] as const) as h}
+                  {@const excess = b.stats?.all?.excess?.[h]}
+                  <td>{excess
+                    ? `n=${excess.n} · 均 ${fmtPct(excess.mean)} · 中 ${fmtPct(excess.median)} · 正 ${fmtPct(excess.positive_share)}`
+                    : '—'}</td>
+                {/each}
+                <td>{(b.stats?.all?.flags ?? []).join('、') || '无'}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table></div>
+        {#each backchecks as b (b.id)}
+          <small class="block text-xs text-muted">{b.stats?.note}</small>
+        {/each}
       {:else if backchecks}
         <p class="text-sm text-muted">尚无历史检查记录</p>
       {/if}

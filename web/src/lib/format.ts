@@ -8,7 +8,7 @@ export function fmtNum(n: number | undefined, decimals = 2): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 }
 
-export function fmtPct(n: number | undefined): string {
+export function fmtPct(n: number | null | undefined): string {
   if (n == null) return '—'
   return (n * 100).toFixed(1) + '%'
 }

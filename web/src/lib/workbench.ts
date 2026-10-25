@@ -126,11 +126,16 @@ export interface ExtendedUnit {
   ticker: string; signal_date: string; proposed_action: Action; rule_ids: string[]; plan: Plan | null
   agent_status: string | null
 }
+export interface ExcessStat {
+  n: number; mean: number | null; median: number | null; positive_share: number | null
+  immature: number; missing: number
+}
 export interface BackcheckRow {
   triggers: number; ticker_sessions: number; per_100: number; max_per_ticker: number; cluster_days: number
   filled: number; expired: number; stopped_within_5: number; stopped_within_5_share: number | null
   t1_share: number | null
   r: { count: number; mean: number | null; median: number | null; p25: number | null; p75: number | null }
+  excess?: Record<'5' | '10' | '20', ExcessStat>
   flags: string[]
 }
 export interface Backcheck {

@@ -205,6 +205,40 @@ describe('P2 review views', () => {
     expect(await screen.findByText(/too_frequent/)).toBeTruthy()
     expect(await screen.findByText(/描述性检查，不调参，不代表规则有效。/)).toBeTruthy()
   })
+  it('shows excess columns for backcheck-2', async () => {
+    respond = async (url) => {
+      if (url.includes('/backchecks')) return json({ backchecks: [
+        { id: 'b2', calc_version: 'backcheck-2', created_at: '2026-10-24T00:00:00Z',
+          params: { tickers: ['NVDA'] },
+          stats: { note: '描述性检查，不调参，不代表规则有效。超额是信号日收盘到第 h 日收盘，不代表可成交。',
+                   all: { triggers: 12, filled: 3, flags: [],
+                          excess: {
+                            '5': { n: 3, mean: 0.003333, median: 0.0, positive_share: 1 / 3, immature: 1, missing: 0 },
+                            '10': { n: 2, mean: -0.01, median: -0.01, positive_share: 0.0, immature: 2, missing: 0 },
+                            '20': { n: 0, mean: null, median: null, positive_share: null, immature: 4, missing: 1 } } },
+                   rules: {}, tickers: [] } }] })
+      return json({})
+    }
+    render(Review, { sub: 'backchecks' })
+    expect(await screen.findByText('超额 5 日')).toBeTruthy()
+    expect(screen.getByText('超额 10 日')).toBeTruthy()
+    expect(screen.getByText('超额 20 日')).toBeTruthy()
+    expect(screen.getByText('n=3 · 均 0.3% · 中 0.0% · 正 33.3%')).toBeTruthy()
+    expect(screen.getByText('n=2 · 均 -1.0% · 中 -1.0% · 正 0.0%')).toBeTruthy()
+    expect(screen.getByText('n=0 · 均 — · 中 — · 正 —')).toBeTruthy()
+  })
+  it('shows a dash for backcheck-1 rows', async () => {
+    respond = async (url) => {
+      if (url.includes('/backchecks')) return json({ backchecks: [
+        { id: 'b1', calc_version: 'backcheck-1', created_at: '2026-10-24T00:00:00Z',
+          params: { tickers: ['MU'] },
+          stats: { note: '描述性检查，不调参，不代表规则有效。',
+                   all: { triggers: 9, filled: 1, flags: ['insufficient'] }, rules: {}, tickers: [] } }] })
+      return json({})
+    }
+    render(Review, { sub: 'backchecks' })
+    expect(await screen.findAllByText('—')).toHaveLength(3)
+  })
   it('backcheck run posts and shows the descriptive note', async () => {
     respond = async (url, init) => {
       if (url.includes('/backchecks')) {
