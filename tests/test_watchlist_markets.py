@@ -94,8 +94,8 @@ def test_us_enrichment_retains_success_identity_and_uses_duration_end_not_later_
         {'period_kind': 'duration', 'start': '2026-05-30', 'end': '2026-09-03', 'metric': 'revenue'},
         {'period_kind': 'instant', 'end': '2026-10-01', 'metric': 'shares_outstanding'}])
     monkeypatch.setattr(repo, 'states', lambda *a: {'financials': {'status': 'failed', 'last_success_details': {'identity': {'name': 'Micron Technology'}}}})
-    from investment_assistant.ashare import repository as cnrepo
-    monkeypatch.setattr(cnrepo, 'get_card', lambda *a: None)
+    from investment_assistant.research import card_repository
+    monkeypatch.setattr(card_repository, 'get_card', lambda *a: None)
     result = wl.watchlist_rows('US', enriched=True)[0]
     assert result['name'] == 'Micron Technology'
     assert result['latest_period'] == '2026-09-03'
