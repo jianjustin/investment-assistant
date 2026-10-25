@@ -18,7 +18,9 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph, add_messages
 from langgraph.prebuilt import ToolNode
 
-from investment_assistant.workbench.agent.citations import Rejected, check_proposal, filter_counter
+from investment_assistant.workbench.agent.citations import (
+    Rejected, check_interpretation, check_proposal, filter_counter,
+)
 from investment_assistant.workbench.agent.tools import TOOL_DESCRIPTIONS, TOOLS, Recorder, ToolContext, call
 from investment_assistant.workbench.plans import AGENT_VERSION   # re-exported here (plan §graph.py)
 
@@ -178,4 +180,80 @@ def run_unit(*, unit: dict, ctx: ToolContext, model: BaseChatModel, checkpointer
     return {'status': final['status'], 'reason': final['reason'],
             'output': _string_levels(final['output']) if final['output'] else None,
             'counter': final['counter'], 'calls': recorder.calls,
+            'input_tokens': final['input_tokens'], 'output_tokens': final['output_tokens']}
+
+
+INTERPRET_VERSION = 'agent-brief-1'
+
+INTERPRET_PROMPT = """你是美股波段研究助手，为一个决策单元写解读，只解读、不给买卖动作。
+只能通过工具获取数据；工具只返回截止时间之前的数据，你不能指定日期。先调用 get_trigger 查看触发了哪些规则。
+每个工具结果带有 ref（如 call:3）。每条结论都必须引用支撑它的 ref，只能引用本次真实返回过的 ref；引用不存在的 ref 会使整条解读作废。
+资讯只有标题与链接，未核验原文。
+完成后只输出一个 JSON 对象，不要输出其他文字：
+{"summary": 一句话, "support": [{"text": 字符串, "refs": [...]}], "contra": [...], "conflicts": [...]}
+support 写支持规则方向的证据，contra 写反证，conflicts 写互相矛盾或信息不足之处。不要输出动作、价位或任何交易指令。"""
+
+
+def _build_interpret_graph(*, ctx: ToolContext, recorder: Recorder, model: BaseChatModel,
+                           tools: list, checkpointer) -> Any:
+    """interpret ⇄ interpret_tools → check → END (§7.2): one phase, the same
+    tool layer, citation-checked output, no counter."""
+
+    def usage_delta(message):
+        meta = getattr(message, 'usage_metadata', None) or {}
+        return meta.get('input_tokens', 0), meta.get('output_tokens', 0)
+
+    def interpret_node(state: AgentState):
+        message = model.bind_tools(tools).invoke(state['messages'])
+        tin, tout = usage_delta(message)
+        update = {'messages': [message], 'input_tokens': state['input_tokens'] + tin,
+                  'output_tokens': state['output_tokens'] + tout}
+        if message.tool_calls:
+            rounds = state['rounds'] + 1
+            update['rounds'] = rounds
+            if rounds > MAX_TOOL_ROUNDS:
+                update['status'] = 'rejected'
+                update['reason'] = 'tool_rounds_exceeded'
+        return update
+
+    def route_interpret(state: AgentState):
+        if state['status'] == 'rejected':
+            return 'end'
+        return 'tools' if state['messages'][-1].tool_calls else 'check'
+
+    def check_node(state: AgentState):
+        try:
+            output = check_interpretation(state['messages'][-1].content, refs=recorder.refs('propose'))
+        except Rejected as exc:
+            return {'status': 'rejected', 'reason': exc.reason}
+        return {'status': 'ok', 'output': output}
+
+    builder = StateGraph(AgentState)
+    builder.add_node('interpret', interpret_node)
+    builder.add_node('interpret_tools', ToolNode(tools))
+    builder.add_node('check', check_node)
+    builder.set_entry_point('interpret')
+    builder.add_conditional_edges('interpret', route_interpret,
+                                  {'tools': 'interpret_tools', 'check': 'check', 'end': END})
+    builder.add_edge('interpret_tools', 'interpret')
+    builder.add_edge('check', END)
+    return builder.compile(checkpointer=checkpointer)
+
+
+def run_interpret(*, unit: dict, ctx: ToolContext, model: BaseChatModel, checkpointer, run_id: str,
+                  now: Callable[[], datetime]) -> dict:
+    """One interpret run of a unit. Model exceptions propagate for the batch to classify."""
+    recorder = Recorder()
+    tools = _wrapped_tools(ctx, recorder, now=now)
+    graph = _build_interpret_graph(ctx=ctx, recorder=recorder, model=model, tools=tools,
+                                   checkpointer=checkpointer)
+    initial = {'messages': [SystemMessage(content=INTERPRET_PROMPT),
+                            HumanMessage(content=f"标的 {unit['ticker']} · 信号日 {unit['signal_date']} · "
+                                                 f"分层 {unit['pool_tier']} · 数据截至信号日收盘")],
+               'counter_messages': [], 'rounds': 0, 'counter_rounds': 0, 'status': 'pending',
+               'reason': None, 'output': None, 'counter': None, 'input_tokens': 0, 'output_tokens': 0}
+    config = {'configurable': {'thread_id': run_id}, 'recursion_limit': 2 * MAX_TOOL_ROUNDS + 6}
+    final = graph.invoke(initial, config=config)
+    return {'status': final['status'], 'reason': final['reason'], 'output': final['output'],
+            'calls': recorder.calls,
             'input_tokens': final['input_tokens'], 'output_tokens': final['output_tokens']}

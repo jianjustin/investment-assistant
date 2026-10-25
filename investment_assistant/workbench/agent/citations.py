@@ -134,3 +134,31 @@ def filter_counter(text: str, *, refs: set[str]) -> dict:
         else:
             dropped += 1
     return {'status': 'ok', 'risks': risks, 'dropped': dropped}
+
+
+def check_interpretation(text: str, *, refs: set[str]) -> dict:
+    """§7.2's three steps for an interpret run's output: JSON shape, item
+    structure, citation existence. Extra keys (action, levels) are dropped —
+    an interpretation never carries a trade instruction."""
+    try:
+        payload = _loads(text)
+    except (json.JSONDecodeError, ValueError):
+        raise Rejected('malformed') from None
+    if not isinstance(payload, dict):
+        raise Rejected('malformed')
+
+    def well_formed(items: Any) -> bool:
+        return isinstance(items, list) and all(
+            isinstance(item, dict) and isinstance(item.get('text'), str)
+            and isinstance(item.get('refs'), list) and item['refs']
+            for item in items)
+
+    if not isinstance(payload.get('summary'), str)             or not well_formed(payload.get('support'))             or not well_formed(payload.get('contra'))             or not well_formed(payload.get('conflicts')):
+        raise Rejected('malformed')
+    for key in ('support', 'contra', 'conflicts'):
+        for item in payload[key]:
+            if any(ref not in refs for ref in item['refs']):
+                raise Rejected('invalid_citation')
+    return {'summary': payload['summary'],
+            **{key: [{'text': item['text'], 'refs': item['refs']} for item in payload[key]]
+               for key in ('support', 'contra', 'conflicts')}}

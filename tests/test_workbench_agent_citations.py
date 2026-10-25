@@ -138,3 +138,53 @@ def test_counter_ignores_levels_and_action():
 
 def test_counter_malformed():
     assert filter_counter('我认为没有风险', refs=REFS) == {'status': 'malformed', 'risks': [], 'dropped': 0}
+
+
+# --- check_interpretation (P4 design §7.2) ---
+
+def _interpret(**overrides):
+    payload = {'summary': '量能扩张，趋势延续', 'support': [{'text': '放量突破 20 日线', 'refs': ['call:1']}],
+               'contra': [], 'conflicts': []}
+    payload.update(overrides)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def check_interpret(text, *, refs=REFS):
+    from investment_assistant.workbench.agent.citations import check_interpretation
+    return check_interpretation(text, refs=refs)
+
+
+def test_interpretation_fenced_ok():
+    fence = chr(96) * 3
+    out = check_interpret(fence + '\n' + _interpret() + '\n' + fence)
+    assert out['summary'] == '量能扩张，趋势延续'
+    assert out['support'] == [{'text': '放量突破 20 日线', 'refs': ['call:1']}]
+    assert out['contra'] == [] and out['conflicts'] == []
+
+
+def test_interpretation_empty_lists_ok():
+    out = check_interpret(_interpret(support=[], contra=[], conflicts=[]))
+    assert out == {'summary': '量能扩张，趋势延续', 'support': [], 'contra': [], 'conflicts': []}
+
+
+def test_interpretation_missing_summary_malformed():
+    with pytest.raises(Rejected) as exc:
+        check_interpret('{' + json.dumps({'support': [], 'contra': [], 'conflicts': []}) + '}')
+    assert exc.value.reason == 'malformed'
+
+
+def test_interpretation_item_without_refs_malformed():
+    with pytest.raises(Rejected) as exc:
+        check_interpret(_interpret(support=[{'text': '缺引用'}]))
+    assert exc.value.reason == 'malformed'
+
+
+def test_interpretation_unknown_ref_invalid():
+    with pytest.raises(Rejected) as exc:
+        check_interpret(_interpret(support=[{'text': '引用不存在', 'refs': ['call:42']}]))
+    assert exc.value.reason == 'invalid_citation'
+
+
+def test_interpretation_drops_action_and_levels():
+    out = check_interpret(_interpret(action='buy', levels={'stop': 95}))
+    assert 'action' not in out and 'levels' not in out

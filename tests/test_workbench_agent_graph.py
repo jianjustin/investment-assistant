@@ -171,3 +171,60 @@ def test_wrapped_tools_expose_schemas(monkeypatch):
     props = by_name['get_price_bars'].args_schema.model_json_schema()['properties']
     assert 'ticker' in props and 'lookback' in props
     assert json.loads(by_name['get_price_bars'].invoke({'ticker': 'AMD', 'lookback': 30}))['ref'] == 'call:1'
+
+
+
+# --- run_interpret (P4 design §7.2) ---
+
+def interpret_run(monkeypatch, make, responses, *, candidates=None, run_id='brief-1'):
+    from langgraph.checkpoint.memory import InMemorySaver
+    saver = InMemorySaver()
+    model = make(responses)
+    result = graph.run_interpret(unit=UNIT, ctx=_ctx(monkeypatch, candidates=candidates), model=model,
+                                 checkpointer=saver, run_id=run_id, now=lambda: NOW)
+    return result, saver, model
+
+
+def _interpret_json(ref='call:1'):
+    return json.dumps({'summary': '回踩修复后放量上行', 'support': [{'text': '放量突破 20 日线', 'refs': [ref]}],
+                       'contra': [], 'conflicts': []}, ensure_ascii=False)
+
+
+def test_interpret_ok(monkeypatch, scripted_model):
+    result, _, _ = interpret_run(monkeypatch, scripted_model, [
+        _tool_call('get_trigger', {}, 't0'),
+        AIMessage(content=_interpret_json('call:1')),
+    ])
+    assert result['status'] == 'ok' and result['reason'] is None
+    assert result['calls'][0]['tool'] == 'get_trigger'
+    assert result['calls'][0]['phase'] == 'propose'
+    assert result['output']['summary'] == '回踩修复后放量上行'
+    assert result['input_tokens'] == 20 and result['output_tokens'] == 10   # 2 条回复之和
+
+
+def test_interpret_invalid_citation(monkeypatch, scripted_model):
+    result, _, _ = interpret_run(monkeypatch, scripted_model, [
+        _tool_call('get_trigger', {}, 't0'),
+        AIMessage(content=_interpret_json('call:99')),
+    ])
+    assert result['status'] == 'rejected' and result['reason'] == 'invalid_citation'
+    assert result['output'] is None
+
+
+def test_interpret_malformed(monkeypatch, scripted_model):
+    result, _, _ = interpret_run(monkeypatch, scripted_model, [AIMessage(content='我认为可以，趋势完整。')])
+    assert result['status'] == 'rejected' and result['reason'] == 'malformed'
+
+
+def test_interpret_tool_rounds_exceeded(monkeypatch, scripted_model):
+    result, _, _ = interpret_run(monkeypatch, scripted_model,
+                                 [_tool_call('get_news', {'days': 7}, f't{i}') for i in range(9)])
+    assert result['status'] == 'rejected' and result['reason'] == 'tool_rounds_exceeded'
+    assert len(result['calls']) == 8   # 第 9 轮不再执行
+
+
+def test_interpret_prompt_verbatim(monkeypatch, scripted_model):
+    assert graph.INTERPRET_VERSION == 'agent-brief-1'
+    _, _, model = interpret_run(monkeypatch, scripted_model, [AIMessage(content=_interpret_json())])
+    first = model.seen[0][0]
+    assert first.type == 'system' and first.content == graph.INTERPRET_PROMPT
