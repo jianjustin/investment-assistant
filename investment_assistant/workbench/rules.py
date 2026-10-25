@@ -78,7 +78,7 @@ def filing_session(filing: dict[str, Any]) -> date:
     return add_trading_days(day, 1) if late or not is_trading_day(day) else day
 
 
-def _precondition(bars: list[dict[str, Any]], signal_date: date) -> str | None:
+def precondition(bars: list[dict[str, Any]], signal_date: date) -> str | None:
     if not bars or bars[-1]['price_date'] != signal_date:
         return 'missing_signal_bar'
     if len(bars) < MIN_BARS:
@@ -87,6 +87,10 @@ def _precondition(bars: list[dict[str, Any]], signal_date: date) -> str | None:
     if any(f <= 0 for f in factors) or any(abs(b / a - 1) > MAX_FACTOR_JUMP for a, b in zip(factors, factors[1:])):
         return 'adjustment_anomaly'
     return None
+
+
+# 兼容别名：v2.1 及更早的调用方仍用 _precondition
+_precondition = precondition
 
 
 class _Series:
@@ -212,7 +216,7 @@ def evaluate(ticker: str, signal_date: date, bars: list[dict[str, Any]], filings
             'signal_date': signal_date.isoformat(), 'filing_ids': sorted(f['id'] for f in new_filings),
             'values': {'forms': sorted({f['form'] for f in new_filings})}}))
 
-    reason = _precondition(bars, signal_date)
+    reason = precondition(bars, signal_date)
     if reason:
         skips.extend(Skip(rule_id, reason) for rule_id in PRICE_RULES)
         return {'candidates': candidates, 'skips': skips}
