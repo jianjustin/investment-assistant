@@ -3,7 +3,7 @@
   import * as api from '../lib/api'
   import StatusPill from '../lib/components/StatusPill.svelte'
   import Skeleton from '../lib/components/Skeleton.svelte'
-  import { fmtTime } from '../lib/format'
+  import { fmtBeijing, weekdayText } from '../lib/format'
   import Modal from '../lib/components/Modal.svelte'
   import FetchDateModal from '../lib/components/FetchDateModal.svelte'
   import FilingRecords from '../lib/components/FilingRecords.svelte'
@@ -13,15 +13,6 @@
   // 旧 hash（ops/results）一律回落到任务中心
   const view = $derived(sub === 'runs' ? 'runs' : sub === 'filings' ? 'filings' : 'tasks')
 
-  const JOB_HELP: Record<string, { goal: string; details: string[] }> = {
-    filings: {
-      goal: '自动跟踪关注列表公司的 SEC 信息披露。',
-      details: [
-        '从 SEC EDGAR 下载 10-Q / 10-K 等财报文件，按「标的 / 表单类型」归档到本地，并写入财报索引。',
-        '定时运行默认拉取昨日（T-1）披露；也可点「按日期运行」回补历史。',
-      ],
-    },
-  }
   const DATE_FETCH: Record<string, { description: string; defaultLabel: string }> = {
     filings: { description: '从 SEC EDGAR 回补财报文件，按披露日匹配。', defaultLabel: '昨日（T-1）' },
   }
@@ -154,10 +145,10 @@
     <p class="text-xs text-muted">总开关关闭时，已启用的任务也不会自动运行。</p>
   {/if}
   {#if scheduler?.meta.last_tick_at}
-    <p class="text-xs text-muted">最近调度检查：{fmtTime(scheduler.meta.last_tick_at)}</p>
+    <p class="text-xs text-muted">最近调度检查：{fmtBeijing(scheduler.meta.last_tick_at)}</p>
   {/if}
   {#if scheduler?.meta.tick_in_progress && scheduler.meta.tick_started_at}
-    <p class="text-xs text-muted">本轮开始：{fmtTime(scheduler.meta.tick_started_at)}</p>
+    <p class="text-xs text-muted">本轮开始：{fmtBeijing(scheduler.meta.tick_started_at)}</p>
   {/if}
 </div>
 {#if loadError}<p role="alert" class="mb-3 text-sm text-danger">{loadError}。当前数据已保留，可刷新重试。</p>{/if}
@@ -177,7 +168,7 @@
           <tr class="border-t border-border">
             <td class="py-2">
               {j.name}
-              {#if JOB_HELP[j.name]}
+              {#if j.description}
                 <button
                   class="inline-flex items-center justify-center w-4 h-4 ml-1 rounded-full border border-border text-muted text-[10px] align-middle hover:border-accent hover:text-accent transition-colors"
                   aria-label={`${j.name} 说明`}
@@ -185,9 +176,15 @@
                 >?</button>
               {/if}
             </td>
-            <td>{j.time_local} · {j.weekday_mask} · {j.timezone ?? '时区未配置'}</td>
-            <td>{fmtTime(j.next_run_at)}</td>
-            <td>{fmtTime(j.last_run_at)}</td>
+            <td>
+              {#if j.timezone === 'Asia/Shanghai'}
+                {j.time_local} 北京 · {weekdayText(j.weekday_mask)}
+              {:else}
+                {j.time_local} · {weekdayText(j.weekday_mask)} · {j.timezone ?? '时区未配置'}（非北京时区）
+              {/if}
+            </td>
+            <td>{fmtBeijing(j.next_run_at)}</td>
+            <td>{fmtBeijing(j.last_run_at)}</td>
             <td>{j.enabled ? '任务启用' : '任务停用'}</td>
             <td class="whitespace-nowrap text-right space-x-3">
               <button class="text-accent text-xs" onclick={() => dateJob = j.name}>按日期运行</button>
@@ -210,13 +207,15 @@
     />
 
     <Modal open={helpJob !== null} title={`${helpJob} · 任务说明`} onclose={() => helpJob = null}>
-      {#if helpJob && JOB_HELP[helpJob]}
-        <p class="text-sm font-medium mb-3">{JOB_HELP[helpJob].goal}</p>
+      {#if helpJob && jobs.find((j) => j.name === helpJob)?.description}
+        {@const info = jobs.find((j) => j.name === helpJob)!.description}
+        <p class="text-sm font-medium mb-3">{info.goal}</p>
         <ul class="space-y-2 text-sm text-muted list-disc pl-4">
-          {#each JOB_HELP[helpJob].details as d}
+          {#each info.details as d}
             <li>{d}</li>
           {/each}
         </ul>
+        <p class="mt-3 text-xs text-muted">手动运行：{info.manual_note}</p>
       {/if}
     </Modal>
     <p class="text-xs text-muted">改运行时间 / 开关请到「设置 · 定时任务」。</p>
@@ -243,7 +242,7 @@
             <td class="py-2 font-medium">{taskName(r.task)}</td>
             <td><StatusPill status={r.status} /></td>
             <td>{r.trigger_source === 'manual' ? '手动' : '定时'}</td>
-            <td>{fmtTime(r.started_at)}</td>
+            <td>{fmtBeijing(r.started_at)}</td>
             <td>{fmtDuration(r)}</td>
             <td>{fmtTargetDates(r)}</td>
             <td class="text-right"><button class="text-accent text-xs" onclick={() => detailReport = r}>详情</button></td>
@@ -258,7 +257,7 @@
       {#if detailReport}
         <div class="text-xs text-muted mb-2 space-y-1">
           <div>run_id：{detailReport.run_id}</div>
-          <div>开始：{fmtTime(detailReport.started_at)} · 结束：{fmtTime(detailReport.finished_at)}</div>
+          <div>开始：{fmtBeijing(detailReport.started_at)} · 结束：{fmtBeijing(detailReport.finished_at)}</div>
           <div>指定日期：{fmtTargetDates(detailReport)} · 触发：{detailReport.trigger_source === 'manual' ? '手动' : '定时'}</div>
         </div>
         <pre class="text-xs overflow-auto max-h-96 bg-surface-2 rounded p-2">{JSON.stringify(detailReport.summary, null, 2)}</pre>

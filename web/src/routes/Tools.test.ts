@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/svelte'
 import Tools from './Tools.svelte'
 import * as api from '../lib/api'
-import { fmtTime } from '../lib/format'
+import { fmtBeijing } from '../lib/format'
 
 const runningScheduler: api.SchedulerStatus = {
   status: 'up', detail: '调度线程正常',
@@ -45,7 +45,14 @@ describe('Tools 任务中心', () => {
 
   it('clicking ? opens a modal with Chinese task description', async () => {
     vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
-      jobs: [{ name: 'filings', time_local: '09:00', enabled: true, next_run_at: null, last_run_at: null }],
+      jobs: [{
+        name: 'filings', time_local: '09:00', enabled: true, next_run_at: null, last_run_at: null,
+        description: {
+          title: 'SEC 监控', goal: '自动跟踪关注列表公司的 SEC 信息披露。',
+          details: ['从 SEC EDGAR 下载 10-Q / 10-K 等财报文件，按「标的 / 表单类型」归档到本地，并写入财报索引。'],
+          manual_note: '定时运行默认拉取昨日（T-1）披露；也可点「按日期运行」回补历史。',
+        },
+      }],
       degraded: false,
     })
     render(Tools, { props: { sub: 'tasks' } })
@@ -54,16 +61,45 @@ describe('Tools 任务中心', () => {
     // 弹窗解释任务目的与回补方式
     expect(await screen.findByText(/SEC EDGAR/)).toBeTruthy()
     expect(screen.getByRole('heading', { name: /filings · 任务说明/ })).toBeTruthy()
+    expect(screen.getByText(/回补历史/)).toBeTruthy()
   })
 
-  it('formats job times down to seconds', async () => {
+  it('every job shows ? from its backend description', async () => {
+    const described = (name: string, extra: Record<string, unknown> = {}) => ({
+      name, enabled: true, next_run_at: null, last_run_at: null, timezone: 'Asia/Shanghai',
+      description: { title: name, goal: `goal-${name}`, details: [`detail-${name}`], manual_note: `note-${name}` },
+      ...extra,
+    })
+    vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
+      jobs: [
+        described('workbench', { time_local: '06:30', weekday_mask: '2-6' }),
+        described('workbench_review', { time_local: '08:00', weekday_mask: '1-7' }),
+        described('filings', { time_local: '09:30', weekday_mask: '1-5' }),
+        { name: 'ghost', time_local: '09:00', weekday_mask: '1-5', timezone: 'America/New_York', enabled: true, next_run_at: null, last_run_at: null, description: null },
+      ],
+      degraded: false,
+    })
+    render(Tools, { props: { sub: 'tasks' } })
+    await screen.findByText('workbench')
+    expect(screen.getAllByLabelText(/ 说明$/)).toHaveLength(3)
+    expect(screen.queryByLabelText('ghost 说明')).toBeNull()
+    await fireEvent.click(screen.getByLabelText('workbench 说明'))
+    expect(await screen.findByText('goal-workbench')).toBeTruthy()
+    expect(screen.getByText('detail-workbench')).toBeTruthy()
+    expect(screen.getByText(/note-workbench/)).toBeTruthy()
+    expect(screen.getByText('06:30 北京 · 周二至周六')).toBeTruthy()
+    expect(screen.getByText(/America\/New_York/)).toBeTruthy()
+    expect(screen.getByText(/非北京时区/)).toBeTruthy()
+  })
+
+  it('formats job times down to seconds in Beijing time', async () => {
     const iso = '2026-07-04T08:00:00.123456+00:00'
     vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
       jobs: [{ name: 'metrics', time_local: '08:00', enabled: true, next_run_at: iso, last_run_at: null }],
       degraded: false,
     })
     render(Tools, { props: { sub: 'tasks' } })
-    expect(await screen.findByText(fmtTime(iso))).toBeTruthy()
+    expect(await screen.findByText(fmtBeijing(iso))).toBeTruthy()
     expect(document.body.textContent).not.toContain('123456')
   })
 
@@ -143,7 +179,7 @@ describe('Tools 任务中心', () => {
     expect(await screen.findByText(label)).toBeTruthy()
     expect(screen.getByText(scheduler.detail)).toBeTruthy()
     if (scheduler.meta.tick_started_at) {
-      expect(screen.getByText(`本轮开始：${fmtTime(scheduler.meta.tick_started_at)}`)).toBeTruthy()
+      expect(screen.getByText(`本轮开始：${fmtBeijing(scheduler.meta.tick_started_at)}`)).toBeTruthy()
     }
   })
 

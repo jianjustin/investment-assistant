@@ -128,7 +128,7 @@ flowchart TD
 | --- | --- | --- |
 | `workbench` | 北京 06:30，周二至周六 | 主线 |
 | `workbench_review` | 北京 08:00，每天（迁移插入为关闭） | 主线 |
-| `filings` | 美东 09:00，周一至周五（本机已改为 20:30 跑 SEC 监控） | 共享 |
+| `filings` | 北京 09:30，周一至周五 | 共享 |
 
 调度细节见 [operations/scheduling-and-notifications.md](operations/scheduling-and-notifications.md)。
 

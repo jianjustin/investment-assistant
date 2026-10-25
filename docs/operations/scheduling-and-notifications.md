@@ -15,7 +15,7 @@
 | --- | --- | --- | --- |
 | `workbench` | `tasks/workbench.py` | 北京 06:30，周二至周六 | `signals`（每日计划推送） |
 | `workbench_review` | `tasks/workbench_review.py` | 北京 08:00，每天，插入为关闭 | `signals`（周/月复盘推送） |
-| `filings` | `tasks/filings.py` | 美东 09:00，周一至周五 | `earnings`；开启 SEC 监控后改为 Bot 直发，见 [SEC 采集](../features/sec-filings.md) |
+| `filings` | `tasks/filings.py` | 北京 09:30，周一至周五（迁移 023 之前是美东 09:00） | `earnings`；开启 SEC 监控后改为 Bot 直发，见 [SEC 采集](../features/sec-filings.md) |
 
 每个任务页面上的 `?` 说明来自 `tasks/catalog.py` 的 `JOB_INFO`，随 `GET /api/jobs/scheduled` 的 `description` 字段下发；前端不再自带文案。改说明只改后端注册表。
 

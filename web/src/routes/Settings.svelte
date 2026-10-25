@@ -218,7 +218,7 @@
                   class="border border-border rounded px-2 py-1 w-24 bg-bg text-sm"
                   onchange={(e) => saveTime(j.name, (e.target as HTMLInputElement).value)}
                 />
-                <span class="text-xs text-muted ml-2">{j.timezone}</span>
+                <span class="text-xs text-muted ml-2">{j.timezone === 'Asia/Shanghai' ? '北京' : j.timezone}</span>
               </td>
               <td class="px-4 py-2">
                 <input
