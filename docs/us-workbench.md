@@ -61,7 +61,7 @@
 
 ## 复盘推送
 
-- **功能**：定时任务 `workbench_review`（北京时间每天 08:00，迁移插入为关闭，验收时开启；默认 `signals` 频道）每天检查一次：周度在每周最后一个交易日收盘后的首次运行冻结并推送该周快照（review-4）；月度在上月有月末资金快照且未推送过时生成并推送（monthly-2），缺快照时从次月第一个周六起提醒一次。收盘前生成的快照会被新快照更替后推送；推送成功后不再重复；推送失败（send_failed）或任务开关关闭（task_disabled）时下一次运行重试；每次尝试写一行 `review_pushes`。周度与月度各在自己的事务里生成，互不阻塞。手动推送强制重发，不受已推送限制。
+- **功能**：定时任务 `workbench_review`（北京时间每天 08:00，迁移插入为关闭，验收时开启；默认 `signals` 频道）每天检查一次：周度在每周最后一个交易日收盘后的首次运行冻结并推送该周快照（review-4）；月度在上月有月末资金快照且未推送过时生成并推送（monthly-2），缺快照时从次月第一个周六起提醒一次；该月末之前既没有任何决定也没有资金快照（即工作台启用前的月份）时不提醒，运行报告 `monthly.action` 记为 `before_start`。收盘前生成的快照会被新快照更替后推送；推送成功后不再重复；推送失败（send_failed）或任务开关关闭（task_disabled）时下一次运行重试；每次尝试写一行 `review_pushes`。周度与月度各在自己的事务里生成，互不阻塞。手动推送强制重发，不受已推送限制。
 - **手动入口**：页面「复盘 → 周度复盘 / 月度复盘」卡片的「推送到 Discord」按钮（旁显最近一次结果）；API `POST /api/jobs/workbench_review/run`（与定时运行相同逻辑，trigger_source 为 manual）、`GET/POST /api/workbench/review-pushes`（POST 请求体 kind 与 period；该周期无快照返回 404，period 不是周一或 1 日返回 400）。
 - **验证入口**：运行报告（`job_reports` 中 `workbench_review` 的 summary，含 weekly 与 monthly 各自的 action 与推送结果）；`GET /api/workbench/review-pushes` 列出每次尝试；页面按钮旁的结果。
 - **验证示例**：周六 08:00 后手动 `POST /api/jobs/workbench_review/run`，运行报告 `weekly.action == "generated"` 且 `push.sent == true`，Discord 收到一条「📅 周度复盘」；同日再跑一次 `weekly.action == "already_sent"`，不再发送。

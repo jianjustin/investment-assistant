@@ -1472,7 +1472,8 @@ def _tick_weekly(*, now: datetime, notify_cfg, trigger_source: str, client) -> d
 
 def _tick_monthly(*, now: datetime, notify_cfg, trigger_source: str, client) -> dict[str, Any]:
     """§6.1 monthly: with the month-end snapshot, reuse-or-generate then push; without it,
-    remind once from the first Saturday of the next month on."""
+    remind once from the first Saturday of the next month on — unless the month predates
+    the workbench (no decision or account snapshot on or before its last day)."""
     from investment_assistant.notify import notifier, templates
     from investment_assistant.config import load_config
 
@@ -1485,7 +1486,10 @@ def _tick_monthly(*, now: datetime, notify_cfg, trigger_source: str, client) -> 
         snapshots, flows = repository.list_snapshots(conn), repository.list_flows(conn)
         head = repository.monthly_head(conn, month)
         account_recorded = repository.latest_account_record_at(conn)
+        started_on = repository.workbench_started_on(conn)
     if monthly.month_end_snapshot(snapshots, month) is None:
+        if started_on is None or started_on > month_end:
+            return {'period': month, 'action': 'before_start'}
         if reminded_before:
             return {'period': month, 'action': 'waiting'}
         if not review_digest.reminder_due(month, now):

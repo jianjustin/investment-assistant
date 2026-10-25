@@ -61,6 +61,13 @@ def _snapshot(db, *, as_of, recorded_at, equity='100000'):
                                recorded_at=recorded_at)
 
 
+def _decision(db, *, decided_at):
+    repository.insert_decision(db, {'request_id': str(uuid.uuid4()), 'ticker': 'NVDA',
+                                    'signal_date': decided_at.date(), 'candidate_ids': [], 'brief_id': None,
+                                    'proposed_action': 'watch', 'final_action': 'watch', 'decision': 'accept',
+                                    'reason': '启用判断用例', 'supersedes_id': None}, 'h', decided_at=decided_at)
+
+
 # --- weekly ---
 
 def test_tick_generates_and_pushes_weekly(db):
@@ -126,6 +133,7 @@ def test_tick_task_disabled_retries_later(db):
 # --- monthly ---
 
 def test_monthly_waits_then_reminds_once(db):
+    _snapshot(db, as_of=date(2026, 9, 30), recorded_at=datetime(2026, 10, 1, 12, tzinfo=UTC))  # 9 月已启用
     client = FakeClient()
     early = tick(db, now=datetime(2026, 11, 3, 0, 0, tzinfo=UTC), client=client)
     assert early['monthly']['action'] == 'waiting'              # 缺快照，还不到提醒日，不发送
@@ -138,6 +146,34 @@ def test_monthly_waits_then_reminds_once(db):
     again = tick(db, now=datetime(2026, 11, 8, 0, 0, tzinfo=UTC), client=client)
     assert again['monthly']['action'] == 'waiting'              # 每月只提醒一次
     assert len(_messages(client, '月度复盘待录入')) == 1
+
+
+def test_monthly_no_reminder_before_workbench_started(db):
+    """No decision and no account snapshot on or before the month's end: the month predates
+    the workbench, so nothing is reminded — even on later runs."""
+    client = FakeClient()
+    _decision(db, decided_at=datetime(2026, 11, 2, 15, tzinfo=UTC))       # 11 月才开始使用
+    _snapshot(db, as_of=date(2026, 11, 2), recorded_at=datetime(2026, 11, 2, 16, tzinfo=UTC))
+    for day in (7, 8):
+        out = tick(db, now=datetime(2026, 11, day, 0, 0, tzinfo=UTC), client=client)
+        assert out['monthly'] == {'period': date(2026, 10, 1), 'action': 'before_start'}
+    assert _messages(client, '月度复盘待录入') == []
+    assert db.execute("SELECT count(*) FROM review_pushes WHERE kind = 'monthly_reminder'").fetchone()[0] == 0
+
+
+def test_monthly_no_reminder_on_empty_database(db):
+    client = FakeClient()
+    out = tick(db, now=datetime(2026, 11, 7, 0, 0, tzinfo=UTC), client=client)
+    assert out['monthly']['action'] == 'before_start'
+    assert _messages(client, '月度复盘待录入') == []
+
+
+def test_monthly_reminds_when_a_decision_precedes_month_end(db):
+    _decision(db, decided_at=datetime(2026, 10, 30, 14, tzinfo=UTC))      # 10 月内已有决定
+    client = FakeClient()
+    out = tick(db, now=datetime(2026, 11, 7, 0, 0, tzinfo=UTC), client=client)
+    assert out['monthly']['action'] == 'reminded'
+    assert len(_messages(client, '月度复盘待录入 · 2026-10')) == 1
 
 
 def test_monthly_generated_after_snapshot_recorded(db):

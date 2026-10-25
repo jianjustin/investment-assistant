@@ -822,6 +822,15 @@ def list_review_pushes(conn, limit: int) -> list[dict[str, Any]]:
                       'FROM review_pushes ORDER BY created_at DESC, id DESC LIMIT %s', (limit,))
 
 
+def workbench_started_on(conn) -> date | None:
+    """The first day the workbench was in use: the earliest decision (New York date)
+    or account snapshot as_of, whichever comes first; None while neither exists."""
+    row = conn.execute(
+        "SELECT least((SELECT min((decided_at AT TIME ZONE 'America/New_York')::date) FROM signal_decisions), "
+        '(SELECT min(as_of) FROM account_snapshots))').fetchone()
+    return row[0] if row else None
+
+
 def latest_account_record_at(conn) -> datetime | None:
     """The latest moment account inputs were recorded or corrected: snapshots and flows."""
     row = conn.execute(
