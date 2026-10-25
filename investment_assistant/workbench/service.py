@@ -14,8 +14,8 @@ from zoneinfo import ZoneInfo
 
 from investment_assistant.data.calendar import is_trading_day
 from investment_assistant.db import connect, list_watchlist_items
-from investment_assistant.workbench import (account, bars, briefs, earnings, exits, ledger, monthly, news,
-                                               plans, positions, repository, review, rules, synthesis)
+from investment_assistant.workbench import (account, bars, briefs, chart, earnings, exits, ledger, monthly,
+                                               news, plans, positions, repository, review, rules, synthesis)
 from investment_assistant.workbench.agent import graph as agent_graph
 from investment_assistant.workbench.agent import model as agent_model
 from investment_assistant.workbench.agent import tools as agent_tools
@@ -600,6 +600,8 @@ def instrument(ticker: str, *, now: datetime) -> dict[str, Any]:
         return {
             'ticker': ticker, 'session': session,
             'bars': repository.read_bars(conn, ticker, session, cutoff_at=now, limit=120),
+            'chart': chart.build(repository.read_bars(
+                conn, ticker, session, cutoff_at=now, limit=chart.READ_LIMIT)),
             'filings': repository.read_filings(conn, ticker, since=session - timedelta(days=180), cutoff_at=now),
             'news': repository.read_news(conn, ticker, cutoff_at=now, since=_midnight(session - timedelta(days=60))),
             'candidates': repository.read_candidates(conn, ticker, since=session - timedelta(days=120)),

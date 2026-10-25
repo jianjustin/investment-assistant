@@ -152,6 +152,7 @@ def test_signal_to_weekly_review_end_to_end(offline):
     assert stored['id'] == frozen['id'] and stored['stats'] == frozen['stats']
 
     timeline = service.instrument('SYNTH', now=later)
+    assert timeline['chart']['bars'][-1]['price_date'] == timeline['bars'][-1]['price_date']
     assert {c['rule_id'] for c in timeline['candidates']} >= {'trend_reclaim', 'trend_break'}
     assert len(timeline['trades']) == 2 and timeline['position'] is None
 
