@@ -6,20 +6,20 @@
 
 | 编号 | 内容 | 组 |
 | --- | --- | --- |
-| 001 | `market_signals`：SPY/VIX 市场信号 | v1 遗留 |
+| 001 | `market_signals`：SPY/VIX 市场信号 | v1 遗留（022 已删） |
 | 002 | `watchlist_items`：观察名单 | 共享 |
-| 003 | `ticker_signal_snapshots`：个股趋势快照 | v1 遗留 |
-| 004–005 | `strategy_scores` 及指向快照的外键 | v1 遗留 |
+| 003 | `ticker_signal_snapshots`：个股趋势快照 | v1 遗留（022 已删） |
+| 004–005 | `strategy_scores` 及指向快照的外键 | v1 遗留（022 已删） |
 | 006 | `job_reports`：运行报告（写入即剪枝，保留 30 天） | 共享 |
 | 007 | `scheduled_jobs`：调度表，种子 `metrics`/`filings`/`scores` | 共享 |
 | 008 | `notify_settings`：通知设置 | 共享 |
-| 009 | `event_studies`：事件研究 | v1 遗留 |
+| 009 | `event_studies`：事件研究 | v1 遗留（022 已删） |
 | 010 | `job_reports` 加指定日期与触发来源 | 共享 |
 | 011 | `filings`：SEC 文件索引 | 共享 |
 | 012 | 通知渠道单选（Discord / 邮件）与邮件配置 | 共享 |
-| 013 | 研究观察卡表（及已删除的 A 股表，见 021） | v1 遗留 |
-| 014 | `us_research_*`：美股财季数据与指引 | v1 遗留 |
-| 015 | `ticker_signal_snapshots`、`strategy_scores` 加来源元数据（可空） | v1 遗留 |
+| 013 | 研究观察卡表（及已删除的 A 股表，见 021） | v1 遗留（022 已删） |
+| 014 | `us_research_*`：美股财季数据与指引 | 主线 · 基本面 |
+| 015 | `ticker_signal_snapshots`、`strategy_scores` 加来源元数据（可空） | v1 遗留（022 已删） |
 | 016 | 工作台 P0：日线、资讯、候选、解读、决定、成交、周度复盘；`workbench` 任务（北京 06:30，周二至周六） | 主线 |
 | 017 | P1：交易计划、财报日、资金快照、出入金、月度复盘；`signal_decisions.plan_id` | 主线 |
 | 018 | P2：`pool_tiers`、`macro_observations`、`market_regimes`、`rule_backchecks` | 主线 |
@@ -81,6 +81,19 @@ psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=
    ```
 
 5. 验证：6 张表的 `to_regclass` 都为 null；`scheduled_jobs` 无 `metrics`、`scores`、`event_study`，`workbench`、`workbench_review`、`filings` 行还在；手动跑一次工作台批处理成功。
+
+#### 执行记录（2026-10-25，手动 psql 执行）
+
+| 步骤 | 结果 |
+| --- | --- |
+| 上线前置 | `notify_settings` 只读查询：`filings` → `earnings`、`workbench` → `signals`、`workbench_review` 未存（默认 `signals`），无主线任务路由到 `daily`；代码 `691641c` 已上线、LaunchAgent 已重启 |
+| 1. 只读预检 | `schema_migrations` 17 条、最新 `017_trade_plans.sql`；行数 `strategy_scores` 568、`ticker_signal_snapshots` 568、`market_signals` 71，`event_studies`、`research_observation_cards`、`research_observation_card_versions` 为 0（共 792 kB）；唯一外键 `fk_strategy_scores_snapshot` 两端都在 6 张表内；`pg_depend` 中 6 张表之外无依赖对象 |
+| 2. 全库备份 | `.local/us-workbench/backups/investment_assistant-before-022-20261025-204403.dump`（4,268,871 字节，sha256 `e77c76ad0db7fd68022d017cb08b5bb18e693bea51b9a7e19d2212fddd480e2b`）；`pg_restore --list` 可读，38 张表与线上一致 |
+| 3. 遗留表导出 | `.local/us-workbench/backups/investment_assistant-v1-legacy-tables-20261025-204504.dump`（38,244 字节，sha256 `0bffe4d87b28a10dd361832cc31b65f60ed5bafda0d980ff50bdaa4e61ea8e81`）；6 张表、4 个序列、3 个索引、外键都在，行数与预检一致 |
+| 4. 执行 | 20:48:30 +0800，`psql --single-transaction -v ON_ERROR_STOP=1`：`DELETE 2`（`metrics`、`scores`；库里本无 `event_study` 行）与 6 次 `DROP TABLE`，退出码 0；`schema_migrations` 仍只到 `017` |
+| 5. 验证 | 6 张表 `to_regclass` 均为 null，`public` 表数 38 → 32；`scheduled_jobs` 只剩 `filings`、`workbench`、`workbench_review`；`job_reports` 的 `metrics`、`scores` 历史各 9 行保留；`us_research_observations`（29,648 行）、`us_research_collection_state`、`price_bars`（3,802 行）未动；服务接口全部 200，健康检查数据库与调度线程 up；手动批处理 `workbench-20261025125234-aff00057` `success`（交易日 2026-10-23，`errors` 为空，手动运行不推送） |
+
+单表恢复：`pg_restore -d "$INVESTMENT_ASSISTANT_DATABASE_URL" .local/us-workbench/backups/investment_assistant-v1-legacy-tables-20261025-204504.dump`，再按需插回两行调度。
 
 ## 一次性测试库
 
