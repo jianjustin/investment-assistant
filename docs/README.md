@@ -38,6 +38,7 @@
 | [specs/](specs/) | 各阶段的设计 spec |
 | [plans/](plans/) | 各阶段的实施 plan |
 | [archive/roadmap-v1/](archive/roadmap-v1/README.md) | roadmap v1 及其 spec、plan、评审 |
+| [../CHANGELOG.md](../CHANGELOG.md) | 按版本记录的变更 |
 
 ## 维护规则
 
