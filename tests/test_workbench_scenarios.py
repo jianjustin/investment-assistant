@@ -70,7 +70,6 @@ def offline(workbench_db, monkeypatch):
             raise AssertionError(f'network access attempted: {address}')
         return real_connect(sock, address)
     monkeypatch.setattr(socket.socket, 'connect', guarded)
-    monkeypatch.delenv('DEEPSEEK_API_KEY', raising=False)   # real client, real fallback path
 
     @contextmanager
     def connection():

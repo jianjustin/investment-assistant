@@ -14,7 +14,7 @@ const unit = {
   ticker: 'SYNTH', signal_date: '2026-09-01', proposed_action: 'buy', labels: [], candidate_ids: ['c1'], plan,
   rule_ids: ['trend_reclaim'], entry_passed: false, holding: false, position: null,
   candidates: [{ id: 'c1', signal_date: '2026-09-01', action: 'buy', rule_id: 'trend_reclaim', inputs: { values: {} } }],
-  brief: { id: 'b1', status: 'fallback', error: 'DEEPSEEK_API_KEY not configured',
+  brief: { id: 'b1', status: 'fallback', error: 'WORKBENCH_AGENT_MODEL_API_KEY not configured',
            output: { summary: '规则候选：trend_reclaim(buy)', support: [], contra: [], conflicts: [] } },
   filings: [], news: [],
 }

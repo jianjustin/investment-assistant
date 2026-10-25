@@ -4,7 +4,7 @@
 
 ## 1. v1 遗留功能：合并或删除
 
-2026-10-25 已逐项定下，排入 `v2.1.0`，设计见 [spec](../specs/2026-10-25-v2.1-legacy-consolidation-design.md)。v2.0.0 时的清单见 [features/legacy](../features/legacy/README.md)。
+已于 `v2.1.0` 落地（2026-10-25）：下表全部执行完毕，设计见 [spec](../specs/2026-10-25-v2.1-legacy-consolidation-design.md)，去向逐项见墓碑页 [features/legacy](../features/legacy/README.md)。
 
 | 功能 | 代码 / 表 / 任务 | 决定 |
 | --- | --- | --- |

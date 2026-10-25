@@ -1,7 +1,7 @@
 """Aggregated health checks for the monitoring status page.
 
 Probes internal infrastructure (Postgres, systemd units, storage) and external
-online services (DeepSeek, SEC EDGAR, Yahoo Finance, Discord, FRED). Everything
+online services (SEC EDGAR, Yahoo Finance, Discord, FRED). Everything
 uses the standard library only, matching the rest of the dashboard server.
 
 Each check returns a uniform shape so the status page can render it generically:
