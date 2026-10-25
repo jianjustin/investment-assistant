@@ -20,13 +20,9 @@
   let generation = 0
   let discardDraft: string | null = null
   let dirty = $derived(baseline !== '' && JSON.stringify(body) !== baseline)
-  const defaultCurrency = $derived(/\.(SH|SZ|BJ)$/.test(symbol) ? 'CNY' : 'USD')
+  const defaultCurrency = 'USD'
   function normalized(input: any) {
-    const result = structuredClone(input ?? empty())
-    for (const s of result.scenarios ?? []) {
-      if (s.profit_cny != null) { s.profit ??= s.profit_cny; s.currency ??= 'CNY' }
-    }
-    return result
+    return structuredClone(input ?? empty())
   }
   function adopt(incoming: any) {
     discardDraft = null
@@ -81,8 +77,6 @@
       data.improvement.next_event_date ||= null
       for (const i of data.invalidations) { i.review_date ||= null; i.checked_at ||= null }
       for (const s of data.scenarios) {
-        // Explicit edit saves the normalized currency schema; legacy GET never migrates rows.
-        delete s.profit_cny
         for (const key of ['profit', 'pe', 'shares']) if (s[key] === '' || s[key] === undefined) s[key] = null
       }
       const result = await api.put<any>(`/api/research/observation-cards/${encodeURIComponent(savedSymbol)}`, { body: data, expected_version: version })
@@ -150,7 +144,7 @@
       <div class="entry"><div class="fields"><label>情景名称<input bind:value={s.label} /></label>
         <label>计算性质<select bind:value={s.method}><option value="analyst_assumption">分析假设</option><option value="mechanical_annualization">机械年化</option><option value="company_guidance">公司指引（需原文）</option></select></label>
         <label>盈利期间<input bind:value={s.period} /></label>
-        <label>年度利润<input type="number" bind:value={s.profit} /></label><label>币种<select bind:value={s.currency}><option>CNY</option><option>USD</option><option>EUR</option><option>HKD</option></select></label>
+        <label>年度利润<input type="number" bind:value={s.profit} /></label><label>币种<select bind:value={s.currency}><option>USD</option><option>EUR</option><option>HKD</option></select></label>
         <label>假设 PE<input type="number" min="0.01" step="0.1" bind:value={s.pe} /></label>
         <label>股数（股）<input type="number" min="1" bind:value={s.shares} /></label></div>
         <label>股本口径<input bind:value={s.share_basis} placeholder="期末/加权平均/A+H总股本；日期" /></label>

@@ -18,7 +18,7 @@ beforeEach(()=>{
  vi.spyOn(HTMLElement.prototype,'clientWidth','get').mockReturnValue(800)
  vi.spyOn(HTMLElement.prototype,'clientHeight','get').mockReturnValue(320)
  history.replaceState(null,'','#data/us-research?market=US&symbol=MU')
- respond = async(url)=>url.includes('/api/watchlist?market=CN')?json({rows:[]}):url.startsWith('/api/watchlist') ? json({rows:[{ticker:'MU',status:'active'},{ticker:'NVDA',status:'active'}]}) : url.includes('/api/us-research/') ? json(view(url.split('/')[3].split('?')[0])) : json({rows:[],records:[],tickers:[]})
+ respond = async(url)=>url.startsWith('/api/watchlist') ? json({rows:[{ticker:'MU',status:'active'},{ticker:'NVDA',status:'active'}]}) : url.includes('/api/us-research/') ? json(view(url.split('/')[3].split('?')[0])) : json({rows:[],records:[],tickers:[]})
  vi.stubGlobal('fetch',vi.fn((url,init)=>respond(String(url),init)))
 })
 afterEach(()=>vi.unstubAllGlobals())
@@ -36,7 +36,7 @@ it('loads the explicit US selection and distinguishes a real zero from a missing
  expect(screen.getAllByText(/2026-04-01.*2026-06-30/).length).toBeGreaterThan(0)
 })
 it('loads an explicit identity when watchlist reading fails, and never invents an empty-list default',async()=>{
- respond = async(url)=>url.includes('/api/watchlist?market=CN')?json({rows:[]}):url.startsWith('/api/watchlist') ? Promise.reject(new Error('offline')) : json(view())
+ respond = async(url)=>url.startsWith('/api/watchlist') ? Promise.reject(new Error('offline')) : json(view())
  const mounted=render(Data,{sub:'us-research'})
  await screen.findByText('未接入一致预期')
  expect(await screen.findByRole('alert')).toHaveTextContent('读取关注列表失败')
@@ -82,7 +82,7 @@ it('uses any future ticker deep link without requiring the stock to be on the wa
  expect(screen.getByRole('heading',{name:/BRK.B/})).toBeInTheDocument()
  expect(screen.getByRole('link',{name:'打开研究观察卡 →'})).toHaveAttribute('href','#strategy/observation?market=US&symbol=BRK.B')
 })
-it('cancels stock and market changes without changing URL or dirty card text, and retains it across a guidance-save reload',async()=>{
+it('cancels stock changes without changing URL or dirty card text, and retains it across a guidance-save reload',async()=>{
  history.replaceState(null,'','#strategy/observation?market=US&symbol=MU')
  const original={id:9,metric:'revenue',target_start:'2026-04-01',target_end:'2026-06-30',basis:'us-gaap:consolidated',unit:'USD',low:90,high:110,issued_at:'2026-03-10T00:00:00Z',source_url:'https://example.com/outlook',source_locator:'table 2',note:''}
  respond=async(url,init)=>url.startsWith('/api/watchlist')?json({rows:[{ticker:'MU',status:'active'},{ticker:'NVDA',status:'active'}]}):init?.method==='POST'?json({record:{...original,id:10,supersedes_id:9}}):url.includes('us-references')?json({rows:[]}):json({...view(),guidance:{records:[original],comparisons:[],consensus:'未接入一致预期'}})
@@ -94,14 +94,12 @@ it('cancels stock and market changes without changing URL or dirty card text, an
  expect(screen.getByLabelText('关注证券')).toHaveValue('MU')
  expect(location.hash).toContain('symbol=MU')
  expect(confirm).toHaveBeenCalledTimes(1)
- await fireEvent.click(screen.getByRole('button',{name:'A 股'}))
- expect(confirm).toHaveBeenCalledTimes(2)
- expect(location.hash).toContain('market=US&symbol=MU')
+ expect(screen.queryByRole('button',{name:'A 股'})).toBeNull()
  await fireEvent.click(screen.getByRole('button',{name:'修订此版本'}))
  await fireEvent.click(screen.getByRole('button',{name:'追加指引版本'}))
  await screen.findByText('指引版本已追加，原始记录保留。')
  expect(screen.getByLabelText('投资假设')).toHaveValue('keep my draft')
- expect(confirm).toHaveBeenCalledTimes(2)
+ expect(confirm).toHaveBeenCalledTimes(1)
 })
 it('allows a confirmed refresh but preserves any new text typed during its pending response',async()=>{
  history.replaceState(null,'','#strategy/observation?market=US&symbol=MU')
@@ -159,7 +157,7 @@ it('enters an explicit US observation link from an already mounted score page',a
  await screen.findByText('未接入一致预期')
  expect(screen.getByRole('heading',{name:/NVDA/})).toBeInTheDocument()
  expect(location.hash).toContain('market=US&symbol=NVDA')
- expect((fetch as any).mock.calls.some(([url]:[string])=>url.includes('/api/watchlist?market=CN'))).toBe(false)
+ expect((fetch as any).mock.calls.some(([url]:[string])=>url.includes('/api/watchlist?market='))).toBe(false)
 })
 it('displays the twelve latest actual quarters, percentages and a recent-year price window',async()=>{
  const payload=view()
@@ -255,7 +253,7 @@ it('formats financial margin trend axis labels as percentages as well as the tab
 })
 
 
-it.each(['symbol','market','page','cutoff'])('protects a guidance draft on %s transition',async(path)=>{
+it.each(['symbol','page','cutoff'])('protects a guidance draft on %s transition',async(path)=>{
  history.replaceState(null,'','#strategy/observation?market=US&symbol=MU')
  vi.stubGlobal('EventSource',class{addEventListener(){}close(){}})
  const confirm=vi.spyOn(window,'confirm').mockReturnValue(false)
@@ -268,7 +266,7 @@ it.each(['symbol','market','page','cutoff'])('protects a guidance draft on %s tr
   await fireEvent.click(screen.getByRole('button',{name:'按截止时间读取'}))
  }else{
   const oldURL=location.href
-  history.replaceState(null,'',path==='market'?'#strategy/observation?market=CN&symbol=600519.SH':'#data/us-research?market=US&symbol=MU')
+  history.replaceState(null,'','#data/us-research?market=US&symbol=MU')
   window.dispatchEvent(new HashChangeEvent('hashchange',{oldURL,newURL:location.href}))
  }
  expect(screen.getByLabelText('指引下限')).toHaveValue(123)
@@ -338,4 +336,12 @@ it('discards only confirmed drafts on a current refresh and preserves edits type
  await waitFor(()=>expect(screen.queryByText('正在读取本地数据…')).toBeNull())
  expect(screen.getByLabelText('投资假设')).toHaveValue('new card')
  expect(screen.getByLabelText('指引下限')).toHaveValue(2)
+})
+
+it('opens an old CN observation link on the US card with the first watchlist stock',async()=>{
+ history.replaceState(null,'','#strategy/observation?market=CN&symbol=688008.SH')
+ render(Strategy,{sub:'observation'})
+ expect(await screen.findByRole('heading',{name:/MU/})).toBeInTheDocument()
+ expect(screen.queryByRole('group',{name:'研究市场'})).toBeNull()
+ expect(location.hash).toBe('#strategy/observation?market=US&symbol=MU')
 })

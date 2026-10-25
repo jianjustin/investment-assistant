@@ -29,7 +29,6 @@
         { id: 'signals', label: '信号总览' },
         { id: 'trend',   label: '趋势分析' },
         { id: 'filings', label: '财报' },
-        { id: 'ashares', label: 'A 股研究数据' },
         { id: 'us-research', label: '美股研究数据' },
       ],
     },

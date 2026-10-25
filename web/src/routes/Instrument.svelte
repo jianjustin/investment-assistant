@@ -46,7 +46,7 @@
 
   onMount(async () => {
     try {
-      const rows = (await getWatchlist('US')) as { rows?: { ticker: string }[] }
+      const rows = (await getWatchlist()) as { rows?: { ticker: string }[] }
       tickers = (rows.rows ?? []).map(r => r.ticker)
       if (!sub && tickers[0]) select(tickers[0])
     } catch {

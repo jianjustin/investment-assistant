@@ -78,7 +78,7 @@
  <label>发布时间（本机时区）<input type="datetime-local" bind:value={draft.issued_at} /></label>
  <label>原文链接<input type="url" bind:value={draft.source_url} /></label><label>原文定位<input bind:value={draft.source_locator} placeholder="页码、表格或原句" /></label>
  </div><details><summary>公司自定义指标与特定口径</summary><p>标准指标以外的业务指引请保留公司原始定义。完整口径须标明 company: 或 non-gaap:，并说明具体定义及调整项；未核验口径不自动比较实际值。</p><div class="fields"><label>自定义指引指标<input bind:value={draft.metric} readonly={!!draft.supersedes_id} placeholder="保留原文指标定义" /></label><label>完整会计口径<input bind:value={draft.basis} placeholder="例如 company:公司披露口径名称" /></label></div></details><label>口径与调整项说明<textarea bind:value={draft.note} rows="2"></textarea></label>
- <p>ratio 采用小数比例，例如 0.5 表示 50%；non-GAAP 调整项不能视作 A 股扣非利润。请按原文填写，不推测未来财季日期。</p>
+ <p>ratio 采用小数比例，例如 0.5 表示 50%。请按原文填写，不推测未来财季日期。</p>
  <div class="heading"><button class="primary" onclick={save} disabled={busy}>{busy?'保存中…':'追加指引版本'}</button>{#if draft.supersedes_id}<button onclick={()=>draft=blank()}>改录原始指引</button>{/if}</div>
  </details>
  {/if}

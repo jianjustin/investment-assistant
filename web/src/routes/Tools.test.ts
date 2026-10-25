@@ -219,3 +219,16 @@ describe('Tools 任务中心', () => {
     expect(screen.getByRole('button', { name: '刷新' })).toBeEnabled()
   })
 })
+
+it('offers no ashares task', async () => {
+  vi.spyOn(api, 'getScheduledJobs').mockResolvedValue(scheduledJobs() as any)
+  vi.spyOn(api, 'getJobReports').mockResolvedValue({ reports: [] } as any)
+  const tasks = render(Tools, { sub: 'tasks' })
+  await screen.findAllByText('metrics')
+  expect(tasks.container.textContent).not.toContain('A 股')
+  tasks.unmount()
+  const { container } = render(Tools, { sub: 'runs' })
+  await screen.findByRole('combobox', { name: '筛选任务' })
+  expect(container.querySelector('option[value="ashares"]')).toBeNull()
+  expect(container.textContent).not.toContain('A 股')
+})

@@ -13,14 +13,6 @@
   const view = $derived(sub === 'runs' ? 'runs' : 'tasks')
 
   const JOB_HELP: Record<string, { goal: string; details: string[] }> = {
-    ashares: {
-      goal: '更新少量 A 股关注标的的研究数据，默认关闭调度。',
-      details: [
-        '使用 Asia/Shanghai 和已核实的 A 股交易日历；不使用 SPY/VIX 规则，不发送通知。',
-        '行情默认最近400个自然日；财务最多8个报告期。失败项保留状态与旧值，独立提交成功数据。',
-        '单证券窗口、复权与失败续跑请到「数据 → A 股研究数据」操作。',
-      ],
-    },
     metrics: {
       goal: '每个交易日早间更新市场环境与关注列表趋势。',
       details: [
@@ -54,7 +46,6 @@
   }
 
   const DATE_FETCH: Record<string, { description: string; defaultLabel: string }> = {
-    ashares: { description: '更新现有 A 股关注列表；日期约束行情窗口，不代表严格历史 PIT。详细选项见 A 股研究数据页。', defaultLabel: '最近400个自然日' },
     metrics: { description: '按历史日期回补市场信号与关注列表快照（周末自动跳过）。', defaultLabel: '今日' },
     filings: { description: '从 SEC EDGAR 回补财报文件，按披露日匹配。', defaultLabel: '昨日（T-1）' },
     scores: { description: '按历史日期回补策略评分（基于该日快照，宏观取当前状态）。', defaultLabel: '今日' },
@@ -260,7 +251,6 @@
         <option value="">全部</option><option value="metrics">metrics</option>
         <option value="filings">filings</option><option value="scores">scores</option>
         <option value="event_study">event_study</option>
-        <option value="ashares">ashares</option>
         <option value="us-research">美股研究</option>
       </select>
       <span class="text-xs text-muted">每 15 秒自动刷新</span>

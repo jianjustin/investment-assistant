@@ -64,6 +64,13 @@ describe('app routing', () => {
     expect(getAllByText('设置').length).toBeGreaterThan(0)
   })
 
+  it('side nav has no A-share entry', async () => {
+    location.hash = '#data/us-research'
+    const { getAllByText, queryByText } = render(App)
+    expect(getAllByText('美股研究数据').length).toBeGreaterThan(0)
+    expect(queryByText('A 股研究数据')).toBeNull()
+  })
+
   it('renders data zone on #data hash', async () => {
     location.hash = '#data'
     const { getAllByText } = render(App)

@@ -9,7 +9,6 @@
   import RatioBar from '../lib/components/RatioBar.svelte'
   import Gauge from '../lib/components/Gauge.svelte'
   import { buildDayCells, countStatuses } from '../lib/signals'
-  import AShares from './AShares.svelte'
   import USResearch from './USResearch.svelte'
 
   let { sub }: { sub?: string } = $props()
@@ -63,7 +62,7 @@
     } finally { loading = false }
   }
 
-  $effect(() => { const page = sub; if (page !== 'ashares' && page !== 'us-research') untrack(() => { void load() }) })
+  $effect(() => { const page = sub; if (page !== 'us-research') untrack(() => { void load() }) })
 
   let cells = $derived(buildDayCells(signals as any, 30))
   let counts = $derived(countStatuses(signals as any))
@@ -78,8 +77,6 @@
 <div>
   {#if sub === 'us-research'}
     <USResearch />
-  {:else if sub === 'ashares'}
-    <AShares />
   {:else}
   <div class="flex items-center gap-4 mb-4">
     <h2 class="text-lg font-semibold">数据</h2>

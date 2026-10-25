@@ -3,12 +3,12 @@ import { researchHash, readResearchSelection } from './research-navigation'
 
 describe('research navigation identity', () => {
   it('round-trips market and symbol without mixing them into the page route', () => {
-    const hash = researchHash('strategy', 'observation', 'CN', '600519.SH')
-    expect(hash).toBe('#strategy/observation?market=CN&symbol=600519.SH')
-    expect(readResearchSelection(hash)).toEqual({ market:'CN', symbol:'600519.SH' })
+    const hash = researchHash('strategy', 'observation', 'US', 'BRK.B')
+    expect(hash).toBe('#strategy/observation?market=US&symbol=BRK.B')
+    expect(readResearchSelection(hash)).toEqual({ market:'US', symbol:'BRK.B' })
   })
-  it('does not accept a CN identity under a US query or incomplete numeric identities', () => {
-    expect(readResearchSelection('#data/ashares?market=US&symbol=600519.SH')).toBeNull()
-    expect(readResearchSelection('#data/ashares?market=CN&symbol=600519')).toBeNull()
+  it('readResearchSelection rejects CN selections', () => {
+    expect(readResearchSelection('#strategy/observation?market=CN&symbol=688008.SH')).toBeNull()
+    expect(readResearchSelection('#strategy/observation?market=US&symbol=MU')).toEqual({ market:'US', symbol:'MU' })
   })
 })

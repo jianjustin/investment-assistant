@@ -110,7 +110,7 @@
 <div class="us-research">
  <header><div><div class="eyebrow">美股 · 中期改善研究</div><h1>{symbol||'美股研究'}{#if company}<span>{company}</span>{/if}</h1><p>币种 {view?.currency??'待确认'} · 财季采用公司实际起止日 · 来源先于判断</p></div>
  <a href={symbol?researchHash(mode==='data'?'strategy':'data',mode==='data'?'observation':'us-research','US',symbol):'#settings/watchlist'}>{mode==='data'?'打开研究观察卡 →':'查看数据与来源 →'}</a></header>
- <div class="controls"><SecurityPicker market="US" value={symbol} onchange={select} beforeChange={confirmResearchNavigation} onloaded={initialSelection} />
+ <div class="controls"><SecurityPicker value={symbol} onchange={select} beforeChange={confirmResearchNavigation} onloaded={initialSelection} />
  <button onclick={refresh} disabled={!symbol||loading}>读取本地数据</button><button class="primary" onclick={()=>update()} disabled={!symbol||busy||!!asOf}>{busy?'采集中…':'手动更新'}</button><button onclick={()=>update(true)} disabled={!symbol||busy||!!asOf}>续跑失败项</button><a href="#settings/watchlist">管理关注列表 →</a></div>
  {#if empty}<p>暂无美股关注证券，请先在关注列表添加。</p>{/if}
  {#if error}<p role="alert" class="notice">{error}</p>{/if}{#if info}<p role="status" class="notice">{info}</p>{/if}

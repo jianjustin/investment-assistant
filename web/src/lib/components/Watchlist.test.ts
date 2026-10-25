@@ -5,19 +5,24 @@ import SecurityPicker from './SecurityPicker.svelte'
 import * as api from '../api'
 const rows = [
   { ticker:'MU', market:'US', status:'active', thesis:'cycle', tags:['memory'], updated_at:'2026-10-16T00:00:00Z' },
-  { ticker:'600519.SH', market:'CN', name:'贵州茅台', board:'主板', status:'active', thesis:'cashflow', tags:['consumer'], updated_at:'2026-10-16T00:00:00Z' },
+  { ticker:'NVDA', market:'US', name:'NVIDIA', status:'active', thesis:'cashflow', tags:['consumer'], updated_at:'2026-10-16T00:00:00Z' },
 ]
 beforeEach(() => { vi.restoreAllMocks() })
 describe('shared watchlist editor', () => {
-  it('filters markets and preserves thesis/tags on status changes with server read-back', async () => {
+  it('watchlist shows no market tabs', async () => {
+    vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows } as any)
+    render(Watchlist)
+    await screen.findByText('NVIDIA')
+    expect(screen.queryByRole('navigation', { name:'关注市场' })).toBeNull()
+    expect(screen.queryByRole('button', { name:'CN' })).toBeNull()
+  })
+  it('preserves thesis/tags on status changes with server read-back', async () => {
     const get = vi.spyOn(api, 'getWatchlist').mockResolvedValueOnce({ rows } as any).mockResolvedValue({ rows:[rows[0], {...rows[1], status:'paused'}] } as any)
     const save = vi.spyOn(api, 'addWatchlistItem').mockResolvedValue({} as any)
     render(Watchlist)
-    await screen.findByText('贵州茅台')
-    await fireEvent.click(screen.getByRole('button', { name:'CN' }))
-    expect(screen.queryByText('MU')).toBeNull()
-    await fireEvent.click(screen.getByRole('button', { name:'暂停' }))
-    await waitFor(() => expect(save).toHaveBeenCalledWith({ ticker:'600519.SH', status:'paused', expected_updated_at:'2026-10-16T00:00:00Z' }))
+    await screen.findByText('NVIDIA')
+    await fireEvent.click(screen.getAllByRole('button', { name:'暂停' })[1])
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ ticker:'NVDA', status:'paused', expected_updated_at:'2026-10-16T00:00:00Z' }))
     expect(get).toHaveBeenCalledTimes(2)
     expect(await screen.findByRole('button', { name:'恢复' })).toBeTruthy()
   })
@@ -30,20 +35,21 @@ describe('shared watchlist editor', () => {
     expect((screen.getByLabelText('标签') as HTMLInputElement).value).toBe('consumer')
     await fireEvent.input(screen.getByLabelText('论点'), { target:{ value:'updated thesis' } })
     await fireEvent.click(screen.getByRole('button', { name:'保存' }))
-    await waitFor(() => expect(save).toHaveBeenCalledWith({ ticker:'600519.SH', status:'active', thesis:'updated thesis', tags:['consumer'], expected_updated_at:'2026-10-16T00:00:00Z' }))
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ ticker:'NVDA', status:'active', thesis:'updated thesis', tags:['consumer'], expected_updated_at:'2026-10-16T00:00:00Z' }))
   })
-  it('requires explicit candidate selection before saving a six-digit code', async () => {
+  it('saves the confirmed candidate symbol', async () => {
     vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows:[] } as any)
-    vi.spyOn(api, 'get').mockResolvedValue({ candidates:[{ symbol:'600519.SH', name:'贵州茅台' }] })
+    vi.spyOn(api, 'get').mockResolvedValue({ candidates:[{ symbol:'BRK.B', market:'US', asset_type:'stock' }] })
     const save = vi.spyOn(api, 'addWatchlistItem').mockResolvedValue({} as any)
     render(Watchlist)
     await fireEvent.click(await screen.findByRole('button', { name:'+ 添加' }))
-    await fireEvent.input(screen.getByLabelText('证券代码'), { target:{ value:'600519' } })
+    expect(screen.getByLabelText('证券代码')).toHaveAttribute('placeholder', 'MU / BRK.B')
+    await fireEvent.input(screen.getByLabelText('证券代码'), { target:{ value:'brk.b' } })
     await fireEvent.click(screen.getByRole('button', { name:'确认身份' }))
     expect(save).not.toHaveBeenCalled()
-    await fireEvent.click(await screen.findByRole('button', { name:'600519.SH 贵州茅台' }))
+    await fireEvent.click(await screen.findByRole('button', { name:'BRK.B' }))
     await fireEvent.click(screen.getByRole('button', { name:'保存' }))
-    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ ticker:'600519.SH', tags:[] })))
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ ticker:'BRK.B', tags:[] })))
   })
   it('keeps the edit form open when server read-back fails', async () => {
     vi.spyOn(api, 'getWatchlist').mockResolvedValueOnce({ rows:[rows[1]] } as any).mockRejectedValueOnce(new Error('read-back unavailable'))
@@ -70,23 +76,23 @@ describe('shared watchlist editor', () => {
     vi.spyOn(api, 'get').mockReturnValue(new Promise(resolve => { finish = resolve }))
     render(Watchlist)
     await fireEvent.click(await screen.findByRole('button', { name:'+ 添加' }))
-    await fireEvent.input(screen.getByLabelText('证券代码'), { target:{ value:'600519' } })
+    await fireEvent.input(screen.getByLabelText('证券代码'), { target:{ value:'MU' } })
     await fireEvent.click(screen.getByRole('button', { name:'确认身份' }))
-    await fireEvent.input(screen.getByLabelText('证券代码'), { target:{ value:'688008' } })
-    finish({ candidates:[{ symbol:'600519.SH', name:'贵州茅台' }] })
+    await fireEvent.input(screen.getByLabelText('证券代码'), { target:{ value:'NVDA' } })
+    finish({ candidates:[{ symbol:'MU', market:'US', asset_type:'stock' }] })
     await Promise.resolve()
-    expect(screen.queryByRole('button', { name:'600519.SH 贵州茅台' })).toBeNull()
+    expect(screen.queryByRole('button', { name:'MU' })).toBeNull()
   })
 })
 describe('security picker', () => {
-  it('uses market filtered API and refuses changes when beforeChange returns false', async () => {
-    const get = vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows:[rows[1]] } as any)
+  it('reads the enriched watchlist and refuses changes when beforeChange returns false', async () => {
+    const get = vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows } as any)
     const onchange = vi.fn()
-    render(SecurityPicker, { market:'CN', value:'600519.SH', onchange, beforeChange:() => false })
+    render(SecurityPicker, { value:'MU', onchange, beforeChange:() => false })
     const select = await screen.findByRole('combobox', { name:'关注证券' })
-    await screen.findByText('600519.SH 贵州茅台')
-    await fireEvent.change(select, { target:{ value:'600519.SH' } })
-    expect(get).toHaveBeenCalledWith('CN', true)
+    await screen.findByText('NVDA NVIDIA')
+    await fireEvent.change(select, { target:{ value:'NVDA' } })
+    expect(get).toHaveBeenCalledWith(true)
     expect(onchange).not.toHaveBeenCalled()
   })
 })
@@ -112,7 +118,7 @@ it('shows unsupported legacy identities for deletion and omits them from the pic
  await fireEvent.click(screen.getAllByRole('button',{name:'删除'})[1])
  expect(remove).toHaveBeenCalledWith('AAPL.US')
  mounted.unmount()
- render(SecurityPicker,{market:'US',value:'MU',onchange:vi.fn()})
+ render(SecurityPicker,{value:'MU',onchange:vi.fn()})
  await screen.findByRole('option',{name:'MU'})
  expect(screen.queryByRole('option',{name:'AAPL.US'})).toBeNull()
 })
@@ -122,7 +128,7 @@ describe('pool tier controls', () => {
     { ticker: 'NVDA', market: 'US', status: 'active', thesis: 'ai', tags: ['core', 'sector:SMH'], updated_at: '2026-10-16T00:00:00Z' },
     { ticker: 'MU', market: 'US', status: 'active', thesis: '', tags: [], updated_at: '2026-10-16T00:00:00Z' },
     { ticker: 'AMD', market: 'US', status: 'paused', thesis: '', tags: [], updated_at: '2026-10-16T00:00:00Z' },
-    { ticker: '600519.SH', market: 'CN', name: '贵州茅台', board: '主板', status: 'active', thesis: '', tags: [], updated_at: '2026-10-16T00:00:00Z' },
+    { ticker: '600519.SH', market: null, identity_error: '证券身份无效，请删除后使用完整有效代码重新添加', status: 'active', thesis: '', tags: [], updated_at: '2026-10-16T00:00:00Z' },  // invalid US code
   ]
   it('header shows pool and core counts', async () => {
     vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows: usRows } as any)
@@ -155,10 +161,10 @@ describe('pool tier controls', () => {
     await screen.findByText(/核心池超出上限：16 > 15/)
     expect(screen.getByRole('checkbox', { name: '核心池 MU' })).toBeTruthy()
   })
-  it('A-share rows have no core or sector controls', async () => {
+  it('invalid identity rows have no core or sector controls', async () => {
     vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows: usRows } as any)
     render(Watchlist)
-    await screen.findByText('贵州茅台')
+    await screen.findByText('600519.SH')
     expect(screen.queryByRole('checkbox', { name: /核心池 600519/ })).toBeNull()
     expect(screen.queryByRole('combobox', { name: /行业 ETF 600519/ })).toBeNull()
   })

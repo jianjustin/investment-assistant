@@ -4,7 +4,6 @@
   import { datasetName, statusName } from '../us-research-format'
   import { isCore, sectorOf, withPoolTags, SECTOR_ETFS } from '../pool-tags'
   let rows = $state<any[]>([])
-  let market = $state('All')
   let loading = $state(true)
   let saving = $state(false)
   let error = $state('')
@@ -17,14 +16,13 @@
   let candidates = $state<any[]>([])
   let resolveRequest = 0
   let request = 0
-  let visible = $derived(rows.filter(row => market === 'All' || row.market === market))
   let usActive = $derived(rows.filter(row => row.market === 'US' && row.status === 'active'))
   let coreCount = $derived(usActive.filter(row => isCore(row.tags ?? [])).length)
   async function load() {
     const current = ++request
     loading = true
     try {
-      const result = await api.getWatchlist(undefined, true) as any
+      const result = await api.getWatchlist(true) as any
       if (current !== request) return false
       rows = result.rows ?? []
       return true
@@ -53,7 +51,6 @@
   }
   async function save() {
     const symbol = ticker.trim().toUpperCase()
-    if (/^\d+$/.test(symbol)) { error = '请确认身份并选择完整证券代码后保存。'; return }
     const body = { ticker: symbol, status, thesis, tags: tags.split(',').map(t => t.trim()).filter(Boolean),
       ...(original?.updated_at ? { expected_updated_at: original.updated_at } : {}) }
     if (await mutate(() => api.addWatchlistItem(body))) open = false
@@ -72,11 +69,10 @@
 </script>
 <div class="watchlist">
   <div class="toolbar"><h2>关注列表</h2><span class="pool-count">美股池 {usActive.length}/100 · 核心 {coreCount}/15</span><button onclick={() => edit()}>+ 添加</button></div>
-  <nav aria-label="关注市场">{#each ['All', 'CN', 'US'] as tab}<button aria-pressed={market === tab} onclick={() => market = tab}>{tab}</button>{/each}</nav>
   {#if error}<p role="alert">{error}</p>{/if}
   {#if loading}<p>正在读取关注列表…</p>{/if}
-  <div class="table-scroll"><table><thead><tr><th>代码 / 名称</th><th>市场 / 板块</th><th>状态</th><th>论点 / 标签</th><th>观察池</th><th>报告期 / 覆盖</th><th>下一事件</th><th>操作</th></tr></thead><tbody>
-    {#each visible as row}<tr><td>{row.ticker}<small>{row.identity_error ?? row.name ?? '名称尚未采集'}</small></td><td>{row.market ?? '—'}<small>{row.board ?? '—'}</small></td><td>{row.status}</td><td>{row.thesis ?? '—'}<small>{(row.tags ?? []).join(' · ')}</small></td>
+  <div class="table-scroll"><table><thead><tr><th>代码 / 名称</th><th>市场</th><th>状态</th><th>论点 / 标签</th><th>观察池</th><th>报告期 / 覆盖</th><th>下一事件</th><th>操作</th></tr></thead><tbody>
+    {#each rows as row}<tr><td>{row.ticker}<small>{row.identity_error ?? row.name ?? '名称尚未采集'}</small></td><td>{row.market ?? '—'}</td><td>{row.status}</td><td>{row.thesis ?? '—'}<small>{(row.tags ?? []).join(' · ')}</small></td>
       <td>
         {#if row.market === 'US'}
           <label class="pool-ctl"><input type="checkbox" aria-label={`核心池 ${row.ticker}`} checked={isCore(row.tags ?? [])}
@@ -89,13 +85,13 @@
         {:else}—{/if}
       </td>
       <td>{row.latest_period ?? '尚未采集'}<small>{Object.entries(row.datasets ?? {}).map(([key, value]) => `${datasetName(key)}: ${statusName((value as any).status)}`).join(' · ') || '尚无本地数据'}</small></td>
-      <td>{row.next_event?.date ?? '尚无本地事件'}<small>{row.next_event?.title ?? ({disclosure:'财报披露预约',unlock:'股份解禁',research_verification:'研究验证'}[row.next_event?.kind as string] ?? '')}</small></td>
+      <td>{row.next_event?.date ?? '尚无本地事件'}<small>{row.next_event?.title ?? ({research_verification:'研究验证'}[row.next_event?.kind as string] ?? '')}</small></td>
       <td><button disabled={saving || !!row.identity_error} onclick={() => edit(row)}>编辑</button><button disabled={saving || !!row.identity_error} onclick={() => toggle(row)}>{row.status === 'active' ? '暂停' : '恢复'}</button><button disabled={saving} onclick={() => mutate(() => api.deleteWatchlistItem(row.ticker))}>删除</button></td></tr>
     {:else}<tr><td colspan="8">暂无关注证券</td></tr>{/each}
   </tbody></table></div>
   {#if open}<section aria-label={original ? '编辑关注' : '添加关注'}>
     <h3>{original ? '编辑关注' : '添加关注'}</h3>
-    <label>证券代码<input aria-label="证券代码" bind:value={ticker} oninput={changedTicker} disabled={!!original || saving} placeholder="MU / 600519.SH" /></label>
+    <label>证券代码<input aria-label="证券代码" bind:value={ticker} oninput={changedTicker} disabled={!!original || saving} placeholder="MU / BRK.B" /></label>
     {#if !original}<button onclick={resolve} disabled={saving || !ticker}>确认身份</button>{/if}
     {#each candidates as candidate}<button onclick={() => { ticker = candidate.symbol; changedTicker() }}>{candidate.symbol} {candidate.name ?? ''}</button>{/each}
     <label>论点<input aria-label="论点" bind:value={thesis} /></label>
@@ -105,5 +101,5 @@
   </section>{/if}
 </div>
 <style>
-  .watchlist{display:grid;gap:1rem}.toolbar,nav{display:flex;align-items:center;gap:.7rem}.toolbar{justify-content:space-between}h2,h3{font-weight:600}button,input,select{padding:.4rem .6rem;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text)}button[aria-pressed=true]{color:var(--accent)}button:disabled{opacity:.45}.table-scroll{overflow:auto}table{width:100%;font-size:.82rem;border-collapse:collapse}td,th{text-align:left;padding:.7rem;border-bottom:1px solid var(--border)}small{display:block;color:var(--text-muted);margin-top:.3rem}td button{margin:.2rem}section{display:flex;flex-wrap:wrap;gap:.7rem;padding:1rem;border:1px solid var(--border)}.pool-count{font-size:.82rem;color:var(--text-muted)}.pool-ctl{white-space:nowrap;font-size:.8rem}td select{margin-left:.3rem;padding:.2rem .3rem;font-size:.78rem}label{display:grid;gap:.3rem}p[role=alert]{color:#bd5d23}
+  .watchlist{display:grid;gap:1rem}.toolbar{display:flex;align-items:center;gap:.7rem}.toolbar{justify-content:space-between}h2,h3{font-weight:600}button,input,select{padding:.4rem .6rem;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text)}button:disabled{opacity:.45}.table-scroll{overflow:auto}table{width:100%;font-size:.82rem;border-collapse:collapse}td,th{text-align:left;padding:.7rem;border-bottom:1px solid var(--border)}small{display:block;color:var(--text-muted);margin-top:.3rem}td button{margin:.2rem}section{display:flex;flex-wrap:wrap;gap:.7rem;padding:1rem;border:1px solid var(--border)}.pool-count{font-size:.82rem;color:var(--text-muted)}.pool-ctl{white-space:nowrap;font-size:.8rem}td select{margin-left:.3rem;padding:.2rem .3rem;font-size:.78rem}label{display:grid;gap:.3rem}p[role=alert]{color:#bd5d23}
 </style>

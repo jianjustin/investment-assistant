@@ -1,7 +1,7 @@
 <script lang="ts">
   import * as api from '../api'
-  let { market, value, onchange, beforeChange, onloaded }: {
-    market: 'CN' | 'US'; value: string; onchange: (symbol: string) => void
+  let { value, onchange, beforeChange, onloaded }: {
+    value: string; onchange: (symbol: string) => void
     beforeChange?: () => boolean; onloaded?: (rows: any[]) => void
   } = $props()
   let rows = $state<any[]>([])
@@ -9,11 +9,10 @@
   let loading = $state(false)
   let request = 0
   $effect(() => {
-    const selectedMarket = market
     const current = ++request
     loading = true
     error = ''
-    api.getWatchlist(selectedMarket, true).then((result: any) => {
+    api.getWatchlist(true).then((result: any) => {
       if (current !== request) return
       rows = (result.rows ?? []).filter((r: any) => r.status === 'active' && !r.identity_error)
       onloaded?.(rows)

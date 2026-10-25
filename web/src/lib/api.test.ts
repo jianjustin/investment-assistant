@@ -19,6 +19,13 @@ describe('jobs/settings api wrappers', () => {
     expect(url).toContain('limit=10')
   })
 
+  it('getWatchlist(true) requests ?enriched=true only', async () => {
+    await api.getWatchlist(true)
+    expect((fetch as any).mock.calls[0][0]).toBe('/api/watchlist?enriched=true')
+    await api.getWatchlist()
+    expect((fetch as any).mock.calls[1][0]).toBe('/api/watchlist')
+  })
+
   it('runJob posts to /run', async () => {
     await api.runJob('metrics')
     expect((fetch as any).mock.calls[0][0]).toBe('/api/jobs/metrics/run')

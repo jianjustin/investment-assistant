@@ -22,6 +22,6 @@ describe('parseHash', () => {
 
 describe('research hash query', () => {
   it('query parameters never become part of route sub', () => {
-    expect(parseHash('#data/ashares?market=CN&symbol=600519.SH')).toEqual({ zone: 'data', sub: 'ashares' })
+    expect(parseHash('#data/us-research?market=US&symbol=MU')).toEqual({ zone: 'data', sub: 'us-research' })
   })
 })

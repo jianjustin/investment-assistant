@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import ResearchCard from './ResearchCard.svelte'
 import GuidanceEditor from './GuidanceEditor.svelte'
-import AShares from '../../routes/AShares.svelte'
 import * as api from '../api'
 
 const body = (text = 'original') => ({ improvement:{hypothesis:text,products:'',expected_window:'',next_event:'',next_event_date:null},evidence:[],scenarios:[],invalidations:[],links:[] })
@@ -16,7 +15,7 @@ beforeEach(() => {
   vi.spyOn(api,'getWatchlist').mockResolvedValue({rows:[{ticker:'RKLB',status:'active'},{ticker:'SNDK',status:'active'}]})
 })
 
-describe('cross-market card editing', () => {
+describe('research card editing', () => {
   it('uses empty currency-aware scenarios and arbitrary ticker links',async()=>{
     render(ResearchCard,props())
     await fireEvent.click(screen.getByRole('button',{name:'添加情景'}))
@@ -72,23 +71,6 @@ describe('cross-market card editing', () => {
     await act(async()=>write.resolve({card:card('submitted',2)}))
     expect((screen.getByLabelText('投资假设') as HTMLTextAreaElement).value).toBe('typed later')
   })
-})
-
-it('cancels actual card picker, refresh and hash navigation while preserving edits',async()=>{
-  window.location.hash='#strategy/observation?market=CN&symbol=600519.SH'
-  vi.spyOn(api,'getWatchlist').mockResolvedValue({rows:[{ticker:'600519.SH',status:'active'},{ticker:'688008.SH',status:'active'}]})
-  vi.spyOn(api,'get').mockImplementation(async(path:string)=>path.includes('us-references')?{rows:[]}:{profile:{name:'证券'},window:{start:'2026-01-01',end:'2026-10-01'},card:card(),financials:[],announcements:[],statuses:[],performance:{},bars:[],raw_bars:[],valuation:null,coverage:{},adjustment:{},comparisons:[],calendar:{},pit:{},upstream:{}})
-  const confirm=vi.spyOn(window,'confirm').mockReturnValue(false)
-  render(AShares,{mode:'card'})
-  await screen.findByLabelText('投资假设')
-  await fireEvent.input(screen.getByLabelText('投资假设'),{target:{value:'do not lose'}})
-  await fireEvent.change(screen.getByRole('combobox',{name:'关注证券'}),{target:{value:'688008.SH'}})
-  await fireEvent.click(screen.getByRole('button',{name:'读取数据'}))
-  window.location.hash='#strategy/observation?market=CN&symbol=688008.SH'
-  window.dispatchEvent(new HashChangeEvent('hashchange'))
-  await waitFor(()=>expect(window.location.hash).toContain('symbol=600519.SH'))
-  expect((screen.getByLabelText('投资假设') as HTMLTextAreaElement).value).toBe('do not lose')
-  expect(confirm).toHaveBeenCalled()
 })
 
 it('accepts an explicitly confirmed same-security refresh',async()=>{

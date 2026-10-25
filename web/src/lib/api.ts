@@ -88,12 +88,8 @@ export const runStrategyScores = (body: object) => post<unknown>('/api/strategie
 export const getMacroAnalysis = (window = 30) => get<unknown>(`/api/hermes/macro-analysis?window=${window}`)
 export const getHermes = () => get<unknown>('/api/hermes')
 export const getHermesAgents = () => get<unknown>('/api/hermes/agents')
-export const getWatchlist = (market?: 'CN' | 'US', enriched = false) => {
-  const query = new URLSearchParams()
-  if (market) query.set('market', market)
-  if (enriched) query.set('enriched', 'true')
-  return get<unknown>(`/api/watchlist${query.size ? '?' + query : ''}`)
-}
+export const getWatchlist = (enriched = false) =>
+  get<unknown>(`/api/watchlist${enriched ? '?enriched=true' : ''}`)
 export const addWatchlistItem = (body: object) => post<unknown>('/api/watchlist', body)
 export const deleteWatchlistItem = (ticker: string) => del<unknown>(`/api/watchlist/${ticker}`)
 export const runMacroLlm = (body: object) => post<{ run_id: string; status: string }>('/api/hermes/macro-analysis/run', body)
