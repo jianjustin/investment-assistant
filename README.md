@@ -18,9 +18,9 @@
 
 **2026-10-23**：美股投研工作台（采集 → 信号 → 复盘）已在本机运行，迁移 `015`、`016` 已上真实库，每日 `workbench` 任务已启用；用户使用验收进行中。Phase 0 全部正式 Gate HOLD。长期路线已更新为 [roadmap v2](docs/roadmap/README.md)（数据 → 交易计划 → 复盘），当前进度见 [v2 进度](docs/roadmap/v2-progress.md)。2026-10-17 的状态说明已随 v1 归档：[实施状态与验收边界](docs/archive/roadmap-v1/implementation-status-2026-10-17.md)、[Phase 0 只读评审](docs/archive/roadmap-v1/reports/2026-10-17-phase0-review.md)。
 
-A 股研究现已接入“数据 → A 股研究数据”和“策略 → 研究观察卡”，首个真实样本为澜起科技 `688008.SH`。只在本地运行，A 股研究不发通知，定时开关沿用本机既有配置；使用独立上海交易日历。局部复用 CNEquity 0.16.0，严格历史 PIT、公告全文解析和产品分部提取尚未实现。详见 [A 股接入与验证报告](docs/ashare-research.md)。下述 SPY/VIX 信号流仅适用于既有美股流程。
+A 股研究现已接入“数据 → A 股研究数据”和“策略 → 研究观察卡”，首个真实样本为澜起科技 `688008.SH`。只在本地运行，A 股研究不发通知，定时开关沿用本机既有配置；使用独立上海交易日历。局部复用 CNEquity 0.16.0，严格历史 PIT、公告全文解析和产品分部提取尚未实现。详见 A 股接入与验证报告（已于 v2.0.0 删除）。下述 SPY/VIX 信号流仅适用于既有美股流程。
 
-A 股多股票关注与美股研究数据已完成本地实现和 Agent 验证，支持现有 8 只美股的实际财季、来源追溯、跨市场观察卡及版本化指引。12 行财季不代表指标完整或连续；TSLA 有既有来源规则导致的缺口，无法核实的估值保持为空，仍保留一项旧值提示误报，用户手动验收待完成。详见 [跨市场研究与本地验证](docs/cross-market-research.md)。
+A 股多股票关注与美股研究数据已完成本地实现和 Agent 验证，支持现有 8 只美股的实际财季、来源追溯、跨市场观察卡及版本化指引。12 行财季不代表指标完整或连续；TSLA 有既有来源规则导致的缺口，无法核实的估值保持为空，仍保留一项旧值提示误报，用户手动验收待完成。详见 [跨市场研究与本地验证](docs/features/legacy/us-research.md)。
 
 ---
 
@@ -116,7 +116,7 @@ API server 启动后可访问 `http://localhost:8787/docs` 查看全部端点的
 
 ## 调度计划
 
-本机已迁移的 SEC 监控沿用美东工作日 **20:30**，直接通知 Discord `#investment`；下面是其他实例的默认种子计划。监控每轮重读正式 SEC 观察名单，从 2026-10-01 扫描到美东当日，保留 TSLA、8-K 筛选和历史去重。新报告提取正文财务事实和公司指引原文，保留期间、口径及来源；不支持的格式标记待核验。见 [SEC 监控接管说明](docs/sec-monitor-migration.md)。
+本机已迁移的 SEC 监控沿用美东工作日 **20:30**，直接通知 Discord `#investment`；下面是其他实例的默认种子计划。监控每轮重读正式 SEC 观察名单，从 2026-10-01 扫描到美东当日，保留 TSLA、8-K 筛选和历史去重。新报告提取正文财务事实和公司指引原文，保留期间、口径及来源；不支持的格式标记待核验。见 [SEC 监控接管说明](docs/features/sec-filings.md)。
 
 | 任务 | 时间（US/Eastern，周一~五） | 说明 |
 |------|-----------------------------|------|
@@ -125,7 +125,7 @@ API server 启动后可访问 `http://localhost:8787/docs` 查看全部端点的
 | `scores` | 18:00 | 策略评分扫描（模块：tasks.nightly_scores） |
 | `event_study` | 无默认调度行 | 事件研究（需手动 INSERT 或经「设置 → 定时任务」启用） |
 
-调度线程内嵌于 API 进程，读取 `scheduled_jobs` 表（迁移 007），支持通过设置层界面启用/禁用单个任务。详见 [docs/scheduling-and-notifications.md](docs/scheduling-and-notifications.md)。
+调度线程内嵌于 API 进程，读取 `scheduled_jobs` 表（迁移 007），支持通过设置层界面启用/禁用单个任务。详见 [docs/scheduling-and-notifications.md](docs/operations/scheduling-and-notifications.md)。
 
 ---
 
@@ -149,7 +149,7 @@ curl -u "$HERMES_DASHBOARD_USER:$SERVER_PWD" http://localhost:8787/api/status
 env -u INVESTMENT_ASSISTANT_DATABASE_URL -u INVESTMENT_ASSISTANT_TEST_DATABASE_URL -u TEST_DATABASE_URL .venv/bin/python -m pytest tests/ -v
 ```
 
-普通回归隔离外部网络及数据库依赖，可离线运行；真实 SQL 行为由单独审查的 TEMP 表测试覆盖。不要给完整套件配置生产 `TEST_DATABASE_URL`，旧迁移集成测试会写业务表；安全边界与最终结果见 [跨市场验证报告](docs/cross-market-research.md)。
+普通回归隔离外部网络及数据库依赖，可离线运行；真实 SQL 行为由单独审查的 TEMP 表测试覆盖。不要给完整套件配置生产 `TEST_DATABASE_URL`，旧迁移集成测试会写业务表；安全边界与最终结果见 [跨市场验证报告](docs/features/legacy/us-research.md)。
 
 ---
 

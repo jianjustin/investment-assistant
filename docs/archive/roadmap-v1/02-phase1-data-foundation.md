@@ -8,7 +8,7 @@
 
 ## 2026-10-17 状态与本轮最小补强
 
-通用 OHLCV 读库优先、市场广度、FRED 和 EPS surprise 均未完成。10 月 A 股/美股研究已有专用行情、SEC Company Facts 财务、来源及指引能力，但公司指引不是市场一致预期，研究表也不是通用数据地基。历史交付见 [跨市场报告](../../cross-market-research.md)，用户验收仍 pending。
+通用 OHLCV 读库优先、市场广度、FRED 和 EPS surprise 均未完成。10 月 A 股/美股研究已有专用行情、SEC Company Facts 财务、来源及指引能力，但公司指引不是市场一致预期，研究表也不是通用数据地基。历史交付见 [跨市场报告](../../features/legacy/us-research.md)，用户验收仍 pending。
 
 [Phase 0 评审](reports/2026-10-17-phase0-review.md)全部正式 Gate HOLD。它支持先解决“旧信号日期/计算口径不可追溯”的最小工程缺口，而不支持扩池、补采、接入 FRED/一致预期或开始全组合回测。本轮第二轮修复正在新增 `015_signal_provenance.sql`：快照加 `price_date` / `calculation_version`，评分加 `calculation_version`；老行 null、不回填，隔离不可信输入，冲突保留旧记录。仅新增迁移文件，未执行到真实 DB，最终复核与全量测试待完成。这不是整个 Phase 1 的交付。
 

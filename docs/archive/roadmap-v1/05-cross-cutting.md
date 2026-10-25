@@ -45,7 +45,7 @@
 
 **2026-10-17 对齐范围**：README 已说明 FastAPI 与新任务入口，不再要求重写成另一份历史设计。本轮更新 roadmap、事件研究说明与实施状态，将 `engineering_done`、`gate_hold`、`runtime_unverified`、`user_acceptance_pending` 分开记录。原估算不是排期，基线测试不是最终变更测试。
 
-历史审计、[跨市场交付](../../cross-market-research.md)与 A 股交付（已于 v2.0.0 删除）保留原文，引用其时点上下文；不删除或重写历史数字来迎合当前状态。新增证据集中在 [实施状态](implementation-status-2026-10-17.md)和 [Phase 0 评审](reports/2026-10-17-phase0-review.md)，凭据/DSN 不进入文档。
+历史审计、[跨市场交付](../../features/legacy/us-research.md)与 A 股交付（已于 v2.0.0 删除）保留原文，引用其时点上下文；不删除或重写历史数字来迎合当前状态。新增证据集中在 [实施状态](implementation-status-2026-10-17.md)和 [Phase 0 评审](reports/2026-10-17-phase0-review.md)，凭据/DSN 不进入文档。
 
 ---
 

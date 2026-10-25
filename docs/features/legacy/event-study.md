@@ -1,10 +1,13 @@
-# 事件研究（Event Study）— 功能说明与验证
+# 事件研究（Event Study）
+
+> v1 遗留，保留但不再演进，见 [遗留功能清单](README.md)。
+
 
 ## 功能与当前边界
 
-事件研究是回测分层中的描述性 A 层：统计某类事件之后 5/10/20 个交易日的股票收益减同期 SPY 收益，报告有效样本数、区制、缺失/跳过原因及统计限制，不模拟可交易组合。工程入口已落地，本轮成熟度、准确端点、as-of、来源与缓存语义修复正在最终复核；最终回归数字见 [实施状态](archive/roadmap-v1/implementation-status-2026-10-17.md)待补项。
+事件研究是回测分层中的描述性 A 层：统计某类事件之后 5/10/20 个交易日的股票收益减同期 SPY 收益，报告有效样本数、区制、缺失/跳过原因及统计限制，不模拟可交易组合。工程入口已落地，本轮成熟度、准确端点、as-of、来源与缓存语义修复正在最终复核；最终回归数字见 [实施状态](../../archive/roadmap-v1/implementation-status-2026-10-17.md)待补项。
 
-[2026-10-17 只读归档评审](archive/roadmap-v1/reports/2026-10-17-phase0-review.md)的正式 Gate 全部 HOLD。它只重建 SMA20 事件；RS、score、EPS/VCP 未计算的 n 为 null，不是零事件。当前 DB 不可达，实际表行数/覆盖 unknown；本轮未进行 HTTP/UI 验收，不能把历史报告或离线组件测试当成本次运行通过。
+[2026-10-17 只读归档评审](../../archive/roadmap-v1/reports/2026-10-17-phase0-review.md)的正式 Gate 全部 HOLD。它只重建 SMA20 事件；RS、score、EPS/VCP 未计算的 n 为 null，不是零事件。当前 DB 不可达，实际表行数/覆盖 unknown；本轮未进行 HTTP/UI 验收，不能把历史报告或离线组件测试当成本次运行通过。
 
 | kind | 当前定义 / 可用性 | 使用限制 |
 | --- | --- | --- |
@@ -79,6 +82,6 @@ curl -s -u "$HERMES_DASHBOARD_USER:$SERVER_PWD" \
 
 ## 调度与运行记录
 
-`event_study` **无默认调度行**，不是“系统每天自动跑”。是否运行取决于 `scheduled_jobs` 和服务级调度开关，本轮不启用或更改。普通任务报告在“工具 → 运行记录”或 `GET /api/jobs/reports?task=event_study` 查看；缓存写入属于事件研究服务路径，不能将任务报告与缓存混为一谈。调度/通知配置见 [说明](scheduling-and-notifications.md)。
+`event_study` **无默认调度行**，不是“系统每天自动跑”。是否运行取决于 `scheduled_jobs` 和服务级调度开关，本轮不启用或更改。普通任务报告在“工具 → 运行记录”或 `GET /api/jobs/reports?task=event_study` 查看；缓存写入属于事件研究服务路径，不能将任务报告与缓存混为一谈。调度/通知配置见 [说明](../../operations/scheduling-and-notifications.md)。
 
 手动验收前应在可合法连接的环境只读确认 schema、真实记录覆盖、来源日期/版本及旧输入隔离。015 的真实迁移、真实任务运行、缓存写入和通知均需另行授权；可信历史输入与运行验收完成后，仍须独立处理研究 Gate 的统计前置条件。

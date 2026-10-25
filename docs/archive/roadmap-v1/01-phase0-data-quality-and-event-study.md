@@ -12,7 +12,7 @@
 
 [只读归档评审](reports/2026-10-17-phase0-review.md)从八只股票重建 132 个 SMA20 事件，5/10/20 有效 n=131/129/122，均值为 2.3453/2.9158/5.8974 个百分点。**全部正式 Gate HOLD**：未校正 CI 不足以证明信号有效，可信历史信号、实际区制、样本依赖、选择偏差、PIT 和成本/入场模型仍有缺口。
 
-当前 DB 回环连接不可达（`OperationalError`，不记录 DSN），当前表数量 unknown 而非 0；未做 HTTP/UI 验收。只读原始 hash 与财务样例复算不等于全库验收。最终变更测试数字待 [实施状态](implementation-status-2026-10-17.md)回填。下文保留原任务设计，现行使用以 [事件研究说明](../../research-event-study.md)为准。
+当前 DB 回环连接不可达（`OperationalError`，不记录 DSN），当前表数量 unknown 而非 0；未做 HTTP/UI 验收。只读原始 hash 与财务样例复算不等于全库验收。最终变更测试数字待 [实施状态](implementation-status-2026-10-17.md)回填。下文保留原任务设计，现行使用以 [事件研究说明](../../features/legacy/event-study.md)为准。
 
 ---
 

@@ -26,14 +26,14 @@
 
 | 文档 | 内容 |
 |------|------|
-| [us-workbench.md](us-workbench.md) | 美股投研工作台：每日流程、规则 v1、复盘口径、时点与已知限制 |
-| [research-event-study.md](research-event-study.md) | 事件研究：方法、字段、CLI/API/前端三条验证路径 |
-| [cross-market-research.md](cross-market-research.md) | A/美股关注、财季与来源、跨市场卡及指引、本地证据和待验收限制 |
+| [us-workbench.md](features/daily-plan.md) | 美股投研工作台：每日流程、规则 v1、复盘口径、时点与已知限制 |
+| [research-event-study.md](features/legacy/event-study.md) | 事件研究：方法、字段、CLI/API/前端三条验证路径 |
+| [cross-market-research.md](features/legacy/us-research.md) | A/美股关注、财季与来源、跨市场卡及指引、本地证据和待验收限制 |
 | ashare-research.md（已于 v2.0.0 删除） | A股接入、CNEquity审计、澜起真实验证、数据边界与本地运行 |
-| [scheduling-and-notifications.md](scheduling-and-notifications.md) | 调度器 daemon、job_reports、Discord 通知机制 |
-| [sec-downloader.md](sec-downloader.md) | SEC EDGAR filings 下载器 |
-| [sec-monitor-migration.md](sec-monitor-migration.md) | 本机接管 SEC 监控：正文事实、来源报告、历史去重、Discord 通知及回执 |
-| [hermes-usage.md](hermes-usage.md) | Hermes（宏观/决策）概念与用法 |
+| [scheduling-and-notifications.md](operations/scheduling-and-notifications.md) | 调度器 daemon、job_reports、Discord 通知机制 |
+| [sec-downloader.md](features/sec-filings.md) | SEC EDGAR filings 下载器 |
+| [sec-monitor-migration.md](features/sec-filings.md) | 本机接管 SEC 监控：正文事实、来源报告、历史去重、Discord 通知及回执 |
+| [hermes-usage.md](features/legacy/hermes.md) | Hermes（宏观/决策）概念与用法 |
 
 ## 方向与历史
 
