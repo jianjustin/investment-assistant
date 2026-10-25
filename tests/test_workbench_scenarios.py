@@ -476,3 +476,165 @@ def test_agent_track_end_to_end(offline, scripted_model):
     assert len(repository.agent_runs_for(offline, 'SYNTH', S1)) == 1
     assert len(repository.agent_runs_for(offline, 'SYNE', S1)) == 1
     assert offline.execute("SELECT count(*) FROM trade_plans WHERE kind = 'agent'").fetchone()[0] == 1
+
+
+# --- P4 review expansion end to end (design §9) ---
+
+def _e2e_frame(rows):
+    closes = [c for _, c in rows]
+    index = pd.DatetimeIndex([pd.Timestamp(d, tz='America/New_York') for d, _ in rows])
+    return pd.DataFrame({'Open': closes, 'High': closes, 'Low': closes, 'Close': closes,
+                         'Adj Close': closes, 'Volume': [1000] * len(rows), 'Stock Splits': [0.0] * len(rows)},
+                        index=index)
+
+
+def _e2e_bars(D1, D2, D3):
+    """ALPHA/BETA: reclaim on S1, fill at D1, T1 at D2, trail exit at D3.
+    POSN: long uptrend cut in half on S1 (breaks below MA50, a held position sells)."""
+
+    def frame(ticker, start, end_exclusive):
+        end = end_exclusive - timedelta(days=1)
+        days = [add_trading_days(S1, -(HISTORY - i)) for i in range(HISTORY + 1)]
+        if ticker in ('ALPHA', 'BETA'):
+            base = [50 + i * 0.25 for i in range(HISTORY - 3)]
+            closes = base + [base[-1] - 6] * 3 + [base[-1] + 1]
+            full = dict(zip(days, closes))
+            full.update({D1: 125.0, D2: 131.0, D3: 126.0})
+        else:
+            full = dict(zip(days, [50 + i * 0.5 for i in range(HISTORY + 1)]))
+            full[S1] = full[add_trading_days(S1, -1)] * 0.5
+        return _e2e_frame([(d, c) for d, c in full.items() if d <= end])
+    return frame
+
+
+def _e2e_decide(u, final, reason, now, *, plan_id=None):
+    return service.decide({
+        'request_id': str(uuid.uuid4()), 'ticker': u['ticker'], 'signal_date': u['signal_date'].isoformat(),
+        'candidate_ids': [str(c) for c in u['candidate_ids']], 'proposed_action': u['proposed_action'],
+        'final_action': final, 'decision': 'accept' if final != 'ignore' else 'reject', 'reason': reason,
+        'plan_id': str(plan_id) if plan_id else None}, now=now)['record']
+
+
+def test_review_expansion_end_to_end(offline, scripted_model):
+    import json as _json
+    from contextlib import nullcontext
+    from datetime import UTC, datetime
+    from langchain_core.messages import AIMessage
+    from langgraph.checkpoint.memory import InMemorySaver
+    from investment_assistant.config import NotifyConfig
+    from investment_assistant.workbench import repository, service
+    from investment_assistant.workbench.agent import model as agent_model
+
+    D1, D2, D3 = add_trading_days(S1, 1), add_trading_days(S1, 2), add_trading_days(S1, 3)
+    bars = _e2e_bars(D1, D2, D3)
+
+    class Sources:
+        def bars(self, ticker, start, end_exclusive):
+            return bars(ticker, start, end_exclusive) if ticker in ('ALPHA', 'BETA', 'POSN')                 else OfflineSources().bars(ticker, start, end_exclusive)
+
+        def news(self, ticker):
+            return []
+
+        def discover(self, tickers, start, end):
+            return []
+
+        def earnings(self, ticker, **_):
+            return {'Earnings Date': []}
+
+    def tool_msg(name, args):
+        return AIMessage(content='', tool_calls=[{'name': name, 'args': args, 'id': name + '-1'}])
+
+    alpha_json = _json.dumps({'action': 'buy', 'summary': '回踩修复放量',
+                              'levels': {'entry_low': {'value': 124, 'refs': ['call:1']},
+                                         'entry_high': {'value': 125.5, 'refs': ['call:1']},
+                                         'stop': {'value': 120, 'refs': ['call:1']},
+                                         'target1': {'value': 131, 'refs': ['call:1']}},
+                              'thesis': [{'text': '放量突破 20 日线', 'refs': ['call:1']}]}, ensure_ascii=False)
+    beta_json = _json.dumps({'action': 'pass', 'summary': '趋势不明',
+                             'thesis': [{'text': '量能不足', 'refs': ['call:1']}]}, ensure_ascii=False)
+    posn_json = _json.dumps({'summary': '持仓跌破均线，趋势走坏',
+                             'support': [{'text': '收盘价跌破 MA50', 'refs': ['call:1']}],
+                             'contra': [], 'conflicts': []}, ensure_ascii=False)
+    replies = [tool_msg('get_indicators', {'ticker': 'ALPHA'}), AIMessage(content=alpha_json),
+               tool_msg('get_news', {'days': 7}), AIMessage(content=_json.dumps({'risks': []})),
+               tool_msg('get_indicators', {'ticker': 'BETA'}), AIMessage(content=beta_json),
+               AIMessage(content=_json.dumps({'risks': []})),
+               tool_msg('get_trigger', {}), AIMessage(content=posn_json)]
+    sources = Sources()
+    settings = agent_model.AgentSettings(provider='zhipu', model='glm-5.3', base_url='https://agent.test/v4',
+                                         api_key='sk-test', daily_tokens=None, config_error=None)
+    deps = service.Deps(bar_fetcher=sources.bars, news_fetcher=sources.news, filing_source=sources,
+                        earnings_fetcher=sources.earnings, agent_model=scripted_model(replies),
+                        agent_checkpointer=lambda: nullcontext(InMemorySaver()), agent_settings=settings)
+
+    service.add_trade({'request_id': '00000000-0000-4000-8000-0000000000a1', 'ticker': 'POSN', 'side': 'buy',
+                       'quantity': '10', 'price': '80.00', 'executed_at': '2026-08-10T15:00:00+00:00'},
+                      now=evening(add_trading_days(S1, -10)))
+    batch = service.run_batch(tickers=['ALPHA', 'BETA', 'POSN'], now=evening(S1), deps=deps)
+    assert batch['errors'] == []
+    assert batch['agent']['runs'] == {'ALPHA': 'ok', 'BETA': 'pass'}
+    assert repository.latest_brief(offline, 'POSN', S1)['prompt_version'] == 'agent-brief-1'   # 持仓解读由 Agent 产出
+    prompt_versions = [r[0] for r in offline.execute('SELECT prompt_version FROM signal_briefs').fetchall()]
+    assert set(prompt_versions) <= {'agent-1', 'agent-brief-1'}                               # 不再有 Codex
+
+    view = service.today(now=evening(S1))
+    alpha_unit = next(u for u in view['units'] if u['ticker'] == 'ALPHA')
+    beta_unit = next(u for u in view['units'] if u['ticker'] == 'BETA')
+    agent_plan = repository.agent_plan(offline, 'ALPHA', S1)
+    alpha_decision = _e2e_decide(alpha_unit, 'buy', '照 Agent 计划执行', evening(S1), plan_id=agent_plan['id'])
+    _e2e_decide(beta_unit, 'ignore', '趋势不明', evening(S1))
+    service.add_trade({'request_id': '00000000-0000-4000-8000-0000000000a2', 'ticker': 'ALPHA', 'side': 'buy',
+                       'quantity': '10', 'price': '125.00', 'executed_at': evening(D1).isoformat(),
+                       'decision_id': str(alpha_decision['id'])}, now=evening(D1))
+    service.add_trade({'request_id': '00000000-0000-4000-8000-0000000000a3', 'ticker': 'ALPHA', 'side': 'sell',
+                       'quantity': '10', 'price': '131.00', 'executed_at': evening(D2).isoformat()},
+                      now=evening(D2))
+    service.run_batch(tickers=['ALPHA', 'BETA', 'POSN'], now=evening(D3),
+                      deps=service.Deps(bar_fetcher=sources.bars, news_fetcher=sources.news,
+                                        filing_source=sources, earnings_fetcher=sources.earnings))
+
+    class FakeClient:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, channel, payload):
+            self.sent.append((channel, payload))
+
+    client = FakeClient()
+    notify = NotifyConfig(task_channels={'workbench_review': 'signals'}, task_enabled={'workbench_review': True})
+    saturday = datetime(2026, 9, 5, 0, 0, tzinfo=UTC)            # 北京周六 08:00
+    tick1 = service.review_tick(now=saturday, notify_cfg=notify, trigger_source='scheduled', client=client)
+    assert tick1['weekly']['action'] == 'generated' and tick1['weekly']['push']['sent'] is True
+    week_monday = S1 - timedelta(days=S1.weekday())
+    head = repository.weekly_head(offline, week_monday)
+    assert head['calc_version'] == 'review-4'
+    rows = {row['ticker']: row for row in head['stats']['tracks']['units']}
+    alpha, beta = rows['ALPHA'], rows['BETA']
+    assert alpha['actual']['r'] == 1.2                            # (131-125)/(125-120)，止损取所选 Agent 计划
+    assert alpha['actual']['plan_kind'] == 'agent'
+    assert alpha['rule']['plan_id'] == str(repository.rule_plan(offline, 'ALPHA', S1)['id'])
+    assert alpha['agent']['plan_id'] == str(agent_plan['id'])
+    assert alpha['actual']['decision_id'] == str(alpha_decision['id'])
+    assert alpha['actual']['buy_trade_ids']
+    assert beta['actual']['status'] == 'not_executed' and beta['actual']['r'] == 0.0
+    assert len([s for s in client.sent if '周度复盘' in str(s[1])]) == 1
+
+    tick2 = service.review_tick(now=saturday + timedelta(hours=1), notify_cfg=notify,
+                                trigger_source='scheduled', client=client)
+    assert tick2['weekly']['action'] == 'already_sent'
+    assert len([s for s in client.sent if '周度复盘' in str(s[1])]) == 1
+
+    repository.insert_snapshot(offline, {'request_id': '00000000-0000-4000-8000-0000000000b1',
+                                         'as_of': '2026-07-31', 'equity': '100000', 'note': None,
+                                         'supersedes_id': None}, 'h', recorded_at=datetime(2026, 8, 1, 12, tzinfo=UTC))
+    repository.insert_snapshot(offline, {'request_id': '00000000-0000-4000-8000-0000000000b2',
+                                         'as_of': '2026-08-31', 'equity': '110000', 'note': None,
+                                         'supersedes_id': None}, 'h', recorded_at=datetime(2026, 9, 1, 12, tzinfo=UTC))
+    sunday = datetime(2026, 9, 6, 0, 0, tzinfo=UTC)
+    tick3 = service.review_tick(now=sunday, notify_cfg=notify, trigger_source='scheduled', client=client)
+    assert tick3['monthly']['action'] == 'generated' and tick3['monthly']['push']['sent'] is True
+    assert repository.monthly_head(offline, date(2026, 8, 1))['calc_version'] == 'monthly-2'
+    assert len([s for s in client.sent if '月度复盘 · 2026-08' in str(s[1])]) == 1
+
+    live = service.tracks(now=sunday, since=week_monday, until=week_monday + timedelta(days=6))
+    assert live['units'] == head['stats']['tracks']['units']

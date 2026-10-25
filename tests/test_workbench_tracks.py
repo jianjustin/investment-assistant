@@ -181,7 +181,7 @@ def test_summarize_by_pool_and_plan_kind():
                          'buy_trade_ids': [], 'status': 'not_executed', 'r': 0.0, 'open': False})]
     out = tracks.summarize(rows)
     assert out['all']['actual']['units'] == 2 and out['core']['actual']['units'] == 1
-    assert out['all']['actual']['by_plan_kind'] == {'agent': 1, None: 1}
+    assert out['all']['actual']['by_plan_kind'] == {'agent': 1, 'none': 1}
     assert out['extended']['actual']['by_status'] == {'not_executed': 1}
 
 

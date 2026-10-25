@@ -10,9 +10,10 @@
 2. 工作台标的来自数据库观察名单（`watchlist_items` 中 `active` 的美股即观察池，上限 100 只、核心池上限 15 只；配置 `watchlist` 不再被工作台读取，其他任务照旧）。超过上限时写入与批处理都会报错，不会静默截断。
 2a. P1 起需再执行迁移 `017_trade_plans.sql`（新增 5 张表与 `signal_decisions.plan_id`，只追加不回填）；未迁移时计划相关接口与推送同样返回 503。执行前先 `pg_dump` 备份。
 2b. 配置新增 `workbench` 段：`risk_pct`（单笔风险，默认 0.01）、`single_cap`（单票上限 0.25）、`total_cap`（总持仓上限 1.0）、`public_url`（推送链接前缀，默认 `http://localhost:8787`）、`return_tiers`（月度收益分档，默认 `[0.20, 0.10, 0.0]`）。示例见 `config/investment-assistant.example.json`；改参数不需要新 `plan_version`，参数会冻结进每份计划。
-3. LLM 解读由 `WORKBENCH_LLM_PROVIDER` 选择：默认 `codex`，通过本机 Codex CLI 使用已登录的 ChatGPT 套餐（只读沙箱、不保存会话、单次约 20 秒）；`deepseek` 需要 `DEEPSEEK_API_KEY`；`off` 关闭。调用失败时退回规则版解读。可用 `WORKBENCH_CODEX_MODEL` 指定模型。
+3. 解读由 Agent 轨道统一产出（P4 起）：无冲突的买入单元直接取其 `propose` 运行的建议摘要与反方；卖出、观察与有冲突的单元由单阶段 `interpret` 运行（`agent-brief-1`）生成只读解读。模型不可用或校验失败时退回规则版摘要。旧的 Codex / DeepSeek 解读客户端已退役，环境变量 `WORKBENCH_LLM_PROVIDER` 不再被读取。
 4. `SEC_USER_AGENT`（含联系邮箱）用于 SEC 列表；列表失败只记入运行报告。
 2c. P2 起需再执行迁移 `018_pool_and_market_context.sql`（新增 `pool_tiers`、`macro_observations`、`market_regimes`、`rule_backchecks` 四张表，只追加）；执行前先 `pg_dump` 备份。配置环境变量 `FRED_API_KEY`（FRED 官方 API 密钥；未配置时运行报告记「未配置」，不写库、不发请求）。在「设置 → 观察名单」为打算重点跟踪的美股勾选「核心」、按需选行业 ETF（SMH/XLK/QQQ）。
+2e. P4 起需再执行迁移 `020_review_expansion.sql`（`agent_runs` 加 `mode` 列并替换 ok/plan 约束、`signal_briefs` 加 `agent_run_id` 列、新增 `review_pushes` 表与 `workbench_review` 定时任务行；只追加，不 UPDATE、不 DELETE、不回填）；执行前先 `pg_dump` 备份，用 `psql --single-transaction` 执行，不走 `migrate` 入口。迁移插入的 `workbench_review` 任务为**关闭**状态，验收时在「设置 → 定时任务」开启。
 2d. P3 起需再执行迁移 `019_agent_track.sql`（新增 `agent_runs`、`agent_tool_calls`，并把 `trade_plans.kind` 放宽为含 `agent`；对旧表只放宽约束与加部分唯一索引，不 UPDATE、不 DELETE、不回填）；执行前先 `pg_dump` 备份。另需对目标库执行一次 `python -m investment_assistant.workbench.agent setup`（由 LangGraph 自带的 `PostgresSaver.setup()` 建 `checkpoints` 等三张表，不进本项目迁移）。配置环境变量 `ZHIPU_API_KEY`（智谱密钥），并核对 `WORKBENCH_AGENT_BASE_URL`（默认 `https://open.bigmodel.cn/api/coding/paas/v4`，即 GLM Coding Plan 端点）。
 
 ## 每日流程
@@ -50,6 +51,20 @@
 - **实际交易**：先进先出配对，买入费用计入成本，卖出费用按数量分摊；跨拆股时按拆股比例换算。显示持有交易日数、盈亏、同期 SPY、最大浮盈与浮亏。
 - **对照组**：所有已决定的单元（包括否决和观察）都假设在下一交易日开盘入场，统计 5／10／20 个交易日相对 SPY 的超额收益；卖出单元取反（避开的跌幅），观察单元只记录走势。窗口没走完显示「未成熟」，不用部分窗口代替。
 - **周度复盘**：按规则、按决定（采纳／否决／降级）、执行偏差（成交价较下一交易日开盘、决定到成交的小时数）、无信号交易四个视角，只给计数、均值、中位数和原始数值。快照生成后冻结，之后更正决定不会改变已生成的快照。
+
+## 轨道对比
+
+- **功能（tracks-1）**：对同一批买入单元并列三条轨道的结果，R 按各自计划的止损计。单元集合 = 窗口内有 rule 计划或有 propose 运行的单元（规则因 ATR 跳过的单元靠 Agent 运行进入集合）。各轨道状态：missing 缺失、not_executable 计划作废（0R）、pending 待定（有效期内未成交，不计入均值）、expired 到期未成交（0R）、open 未平仓（浮动 R）、closed 已平仓、pass 不建议（0R）、not_executed 未执行（0R，忽略/观察/卖出或过期未成交）、no_plan 无计划成交。实际一列另记 plan_kind（照规则 / 照 Agent / 自定执行）；已平仓部分用买入日口径的止损，未平仓部分换算到当前拆股口径并按最新收盘计浮动 R，两部分按股数加权。汇总只给计数与描述统计（均值、中位、合计、盈利数），「没算出来」与「0R」分开，均值只用已确定的值。每行的计划、运行、决定、成交 id 都可追溯到对应接口。
+- **手动入口**：页面「复盘 → 轨道对比」（汇总表 + 单元表，计划 id 链到标的页，点 Agent 运行可展开工具调用）；API `GET /api/workbench/review/tracks`（参数 since / until，默认最近 90 天，不冻结）；周度快照（review-4）与月度快照（monthly-2）各冻结一份当期 tracks。
+- **验证入口**：`GET /api/workbench/review/tracks` 的 units 与快照 stats.tracks.units 逐行一致；页面「复盘 → 轨道对比」。
+- **验证示例**：采纳一份 Agent 计划并按其入场与 T1 卖出后，打开「复盘 → 轨道对比」，该单元实际列显示「已平仓 +x.xxR · 照Agent」，点计划与运行 id 均可跳转查看原始记录。
+
+## 复盘推送
+
+- **功能**：定时任务 `workbench_review`（北京时间每天 08:00，迁移插入为关闭，验收时开启；默认 `signals` 频道）每天检查一次：周度在每周最后一个交易日收盘后的首次运行冻结并推送该周快照（review-4）；月度在上月有月末资金快照且未推送过时生成并推送（monthly-2），缺快照时从次月第一个周六起提醒一次。收盘前生成的快照会被新快照更替后推送；推送成功后不再重复；推送失败（send_failed）或任务开关关闭（task_disabled）时下一次运行重试；每次尝试写一行 `review_pushes`。周度与月度各在自己的事务里生成，互不阻塞。手动推送强制重发，不受已推送限制。
+- **手动入口**：页面「复盘 → 周度复盘 / 月度复盘」卡片的「推送到 Discord」按钮（旁显最近一次结果）；API `POST /api/jobs/workbench_review/run`（与定时运行相同逻辑，trigger_source 为 manual）、`GET/POST /api/workbench/review-pushes`（POST 请求体 kind 与 period；该周期无快照返回 404，period 不是周一或 1 日返回 400）。
+- **验证入口**：运行报告（`job_reports` 中 `workbench_review` 的 summary，含 weekly 与 monthly 各自的 action 与推送结果）；`GET /api/workbench/review-pushes` 列出每次尝试；页面按钮旁的结果。
+- **验证示例**：周六 08:00 后手动 `POST /api/jobs/workbench_review/run`，运行报告 `weekly.action == "generated"` 且 `push.sent == true`，Discord 收到一条「📅 周度复盘」；同日再跑一次 `weekly.action == "already_sent"`，不再发送。
 
 ## 交易计划
 
@@ -103,7 +118,7 @@
 
 ## 资金与月度复盘
 
-- **功能**：月末按券商录总资金快照（`as_of` + 权益），更正必须指向当前有效快照；出入金按笔录入（入金为正），只能作废。月度收益 =（本月末快照 − 上月末快照 − 区间净出入金）÷ 上月末快照，任一端缺快照显示「缺资金快照，无法计算」；附分档（>20% 非常优秀 / 10–20% 优秀 / 0–10% 可行 / <0 需关注）、同期 SPY 与超额、流程复查（连续 3 个月复合收益 < 0 且跑输 SPY 才标记）、敏感性表（当月已平仓交易的实际 R 按 0.5%/1%/1.5%/2% 近似）、当月纪律与计划影子。周度复盘升为 `review-2`，新增计划影子与纪律两个视角；已生成的旧快照不变。计划影子（`plan-shadow-1`）按价位独立模拟规则与自定计划：三种入场、止损与 T1 同日按止损先、移动止损保本下限、跳空穿止损按开盘价。
+- **功能**：月末按券商录总资金快照（`as_of` + 权益），更正必须指向当前有效快照；出入金按笔录入（入金为正），只能作废。月度收益 =（本月末快照 − 上月末快照 − 区间净出入金）÷ 上月末快照，任一端缺快照显示「缺资金快照，无法计算」；附分档（>20% 非常优秀 / 10–20% 优秀 / 0–10% 可行 / <0 需关注）、同期 SPY 与超额、流程复查（连续 3 个月复合收益 < 0 且跑输 SPY 才标记）、敏感性表（当月已平仓交易的实际 R 按 0.5%/1%/1.5%/2% 近似）、当月纪律与计划影子。周度复盘升为 `review-2`，新增计划影子与纪律两个视角；已生成的旧快照不变。计划影子（`plan-shadow-1`）按价位独立模拟规则与自定计划：三种入场、止损与 T1 同日按止损先、移动止损保本下限、跳空穿止损按开盘价。P4 起月度快照升为 `monthly-2`：附 3 个月复查明细（复合与 SPY 复合）、敏感性表按平仓时间排序并注明笔数、冻结一份当期轨道对比。
 - **手动入口**：页面「复盘 → 资金」（快照与出入金录入、作废；风险参数只读显示）与「复盘 → 月度复盘」（选月份生成、查看）；API `GET/POST /api/workbench/account/snapshots`、`GET/POST /api/workbench/account/flows`、`POST /api/workbench/account/flows/{id}/void`、`GET/POST /api/workbench/monthly-reviews`、`GET /api/workbench/plans/shadow`、`GET /api/workbench/discipline`；CLI 无。
 - **验证入口**：页面两个页签；月度快照生成后冻结（`stats` JSONB），更正需 supersede。
 - **验证示例**：录 8-31 与 9-30 两笔快照后，「复盘 → 月度复盘」选 2026-09-01 生成，页面显示「月度收益 +5.00% · 可行 · SPY …」。

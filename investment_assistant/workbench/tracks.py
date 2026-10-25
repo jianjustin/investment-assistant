@@ -135,9 +135,10 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for pool in ('all', 'core', 'extended'):
         group = rows if pool == 'all' else [row for row in rows if row['pool'] == pool]
         block = {track: _stats([row[track] for row in group]) for track in ('rule', 'agent', 'actual')}
-        kinds: dict[Any, int] = {}
+        kinds: dict[str, int] = {}          # plan_kind as a string key: None (no plan) sorts in JSON
         for row in group:
-            kinds[row['actual'].get('plan_kind')] = kinds.get(row['actual'].get('plan_kind'), 0) + 1
+            kind = row['actual'].get('plan_kind') or 'none'
+            kinds[kind] = kinds.get(kind, 0) + 1
         block['actual']['by_plan_kind'] = kinds
         out[pool] = block
     return out
