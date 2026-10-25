@@ -177,7 +177,7 @@ def market_row(**over):
 
 
 def ctx(**over):
-    context = {'context_version': 'context-1', 'pool_tier': 'core',
+    context = {'context_version': 'context-2', 'pool_tier': 'core',
                'regime': {'id': 'r1', 'label': 'risk_off'},
                'sector': {'etf': 'SMH', 'rs20': -0.12, 'rs60': -0.2, 'state': 'weak'},
                'next_earnings': date(2026, 11, 20)}

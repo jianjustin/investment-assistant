@@ -143,8 +143,10 @@ def _position_plan_state(conn, ticker: str, book: dict[str, Any], ticker_bars: l
     return plan, state
 
 
-def plan_context(conn, ticker: str, session: date, *, now: datetime) -> dict[str, Any]:
-    """Market context frozen into a plan: tier at the signal date, regime, sector, earnings."""
+def plan_context(conn, ticker: str, session: date, *, now: datetime,
+                 screen_ref: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Market context frozen into a plan: tier and source at the signal date, regime, sector,
+    earnings, and the screen pick that put the ticker in the pool."""
     entry = repository.pool_entry_at(conn, ticker, session, cutoff_at=now)
     tier = entry['tier'] if entry and entry['tier'] in ('core', 'extended') else 'unknown'
     regime_row = repository.regime_for(conn, session, cutoff_at=now)
@@ -158,6 +160,8 @@ def plan_context(conn, ticker: str, session: date, *, now: datetime) -> dict[str
     next_earnings = (earnings['earnings_date'] if earnings and earnings['status'] == 'known'
                      and earnings['earnings_date'] and earnings['earnings_date'] >= session else None)
     return {'context_version': plans.CONTEXT_VERSION, 'pool_tier': tier,
+            'source': entry.get('source') if entry else None,
+            'screen': screen_ref,
             'regime': ({'id': str(regime_row['id']), 'label': regime_row['label']}
                        if regime_row is not None else None),
             'sector': sector, 'next_earnings': next_earnings}
@@ -769,9 +773,9 @@ def _track_rows(conn, since: date, until: date, *, session: date, now: datetime)
             splits=splits, session=session,
             unit_valid_until=max((p['valid_until'] for p in (rule, agent_plan, chosen)
                                   if p is not None), default=None))
-        def tier_of(plan):
-            return ((plan.get('inputs') or {}).get('context') or {}).get('pool_tier') if plan else None
-        pool = review.pool_of(tier_of(rule) or tier_of(agent_plan),
+        def context_of(plan):
+            return (plan.get('inputs') or {}).get('context') if plan else None
+        pool = review.pool_of(context_of(rule) or context_of(agent_plan),
                               repository.pool_entry_at(conn, ticker, signal_date, cutoff_at=now))
         rows.append({
             'ticker': ticker, 'signal_date': signal_date.isoformat(), 'pool': pool,
@@ -824,9 +828,9 @@ def generate_weekly(week_start: date, *, notes: str = '', supersedes_id=None, no
             if plan['signal_date'] > week_end:
                 continue
             ticker_bars = repository.read_bars(conn, plan['ticker'], session, cutoff_at=now, limit=400)
-            # Pool of a plan: the frozen context tier first, else the tier recorded on its signal date.
+            # Pool of a plan: the frozen context first, else the tier recorded on its signal date.
             plan_outcomes.append({**plan, 'pool': review.pool_of(
-                (plan.get('inputs') or {}).get('context', {}).get('pool_tier'),
+                (plan.get('inputs') or {}).get('context'),
                 repository.pool_entry_at(conn, plan['ticker'], plan['signal_date'], cutoff_at=now)),
                 'rule_ids': [c['rule_id'] for c in repository.unit_candidates(conn, plan['ticker'], plan['signal_date'])
                              if c['action'] == 'buy'],

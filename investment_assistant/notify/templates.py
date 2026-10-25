@@ -258,7 +258,7 @@ def workbench_weekly(payload):
     for r in rules:
         mean = r.get("r_mean")
         mean_text = _r(mean)                                       # 触发未成交：写 —，不写 NoneR
-        pool_text = "核心" if r["pool"] == "core" else "扩展"
+        pool_text = {"core": "核心", "screen": "筛选", "extended": "扩展"}.get(r["pool"], r["pool"])
         rule_id, triggers, plans, filled = r["rule_id"], r["triggers"], r["plans"], r["filled"]
         rule_lines.append(f"{pool_text} {rule_id} 触发 {triggers}"
                           f" · 计划 {plans} · 成交 {filled} · 均值 {mean_text}")

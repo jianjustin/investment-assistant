@@ -199,14 +199,14 @@ def test_own_plan_sizes_from_own_entry_not_signal_close():
 
 # --- P2: market context frozen into plans ---
 
-CONTEXT = {'context_version': 'context-1', 'pool_tier': 'core',
+CONTEXT = {'context_version': 'context-2', 'pool_tier': 'core',
            'regime': {'id': 'r1', 'label': 'risk_off'},
            'sector': {'etf': 'SMH', 'rs20': -0.01, 'rs60': -0.02, 'state': 'weak'},
            'next_earnings': date(2026, 11, 20)}
 
 
 def test_context_flags():
-    assert plans.CONTEXT_VERSION == 'context-1'
+    assert plans.CONTEXT_VERSION == 'context-2'
     assert plans.context_flags(None) == []
     assert plans.context_flags({'regime': {'id': 'r', 'label': 'neutral'}, 'sector': None}) == []
     assert plans.context_flags({'regime': None, 'sector': None}) == ['regime_unavailable']

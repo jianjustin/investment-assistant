@@ -16,7 +16,7 @@ from investment_assistant.data.calendar import add_trading_days
 
 PLAN_VERSION = 'plan-1'
 AGENT_VERSION = 'agent-1'   # the agent track's plan version; graph.py re-exports it
-CONTEXT_VERSION = 'context-1'
+CONTEXT_VERSION = 'context-2'
 ENTRY_ATR = Decimal('0.5')
 STOP_ATR = Decimal('2')
 TARGET_ATR = Decimal('4')

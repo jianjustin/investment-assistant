@@ -23,6 +23,7 @@ class Pool:
     core: tuple[str, ...]
     extended: tuple[str, ...]
     sectors: dict[str, str] = field(default_factory=dict)
+    sources: dict[str, str] = field(default_factory=dict)  # ticker -> 'watchlist' | 'screen'，缺失视为 watchlist
 
     @property
     def tickers(self) -> tuple[str, ...]:
@@ -34,6 +35,9 @@ class Pool:
         if ticker in self.extended:
             return 'extended'
         return None
+
+    def source(self, ticker: str) -> str | None:
+        return self.sources.get(ticker, 'watchlist') if self.tier(ticker) else None
 
     @classmethod
     def all_core(cls, tickers: list[str]) -> 'Pool':
@@ -104,19 +108,46 @@ def from_watchlist(rows: list[dict]) -> Pool:
     return Pool(core=tuple(sorted(core)), extended=tuple(sorted(extended)), sectors=sectors)
 
 
-def tier_changes(pool: Pool, latest: dict[str, dict]) -> list[dict]:
-    """Rows to append: tickers whose (tier, sector_etf) differs, plus removals.
+def with_screen(base: Pool, members: tuple[str, ...]) -> Pool:
+    """The watchlist pool plus today's screen members: extended tier, source 'screen'.
 
-    A ticker already recorded as removed and still absent is not re-written.
+    Members already in `base` keep their tier and source. The pool cap is a
+    defense line: the screen stage already caps members against MAX_POOL.
+    """
+    additions: list[str] = []
+    have = set(base.tickers)
+    for ticker in members:
+        upper = ticker.upper()
+        if upper in have:
+            continue
+        have.add(upper)
+        additions.append(upper)
+    total = len(have)
+    if total > MAX_POOL:
+        raise ValueError(f'股票池超出上限：{total} > {MAX_POOL}')
+    sources = dict(base.sources)
+    sources.update({t: 'screen' for t in additions})
+    return Pool(core=base.core, extended=base.extended + tuple(additions),
+                sectors=base.sectors, sources=sources)
+
+
+def tier_changes(pool: Pool, latest: dict[str, dict]) -> list[dict]:
+    """Rows to append: tickers whose (tier, sector_etf, source) differs, plus removals.
+
+    A ticker already recorded as removed and still absent is not re-written;
+    a removal keeps the source it was removed from.
     """
     changes: list[dict] = []
     for ticker in pool.tickers:
         want = pool.tier(ticker)
         sector = pool.sectors.get(ticker)
+        source = pool.sources.get(ticker, 'watchlist')
         have = latest.get(ticker)
-        if have is None or have['tier'] != want or have.get('sector_etf') != sector:
-            changes.append({'ticker': ticker, 'tier': want, 'sector_etf': sector})
+        if (have is None or have['tier'] != want or have.get('sector_etf') != sector
+                or have.get('source', 'watchlist') != source):
+            changes.append({'ticker': ticker, 'tier': want, 'sector_etf': sector, 'source': source})
     for ticker, have in latest.items():
         if have['tier'] != 'removed' and ticker not in pool.tickers:
-            changes.append({'ticker': ticker, 'tier': 'removed', 'sector_etf': None})
+            changes.append({'ticker': ticker, 'tier': 'removed', 'sector_etf': None,
+                            'source': have.get('source', 'watchlist')})
     return changes

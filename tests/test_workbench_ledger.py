@@ -257,7 +257,7 @@ def test_own_plan_gets_context(workbench_db, cids):
         cids, own_plan={'request_id': str(uuid.uuid4()), **own_levels()}), now=NOW)
     plan = repository.plan_by_id(workbench_db, out['record']['plan_id'])
     ctx = plan['inputs']['context']
-    assert ctx['context_version'] == 'context-1'
+    assert ctx['context_version'] == 'context-2'
     assert ctx['pool_tier'] == 'unknown'      # no pool_tiers rows in this schema
     assert ctx['regime'] is None and ctx['sector'] is None
     assert 'regime_unavailable' in plan['warnings']

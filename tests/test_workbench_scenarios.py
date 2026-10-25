@@ -362,7 +362,7 @@ def test_pool_and_context_end_to_end(offline, monkeypatch):
 
     week_start = add_trading_days(S1, -1)                               # Monday of the signal week
     weekly = service.generate_weekly(week_start, now=evening(add_trading_days(S1, 2)))
-    assert weekly['calc_version'] == 'review-4'
+    assert weekly['calc_version'] == 'review-5'
     by_pool = weekly['stats']['by_pool']
     assert by_pool['extended']['trend_reclaim']['triggers'] == 25
     assert by_pool['core']['trend_reclaim']['triggers'] == 1            # SYNTH；X01 仍归扩展池
@@ -607,7 +607,7 @@ def test_review_expansion_end_to_end(offline, scripted_model):
     assert tick1['weekly']['action'] == 'generated' and tick1['weekly']['push']['sent'] is True
     week_monday = S1 - timedelta(days=S1.weekday())
     head = repository.weekly_head(offline, week_monday)
-    assert head['calc_version'] == 'review-4'
+    assert head['calc_version'] == 'review-5'
     rows = {row['ticker']: row for row in head['stats']['tracks']['units']}
     alpha, beta = rows['ALPHA'], rows['BETA']
     assert alpha['actual']['r'] == 1.2                            # (131-125)/(125-120)，止损取所选 Agent 计划

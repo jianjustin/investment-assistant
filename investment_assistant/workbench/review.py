@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from investment_assistant.data.calendar import add_trading_days, trading_days_between
 from investment_assistant.workbench import ledger, repository
 
-CALC_VERSION = 'review-4'
+CALC_VERSION = 'review-5'
 WINDOWS = (5, 10, 20)
 NY = ZoneInfo('America/New_York')
 
@@ -126,12 +126,21 @@ def _plan_summary(plan_outcomes: list[dict[str, Any]], week_start: date, week_en
     return out
 
 
-def pool_of(context_tier: str | None, entry: dict | None) -> str:
-    """Pool of a plan: the frozen context tier wins, else the tier recorded at the signal date.
+def pool_of(context: dict | None, entry: dict | None) -> str:
+    """Pool of a plan: the frozen context wins, else the tier recorded at the signal date.
 
-    Only 'extended' lands in the extended pool; unknown and legacy (P1) plans count as core.
+    'screen' comes first (a screened pick stays screen even after entering the main
+    list); then only 'extended' lands in the extended pool — unknown and legacy
+    (P1) plans count as core. Old contexts and entries without a source keep the
+    two-way split.
     """
-    tier = context_tier or (entry or {}).get('tier')
+    context = context or {}
+    if context.get('source') == 'screen':
+        return 'screen'
+    entry = entry or {}
+    if not context and entry.get('source') == 'screen':
+        return 'screen'
+    tier = context.get('pool_tier') or entry.get('tier')
     return 'extended' if tier == 'extended' else 'core'
 
 
