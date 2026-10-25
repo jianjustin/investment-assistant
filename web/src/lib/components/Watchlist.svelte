@@ -85,7 +85,7 @@
         {:else}—{/if}
       </td>
       <td>{row.latest_period ?? '尚未采集'}<small>{Object.entries(row.datasets ?? {}).map(([key, value]) => `${datasetName(key)}: ${statusName((value as any).status)}`).join(' · ') || '尚无本地数据'}</small></td>
-      <td>{row.next_event?.date ?? '尚无本地事件'}<small>{row.next_event?.title ?? ({research_verification:'研究验证'}[row.next_event?.kind as string] ?? '')}</small></td>
+      <td>{row.next_event?.date ?? '尚无财报日'}<small>{row.next_event?.title ?? ({earnings:'财报'}[row.next_event?.kind as string] ?? '')}</small></td>
       <td><button disabled={saving || !!row.identity_error} onclick={() => edit(row)}>编辑</button><button disabled={saving || !!row.identity_error} onclick={() => toggle(row)}>{row.status === 'active' ? '暂停' : '恢复'}</button><button disabled={saving} onclick={() => mutate(() => api.deleteWatchlistItem(row.ticker))}>删除</button></td></tr>
     {:else}<tr><td colspan="8">暂无关注证券</td></tr>{/each}
   </tbody></table></div>

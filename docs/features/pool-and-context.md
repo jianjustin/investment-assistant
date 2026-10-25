@@ -38,7 +38,7 @@
 
 ## 入口与验证
 
-- 页面：「设置 → 关注列表」（核心池勾选、行业 ETF 下拉，表头显示「美股池 n/100 · 核心 m/15」；超限或标签不规范时返回 400，观察名单不变）；「今日」顶部的市场环境卡片，以及计划卡片上的「区制 · 下次财报 · 行业」一行；「复盘 → 上线前检查」。
+- 页面：「设置 → 关注列表」（核心池勾选、行业 ETF 下拉，「下一事件」列显示今天及以后最近的财报日，表头显示「美股池 n/100 · 核心 m/15」；超限或标签不规范时返回 400，观察名单不变）；「今日」顶部的市场环境卡片，以及计划卡片上的「区制 · 下次财报 · 行业」一行；「复盘 → 上线前检查」。
 - API：`GET/POST /api/watchlist`、`DELETE /api/watchlist/{ticker}`、`GET /api/watchlist/resolve?symbol=`；`GET/POST /api/workbench/backchecks`（body 可以带 `tickers`）。
 - 命令行：`python -m investment_assistant.workbench.backcheck [--tickers A,B]`。
 - 运行报告：`summary.pool`（`core` / `extended` / `holdings` / `changes`）、`summary.regime`、`summary.etfs`、`summary.macro`（未配置 FRED 时记 `not_configured`）、`summary.timings`（总耗时 > 1800 秒时记 `batch_over_budget`）。

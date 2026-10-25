@@ -97,6 +97,13 @@ describe('security picker', () => {
   })
 })
 
+it('labels earnings events', async () => {
+  vi.spyOn(api, 'getWatchlist').mockResolvedValue({ rows:[{...rows[0], next_event:{date:'2026-11-19', kind:'earnings', title:null}}] } as any)
+  render(Watchlist)
+  expect(await screen.findByText('2026-11-19')).toBeInTheDocument()
+  expect(screen.getByText('财报')).toBeInTheDocument()
+})
+
 it('shows persisted US coverage and a dated manual verification event in readable Chinese',async()=>{
  vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({rows:[{...rows[0],name:'Micron',latest_period:'2026-09-03',datasets:{financials:{status:'failed'}},next_event:{date:'2099-01-01',kind:'research_verification',title:'核对下一季毛利'}}]}),{status:200})))
  try{

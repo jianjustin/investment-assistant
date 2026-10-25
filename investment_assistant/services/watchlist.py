@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from investment_assistant.api.http import parse_payload_tags
@@ -50,7 +50,7 @@ def _enrich(row, conn):
         return result
     from investment_assistant.us_research import repository as us_repo
     from investment_assistant.data.identity import stock_id as us_stock_id
-    from investment_assistant.research.card_repository import get_card
+    from investment_assistant.workbench import repository as wb_repo
     sid = us_stock_id(row['ticker'])
     states = us_repo.states(conn, sid)
     financials = us_repo.read_rows(conn, sid, 'financials')
@@ -59,11 +59,10 @@ def _enrich(row, conn):
                and r.get('start') and r.get('end') and r['start'] < r['end']]
     successful = states.get('financials', {}).get('last_success_details') or {}
     identity = successful.get('identity') or {}
-    card = get_card(conn, sid)
-    event = ((card or {}).get('body') or {}).get('improvement') or {}
-    event_date = event.get('next_event_date')
-    next_event = ({'date': event_date, 'kind': 'research_verification', 'title': event.get('next_event')}
-                  if event_date and str(event_date) >= date.today().isoformat() else None)
+    earnings = wb_repo.latest_earnings(conn, row['ticker'], cutoff_at=datetime.now(UTC))
+    earnings_day = str(earnings.get('earnings_date')) if earnings and earnings.get('earnings_date') else None
+    next_event = ({'date': earnings_day, 'kind': 'earnings', 'title': None}
+                  if earnings_day and earnings_day >= date.today().isoformat() else None)
     result.update(name=identity.get('name'), latest_period=max(periods, default=None),
                   datasets=states, next_event=next_event)
     return result
