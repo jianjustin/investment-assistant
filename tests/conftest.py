@@ -27,7 +27,8 @@ def client():
 
 WORKBENCH_MIGRATIONS = ('002_watchlist_items.sql', '006_job_reports.sql', '007_scheduled_jobs.sql',
                         '011_filings.sql', '016_us_workbench.sql', '017_trade_plans.sql',
-                        '018_pool_and_market_context.sql', '019_agent_track.sql', '020_review_expansion.sql')
+                        '018_pool_and_market_context.sql', '019_agent_track.sql', '020_review_expansion.sql',
+                        '023_screen_and_beijing_jobs.sql')
 
 
 @pytest.fixture

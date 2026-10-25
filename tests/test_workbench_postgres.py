@@ -359,6 +359,91 @@ def test_missing_tables_lists_018(workbench_db):
     assert 'market_regimes' in repository.missing_tables(workbench_db)
 
 
+def _screen_run(session, created_at, **overrides):
+    base = {'session': session, 'calc_version': 'screen-1', 'universe_name': 'nasdaq100',
+            'universe_as_of': date(2026, 10, 1), 'cutoff_at': created_at, 'status': 'success',
+            'summary': {'counts': {}}, 'run_id': 'r1', 'created_at': created_at}
+    base.update(overrides)
+    return base
+
+
+def _screen_row(ticker, **overrides):
+    base = {'ticker': ticker, 'group': 'setup', 'trigger_rules': [], 'filters': {'data': 'ok'},
+            'rs': 0.05, 'atr_pct': 0.04, 'dollar_volume_20': 6e8, 'rank': 1, 'selected': True}
+    base.update(overrides)
+    return base
+
+
+def test_screen_run_roundtrip_and_latest_per_session(workbench_db):
+    from investment_assistant.workbench import repository
+    s1 = date(2026, 10, 21)
+    t1, t2 = NOW, NOW + timedelta(hours=1)
+    stored1 = repository.insert_screen_run(workbench_db, _screen_run(s1, t1),
+                                           [_screen_row('A', group='trigger', trigger_rules=['trend_reclaim'], rank=1),
+                                            _screen_row('B', rank=2)])
+    assert stored1['session'] == s1 and stored1['status'] == 'success'
+    rows = repository.screen_results(workbench_db, stored1['id'])
+    assert [r['ticker'] for r in rows] == ['A', 'B']
+    assert rows[0]['group'] == 'trigger' and rows[0]['trigger_rules'] == ['trend_reclaim']
+    assert rows[0]['selected'] is True and rows[1]['selected'] is True
+    stored2 = repository.insert_screen_run(workbench_db, _screen_run(s1, t2, run_id='r2'), [])
+    assert repository.latest_screen_run(workbench_db, session=s1,
+                                        cutoff_at=t2 + timedelta(hours=1))['id'] == stored2['id']
+    assert repository.latest_screen_run(workbench_db, session=s1,
+                                        cutoff_at=t1 + timedelta(minutes=1))['id'] == stored1['id']
+    assert repository.latest_screen_run(workbench_db, session=None,
+                                        cutoff_at=t2 + timedelta(hours=1))['id'] == stored2['id']
+    assert repository.latest_screen_run(workbench_db, session=date(2026, 10, 20),
+                                        cutoff_at=t2 + timedelta(hours=1)) is None
+
+
+def test_screen_selected_since_uses_latest_run_per_session(workbench_db):
+    from investment_assistant.workbench import repository
+    s1, s2 = date(2026, 10, 21), date(2026, 10, 22)
+    t1, t2 = NOW, NOW + timedelta(hours=1)
+    repository.insert_screen_run(workbench_db, _screen_run(s1, t1),
+                                 [_screen_row('A', rank=1), _screen_row('B', rank=2)])
+    # Rerun of S1: only B is selected this time; the earlier A pick no longer counts.
+    repository.insert_screen_run(workbench_db, _screen_run(s1, t2), [_screen_row('B', rank=1)])
+    repository.insert_screen_run(workbench_db, _screen_run(s2, t2 + timedelta(hours=1)),
+                                 [_screen_row('C', rank=1)])
+    got = repository.screen_selected_since(workbench_db, s1, s1, cutoff_at=t2 + timedelta(hours=2))
+    assert got == {'B': {'session': s1, 'rank': 1}}
+    got = repository.screen_selected_since(workbench_db, s1, s2, cutoff_at=t2 + timedelta(hours=2))
+    assert got == {'B': {'session': s1, 'rank': 1}, 'C': {'session': s2, 'rank': 1}}
+
+
+def _lock_plan(ticker, valid_until, *, status='ok', invalid_reasons=None):
+    from decimal import Decimal
+    return {'ticker': ticker, 'signal_date': date(2026, 10, 21), 'kind': 'rule', 'ref_price': Decimal('100'),
+            'atr': Decimal('2'), 'entry_low': Decimal('98'), 'entry_high': Decimal('101'), 'stop': Decimal('95'),
+            'target1': Decimal('110'), 'trail_atr_multiple': 3,
+            'valid_from': date(2026, 10, 21), 'valid_until': valid_until,
+            'sizing': {'shares': 10}, 'status': status,
+            'invalid_reasons': invalid_reasons or [], 'warnings': [], 'inputs': {}}
+
+
+def _trade(conn, ticker, side, *, executed_at=NOW):
+    conn.execute('INSERT INTO trades (request_id, request_hash, ticker, side, quantity, price, executed_at) '
+                 "VALUES (%s, 'h', %s, %s, 10, 100, %s)", [uuid.uuid4(), ticker, side, executed_at])
+
+
+def test_locked_screen_tickers(workbench_db):
+    from investment_assistant.workbench import repository
+    session = date(2026, 10, 21)
+    cutoff = datetime.now(UTC) + timedelta(hours=1)
+    repository.insert_plan(workbench_db, _lock_plan('OKP', session + timedelta(days=5)))
+    repository.insert_plan(workbench_db, _lock_plan('INVP', session + timedelta(days=5), status='invalid',
+                                               invalid_reasons=['earnings']))
+    repository.insert_plan(workbench_db, _lock_plan('EXPP', session - timedelta(days=1)))
+    repository.insert_plan(workbench_db, _lock_plan('FUTP', session + timedelta(days=5)))
+    workbench_db.execute("UPDATE trade_plans SET created_at = now() + interval '2 hours' WHERE ticker = 'FUTP'")
+    _trade(workbench_db, 'HELD', 'buy')
+    _trade(workbench_db, 'GONE', 'buy', executed_at=NOW - timedelta(days=1))
+    _trade(workbench_db, 'GONE', 'sell')
+    assert repository.locked_screen_tickers(workbench_db, session, cutoff_at=cutoff) == {'OKP', 'HELD'}
+
+
 def test_pool_entry_at_respects_effective_session_and_cutoff(workbench_db):
     from datetime import timedelta
     from investment_assistant.workbench import repository
@@ -369,16 +454,17 @@ def test_pool_entry_at_respects_effective_session_and_cutoff(workbench_db):
     assert repository.insert_pool_tiers(
         workbench_db, [{'ticker': 'NVDA', 'tier': 'core', 'sector_etf': 'SMH'}], session=wednesday,
         now=NOW + timedelta(days=4)) == 1
-    assert repository.pool_latest(workbench_db) == {'NVDA': {'tier': 'core', 'sector_etf': 'SMH'}}
+    assert repository.pool_latest(workbench_db) == \
+        {'NVDA': {'tier': 'core', 'sector_etf': 'SMH', 'source': 'watchlist'}}
     assert repository.pool_entry_at(workbench_db, 'NVDA', monday, cutoff_at=NOW + timedelta(days=1)) == \
-        {'tier': 'extended', 'sector_etf': None}
+        {'tier': 'extended', 'sector_etf': None, 'source': 'watchlist'}
     assert repository.pool_entry_at(workbench_db, 'NVDA', date(2026, 10, 20), cutoff_at=NOW + timedelta(days=1)) == \
-        {'tier': 'extended', 'sector_etf': None}
+        {'tier': 'extended', 'sector_etf': None, 'source': 'watchlist'}
     assert repository.pool_entry_at(workbench_db, 'NVDA', wednesday, cutoff_at=NOW + timedelta(days=5)) == \
-        {'tier': 'core', 'sector_etf': 'SMH'}
+        {'tier': 'core', 'sector_etf': 'SMH', 'source': 'watchlist'}
     # The Wednesday row was recorded Friday; a Thursday cutoff cannot see it yet.
     assert repository.pool_entry_at(workbench_db, 'NVDA', wednesday, cutoff_at=NOW + timedelta(days=2)) == \
-        {'tier': 'extended', 'sector_etf': None}
+        {'tier': 'extended', 'sector_etf': None, 'source': 'watchlist'}
     assert repository.pool_entry_at(workbench_db, 'MU', wednesday, cutoff_at=NOW + timedelta(days=5)) is None
 
 

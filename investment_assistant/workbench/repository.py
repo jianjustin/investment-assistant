@@ -530,7 +530,8 @@ def read_filings(conn, ticker: str, *, since: date, cutoff_at: datetime) -> list
 WORKBENCH_TABLES = ('price_bars', 'news_items', 'news_item_tickers', 'signal_candidates', 'signal_briefs',
                     'signal_decisions', 'trades', 'weekly_reviews', 'filings', 'trade_plans', 'earnings_dates',
                     'account_snapshots', 'cash_flows', 'monthly_reviews', 'watchlist_items', 'pool_tiers',
-                    'macro_observations', 'market_regimes', 'rule_backchecks', 'agent_runs', 'agent_tool_calls', 'review_pushes')
+                    'macro_observations', 'market_regimes', 'rule_backchecks', 'agent_runs', 'agent_tool_calls',
+                    'review_pushes', 'screen_runs', 'screen_results')
 
 
 def store_macro(conn, series_id: str, rows: list[dict[str, Any]], *, now: datetime) -> dict[str, int]:
@@ -625,11 +626,12 @@ def list_backchecks(conn, limit: int) -> list[dict[str, Any]]:
 
 
 def pool_latest(conn) -> dict[str, dict[str, Any]]:
-    """Each ticker's newest pool_tiers row: {'tier', 'sector_etf'}."""
+    """Each ticker's newest pool_tiers row: {'tier', 'sector_etf', 'source'}."""
     with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute('SELECT DISTINCT ON (ticker) ticker, tier, sector_etf FROM pool_tiers '
+        cur.execute('SELECT DISTINCT ON (ticker) ticker, tier, sector_etf, source FROM pool_tiers '
                     'ORDER BY ticker, effective_session DESC, recorded_at DESC, id DESC')
-        return {row['ticker']: {'tier': row['tier'], 'sector_etf': row['sector_etf']}
+        return {row['ticker']: {'tier': row['tier'], 'sector_etf': row['sector_etf'],
+                                'source': row['source']}
                 for row in cur.fetchall()}
 
 
@@ -638,21 +640,108 @@ def insert_pool_tiers(conn, rows: list[dict[str, Any]], *, session: date, now: d
     if not rows:
         return 0
     with conn.cursor() as cur:
-        cur.executemany('INSERT INTO pool_tiers (ticker, tier, sector_etf, effective_session, recorded_at) '
-                        'VALUES (%s, %s, %s, %s, %s)',
-                        [(r['ticker'], r['tier'], r['sector_etf'], session, now) for r in rows])
+        cur.executemany('INSERT INTO pool_tiers (ticker, tier, sector_etf, effective_session, recorded_at, source) '
+                        'VALUES (%s, %s, %s, %s, %s, %s)',
+                        [(r['ticker'], r['tier'], r['sector_etf'], session, now,
+                          r.get('source', 'watchlist')) for r in rows])
     return len(rows)
 
 
 def pool_entry_at(conn, ticker: str, day: date, *, cutoff_at: datetime) -> dict[str, Any] | None:
     """The tier in force on `day` as known by `cutoff_at`; removed rows count too."""
-    row = conn.execute('SELECT tier, sector_etf FROM pool_tiers '
+    row = conn.execute('SELECT tier, sector_etf, source FROM pool_tiers '
                        'WHERE ticker = %s AND effective_session <= %s AND recorded_at <= %s '
                        'ORDER BY effective_session DESC, recorded_at DESC, id DESC LIMIT 1',
                        (ticker, day, cutoff_at)).fetchone()
     if row is None:
         return None
-    return {'tier': row[0], 'sector_etf': row[1]}
+    return {'tier': row[0], 'sector_etf': row[1], 'source': row[2]}
+
+
+# ---------------------------------------------------------------- daily screen (v2.2 §10)
+
+_SCREEN_RUN_COLUMNS = ('id, session, calc_version, universe_name, universe_as_of, cutoff_at, status, summary, '
+                       'run_id, created_at')
+
+
+def insert_screen_run(conn, run: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Append one screen run and its per-ticker rows; same-session reruns add new rows.
+
+    `run` may carry `created_at` (tests pin it to order runs inside one transaction);
+    the default is the database clock."""
+    record = _one(conn,
+                  'INSERT INTO screen_runs (session, calc_version, universe_name, universe_as_of, cutoff_at, '
+                  'status, summary, run_id, created_at) '
+                  'VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, COALESCE(%s, now())) '
+                  f'RETURNING {_SCREEN_RUN_COLUMNS}',
+                  (run['session'], run['calc_version'], run['universe_name'], run['universe_as_of'],
+                   run['cutoff_at'], run['status'], _plan_json(run['summary']), run.get('run_id'),
+                   run.get('created_at')))
+    with conn.cursor() as cur:
+        cur.executemany('INSERT INTO screen_results (screen_run_id, ticker, screen_group, trigger_rules, filters, '
+                        'rs, atr_pct, dollar_volume_20, rank, selected) '
+                        'VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)',
+                        [(record['id'], r['ticker'], r['group'], r.get('trigger_rules') or [],
+                          _plan_json(r['filters']), r.get('rs'), r.get('atr_pct'),
+                          r.get('dollar_volume_20'), r.get('rank'), r['selected']) for r in results])
+    return record
+
+
+def latest_screen_run(conn, *, session: date | None, cutoff_at: datetime) -> dict[str, Any] | None:
+    """The newest run for one session, or overall, as known by `cutoff_at`."""
+    if session is not None:
+        return _one(conn, f'SELECT {_SCREEN_RUN_COLUMNS} FROM screen_runs '
+                          'WHERE session = %s AND created_at <= %s '
+                          'ORDER BY created_at DESC, id DESC LIMIT 1', (session, cutoff_at))
+    return _one(conn, f'SELECT {_SCREEN_RUN_COLUMNS} FROM screen_runs '
+                      'WHERE created_at <= %s ORDER BY created_at DESC, id DESC LIMIT 1', (cutoff_at,))
+
+
+def screen_results(conn, screen_run_id) -> list[dict[str, Any]]:
+    """All rows of one run ordered by rank; the interface field is `group`."""
+    return _all(conn, 'SELECT ticker, screen_group AS "group", trigger_rules, filters, rs, atr_pct, '
+                      'dollar_volume_20, rank, selected FROM screen_results WHERE screen_run_id = %s '
+                      'ORDER BY rank NULLS LAST, ticker', (screen_run_id,))
+
+
+def screen_selected_since(conn, since: date, until: date, *, cutoff_at: datetime) -> dict[str, dict[str, Any]]:
+    """Latest-run-per-session picks in [since, until]: {ticker: {'session', 'rank'}} of the newest pick."""
+    rows = conn.execute(
+        'WITH latest AS ('
+        '  SELECT DISTINCT ON (session) session, id FROM screen_runs'
+        '   WHERE session BETWEEN %s AND %s AND created_at <= %s'
+        '   ORDER BY session, created_at DESC, id DESC),'
+        ' picked AS ('
+        '  SELECT r.ticker, l.session, r.rank FROM screen_results r JOIN latest l ON r.screen_run_id = l.id'
+        '   WHERE r.selected)'
+        ' SELECT DISTINCT ON (ticker) ticker, session, rank FROM picked'
+        '  ORDER BY ticker, session DESC',
+        (since, until, cutoff_at)).fetchall()
+    return {row[0]: {'session': row[1], 'rank': row[2]} for row in rows}
+
+
+def locked_screen_tickers(conn, session: date, *, cutoff_at: datetime) -> set[str]:
+    """Valid plans for the session plus tickers holding an open position from unvoided trades."""
+    tickers = {row[0] for row in conn.execute(
+        'SELECT DISTINCT ticker FROM trade_plans '
+        "WHERE kind IN ('rule', 'own') AND status = 'ok' AND valid_until >= %s AND created_at <= %s",
+        (session, cutoff_at)).fetchall()}
+    tickers |= _open_position_tickers(conn)
+    return tickers
+
+
+def _open_position_tickers(conn) -> set[str]:
+    from investment_assistant.workbench import positions
+
+    held: set[str] = set()
+    for ticker in sorted({t['ticker'] for t in list_trades(conn) if t['voided_at'] is None}):
+        try:
+            book = positions.build(list_trades(conn, ticker), splits=split_events(conn, ticker))
+        except positions.PositionError:
+            continue  # a broken trade history must not fail the whole screen
+        if book['position'] is not None:
+            held.add(ticker)
+    return held
 
 
 def last_push(conn, *, session: date | None = None) -> dict[str, Any] | None:

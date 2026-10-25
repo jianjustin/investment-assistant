@@ -66,6 +66,21 @@ def test_023_keeps_user_changed_timezone(migrated_db):
     assert _filings(conn)[:2] == ('Asia/Shanghai', '10:00')
 
 
+def test_023_creates_screen_tables_and_source(migrated_db):
+    import psycopg
+    conn = migrated_db
+    conn.execute(MIGRATION.read_text(encoding='utf-8'))
+    conn.commit()
+    assert conn.execute("SELECT to_regclass('screen_runs')").fetchone()[0] is not None
+    assert conn.execute("SELECT to_regclass('screen_results')").fetchone()[0] is not None
+    conn.execute("INSERT INTO pool_tiers (ticker, tier, effective_session) "
+                 "VALUES ('NVDA', 'core', '2026-10-19')")
+    assert conn.execute("SELECT source FROM pool_tiers WHERE ticker = 'NVDA'").fetchone()[0] == 'watchlist'
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute("INSERT INTO pool_tiers (ticker, tier, effective_session, source) "
+                     "VALUES ('MU', 'core', '2026-10-19', 'other')")
+
+
 def test_023_is_rerunnable(migrated_db):
     conn = migrated_db
     sql = MIGRATION.read_text(encoding='utf-8')

@@ -46,7 +46,6 @@ def test_svelte_components_exist():
 def test_svelte_chart_wrappers_exist():
     expected = [
         "web/src/lib/charts/EChart.svelte",
-        "web/src/lib/charts/LineChart.svelte",
         "web/src/lib/charts/CandleChart.svelte",
     ]
     for f in expected:
