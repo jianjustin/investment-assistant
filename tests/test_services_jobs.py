@@ -127,3 +127,17 @@ def test_trigger_job_rejects_future_date(monkeypatch):
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
     with pytest.raises(ValueError):
         jobs.trigger_job("metrics", {"date": tomorrow})
+
+
+def test_scheduled_jobs_carry_description(monkeypatch):
+    from investment_assistant.tasks import catalog
+
+    monkeypatch.setattr(jobs, "_has_db", lambda: True)
+    monkeypatch.setattr(jobs, "_with_conn", lambda fn: [
+        {"name": "workbench", "enabled": True},
+        {"name": "ghost", "enabled": True},
+    ])
+    out = jobs.scheduled_jobs()
+    assert out["degraded"] is False
+    assert out["jobs"][0]["description"]["title"] == catalog.JOB_INFO["workbench"]["title"]
+    assert out["jobs"][1]["description"] is None

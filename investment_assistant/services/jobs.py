@@ -23,11 +23,15 @@ def _has_db() -> bool:
 
 def scheduled_jobs() -> dict[str, Any]:
     from investment_assistant.services.health import check_scheduler
+    from investment_assistant.tasks import catalog
 
     scheduler_status = check_scheduler()
     if not _has_db():
         return {"jobs": [], "degraded": True, "scheduler": scheduler_status}
-    return {"jobs": _with_conn(db.list_scheduled_jobs), "degraded": False, "scheduler": scheduler_status}
+    jobs = _with_conn(db.list_scheduled_jobs)
+    for job in jobs:
+        job["description"] = catalog.describe(job["name"])
+    return {"jobs": jobs, "degraded": False, "scheduler": scheduler_status}
 
 
 def job_reports(task: str | None = None, limit: int = 50) -> dict[str, Any]:

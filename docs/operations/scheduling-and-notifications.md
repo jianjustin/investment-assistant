@@ -17,6 +17,8 @@
 | `workbench_review` | `tasks/workbench_review.py` | 北京 08:00，每天，插入为关闭 | `signals`（周/月复盘推送） |
 | `filings` | `tasks/filings.py` | 美东 09:00，周一至周五 | `earnings`；开启 SEC 监控后改为 Bot 直发，见 [SEC 采集](../features/sec-filings.md) |
 
+每个任务页面上的 `?` 说明来自 `tasks/catalog.py` 的 `JOB_INFO`，随 `GET /api/jobs/scheduled` 的 `description` 字段下发；前端不再自带文案。改说明只改后端注册表。
+
 迁移种子只是默认值。改时间或开关在「设置 → 定时任务」操作（`PATCH /api/jobs/scheduled/{name}`），下一个 tick 生效，不用重启。
 
 ### 手动运行
