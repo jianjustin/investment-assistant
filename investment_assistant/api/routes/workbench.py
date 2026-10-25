@@ -192,3 +192,24 @@ def run_agent(payload: dict[str, Any] = Body(default_factory=dict)):
     if not ticker or signal_date is None:
         raise HTTPException(status_code=400, detail='ticker 与 signal_date 必填')
     return _call(service.run_agent, ticker.upper(), signal_date, now=_now())
+
+
+@router.get('/api/workbench/review-pushes')
+def review_pushes(limit: int = 20):
+    if not 1 <= limit <= 100:
+        raise HTTPException(status_code=400, detail='limit must be between 1 and 100')
+    return {'pushes': _call(service.list_review_pushes, limit=limit)}
+
+
+@router.post('/api/workbench/review-pushes')
+def review_push(payload: dict[str, Any] = Body(default_factory=dict)):
+    kind = payload.get('kind')
+    if kind not in ('weekly', 'monthly'):
+        raise HTTPException(status_code=400, detail='kind must be weekly or monthly')
+    period = _date(payload.get('period'), 'period')
+    if period is None:
+        raise HTTPException(status_code=400, detail='period is required')
+    from investment_assistant.config import load_config
+    from investment_assistant.services.settings import effective_notify_config
+    return _call(service.push_review, kind, period, now=_now(),
+                 notify_cfg=effective_notify_config(load_config().notify), trigger_source='manual')

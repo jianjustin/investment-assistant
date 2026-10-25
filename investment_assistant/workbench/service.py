@@ -24,6 +24,7 @@ from investment_assistant.workbench import pool as pool_module
 from investment_assistant.workbench import regime as regime_module
 from investment_assistant.workbench import discipline as _discipline_module
 from investment_assistant.workbench import plan_shadow as _plan_shadow_module
+from investment_assistant.workbench import review_digest
 from investment_assistant.workbench import tracks as _tracks_module
 
 NY = ZoneInfo('America/New_York')
@@ -775,6 +776,7 @@ def _track_rows(conn, since: date, until: date, *, session: date, now: datetime)
                       'plan_id': str(agent_track['plan_id']) if agent_track['plan_id'] else None},
             'actual': {**actual,
                        'decision_id': str(actual['decision_id']) if actual['decision_id'] else None,
+                       'plan_id': str(actual['plan_id']) if actual['plan_id'] else None,
                        'buy_trade_ids': [str(tid) for tid in actual['buy_trade_ids']]},
         })
     return rows
@@ -1393,3 +1395,136 @@ def agent_run_detail(run_id: str) -> dict[str, Any]:
         if run is None:
             raise LookupError(f'运行 {run_id} 不存在')
         return {**run, 'id': str(run['id']), 'tool_calls': repository.agent_tool_calls(conn, run['id'])}
+
+
+# --- review pushes (P4 §6.1, §6.3) ---
+
+def _redact_reason(reason: str, notify_cfg) -> str:
+    """Webhook URLs never survive into stored push reasons."""
+    from investment_assistant.workbench.macro import redact
+
+    for secret in (getattr(notify_cfg, 'webhooks', None) or {}).values():
+        if secret:
+            reason = redact(reason, str(secret))
+    return reason
+
+
+def _record_push(kind, period, *, review_id, trigger_source, result, notify_cfg, conn=None) -> dict[str, Any]:
+    row = {'kind': kind, 'period': period, 'review_id': review_id, 'trigger_source': trigger_source,
+           'sent': bool(result.get('sent')), 'messages': result.get('messages') or 0,
+           'reason': _redact_reason(result['reason'], notify_cfg) if result.get('reason') else None}
+    with _tx() as conn2:
+        repository.insert_review_push(conn2, row)
+    return {'kind': kind, 'period': period, 'review_id': review_id, 'sent': row['sent'],
+            'messages': row['messages'], 'reason': row['reason']}
+
+
+def push_review(kind: str, period: date, *, now: datetime, notify_cfg, trigger_source: str = 'manual',
+                client=None) -> dict[str, Any]:
+    """Push one period's latest frozen snapshot and record the attempt (§6.3).
+    Manual pushes resend regardless of a previous success."""
+    from investment_assistant.config import load_config
+    from investment_assistant.notify import notifier, templates
+
+    if kind not in ('weekly', 'monthly'):
+        raise ledger.LedgerError('kind 必须是 weekly 或 monthly')
+    if kind == 'weekly' and period.weekday() != 0:
+        raise ledger.LedgerError('period 必须是周一')
+    if kind == 'monthly' and period.day != 1:
+        raise ledger.LedgerError('period 必须是当月 1 日')
+    public_url = load_config().workbench.public_url
+    with _tx() as conn:
+        head = (repository.weekly_head(conn, period) if kind == 'weekly'
+                else repository.monthly_head(conn, period))
+    if head is None:
+        raise ledger.NotFound(f'{period} 没有该周期的复盘快照')
+    payload = (review_digest.weekly(head, public_url=public_url) if kind == 'weekly'
+               else review_digest.monthly(head, public_url=public_url))
+    messages = (templates.workbench_weekly if kind == 'weekly' else templates.workbench_monthly)(payload)
+    result = notifier.send_notifications('workbench_review', messages, notify_cfg, client=client)
+    return _record_push(kind, period, review_id=head['id'], trigger_source=trigger_source,
+                        result=result, notify_cfg=notify_cfg)
+
+
+def _tick_weekly(*, now: datetime, notify_cfg, trigger_source: str, client) -> dict[str, Any]:
+    """§6.1 weekly: reuse a snapshot frozen after the week's final close, else
+    generate one (superseding whatever is there), then push."""
+    week = review_digest.due_week(now)
+    week_end = week + timedelta(days=6)
+    with _tx() as conn:
+        if repository.review_push_sent(conn, 'weekly', week):
+            return {'period': week, 'action': 'already_sent'}
+        head = repository.weekly_head(conn, week)
+    final = review_digest.last_session(week, week_end)
+    fresh = head is not None and final is not None and bars.latest_closed_session(head['created_at']) >= final
+    if fresh:
+        action = 'reused'
+    else:
+        head = generate_weekly(week, notes='自动生成', supersedes_id=head['id'] if head else None, now=now)
+        action = 'generated'
+    push = push_review('weekly', week, now=now, notify_cfg=notify_cfg, trigger_source=trigger_source,
+                       client=client)
+    return {'period': week, 'action': action, 'push': push}
+
+
+def _tick_monthly(*, now: datetime, notify_cfg, trigger_source: str, client) -> dict[str, Any]:
+    """§6.1 monthly: with the month-end snapshot, reuse-or-generate then push; without it,
+    remind once from the first Saturday of the next month on."""
+    from investment_assistant.notify import notifier, templates
+    from investment_assistant.config import load_config
+
+    month = review_digest.due_month(now)
+    month_end = (month.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    with _tx() as conn:
+        if repository.review_push_sent(conn, 'monthly', month):
+            return {'period': month, 'action': 'already_sent'}
+        reminded_before = repository.review_push_sent(conn, 'monthly_reminder', month)
+        snapshots, flows = repository.list_snapshots(conn), repository.list_flows(conn)
+        head = repository.monthly_head(conn, month)
+        account_recorded = repository.latest_account_record_at(conn)
+    if monthly.month_end_snapshot(snapshots, month) is None:
+        if reminded_before:
+            return {'period': month, 'action': 'waiting'}
+        if not review_digest.reminder_due(month, now):
+            return {'period': month, 'action': 'waiting'}
+        payload = review_digest.reminder(month, public_url=load_config().workbench.public_url)
+        messages = templates.workbench_review_reminder(payload)
+        result = notifier.send_notifications('workbench_review', messages, notify_cfg, client=client)
+        push = _record_push('monthly_reminder', month, review_id=None, trigger_source=trigger_source,
+                            result=result, notify_cfg=notify_cfg)
+        return {'period': month, 'action': 'reminded', 'push': push}
+    final = review_digest.last_session(month, month_end)
+    fresh = (head is not None and final is not None
+             and bars.latest_closed_session(head['created_at']) >= final
+             and (account_recorded is None or head['created_at'] > account_recorded))
+    if fresh:
+        action = 'reused'
+    else:
+        head = generate_monthly(month, notes='自动生成', supersedes_id=head['id'] if head else None, now=now)
+        action = 'generated'
+    push = push_review('monthly', month, now=now, notify_cfg=notify_cfg, trigger_source=trigger_source,
+                       client=client)
+    return {'period': month, 'action': action, 'push': push}
+
+
+def review_tick(*, now: datetime, notify_cfg, trigger_source: str, client=None) -> dict[str, Any]:
+    """The workbench_review task body (§6.1): weekly and monthly each in their own
+    transaction; one failing never blocks the other, and errors land in the report."""
+    out: dict[str, Any] = {'weekly': None, 'monthly': None, 'errors': []}
+    for name, part in (('weekly', _tick_weekly), ('monthly', _tick_monthly)):
+        try:
+            out[name] = part(now=now, notify_cfg=notify_cfg, trigger_source=trigger_source, client=client)
+        except Unavailable:
+            raise
+        except Exception as exc:
+            out[name] = {'action': 'error', 'error': str(exc)}
+            out['errors'].append(f'review {name}: {exc}')
+    return out
+
+
+def list_review_pushes(limit: int = 20) -> list[dict[str, Any]]:
+    with _tx() as conn:
+        rows = repository.list_review_pushes(conn, limit)
+    return [{**row, 'id': str(row['id']), 'review_id': str(row['review_id']) if row['review_id'] else None,
+             'period': row['period'].isoformat(), 'created_at': row['created_at'].isoformat()}
+            for row in rows]

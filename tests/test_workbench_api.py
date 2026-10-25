@@ -273,3 +273,32 @@ def test_tracks_route_passes_dates(client, monkeypatch):
                       params={'since': '2026-10-01', 'until': '2026-10-22'})
     assert resp.status_code == 200
     assert calls == {'since': date(2026, 10, 1), 'until': date(2026, 10, 22)}
+
+
+def test_review_push_route_validation(client, monkeypatch):
+    from investment_assistant.workbench import ledger, service
+
+    monkeypatch.setattr(service, 'push_review',
+                        raiser(ledger.NotFound('没有快照')))
+    resp = client.post('/api/workbench/review-pushes', json={'kind': 'weekly', 'period': '2026-10-19'})
+    assert resp.status_code == 404
+    monkeypatch.setattr(service, 'push_review', raiser(ledger.LedgerError('period 必须是周一')))
+    assert client.post('/api/workbench/review-pushes',
+                       json={'kind': 'weekly', 'period': '2026-10-21'}).status_code == 400
+    calls = {}
+
+    def push_review(kind, period, **kwargs):
+        calls.update(kind=kind, period=period)
+        return {'kind': kind, 'period': period, 'sent': True}
+    monkeypatch.setattr(service, 'push_review', push_review)
+    resp = client.post('/api/workbench/review-pushes', json={'kind': 'weekly', 'period': '2026-10-19'})
+    assert resp.status_code == 200
+    assert calls == {'kind': 'weekly', 'period': date(2026, 10, 19)}
+
+
+def test_review_pushes_list_route(client, monkeypatch):
+    monkeypatch.setattr(service, 'list_review_pushes', lambda limit=20: [{'id': 1}])
+    assert client.get('/api/workbench/review-pushes').json() == {'pushes': [{'id': 1}]}
+    assert client.get('/api/workbench/review-pushes', params={'limit': 5}).status_code == 200
+    assert client.get('/api/workbench/review-pushes', params={'limit': 0}).status_code == 400
+    assert client.get('/api/workbench/review-pushes', params={'limit': 101}).status_code == 400

@@ -1,0 +1,215 @@
+"""Review push orchestration: the tick, manual pushes and their records (P4 design §6.1, §6.3).
+
+SQL against a disposable schema; the Discord client is a recording fake.
+"""
+import uuid
+from contextlib import contextmanager
+from datetime import UTC, date, datetime, timedelta
+
+import pytest
+
+from investment_assistant.config import NotifyConfig
+from investment_assistant.workbench import repository, service
+
+W = date(2026, 10, 19)                 # the week of 2026-10-19
+SAT_MORNING = datetime(2026, 10, 24, 0, 0, tzinfo=UTC)   # 北京周六 08:00
+
+
+@pytest.fixture
+def db(workbench_db, monkeypatch):
+    @contextmanager
+    def connection():
+        yield workbench_db
+    monkeypatch.setattr(service, 'connection', connection)
+    return workbench_db
+
+
+class FakeClient:
+    """Discord stand-in: records (channel, payload); the first fail_first sends raise."""
+
+    def __init__(self, fail_first=0, error='boom'):
+        self.sent = []
+        self.fail_first = fail_first
+        self.error = error
+
+    def send(self, channel, payload):
+        if self.fail_first > 0:
+            self.fail_first -= 1
+            raise RuntimeError(self.error)
+        self.sent.append((channel, payload))
+
+
+def cfg(**overrides):
+    values = {'task_channels': {'workbench_review': 'signals'},
+              'task_enabled': {'workbench_review': True}}
+    values.update(overrides)
+    return NotifyConfig(**values)
+
+
+def tick(db, now=SAT_MORNING, *, notify_cfg=None, client=None, trigger_source='scheduled'):
+    return service.review_tick(now=now, notify_cfg=notify_cfg or cfg(), trigger_source=trigger_source,
+                               client=client)
+
+
+def _messages(client, marker):
+    return [s for s in client.sent if marker in str(s[1])]
+
+
+def _snapshot(db, *, as_of, recorded_at, equity='100000'):
+    repository.insert_snapshot(db, {'request_id': str(uuid.uuid4()), 'as_of': as_of.isoformat(),
+                                    'equity': equity, 'note': None, 'supersedes_id': None}, 'h',
+                               recorded_at=recorded_at)
+
+
+# --- weekly ---
+
+def test_tick_generates_and_pushes_weekly(db):
+    client = FakeClient()
+    out = tick(db, client=client)
+    assert out['weekly']['action'] == 'generated'
+    assert out['weekly']['push']['sent'] is True
+    assert len(_messages(client, '周度复盘')) == 1
+    row = db.execute('SELECT kind, period, sent, messages, trigger_source FROM review_pushes').fetchone()
+    assert row == ('weekly', W, True, 1, 'scheduled')
+    assert repository.weekly_head(db, W)['notes'] == '自动生成'
+
+
+def test_tick_reuses_snapshot_generated_after_close(db):
+    repository.insert_weekly_review(db, W, 'review-4', {'units': {'decided': 0}}, '手写', None)
+    client = FakeClient()
+    out = tick(db, client=client)
+    assert out['weekly']['action'] == 'reused'                  # 收盘后已有快照，直接沿用
+    assert out['weekly']['push']['sent'] is True
+    assert db.execute('SELECT count(*) FROM weekly_reviews').fetchone()[0] == 1
+
+
+def test_tick_supersedes_snapshot_generated_before_close(db):
+    repository.insert_weekly_review(db, W, 'review-3', {'units': {'decided': 0}}, '周三', None)
+    db.execute("UPDATE weekly_reviews SET created_at = '2026-10-21T22:00:00+00:00' WHERE notes = '周三'")
+    client = FakeClient()
+    out = tick(db, client=client)
+    assert out['weekly']['action'] == 'generated'               # 收盘前的快照被更替
+    head = repository.weekly_head(db, W)
+    assert head['notes'] == '自动生成' and head['supersedes_id'] is not None
+    assert out['weekly']['push']['review_id'] == head['id']     # 推送的是新快照
+
+
+def test_tick_does_not_repeat_after_success(db):
+    client = FakeClient()
+    tick(db, client=client)
+    out = tick(db, client=client)
+    assert out['weekly']['action'] == 'already_sent'
+    assert len(_messages(client, '周度复盘')) == 1
+    assert db.execute("SELECT count(*) FROM review_pushes WHERE kind = 'weekly'").fetchone()[0] == 1
+
+
+def test_tick_retries_after_send_failure(db):
+    client = FakeClient(fail_first=1)
+    first = tick(db, client=client)
+    assert first['weekly']['push']['sent'] is False
+    assert 'send_failed' in first['weekly']['push']['reason']
+    second = tick(db, client=client)
+    assert second['weekly']['action'] == 'reused'
+    assert second['weekly']['push']['sent'] is True             # 失败后下一次定时运行重试
+    assert len(_messages(client, '周度复盘')) == 1
+
+
+def test_tick_task_disabled_retries_later(db):
+    client = FakeClient()
+    first = tick(db, notify_cfg=cfg(task_enabled={'workbench_review': False}), client=client)
+    assert first['weekly']['push']['reason'] == 'task_disabled'
+    assert client.sent == []
+    second = tick(db, client=client)                            # 开关打开后照常推送
+    assert second['weekly']['action'] == 'reused' and second['weekly']['push']['sent'] is True
+
+
+# --- monthly ---
+
+def test_monthly_waits_then_reminds_once(db):
+    client = FakeClient()
+    early = tick(db, now=datetime(2026, 11, 3, 0, 0, tzinfo=UTC), client=client)
+    assert early['monthly']['action'] == 'waiting'              # 缺快照，还不到提醒日，不发送
+    assert _messages(client, '月度复盘待录入') == []
+    reminded = tick(db, now=datetime(2026, 11, 7, 0, 0, tzinfo=UTC), client=client)
+    assert reminded['monthly']['action'] == 'reminded'
+    assert len(_messages(client, '月度复盘待录入')) == 1
+    row = db.execute("SELECT kind, period, sent, review_id FROM review_pushes WHERE kind = 'monthly_reminder'").fetchone()
+    assert row == ('monthly_reminder', date(2026, 10, 1), True, None)
+    again = tick(db, now=datetime(2026, 11, 8, 0, 0, tzinfo=UTC), client=client)
+    assert again['monthly']['action'] == 'waiting'              # 每月只提醒一次
+    assert len(_messages(client, '月度复盘待录入')) == 1
+
+
+def test_monthly_generated_after_snapshot_recorded(db):
+    _snapshot(db, as_of=date(2026, 10, 31), recorded_at=datetime(2026, 11, 1, 12, tzinfo=UTC))
+    client = FakeClient()
+    out = tick(db, now=datetime(2026, 11, 7, 0, 0, tzinfo=UTC), client=client)
+    assert out['monthly']['action'] == 'generated'
+    assert out['monthly']['push']['sent'] is True
+    assert len(_messages(client, '月度复盘 · 2026-10')) == 1
+    head = repository.monthly_head(db, date(2026, 10, 1))
+    assert head['notes'] == '自动生成'
+
+
+def test_monthly_head_older_than_snapshot_is_superseded(db):
+    _snapshot(db, as_of=date(2026, 10, 31), recorded_at=datetime(2026, 11, 1, 12, tzinfo=UTC))
+    repository.insert_monthly_review(db, date(2026, 10, 1), 'monthly-2', {'month': '2026-10'}, '旧', None)
+    db.execute("UPDATE monthly_reviews SET created_at = '2026-10-31T20:00:00+00:00' WHERE notes = '旧'")
+    client = FakeClient()
+    out = tick(db, now=datetime(2026, 11, 7, 0, 0, tzinfo=UTC), client=client)
+    assert out['monthly']['action'] == 'generated'              # 快照晚于旧快照生成时间，更替
+    head = repository.monthly_head(db, date(2026, 10, 1))
+    assert head['notes'] == '自动生成' and head['supersedes_id'] is not None
+
+
+# --- manual pushes ---
+
+def test_manual_push_forces_resend(db):
+    client = FakeClient()
+    tick(db, client=client)
+    out = service.push_review('weekly', W, now=SAT_MORNING, notify_cfg=cfg(), client=client)
+    assert out['sent'] is True                                  # 手动不受已推送限制
+    assert len(_messages(client, '周度复盘')) == 2
+    row = db.execute("SELECT trigger_source FROM review_pushes WHERE trigger_source = 'manual'").fetchone()
+    assert row == ('manual',)
+
+
+def test_manual_push_unknown_period_404(db):
+    with pytest.raises(LookupError):
+        service.push_review('weekly', date(2026, 11, 16), now=SAT_MORNING, notify_cfg=cfg())
+
+
+def test_manual_push_bad_kind_or_period():
+    from investment_assistant.workbench import ledger
+    with pytest.raises(ledger.LedgerError):
+        service.push_review('daily', W, now=SAT_MORNING, notify_cfg=cfg())
+    with pytest.raises(ledger.LedgerError):
+        service.push_review('weekly', W + timedelta(days=1), now=SAT_MORNING, notify_cfg=cfg())
+
+
+def test_push_reason_redacted(db):
+    secret = 'https://discord.com/api/webhooks/SECRET123'
+    notify = cfg(webhooks={'signals': secret})
+    client = FakeClient(fail_first=1, error=f'POST {secret} failed')
+    out = tick(db, notify_cfg=notify, client=client)
+    assert 'SECRET123' not in out['weekly']['push']['reason']
+    assert '***' in out['weekly']['push']['reason']
+
+
+def test_generation_conflict_recorded_and_retried(db, monkeypatch):
+    from investment_assistant.workbench import ledger
+    real_generate = service.generate_weekly
+
+    def conflicting(week_start, **kwargs):
+        raise ledger.Conflict('该周已有更新的复盘；请更正最新一条')
+
+    monkeypatch.setattr(service, 'generate_weekly', conflicting)
+    client = FakeClient()
+    first = tick(db, client=client)
+    assert first['weekly']['action'] == 'error'
+    assert any('该周已有更新' in str(e) for e in first['errors'])
+    assert _messages(client, '周度复盘') == []                   # 周度出错不影响月度部分
+    assert first['monthly']['action'] != 'error'
+    monkeypatch.setattr(service, 'generate_weekly', real_generate)
+    second = tick(db, client=client)
+    assert second['weekly']['action'] == 'generated' and second['weekly']['push']['sent'] is True

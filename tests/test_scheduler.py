@@ -184,3 +184,8 @@ def test_poll_state_retains_failure_until_retry_succeeds(monkeypatch):
 
 def test_scheduler_module_has_no_cli_main():
     assert not hasattr(scheduler, "main")  # 独立调度进程入口已删除，防双跑
+
+
+def test_registry_has_workbench_review():
+    from investment_assistant.tasks import scheduler
+    assert scheduler.REGISTRY['workbench_review'] is not None

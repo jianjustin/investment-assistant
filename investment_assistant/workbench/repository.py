@@ -791,3 +791,34 @@ def candidate_groups_since(conn, since: date) -> list[dict[str, Any]]:
         key = (row['ticker'], row['signal_date'])
         groups.setdefault(key, {'ticker': key[0], 'signal_date': key[1], 'candidates': []})['candidates'].append(row)
     return list(groups.values())
+
+
+# --- review pushes (P4 §3.3) ---
+
+def insert_review_push(conn, row: dict[str, Any]) -> dict[str, Any]:
+    """One row per push attempt, successful or not; append-only."""
+    return _one(conn, 'INSERT INTO review_pushes (kind, period, review_id, trigger_source, sent, messages, reason) '
+                      'VALUES (%s, %s, %s, %s, %s, %s, %s) '
+                      'RETURNING id, kind, period, review_id, trigger_source, sent, messages, reason, created_at',
+                (row['kind'], row['period'], row.get('review_id'), row['trigger_source'],
+                 row['sent'], row.get('messages') or 0, row.get('reason')))
+
+
+def review_push_sent(conn, kind: str, period: date) -> bool:
+    """Whether this kind and period already has a fully successful push (§6.1 idempotence)."""
+    return conn.execute('SELECT EXISTS (SELECT 1 FROM review_pushes WHERE kind = %s AND period = %s '
+                        'AND sent = true)', (kind, period)).fetchone()[0]
+
+
+def list_review_pushes(conn, limit: int) -> list[dict[str, Any]]:
+    return _all(conn, 'SELECT id, kind, period, review_id, trigger_source, sent, messages, reason, created_at '
+                      'FROM review_pushes ORDER BY created_at DESC, id DESC LIMIT %s', (limit,))
+
+
+def latest_account_record_at(conn) -> datetime | None:
+    """The latest moment account inputs were recorded or corrected: snapshots and flows."""
+    row = conn.execute(
+        'SELECT greatest(s.rec, f.rec, f.void) FROM '
+        '(SELECT max(recorded_at) AS rec FROM account_snapshots) s, '
+        '(SELECT max(recorded_at) AS rec, max(voided_at) AS void FROM cash_flows) f').fetchone()
+    return row[0] if row else None

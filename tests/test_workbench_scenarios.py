@@ -362,7 +362,7 @@ def test_pool_and_context_end_to_end(offline, monkeypatch):
 
     week_start = add_trading_days(S1, -1)                               # Monday of the signal week
     weekly = service.generate_weekly(week_start, now=evening(add_trading_days(S1, 2)))
-    assert weekly['calc_version'] == 'review-3'
+    assert weekly['calc_version'] == 'review-4'
     by_pool = weekly['stats']['by_pool']
     assert by_pool['extended']['trend_reclaim']['triggers'] == 25
     assert by_pool['core']['trend_reclaim']['triggers'] == 1            # SYNTH；X01 仍归扩展池
