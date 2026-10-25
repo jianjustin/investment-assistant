@@ -535,7 +535,7 @@ def test_backcheck_makes_no_network_calls(workbench_db, monkeypatch):
         _bar(workbench_db, price_date=date(2026, 1, 5) + timedelta(days=i), close=100 + i, high=102 + i,
              low=99 + i, open=100 + i, adj_close=100 + i)
     record = service.run_backcheck(now=NOW)
-    assert record['calc_version'] == 'backcheck-1'
+    assert record['calc_version'] == 'backcheck-2'
     assert record['params']['tickers'] == ['NVDA']
     assert record['stats']['all']['ticker_sessions'] == 260 - 200
     assert repository.list_backchecks(workbench_db, 10)[0]['id'] == record['id']

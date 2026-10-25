@@ -1,4 +1,4 @@
-"""Pre-launch historical rule check (backcheck-1, spec §10).
+"""Pre-launch historical rule check (backcheck-2, spec §5.3).
 
 Replays stored bars through the current rules with no position, prices buy
 candidates with plan-1 and simulates them with plan-shadow-1. Descriptive
@@ -14,7 +14,7 @@ from typing import Any
 from investment_assistant.data.calendar import add_trading_days
 from investment_assistant.workbench import plans, plan_shadow, rules
 
-CALC_VERSION = 'backcheck-1'
+CALC_VERSION = 'backcheck-2'
 WARMUP = rules.MIN_BARS
 MATURE_SESSIONS = 20
 SWEEP_SESSIONS = 5
@@ -23,8 +23,9 @@ SWEEP_SHARE = 0.5
 MIN_FILLED = 10
 CLUSTER_MIN = 3
 BUY_RULES = ('trend_reclaim', 'volume_breakout', 'earnings_gap_up')
+EXCESS_HORIZONS = (5, 10, 20)
 
-NOTE = '描述性检查，不调参，不代表规则有效。'
+NOTE = '描述性检查，不调参，不代表规则有效。超额是信号日收盘到第 h 日收盘，不代表可成交。'
 
 
 def replay(ticker: str, bars: list[dict[str, Any]], filings: list[dict[str, Any]], spy_bars: list[dict[str, Any]],
@@ -37,6 +38,7 @@ def replay(ticker: str, bars: list[dict[str, Any]], filings: list[dict[str, Any]
     """
     from investment_assistant.config import WorkbenchConfig
 
+    spy_close = {bar['price_date']: bar['close'] for bar in spy_bars}
     signals: list[dict[str, Any]] = []
     skipped_atr = 0
     warmup_end = bars[WARMUP - 1]['price_date'] if len(bars) >= WARMUP else None
@@ -63,15 +65,59 @@ def replay(ticker: str, bars: list[dict[str, Any]], filings: list[dict[str, Any]
         # One signal per ticker-day (one plan); every buy rule that fired is listed and counts for its own row.
         rule_ids = list(dict.fromkeys(c.rule_id for c in cands))
         signals.append({'rule_id': rule_ids[0], 'rule_ids': rule_ids, 'signal_date': day, 'mature': mature,
-                        'outcome': outcome})
+                        'outcome': outcome, 'excess': _excess(bars, i, spy_close)})
     return {'ticker': ticker, 'warmup_end': warmup_end, 'eval_start': eval_start, 'eval_end': eval_end,
             'eval_sessions': max(0, len(bars) - WARMUP), 'skipped_atr': skipped_atr, 'signals': signals}
+
+
+def _excess(bars: list[dict[str, Any]], i: int, spy_close: dict[Any, Any]) -> dict[int, Any]:
+    """Close-to-close excess over SPY per horizon; bar h trading days after the signal day.
+
+    Beyond the last bar is immature; a missing close on either endpoint is missing —
+    neither is substituted from neighbouring bars.
+    """
+    stock0 = bars[i]['close']
+    spy0 = spy_close.get(bars[i]['price_date'])
+    out: dict[int, Any] = {}
+    for h in EXCESS_HORIZONS:
+        j = i + h
+        if j >= len(bars):
+            out[h] = 'immature'
+            continue
+        stock1, spy1 = bars[j]['close'], spy_close.get(bars[j]['price_date'])
+        if stock0 in (None, 0) or stock1 is None or spy0 in (None, 0) or spy1 is None:
+            out[h] = 'missing'
+        else:
+            out[h] = stock1 / stock0 - spy1 / spy0
+    return out
+
+
+def _excess_stats(signals: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for h in EXCESS_HORIZONS:
+        values: list[float] = []
+        immature = missing = 0
+        for signal in signals:
+            value = (signal.get('excess') or {}).get(h)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                values.append(float(value))
+            elif value == 'immature':
+                immature += 1
+            elif value == 'missing':
+                missing += 1
+        out[str(h)] = {'n': len(values), 'mean': fmean(values) if values else None,
+                       'median': median(values) if values else None,
+                       'positive_share': (sum(1 for v in values if v > 0) / len(values)) if values else None,
+                       'immature': immature, 'missing': missing}
+    return out
 
 
 def _row() -> dict[str, Any]:
     return {'triggers': 0, 'ticker_sessions': 0, 'per_100': 0.0, 'max_per_ticker': 0, 'cluster_days': 0,
             'filled': 0, 'expired': 0, 'stopped_within_5': 0, 'stopped_within_5_share': None, 't1_share': None,
-            'r': {'count': 0, 'mean': None, 'median': None, 'p25': None, 'p75': None}, 'flags': []}
+            'r': {'count': 0, 'mean': None, 'median': None, 'p25': None, 'p75': None},
+            'excess': {str(h): {'n': 0, 'mean': None, 'median': None, 'positive_share': None,
+                                'immature': 0, 'missing': 0} for h in EXCESS_HORIZONS}, 'flags': []}
 
 
 def _stopped_within_5(outcome: dict[str, Any]) -> bool:
@@ -122,6 +168,7 @@ def _fill_row(row: dict[str, Any], signals: list[dict[str, Any]], per_ticker_cou
         row['flags'].append('stops_swept')
     if row['filled'] < MIN_FILLED:
         row['flags'].append('insufficient')
+    row['excess'] = _excess_stats(signals)
 
 
 def summarize(replays: list[dict[str, Any]]) -> dict[str, Any]:
@@ -167,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     """CLI: python -m investment_assistant.workbench.backcheck [--tickers A,B]"""
     import argparse
 
-    parser = argparse.ArgumentParser(description='上线前历史检查（backcheck-1）')
+    parser = argparse.ArgumentParser(description='上线前历史检查（backcheck-2）')
     parser.add_argument('--tickers', help='逗号分隔的标的；缺省用当前观察池')
     args = parser.parse_args(argv)
     from investment_assistant.workbench import service

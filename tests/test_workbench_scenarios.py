@@ -370,7 +370,7 @@ def test_pool_and_context_end_to_end(offline, monkeypatch):
 
     # 历史检查：读库重放，可列出，不联网
     record = service.run_backcheck(now=evening(S1))
-    assert record['calc_version'] == 'backcheck-1' and record['params']['tickers'][0] == 'SYNB'
+    assert record['calc_version'] == 'backcheck-2' and record['params']['tickers'][0] == 'SYNB'
     assert len(repository.list_backchecks(offline, 10)) == 1
 
 
