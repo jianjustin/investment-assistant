@@ -154,5 +154,23 @@ def members(*, selected_today: list[str], recent: dict[str, dict[str, Any]], loc
     return {'members': tuple(ordered[:cap]), 'evicted': ordered[cap:], 'flags': flags}
 
 
-def main(argv: list[str] | None = None) -> int:  # Task 8 fills this in (replay CLI).
-    raise SystemExit('replay CLI lands with the report task')
+def main(argv: list[str] | None = None) -> int:
+    """`python -m investment_assistant.workbench.screen replay [--sessions N]` prints JSON."""
+    import argparse
+    import json
+    from datetime import UTC, datetime
+
+    parser = argparse.ArgumentParser(prog='python -m investment_assistant.workbench.screen')
+    sub = parser.add_subparsers(dest='command', required=True)
+    replay_cmd = sub.add_parser('replay', help='read-only replay of the last N closed sessions')
+    replay_cmd.add_argument('--sessions', type=int, default=5)
+    args = parser.parse_args(argv)
+    if args.command == 'replay':
+        from investment_assistant.workbench import screening
+        print(json.dumps(screening.replay(sessions=args.sessions, now=datetime.now(UTC)),
+                         ensure_ascii=False, default=str))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -177,3 +177,109 @@ def screen_ref(conn, ticker: str, session: date, *, cutoff_at: datetime | None =
     cutoff_at defaults to None so the batch's own rule-plan stage can read the run
     the screen stage wrote in the same pass (spec §7.3)."""
     return repository.latest_screen_pick(conn, ticker, session, cutoff_at=cutoff_at)
+
+
+def _plan_view(plan: dict[str, Any]) -> dict[str, Any]:
+    sizing = plan.get('sizing') or {}
+    return {'entry_low': plan['entry_low'], 'entry_high': plan['entry_high'],
+            'stop': plan['stop'], 'target1': plan['target1'],
+            'shares': sizing.get('shares'), 'sizing_status': sizing.get('status')}
+
+
+def report(conn, session: date, *, now: datetime, full: bool = False) -> dict[str, Any] | None:
+    """The screen report of the newest run for one session; None when there is no run."""
+    from investment_assistant.workbench import synthesis
+
+    run = repository.latest_screen_run(conn, session=session)
+    if run is None:
+        return None
+    stored = repository.screen_results(conn, run['id'])
+    summary = run['summary'] or {}
+    flags = summary.get('flags') or []
+    triggers: list[dict[str, Any]] = []
+    setups: list[dict[str, Any]] = []
+    for row in stored:
+        if row['group'] == 'trigger':
+            plan = repository.rule_plan(conn, row['ticker'], session)
+            review, plan_out, reasons = 'watch', None, []
+            if plan is not None:
+                plan_out = _plan_view(plan)
+                reasons = plan.get('invalid_reasons') or []
+                review = 'plan' if plan['status'] == 'ok' else 'invalid'
+            else:
+                group = repository.unit_candidates(conn, row['ticker'], session)
+                unit = synthesis.synthesize(row['ticker'], session, group, holding=False,
+                                            now=now) if group else None
+                if unit is not None and ('conflict' in unit['labels'] or 'avoid' in unit['labels']):
+                    review = 'conflict'
+            triggers.append({'ticker': row['ticker'], 'rule_ids': row['trigger_rules'],
+                             'rs': row['rs'], 'review': review, 'plan': plan_out,
+                             'invalid_reasons': reasons})
+        elif row['group'] == 'setup':
+            setups.append({'ticker': row['ticker'], 'rs': row['rs'], 'atr_pct': row['atr_pct'],
+                           'rank': row['rank']})
+    manual = sum(1 for row in repository.pool_latest(conn).values()
+                 if row.get('source', 'watchlist') == 'watchlist' and row['tier'] != 'removed')
+    out: dict[str, Any] = {
+        'session': session.isoformat(), 'calc_version': run['calc_version'],
+        'status': run['status'], 'error': summary.get('error'),
+        'universe': {'name': run['universe_name'],
+                     'as_of': run['universe_as_of'].isoformat()
+                     if hasattr(run['universe_as_of'], 'isoformat') else run['universe_as_of'],
+                     'stale': 'universe_stale' in flags},
+        'counts': summary.get('counts') or {},
+        'selected': summary.get('selected') or [],
+        'members': len(summary.get('members') or []),
+        'cap': min(screen.MAX_MEMBERS, pool_module.MAX_POOL - manual),
+        'evicted': summary.get('evicted') or [], 'removed': summary.get('removed') or [],
+        'flags': flags, 'triggers': triggers,
+        'setups': setups[:10], 'setups_more': max(0, len(setups) - 10),
+    }
+    if full:
+        out['results'] = stored
+    return out
+
+
+def replay(*, sessions: int, now: datetime) -> list[dict[str, Any]]:
+    """Read-only replay of the last N closed sessions through screen-1.
+
+    Only bars at or before each day are read; nothing is written, nothing pushed.
+    Earnings dates are the currently known ones, not point-in-time."""
+    if not 1 <= sessions <= 20:
+        raise ValueError(f'sessions must be 1..20, got {sessions}')
+    from investment_assistant.db import list_watchlist_items
+    from investment_assistant.workbench import bars as bars_module
+    from investment_assistant.workbench import service as service_module
+
+    note = '财报日用当前已知值，非当时时点值'
+    with service_module.connection() as conn:
+        latest = bars_module.latest_closed_session(now)
+        days = [add_trading_days(latest, -i) for i in range(sessions)]   # newest first
+        universe_ = universe_module.load()
+        manual = pool_module.from_watchlist(list_watchlist_items(conn))
+        targets = [t for t in universe_.tickers
+                   if t not in manual.tickers and t != screen.BENCHMARK]
+        reports = []
+        for day in days:
+            bars_by_ticker = {t: repository.read_bars(conn, t, day, cutoff_at=now, limit=300)
+                              for t in targets}
+            earnings_by_ticker = {t: repository.latest_earnings(conn, t, cutoff_at=now) for t in targets}
+            benchmark_bars = repository.read_bars(conn, screen.BENCHMARK, day, cutoff_at=now, limit=300)
+            base = {'session': day.isoformat(), 'note': note}
+            try:
+                out = screen.evaluate(session=day, bars_by_ticker=bars_by_ticker,
+                                      benchmark_bars=benchmark_bars,
+                                      earnings_by_ticker=earnings_by_ticker)
+            except screen.BenchmarkMissing as exc:
+                reports.append({**base, 'error': 'benchmark_missing', 'detail': str(exc),
+                                'counts': {}, 'selected': [], 'triggers': [], 'setups': []})
+                continue
+            reports.append({**base, 'counts': out['counts'],
+                            'selected': [r['ticker'] for r in sorted(
+                                (r for r in out['results'] if r['selected']),
+                                key=lambda r: r['rank'])],
+                            'triggers': [{'ticker': r['ticker'], 'rule_ids': r['trigger_rules'],
+                                          'rs': r['rs']} for r in out['results'] if r['group'] == 'trigger'],
+                            'setups': [{'ticker': r['ticker'], 'rs': r['rs'], 'atr_pct': r['atr_pct'],
+                                        'rank': r['rank']} for r in out['results'] if r['group'] == 'setup']})
+        return reports

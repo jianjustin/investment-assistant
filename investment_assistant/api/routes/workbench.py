@@ -40,6 +40,20 @@ def today():
     return _call(service.today, now=_now())
 
 
+@router.get('/api/workbench/screen')
+def screen(session: str | None = None, full: int = 0):
+    day = date.fromisoformat(session) if session else None
+    return _call(service.screen_view, now=_now(), session=day, full=bool(full))
+
+
+@router.post('/api/workbench/screen/replay')
+def screen_replay(payload: dict[str, Any] = Body(default_factory=dict)):
+    sessions = payload.get('sessions', 5)
+    if not isinstance(sessions, int) or not 1 <= sessions <= 20:
+        raise HTTPException(status_code=400, detail='sessions must be an integer in 1..20')
+    return _call(service.replay_screen, now=_now(), sessions=sessions)
+
+
 @router.get('/api/workbench/instruments/{ticker}')
 def instrument(ticker: str):
     return _call(service.instrument, ticker, now=_now())

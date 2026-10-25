@@ -302,3 +302,29 @@ def test_review_pushes_list_route(client, monkeypatch):
     assert client.get('/api/workbench/review-pushes', params={'limit': 5}).status_code == 200
     assert client.get('/api/workbench/review-pushes', params={'limit': 0}).status_code == 400
     assert client.get('/api/workbench/review-pushes', params={'limit': 101}).status_code == 400
+
+
+def test_screen_view_passthrough(client, monkeypatch):
+    monkeypatch.setattr(service, 'screen_view',
+                        lambda *, now, session=None, full=False: {'report': {'full': full, 'session': session}})
+    resp = client.get('/api/workbench/screen')
+    assert resp.status_code == 200
+    assert resp.json()['report'] == {'full': False, 'session': None}
+    resp = client.get('/api/workbench/screen?session=2026-10-22&full=1')
+    assert resp.status_code == 200
+    assert resp.json()['report'] == {'full': True, 'session': date(2026, 10, 22).isoformat()}
+
+
+def test_screen_replay_route(client, monkeypatch):
+    seen = {}
+
+    def replay_screen(*, now, sessions):
+        seen['sessions'] = sessions
+        return {'reports': [{'session': '2026-10-22'}]}
+
+    monkeypatch.setattr(service, 'replay_screen', replay_screen)
+    resp = client.post('/api/workbench/screen/replay', json={'sessions': 21})
+    assert resp.status_code == 400
+    resp = client.post('/api/workbench/screen/replay', json={})
+    assert resp.status_code == 200 and seen['sessions'] == 5
+    assert resp.json()['reports'][0]['session'] == '2026-10-22'

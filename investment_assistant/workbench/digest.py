@@ -34,7 +34,8 @@ def _agent_field(agent: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str, Any]], summary: dict[str, Any],
           last_push_failed: bool, public_url: str, extended_plans: int = 0,
-          market: dict[str, Any] | None = None, agent_summary: dict[str, Any] | None = None) -> dict[str, Any]:
+          market: dict[str, Any] | None = None, agent_summary: dict[str, Any] | None = None,
+          screen: dict[str, Any] | None = None) -> dict[str, Any]:
     """{'session', 'overview', 'plans', 'holdings', 'pending', 'errors', 'errors_by_source'} for the day's push."""
     plans = []
     expiring = []
@@ -59,7 +60,8 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
         sector = context.get('sector') or None
         rule_plan = u.get('plan')
         plans.append({
-            'ticker': u['ticker'], 'action': u['proposed_action'], 'rule_ids': u.get('rule_ids', []),
+            'ticker': u['ticker'], 'source': u.get('source'),
+            'action': u['proposed_action'], 'rule_ids': u.get('rule_ids', []),
             'kind': plan['kind'], 'plan_version': plan.get('plan_version'), 'status': plan['status'],
             'entry_low': rule_plan['entry_low'] if rule_plan else None,
             'entry_high': rule_plan['entry_high'] if rule_plan else None,
@@ -118,6 +120,7 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
         'pending': {'undecided': [u['ticker'] for u in units], 'expiring': expiring},
         'errors': errors,
         'errors_by_source': errors_by_source,
+        'screen': screen,
     }
 
 

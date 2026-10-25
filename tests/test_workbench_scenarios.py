@@ -234,7 +234,7 @@ def test_plan_to_monthly_review_end_to_end(offline):
     # 2. 推送（替身客户端）：四条消息，含价位与证据状态
     spy = PushSpy()
     push_out = service.push(now=evening(S1), force=False, summary=batch, notify_cfg=NotifyConfig(), client=spy)
-    assert push_out['sent'] is True and push_out['messages'] == 4
+    assert push_out['sent'] is True and push_out['messages'] == 5
     pushed_text = json.dumps(spy.payloads, ensure_ascii=False)
     assert '证据：未验证' in pushed_text and 'SYNTH' in pushed_text
 

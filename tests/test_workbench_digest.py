@@ -22,9 +22,10 @@ def plan_row(signal_date=SESSION, ticker='NVDA', **over):
     return row
 
 
-def unit(ticker='NVDA', plan=None, brief_summary='解读：量价配合。', signal_date=SESSION, agent=None):
+def unit(ticker='NVDA', plan=None, brief_summary='解读：量价配合。', signal_date=SESSION, agent=None,
+         source=None):
     return {'ticker': ticker, 'signal_date': signal_date, 'proposed_action': 'buy', 'rule_ids': ['trend_reclaim'],
-            'labels': [],
+            'labels': [], 'source': source,
             'plan': plan,
             'agent': agent,
             'brief': ({'status': 'fallback', 'output': {'summary': brief_summary}} if brief_summary else None)}
@@ -39,11 +40,12 @@ def holding(ticker='NVDA', **over):
 
 
 def build(units=(), holdings=(), summary=None, last_push_failed=False, extended_plans=0, market=None,
-          agent_summary=None):
+          agent_summary=None, screen=None):
     return digest.build(session=SESSION, units=list(units), holdings=list(holdings),
                         summary=summary or {'errors': [], 'earnings': {}},
                         last_push_failed=last_push_failed, public_url=URL,
-                        extended_plans=extended_plans, market=market, agent_summary=agent_summary)
+                        extended_plans=extended_plans, market=market, agent_summary=agent_summary,
+                        screen=screen)
 
 
 def agent_ok(ticker='NVDA', summary='回踩修复放量', first_risk='财报临近'):
@@ -370,3 +372,75 @@ def test_legacy_brief_still_attached():
     out = build(units=[u])
     assert out['plans'][0]['brief_summary'] == '解读：量价配合。'
     assert out['plans'][0]['contra'] == ''
+
+
+def screen_report(*, setups=12, **over):
+    setups_rows = [{'ticker': f'S{i:02d}', 'rs': 0.05 - i * 0.001, 'atr_pct': 0.04, 'rank': 3 + i}
+                   for i in range(setups)]
+    row = {'session': SESSION.isoformat(), 'calc_version': 'screen-1', 'status': 'success', 'error': None,
+           'universe': {'name': 'nasdaq100', 'as_of': '2026-10-22', 'stale': False},
+           'counts': {'universe': 100, 'data_skipped': 0, 'illiquid': 0, 'earnings_soon': 0,
+                      'no_setup': 50, 'trigger': 2, 'setup': 12, 'selected': 14},
+           'members': 20, 'cap': 40, 'evicted': [], 'removed': ['GONE'], 'flags': [],
+           'triggers': [
+               {'ticker': 'U00', 'rule_ids': ['trend_reclaim'], 'rs': 0.12, 'review': 'plan',
+                'plan': {'entry_low': '98.5', 'entry_high': '101.5', 'stop': '94', 'target1': '112',
+                         'shares': 166, 'sizing_status': 'sized'}, 'invalid_reasons': []},
+               {'ticker': 'U01', 'rule_ids': ['volume_breakout'], 'rs': 0.10, 'review': 'invalid',
+                'plan': None, 'invalid_reasons': ['earnings']}],
+           'setups': setups_rows[:10], 'setups_more': max(0, setups - 10)}
+    row.update(over)
+    return row
+
+
+def test_screen_message_shapes():
+    msgs = templates.workbench_digest(build(screen=screen_report()))
+    assert len(msgs) == 5
+    screen_msg = msgs[4]
+    assert screen_msg.title.startswith('🔎 筛选报告')
+    fields = {f.name: f.value for f in screen_msg.fields}
+    assert 'U00' in fields['今日触发 → 复核']
+    assert '入场 98.5–101.5 · 止损 94 · T1 112 · 建议 166 股' in fields['今日触发 → 复核']
+    assert '作废 earnings' in fields['今日触发 → 复核']
+    assert 'S00' in fields['形态候选（等待触发）'] and 'S09' in fields['形态候选（等待触发）']
+    assert 'S10' not in fields['形态候选（等待触发）']
+    assert '另 2 只见页面' in fields['形态候选（等待触发）']
+    assert '移出 1' in fields['概览'] and '成员 20/40' in fields['概览']
+
+
+def test_screen_message_none_and_error():
+    msgs = templates.workbench_digest(build())
+    assert len(msgs) == 5
+    fields = {f.name: f.value for f in msgs[4].fields}
+    assert '今日无筛选记录' in fields['概览']
+    failed = screen_report(status='error', error='benchmark_missing')
+    failed['triggers'] = []
+    failed['setups'] = []
+    failed['setups_more'] = 0
+    msgs = templates.workbench_digest(build(screen=failed))
+    fields = {f.name: f.value for f in msgs[4].fields}
+    assert '筛选未运行：benchmark_missing' in fields['概览']
+    assert '沿用成员 20 只' in fields['概览']
+
+
+def test_screen_plan_marked_in_new_plans():
+    msgs = templates.workbench_digest(build(units=[unit(plan=plan_row(), source='screen',
+                                                        ticker='U00')]))
+    plans_msg = msgs[1]
+    names = [f.name for f in plans_msg.fields]
+    assert '【筛选】U00' in names
+
+
+def test_screen_message_respects_limits():
+    huge = screen_report(setups=40)
+    huge['setups'] = huge['setups'][:10]
+    huge['triggers'] = [
+        {'ticker': f'TRIGLONGNAME{i}', 'rule_ids': ['trend_reclaim', 'volume_breakout'], 'rs': 0.1,
+         'review': 'plan', 'plan': None, 'invalid_reasons': ['earnings', 'no_room']}
+        for i in range(20)]
+    msgs = templates.workbench_digest(build(screen=huge))
+    screen_msg = msgs[4]
+    for f in screen_msg.fields:
+        assert len(f.value) <= 1024, f.name
+    total = len(screen_msg.title) + sum(len(f.name) + len(f.value) + 8 for f in screen_msg.fields)
+    assert total <= 6000

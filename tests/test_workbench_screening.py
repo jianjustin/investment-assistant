@@ -297,3 +297,50 @@ def test_explicit_tickers_skip_screen(offline):
     batch = service.run_batch(now=evening(S1), tickers=['SYNTH'], deps=make_deps())
     assert batch['screen'] == {'status': 'skipped', 'reason': 'explicit_pool'}
     assert offline.execute('SELECT count(*) FROM screen_runs').fetchone()[0] == 0
+
+
+class PushSpy:
+    def __init__(self):
+        self.payloads = []
+
+    def send(self, channel, payload):
+        self.payloads.append(payload)
+        return 'ok'
+
+
+def test_force_push_reads_screen_from_db(offline, monkeypatch):
+    from investment_assistant.config import NotifyConfig
+    seed_watchlist(offline)
+    service.run_batch(now=evening(S1), deps=make_deps())
+    spy = PushSpy()
+    out = service.push(now=evening(S1) + timedelta(hours=1), force=True, summary=None,
+                       notify_cfg=NotifyConfig(), client=spy)
+    assert out['sent'] is True
+    pushed = '\n'.join(str(p) for p in spy.payloads)
+    assert 'U00' in pushed
+    assert len(spy.payloads) == 5
+
+
+def test_replay_is_read_only(offline, monkeypatch):
+    seed_watchlist(offline)
+    deps = make_deps()
+    service.run_batch(now=evening(S1), deps=deps)
+    service.run_batch(now=evening(add_trading_days(S1, 1)), deps=deps)
+    tables = ('screen_runs', 'screen_results', 'pool_tiers', 'trade_plans', 'signal_candidates')
+    before = {t: offline.execute(f'SELECT count(*) FROM {t}').fetchone()[0] for t in tables}
+    monkeypatch.setattr(universe_module, 'load',
+                        lambda: universe_module.Universe('test', S1, 'test', UNIVERSE_TICKERS))
+    reports = service.replay_screen(now=evening(add_trading_days(S1, 1)), sessions=2)['reports']
+    assert [r['session'] for r in reports] == [add_trading_days(S1, 1).isoformat(), S1.isoformat()]
+    s1_run = repository.latest_screen_run(offline, session=S1)
+    stored_selected = [r['ticker'] for r in repository.screen_results(offline, s1_run['id']) if r['selected']]
+    assert reports[1]['selected'] == stored_selected
+    assert all(r.get('note') == '财报日用当前已知值，非当时时点值' for r in reports)
+    after = {t: offline.execute(f'SELECT count(*) FROM {t}').fetchone()[0] for t in tables}
+    assert after == before
+
+
+def test_replay_bounds(offline):
+    for n in (0, 21):
+        with pytest.raises(ValueError):
+            service.replay_screen(now=evening(S1), sessions=n)

@@ -532,8 +532,9 @@ def today(*, now: datetime) -> dict[str, Any]:
                 units.append(unit)
         holdings = _holdings(conn, session, now=now)
         market = repository.latest_regime(conn, on_or_before=session, cutoff_at=now)
+        screen_report = screening.report(conn, session, now=now)
     return {'session': session, 'units': units, 'extended_units': extended_units,
-            'holdings': holdings, 'market': market, 'screen': None}
+            'holdings': holdings, 'market': market, 'screen': screen_report}
 
 
 def run_backcheck(*, now: datetime, tickers: list[str] | None = None) -> dict[str, Any]:
@@ -636,7 +637,8 @@ def push(*, now: datetime, force: bool, summary: dict[str, Any] | None = None, n
             last_push_failed=_last_push_failed(conn, session),
             public_url=load_config().workbench.public_url,
             extended_plans=sum(1 for u in view.get('extended_units', []) if u.get('plan') is not None),
-            market=view.get('market'), agent_summary=(summary or {}).get('agent'))
+            market=view.get('market'), agent_summary=(summary or {}).get('agent'),
+            screen=view.get('screen'))
     out = notifier.send_notifications('workbench', templates.workbench_digest(payload), notify_cfg, client=client)
     return {'session': session.isoformat(), **out}
 
@@ -648,6 +650,17 @@ def push_closed(*, now: datetime, notify_cfg, client=None) -> dict[str, Any]:
     ny_date = now.astimezone(NY).date()
     out = notifier.send_notifications('workbench', templates.workbench_closed(ny_date), notify_cfg, client=client)
     return {'session': ny_date.isoformat(), **out}
+
+
+def screen_view(*, now: datetime, session: date | None = None, full: bool = False) -> dict[str, Any]:
+    """The screen report of one session (default the latest closed); None when no run exists."""
+    session = session if session is not None else bars.latest_closed_session(now)
+    with _tx() as conn:
+        return {'report': screening.report(conn, session, now=now, full=full)}
+
+
+def replay_screen(*, now: datetime, sessions: int) -> dict[str, Any]:
+    return {'reports': screening.replay(sessions=sessions, now=now)}
 
 
 def instrument(ticker: str, *, now: datetime) -> dict[str, Any]:

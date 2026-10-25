@@ -140,7 +140,8 @@ def workbench_digest(digest: dict) -> list[Notification]:
         band = (f"区间 {p['entry_low']}–{p['entry_high']} · 止损 {p['stop']} · T1 {p['target1']}"
                 if p.get('entry_low') is not None else None)   # agent-only units have no rule band
         position = f"仓位 {sizing}" if p.get('sizing_status') is not None else None
-        _clip_field(fields, p['ticker'], '；'.join(filter(None, [
+        field_name = f"【筛选】{p['ticker']}" if p.get('source') == 'screen' else p['ticker']
+        _clip_field(fields, field_name, '；'.join(filter(None, [
             head,
             context,
             band,
@@ -180,7 +181,48 @@ def workbench_digest(digest: dict) -> list[Notification]:
         if items:
             _clip_field(fields, SOURCE_NAMES.get(source, source), '\n'.join(str(i) for i in items))
     pending_msg = _fit_message(f"⏳ 待处理与异常 · {session}", fields, _footer())
-    return [overview_msg, plans_msg, holdings_msg, pending_msg]
+    return [overview_msg, plans_msg, holdings_msg, pending_msg, _screen_message(session, digest.get('screen'))]
+
+
+def _screen_message(session: str, screen: dict | None):
+    """The fifth message: the daily screen report (§9.1)."""
+    fields: list[NotifyField] = []
+    if screen is None:
+        _clip_field(fields, '概览', '今日无筛选记录')
+        return _fit_message(f"🔎 筛选报告 · {session}", fields, _footer())
+    if screen.get('status') == 'error':
+        _clip_field(fields, '概览',
+                    f"筛选未运行：{screen.get('error')}\n沿用成员 {screen.get('members', 0)} 只")
+    else:
+        counts = screen.get('counts') or {}
+        selected = screen.get('selected') or []
+        trigger_picked = sum(1 for t in screen.get('triggers') or [] if t.get('ticker') in selected)
+        lines = [f"{screen.get('calc_version')} · 范围 {counts.get('universe', 0)} · "
+                 f"通过过滤 {counts.get('trigger', 0) + counts.get('setup', 0)}",
+                 f"今日入选 {len(selected)}（触发 {trigger_picked} / 形态 {len(selected) - trigger_picked}）· "
+                 f"成员 {screen.get('members', 0)}/{screen.get('cap', 0)} · 移出 {len(screen.get('removed') or [])}"]
+        if screen.get('flags'):
+            lines.append('提示 ' + '、'.join(str(f) for f in screen['flags']))
+        _clip_field(fields, '概览', '\n'.join(lines))
+    trigger_lines = []
+    for t in screen.get('triggers') or []:
+        plan = t.get('plan') or {}
+        if t.get('review') == 'plan':
+            outcome = (f"入场 {plan.get('entry_low')}–{plan.get('entry_high')} · 止损 {plan.get('stop')}"
+                       f" · T1 {plan.get('target1')} · 建议 {plan.get('shares')} 股")
+        elif t.get('review') == 'invalid':
+            outcome = '作废 ' + '、'.join(str(r) for r in t.get('invalid_reasons') or [])
+        else:
+            outcome = {'conflict': '冲突 / 回避', 'watch': '等待触发'}.get(t.get('review'), t.get('review', ''))
+        trigger_lines.append(f"{t.get('ticker')} · {'、'.join(t.get('rule_ids') or [])} · RS {t.get('rs')}"
+                             f" · {outcome}")
+    _clip_field(fields, '今日触发 → 复核', '\n'.join(trigger_lines) or '今日无触发')
+    setup_lines = [f"{s.get('ticker')} · RS {s.get('rs')} · ATR% {round(float(s.get('atr_pct') or 0), 4)}"
+                   for s in screen.get('setups') or []]
+    if screen.get('setups_more'):
+        setup_lines.append(f"另 {screen['setups_more']} 只见页面")
+    _clip_field(fields, '形态候选（等待触发）', '\n'.join(setup_lines) or '今日无形态候选')
+    return _fit_message(f"🔎 筛选报告 · {screen.get('session', session)}", fields, _footer())
 
 
 def workbench_closed(ny_date) -> list[Notification]:
