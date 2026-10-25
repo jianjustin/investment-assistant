@@ -319,6 +319,17 @@ def test_overview_agent_counts_and_quota_warning():
     assert '⚠️ Agent 额度用尽，其余单元未运行' in text
 
 
+def test_overview_agent_counts_only_session_buy_units():
+    """Sell/watch, conflict and earlier still-open units never enter the agent stage: not 'missing'."""
+    units = [unit(plan=plan_row(), agent=agent_ok()),
+             {**unit(ticker='AAPL'), 'proposed_action': 'sell'},
+             {**unit(ticker='MSFT'), 'proposed_action': 'watch'},
+             {**unit(ticker='MU'), 'labels': ['conflict']},
+             unit(ticker='AMD', signal_date=date(2026, 10, 21), plan=plan_row(ticker='AMD')),
+             unit(ticker='TSM', plan=plan_row(ticker='TSM'), agent=None)]
+    assert build(units=units)['overview']['agent'] == {'ok': 1, 'pass': 0, 'missing': 1}
+
+
 def test_digest_limits_with_agent_lines():
     long_text = '风' * 900
     units = [unit(ticker=f'T{i:02d}', plan=plan_row(ticker=f'T{i:02d}'),

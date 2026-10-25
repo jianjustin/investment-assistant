@@ -695,7 +695,7 @@ def fill_filing_acceptance(conn, metas: list[dict[str, Any]]) -> int:
 # ---------------------------------------------------------------- agent track (P3 §3)
 
 _AGENT_RUN_COLUMNS = ('id, ticker, signal_date, pool, attempt, agent_version, provider, model, cutoff_at, '
-                      'status, reason, output, counter, plan_id, input_tokens, output_tokens, '
+                      'status, reason, detail, output, counter, plan_id, input_tokens, output_tokens, '
                       'started_at, finished_at, created_at')
 
 
@@ -704,13 +704,13 @@ def insert_agent_run(conn, run: dict[str, Any], calls: list[dict[str, Any]]) -> 
     plan, run, calls; the plan is inserted by the service before this call)."""
     record = _one(conn,
                   'INSERT INTO agent_runs (id, ticker, signal_date, pool, attempt, agent_version, provider, '
-                  'model, cutoff_at, status, reason, output, counter, plan_id, input_tokens, output_tokens, '
+                  'model, cutoff_at, status, reason, detail, output, counter, plan_id, input_tokens, output_tokens, '
                   'started_at, finished_at) '
-                  'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s) '
+                  'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s) '
                   f'RETURNING {_AGENT_RUN_COLUMNS}',
                   (run['id'], run['ticker'], run['signal_date'], run['pool'], run['attempt'],
                    run['agent_version'], run['provider'], run['model'], run['cutoff_at'], run['status'],
-                   run['reason'],
+                   run['reason'], run.get('detail'),
                    _plan_json(run['output']) if run.get('output') is not None else None,
                    _plan_json(run['counter']) if run.get('counter') is not None else None,
                    run.get('plan_id'), run['input_tokens'], run['output_tokens'],
@@ -745,7 +745,7 @@ def agent_tool_calls(conn, run_id) -> list[dict[str, Any]]:
 def list_agent_runs(conn, since: date) -> list[dict[str, Any]]:
     """Run rows for the API list view: no result payloads, but a tool-call count each."""
     return _all(conn, 'SELECT r.id, r.ticker, r.signal_date, r.pool, r.attempt, r.agent_version, r.provider, '
-                      'r.model, r.cutoff_at, r.status, r.reason, r.plan_id, r.input_tokens, r.output_tokens, '
+                      'r.model, r.cutoff_at, r.status, r.reason, r.detail, r.plan_id, r.input_tokens, r.output_tokens, '
                       'r.started_at, r.finished_at, r.created_at, '
                       '(SELECT count(*) FROM agent_tool_calls c WHERE c.run_id = r.id) AS tool_calls '
                       'FROM agent_runs r WHERE r.signal_date >= %s ORDER BY r.created_at, r.id', (since,))

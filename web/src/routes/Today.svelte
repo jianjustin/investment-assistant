@@ -29,8 +29,7 @@
       for (const u of next.units) {
         // Drafts survive reloads and failed submits; the request id stays the same until success.
         drafts[keyOf(u)] ??= { choice: 'accept', reason: '', requestId: wb.newRequestId(), error: '', busy: false,
-                                basis: u.plan != null && u.plan.status !== 'ok'
-                                  ? (agentUsable(u) ? 'agent' : 'own') : 'rule',
+                                basis: defaultBasis(u),
                                 own: { entry_low: '', entry_high: '', stop: '', target1: '' },
                                 ownRequestId: wb.newRequestId() }
       }
@@ -43,9 +42,14 @@
     }
   }
 
-  const basisLocked = (u: wb.Unit) => u.plan != null && u.plan.status !== 'ok'   // 规则计划作废时只能自定或 Agent
-  const agentUsable = (u: wb.Unit) => u.agent != null && 'plan' in u.agent
-    && u.agent.plan != null && u.agent.plan.status === 'ok'
+  const ruleUsable = (u: wb.Unit) => u.plan != null && u.plan.status === 'ok'
+  const agentPlanOf = (u: wb.Unit) => (u.agent != null && 'plan' in u.agent ? u.agent.plan : null)
+  const agentUsable = (u: wb.Unit) => agentPlanOf(u)?.status === 'ok'
+  // 任一计划存在时采纳买入必须带依据（后端同规则）；规则计划缺失或作废时只能 Agent 或自定。
+  const needsBasis = (u: wb.Unit) => u.proposed_action === 'buy' && (u.plan != null || agentPlanOf(u) != null)
+  const defaultBasis = (u: wb.Unit): Basis =>
+    ruleUsable(u) ? 'rule' : agentUsable(u) ? 'agent' : needsBasis(u) ? 'own' : 'rule'
+  const LEVEL_TEXT = [['entry_low', '入场下限'], ['entry_high', '入场上限'], ['stop', '止损'], ['target1', 'T1']] as const
   const ownReady = (draft: Draft) => draft.own.entry_low.trim() !== '' && wb.levelsError(draft.own) === null
 
   async function submit(u: wb.Unit) {
@@ -247,6 +251,8 @@
             <p class="font-medium">Agent 建议（{a.model} · {a.agent_version}）{a.status === 'ok' ? '买入' : '不建议买入'}</p>
             {#if a.output?.levels}
               <p>入场区间 {a.output.levels.entry_low.value}–{a.output.levels.entry_high.value} · 止损 {a.output.levels.stop.value} · T1 {a.output.levels.target1.value}</p>
+              {@const levels = a.output.levels}
+              <p class="text-xs text-muted">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}（{#each levels[key].refs as ref, i}{#if i}、{/if}<button class="underline" onclick={() => showCall(u, ref)}>{ref}</button>{/each}）{/each}</p>
             {/if}
             {#if a.plan?.sizing?.shares != null}
               <p>建议 {a.plan.sizing.shares} 股</p>
@@ -277,12 +283,12 @@
 
       {#if draft}
         <form class="space-y-2" onsubmit={e => { e.preventDefault(); submit(u) }}>
-          {#if draft.choice === 'accept' && u.proposed_action === 'buy' && (u.plan || agentUsable(u))}
+          {#if draft.choice === 'accept' && needsBasis(u)}
             <fieldset class="flex gap-3 text-sm">
               <legend class="text-xs text-muted">执行依据</legend>
               <label class="flex items-center gap-1">
                 <input type="radio" name={`basis-${keyOf(u)}`} value="rule" bind:group={draft.basis}
-                       disabled={basisLocked(u)} />
+                       disabled={!ruleUsable(u)} />
                 规则计划
               </label>
               <label class="flex items-center gap-1">

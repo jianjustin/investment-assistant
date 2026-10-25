@@ -403,6 +403,47 @@ describe('agent track', () => {
     })
   })
 
+  it('missing rule plan and agent ok defaults basis to agent and locks rule', async () => {
+    respond = todayWith([unit({ plan: null, agent: agentOk() })])
+    render(Today)
+    expect((await screen.findByLabelText(/Agent 建议/) as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByLabelText(/规则计划/) as HTMLInputElement).disabled).toBe(true)
+    await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '规则计划缺失，按 Agent 执行' } })
+    await fireEvent.click(screen.getByRole('button', { name: '提交决定' }))
+    await waitFor(() => {
+      const post = calls.find(c => c.url === '/api/workbench/decisions')
+      expect(JSON.parse(String(post!.init!.body)).plan_id).toBe('ap1')
+    })
+  })
+
+  it('missing rule plan and void agent plan still offers own levels', async () => {
+    respond = todayWith([unit({ plan: null, agent: agentOk({
+      plan: agentPlan({ status: 'invalid', invalid_reasons: ['no_room'] }) }) })])
+    render(Today)
+    expect((await screen.findByLabelText(/自定价位/) as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByLabelText(/规则计划/) as HTMLInputElement).disabled).toBe(true)
+    expect((screen.getByLabelText(/Agent 建议/) as HTMLInputElement).disabled).toBe(true)
+    expect(screen.getByLabelText('入场下限')).toBeInTheDocument()
+  })
+
+  it('level refs open their tool calls', async () => {
+    const levels = { entry_low: { value: '98.50', refs: ['call:2'] }, entry_high: { value: '101.50', refs: ['call:2'] },
+                     stop: { value: '96.00', refs: ['call:2'] }, target1: { value: '108.00', refs: ['call:2'] } }
+    const agent = agentOk({ output: { ...agentOk().output, levels } })
+    respond = async (url: string) => url.includes('/agent-runs/r1')
+      ? json({ ...agent, tool_calls: [...toolCallDetail().tool_calls,
+          { seq: 2, phase: 'propose', tool: 'get_price_bars', args: { ticker: 'NVDA', lookback: 20 },
+            result: { ref: 'call:2', data: [] }, result_sha256: '99887766'.repeat(8), called_at: '2026-10-22T22:32:00Z' }] })
+      : await todayWith([unit({ agent })])()
+    render(Today)
+    const line = await screen.findByText(/价位引用/)
+    const buttons = Array.from(line.querySelectorAll('button')).filter(b => b.textContent === 'call:2')
+    expect(buttons.length).toBe(4)
+    await fireEvent.click(buttons[2])
+    expect(await screen.findByText(/get_price_bars/)).toBeInTheDocument()
+    expect(screen.getByText(/99887766/)).toBeInTheDocument()
+  })
+
   it('extended list shows agent status', async () => {
     respond = todayWith([], [{ ticker: 'X01', signal_date: '2026-10-22', proposed_action: 'buy',
                                rule_ids: ['trend_reclaim'], plan: null, agent_status: 'skipped: disabled' }])

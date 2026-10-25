@@ -854,6 +854,51 @@ def test_checkpoint_unavailable(db, scripted_model):
     assert (run['status'], run['reason']) == ('error', 'checkpoint_unavailable')
 
 
+class LeakyErrorModel(BaseChatModel):
+    """Fails with the API key in the message, like an upstream error echoing the request."""
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        raise RuntimeError('upstream 502 for key sk-test')
+
+    @property
+    def _llm_type(self):
+        return 'leaky-test'
+
+
+def test_error_detail_stored_redacted(db, scripted_model):
+    d = agent_deps(scripted_model, [])
+    d.agent_model = LeakyErrorModel()
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=d)
+    run = repository.latest_agent_run(db, 'NVDA', SESSION)
+    assert (run['status'], run['reason']) == ('error', 'model_error')
+    assert run['detail'] == 'RuntimeError: upstream 502 for key ***'
+    assert service.agent_run_detail(str(run['id']))['detail'] == run['detail']
+    assert service.agent_runs(now=NOW)['runs'][0]['detail'] == run['detail']
+
+
+def test_checkpoint_unavailable_detail_stored(db, scripted_model):
+    import psycopg
+
+    def boom():
+        raise psycopg.OperationalError('checkpoint db down')
+
+    d = agent_deps(scripted_model, [])
+    d.agent_checkpointer = boom
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=d)
+    run = repository.latest_agent_run(db, 'NVDA', SESSION)
+    assert run['detail'] == 'OperationalError: checkpoint db down'
+
+
+def test_ok_and_skipped_runs_have_no_detail(db, scripted_model):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    service.run_batch(tickers=['MU'], now=NOW,
+                      deps=agent_deps(scripted_model, [], settings=_agent_settings(provider='off')))
+    assert repository.latest_agent_run(db, 'NVDA', SESSION)['detail'] is None
+    assert repository.latest_agent_run(db, 'MU', SESSION)['detail'] is None
+
+
 def test_summary_agent_keys(db, scripted_model):
     summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
     assert summary['agent'] == {'runs': {'NVDA': 'ok'}, 'tokens': {'input': 40, 'output': 20},

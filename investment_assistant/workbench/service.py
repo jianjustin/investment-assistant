@@ -952,13 +952,14 @@ def _agent_units(conn, session: date, *, now: datetime) -> list[dict[str, Any]]:
 
 
 def _agent_run_row(unit: dict, *, settings, attempt: int, now: datetime, status: str,
-                   run_id: str | None = None, reason: str | None = None, output: dict | None = None,
+                   run_id: str | None = None, reason: str | None = None, detail: str | None = None,
+                   output: dict | None = None,
                    counter: dict | None = None, plan_id=None, input_tokens: int = 0,
                    output_tokens: int = 0) -> dict:
     return {'id': run_id or str(uuid.uuid4()), 'ticker': unit['ticker'],
             'signal_date': unit['signal_date'], 'pool': unit['pool'], 'attempt': attempt,
             'agent_version': agent_graph.AGENT_VERSION, 'provider': settings.provider,
-            'model': settings.model, 'cutoff_at': now, 'status': status, 'reason': reason,
+            'model': settings.model, 'cutoff_at': now, 'status': status, 'reason': reason, 'detail': detail,
             'output': output, 'counter': counter, 'plan_id': plan_id,
             'input_tokens': input_tokens, 'output_tokens': output_tokens,
             'started_at': now, 'finished_at': now}
@@ -1015,8 +1016,9 @@ def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt:
                 factory = deps.agent_checkpointer or (
                     lambda: agent_model.checkpointer(os.environ.get('INVESTMENT_ASSISTANT_DATABASE_URL', '')))
                 checkpointer = stack.enter_context(factory())
-            except Exception:
-                return write(row('error', reason='checkpoint_unavailable'))
+            except Exception as exc:
+                _, detail = agent_model.classify_error(exc, settings.api_key)
+                return write(row('error', reason='checkpoint_unavailable', detail=detail))
             model_obj = deps.agent_model if deps.agent_model is not None else agent_model.chat_model(settings)
             try:
                 result = agent_graph.run_unit(unit=unit, ctx=ctx, model=model_obj,
@@ -1025,10 +1027,10 @@ def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt:
             except Unavailable:
                 raise
             except Exception as exc:
+                reason, detail = agent_model.classify_error(exc, settings.api_key)
                 if _checkpoint_missing(exc):
-                    return write(row('error', reason='checkpoint_unavailable'))
-                reason, _detail = agent_model.classify_error(exc, settings.api_key)
-                return write(row('error', reason=reason))
+                    reason = 'checkpoint_unavailable'
+                return write(row('error', reason=reason, detail=detail))
         if result['status'] == 'ok':
             with _tx() as conn:   # §3.3: plan, run, calls in one transaction
                 levels = {key: Decimal(item['value']) for key, item in result['output']['levels'].items()}
@@ -1051,8 +1053,8 @@ def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt:
     except Unavailable:
         raise
     except Exception as exc:   # the unexpected: this unit only, never the batch
-        reason, _ = agent_model.classify_error(exc, settings.api_key)
-        return write(row('error', reason=reason))
+        reason, detail = agent_model.classify_error(exc, settings.api_key)
+        return write(row('error', reason=reason, detail=detail))
 
 
 def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str, Any],

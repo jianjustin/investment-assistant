@@ -50,6 +50,7 @@
 | `cutoff_at` | 工具层使用的截止时间 |
 | `status` | `ok` / `pass` / `rejected` / `error` / `skipped` |
 | `reason` | 非 `ok`/`pass` 时必填，取值见 §6.4 |
+| `detail` | `error` 时脱敏后的异常文本（≤ 300 字符，密钥替换为 `***`），其余为空（复核修复补充） |
 | `output` | 校验后的建议（JSONB），`ok`/`pass` 时有值 |
 | `counter` | 反方结果（JSONB），可空 |
 | `plan_id` | `ok` 时指向 `agent` 计划，其余为空 |

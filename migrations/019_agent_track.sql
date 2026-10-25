@@ -12,6 +12,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_plans_agent_unique
 
 -- One row per agent run of a unit (attempt from 1); append-only. plan_id is
 -- set exactly when status is 'ok'; every other status carries a reason.
+-- detail keeps the redacted exception text of an 'error' run (key → ***), so
+-- quota codes and endpoint failures can be checked against real responses.
 CREATE TABLE IF NOT EXISTS agent_runs (
   id            UUID PRIMARY KEY,
   ticker        TEXT NOT NULL,
@@ -24,6 +26,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   cutoff_at     TIMESTAMPTZ NOT NULL,
   status        TEXT NOT NULL CHECK (status IN ('ok','pass','rejected','error','skipped')),
   reason        TEXT,
+  detail        TEXT,
   output        JSONB,
   counter       JSONB,
   plan_id       UUID REFERENCES trade_plans(id),

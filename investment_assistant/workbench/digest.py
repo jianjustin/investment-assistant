@@ -107,7 +107,7 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
                      'extended_plans': extended_plans,
                      'core_empty': 'core_empty' in (summary.get('errors') or []),
                      'market': market,
-                     'agent': _agent_counts(units),
+                     'agent': _agent_counts(units, session),
                      'agent_quota_exhausted': bool((agent_summary or {}).get('quota_exhausted'))},
         'plans': plans,
         'holdings': holdings_out,
@@ -117,10 +117,14 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
     }
 
 
-def _agent_counts(units: list[dict[str, Any]]) -> dict[str, int]:
-    """Main-list units by their agent outcome; anything but ok/pass counts as not given."""
+def _agent_counts(units: list[dict[str, Any]], session: date) -> dict[str, int]:
+    """Main-list units the agent stage covers (this session's conflict-free buys, §8.1) by
+    outcome; anything but ok/pass counts as not given."""
     counts = {'ok': 0, 'pass': 0, 'missing': 0}
     for u in units:
+        if (u['signal_date'] != session or u.get('proposed_action') != 'buy'
+                or 'conflict' in (u.get('labels') or [])):
+            continue
         status = (u.get('agent') or {}).get('status')
         if status in counts:
             counts[status] += 1

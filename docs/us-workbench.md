@@ -84,7 +84,7 @@
 - **功能**：每个买入单元在规则主计划旁多一条 Agent 建议（LangGraph + 智谱 `glm-5.3`）。Agent 通过八个工具读取截止时间之前的数据（只允许单元标的与 SPY/SMH/XLK/QQQ，不接受日期参数），独立给出动作、入场区间、止损、T1 和带引用的理由；「反方」步骤找反证并核对引用。每个价位和理由都引用一次写库的工具调用（`call:N`），引用不存在或价位没有价格类工具支撑时整条作废（`rejected / invalid_citation`），只显示原因、不显示内容。`ok` 的建议生成 `agent` 计划（`agent-1`，有效期与移动止损同 `plan-1`，仓位按入场区间中点）并进入影子跟踪；采纳时可把执行依据选为「Agent 建议」，纪律轨道记为 `agent`。扩展池单元也跑，排在主列表之后，其建议不推送。批处理在规则计划全部写入之后才开始；Agent 失败只记在 Agent 轨道，不影响规则计划与推送。每单元最多 3 次尝试、超过后只记一行 `skipped / max_attempts`；批处理开始 1500 秒后不再启动新单元；智谱 5 小时窗口额度用尽时其余单元记 `skipped / quota_exhausted`，规则轨道照常。
 - **环境变量**：`WORKBENCH_AGENT_PROVIDER`（`zhipu` 默认 / `off` 关闭）；`ZHIPU_API_KEY`；`WORKBENCH_AGENT_MODEL`（默认 `glm-5.3`）；`WORKBENCH_AGENT_BASE_URL`（默认智谱 OpenAI 兼容端点）；`WORKBENCH_AGENT_DAILY_TOKENS`（可选正整数，当日已用 token 达到上限后其余单元 `skipped / token_budget`）。密钥只从环境变量读取，出现在错误文本中一律替换为 `***`。
 - **手动入口**：页面「今日」的 Agent 建议卡片（失败时「重新运行 Agent」按钮，引用编号可展开查看工具调用的参数、返回值与哈希前 8 位）；API `GET /api/workbench/agent-runs?since=`（运行列表与覆盖率）、`GET /api/workbench/agent-runs/{id}`（运行详情与全部工具调用）、`POST /api/workbench/agent-runs`（body `{ticker, signal_date}`，已有 `ok`/`pass` 返回 409，不是买入单元返回 400）；命令行 `python -m investment_assistant.workbench.agent run --ticker X --date YYYY-MM-DD`（同手动接口）、`python -m investment_assistant.workbench.agent setup`（建检查点表）。
-- **验证入口**：运行报告的 `summary.agent`（`{runs, tokens, quota_exhausted}`）、`summary.sources.agent`（状态为 `error` 的标的）、`summary.timings.agent`；`GET /api/workbench/agent-runs` 的 `coverage.missing`（区间内没有 Agent 建议或明确原因的买入单元）；运行详情的工具调用与 `result_sha256`；页面「今日」与推送的 Agent 行（`ok` 写价位与第一条反方风险，`pass` 写不建议，其余写「Agent 未给出建议（原因）」）。
+- **验证入口**：运行报告的 `summary.agent`（`{runs, tokens, quota_exhausted}`）、`summary.sources.agent`（状态为 `error` 的标的）、`summary.timings.agent`；`GET /api/workbench/agent-runs` 的 `coverage.missing`（区间内没有 Agent 建议或明确原因的买入单元）；运行详情的工具调用与 `result_sha256`；`error` 运行的 `detail`（脱敏后的异常文本，密钥替换为 `***`，运行列表与详情都返回）；页面「今日」与推送的 Agent 行（`ok` 写价位与第一条反方风险，`pass` 写不建议，其余写「Agent 未给出建议（原因）」）。
 - **验证示例**：跑一次批处理后 `GET /api/workbench/agent-runs`，`coverage` 显示 `covered / units` 全覆盖、`missing` 为空；打开「今日」任一买入单元，Agent 建议卡片的每个价位旁有引用编号，点开可见工具调用与哈希。
 
 ## 上线前检查
@@ -120,7 +120,7 @@
 - 免费资讯源覆盖与稳定性有限：yfinance 的 `Ticker.get_news` 已被 Yahoo 改为 404（yfinance 会静默返回空列表），现改用搜索接口；运行报告的 `news.fetched` 为 0 时说明资讯源再次失效。SEC 列表依赖 `SEC_USER_AGENT`。
 - 样本量小（观察池 100 只以内、重叠信号多），统计结果没有推断意义；上线前检查只是描述性统计。
 - 原有六个入口收在侧栏「更多」下，保持只读可用；新主线不写入、不回填旧的快照与评分表。
-- Agent 轨道的额度错误码（`1113`、`1308`、`1310`）与智谱 OpenAI 兼容端点是按文档初值写的，需按真实响应核对；模型输出格式不保证稳定，围栏 JSON 与数字字符串已兼容，夹带说明文字会作废为 `malformed`。Agent 计划价位来自模型输出，不构成投资建议，Phase 0 证据状态仍为「未验证」。
+- Agent 轨道的额度错误码（`1113`、`1308`、`1310`）与智谱 OpenAI 兼容端点是按文档初值写的，需按真实响应核对（看 `error` 运行的 `detail`）；模型输出格式不保证稳定，围栏 JSON 与数字字符串已兼容，夹带说明文字会作废为 `malformed`。Agent 计划价位来自模型输出，不构成投资建议，Phase 0 证据状态仍为「未验证」。
 
 ## 验证记录（2026-10-23）
 
