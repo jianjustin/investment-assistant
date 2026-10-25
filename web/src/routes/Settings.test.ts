@@ -33,9 +33,9 @@ describe('Settings · Discord', () => {
     vi.spyOn(api, 'getNotifySettings').mockResolvedValue({
       channel: 'discord',
       discord_enabled: true,
-      task_channels: { metrics: 'daily' },
-      task_enabled: { metrics: true },
-      webhooks: { daily: { configured: true } },
+      task_channels: { workbench: 'signals' },
+      task_enabled: { workbench: true },
+      webhooks: { signals: { configured: true } },
       email: { from_addr: '', to_addr: '' },
       degraded: false,
     } as any)
@@ -44,19 +44,19 @@ describe('Settings · Discord', () => {
 
     render(Settings, { props: { sub: 'discord' } })
 
-    const btn = await screen.findByText('验证 daily')
+    const btn = await screen.findByText('验证 signals')
     await fireEvent.click(btn)
 
     expect(spy).toHaveBeenCalled()
   })
 
-  it('webhook inputs are password type — plaintext never visible', async () => {
+  it('shows only earnings and signals webhooks', async () => {
     vi.spyOn(api, 'getNotifySettings').mockResolvedValue({
       channel: 'discord',
       discord_enabled: true,
       task_channels: {},
       task_enabled: {},
-      webhooks: { earnings: { configured: false }, signals: { configured: false }, daily: { configured: false } },
+      webhooks: { earnings: { configured: true }, signals: { configured: false } },
       email: { from_addr: '', to_addr: '' },
       degraded: false,
     } as any)
@@ -65,10 +65,30 @@ describe('Settings · Discord', () => {
 
     render(Settings, { props: { sub: 'discord' } })
 
-    await screen.findByText('验证 daily')
+    await screen.findByText('验证 earnings')
+    expect(screen.getByText('验证 signals')).toBeTruthy()
+    expect(screen.queryByText('验证 daily')).toBeNull()
+  })
+
+  it('webhook inputs are password type — plaintext never visible', async () => {
+    vi.spyOn(api, 'getNotifySettings').mockResolvedValue({
+      channel: 'discord',
+      discord_enabled: true,
+      task_channels: {},
+      task_enabled: {},
+      webhooks: { earnings: { configured: false }, signals: { configured: false } },
+      email: { from_addr: '', to_addr: '' },
+      degraded: false,
+    } as any)
+    vi.spyOn(api, 'getEnvStatus').mockResolvedValue({ SMTP_PASSWORD: false } as any)
+    vi.spyOn(api, 'testNotifyChannel').mockResolvedValue({ ok: true })
+
+    render(Settings, { props: { sub: 'discord' } })
+
+    await screen.findByText('验证 signals')
 
     const inputs = document.querySelectorAll('input[type="password"]')
-    expect(inputs.length).toBeGreaterThanOrEqual(3)
+    expect(inputs.length).toBeGreaterThanOrEqual(2)
   })
 })
 
@@ -83,7 +103,7 @@ describe('Settings · 通知渠道（Discord/邮件）', () => {
       discord_enabled: true,
       task_channels: {},
       task_enabled: {},
-      webhooks: { earnings: { configured: false }, signals: { configured: false }, daily: { configured: false } },
+      webhooks: { earnings: { configured: false }, signals: { configured: false } },
       email: { from_addr: '', to_addr: '' },
       degraded: false,
     } as any)
@@ -91,11 +111,11 @@ describe('Settings · 通知渠道（Discord/邮件）', () => {
 
     render(Settings, { props: { sub: 'discord' } })
 
-    await screen.findByText('验证 daily')
+    await screen.findByText('验证 signals')
     const emailRadio = screen.getByLabelText('邮件') as HTMLInputElement
     await fireEvent.click(emailRadio)
 
-    expect(screen.queryByText('验证 daily')).toBeNull()
+    expect(screen.queryByText('验证 signals')).toBeNull()
     await screen.findByPlaceholderText('you@gmail.com')
     await screen.findByText(/SMTP_PASSWORD.*已配置/)
   })

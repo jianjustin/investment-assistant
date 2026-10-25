@@ -23,18 +23,13 @@ def test_operations_registry_shape(client):
     resp = client.get("/api/operations")
     assert resp.status_code == 200
     ids = {op["id"] for op in resp.json()["operations"]}
-    assert ids == {"fetch_market_signals", "sync_filings", "health_check"}
+    assert ids == {"sync_filings", "health_check"}
 
 
 def test_watchlist_get_falls_back_to_config_without_db(client):
     resp = client.get("/api/watchlist")
     assert resp.json()["count"] >= 1
     assert all(row["source"] == "config" for row in resp.json()["rows"])
-
-
-def test_post_market_fetch_requires_date(client):
-    resp = client.post("/api/market/signals/fetch", json={})
-    assert resp.status_code == 400 and "error" in resp.json()
 
 
 def test_delete_route_resolves(monkeypatch, client):

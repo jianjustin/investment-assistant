@@ -71,14 +71,12 @@ tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、�
 | `services/watchlist.py`、`settings.py`、`jobs.py`、`status.py`、`health.py` | 观察名单（只认美股代码）、通知设置、任务与运行报告、系统状态 |
 | `db.py`、`migrate.py`、`config.py` | 连接池与通用 SQL、迁移入口、配置加载 |
 
-### v1 遗留（保留，不再演进，待合并或删除）
+### v1 遗留（保留，不再演进，待删除）
 
 | 模块 | 做什么 |
 | --- | --- |
-| `hermes/`、`services/hermes.py` | DeepSeek 宏观分析、决策证据 |
-| `market/`、`tickers/`、`strategies/`、`facts/` | SPY/VIX 市场信号、个股趋势、策略评分 |
-| `research/event_study.py` 等 | 事件研究 |
-| `us_research/`、`research/cards.py` | 美股财季数据与指引、研究观察卡 |
+| `research/`、`services/research.py` | 事件研究、研究观察卡 |
+| `us_research/` | 美股财季数据与指引（主线「标的 → 基本面」在用） |
 
 ---
 
@@ -119,7 +117,8 @@ flowchart TD
 | 工作台 · 计划与执行 | `trade_plans`、`signal_decisions`、`trades`、`account_snapshots`、`cash_flows` |
 | 工作台 · Agent | `agent_runs`、`agent_tool_calls`；LangGraph 检查点表由 `python -m investment_assistant.workbench.agent setup` 创建，不在迁移里 |
 | 工作台 · 复盘 | `weekly_reviews`、`monthly_reviews`、`rule_backchecks`、`review_pushes` |
-| v1 遗留 | `market_signals`、`ticker_signal_snapshots`、`strategy_scores`、`event_studies`、`us_research_observations`、`us_research_collection_state`、`research_observation_cards`、`research_observation_card_versions` |
+| v1 遗留（待迁移 022 删除） | `market_signals`、`ticker_signal_snapshots`、`strategy_scores`、`event_studies`、`research_observation_cards`、`research_observation_card_versions` |
+| 主线 · 基本面 | `us_research_observations`、`us_research_collection_state`（`us_research/`） |
 
 迁移清单与执行方式见 [operations/migrations-and-backup.md](operations/migrations-and-backup.md)。
 
@@ -132,8 +131,7 @@ flowchart TD
 | `workbench` | 北京 06:30，周二至周六 | 主线 |
 | `workbench_review` | 北京 08:00，每天（迁移插入为关闭） | 主线 |
 | `filings` | 美东 09:00，周一至周五（本机已改为 20:30 跑 SEC 监控） | 共享 |
-| `metrics`、`scores` | 美东 08:00 / 18:00，周一至周五 | v1 遗留 |
-| `event_study` | 已注册，无默认调度行 | v1 遗留 |
+| `event_study` | 已注册，无默认调度行 | v1 遗留（待删） |
 
 调度细节见 [operations/scheduling-and-notifications.md](operations/scheduling-and-notifications.md)。
 

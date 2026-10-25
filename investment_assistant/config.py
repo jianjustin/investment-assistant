@@ -39,20 +39,8 @@ class SecMonitorConfig:
 
 
 @dataclass(frozen=True)
-class LLMConfig:
-    """DeepSeek / LLM tuning. Model ids are the real published DeepSeek ids."""
-
-    model: str = "deepseek-chat"
-    deep_research_model: str = "deepseek-reasoner"
-    max_tokens: int = 4096
-    timeout: int = 60
-    max_retries: int = 2
-    temperature: float = 0.2
-
-
-@dataclass(frozen=True)
 class NotifyConfig:
-    """Notification channel toggles for the Hermes capability layer."""
+    """Notification channel toggles for the scheduled tasks."""
 
     channel: str = "discord"  # "discord" | "email"（全局单选）
     discord_enabled: bool = True
@@ -61,13 +49,11 @@ class NotifyConfig:
         "from_addr": "", "to_addr": "", "host": "smtp.gmail.com", "port": 465,
     })
     task_channels: dict[str, str] = field(
-        default_factory=lambda: {"metrics": "daily", "filings": "earnings", "scores": "signals",
-                                 "workbench": "signals",
+        default_factory=lambda: {"filings": "earnings", "workbench": "signals",
                                  "workbench_review": "signals"}
     )
     task_enabled: dict[str, bool] = field(
-        default_factory=lambda: {"metrics": True, "filings": True, "scores": True, "workbench": True,
-                                  "workbench_review": True}
+        default_factory=lambda: {"filings": True, "workbench": True, "workbench_review": True}
     )
 
 
@@ -112,28 +98,6 @@ class PriceConfig:
     backoff_seconds: float = 1.0
 
 
-@dataclass(frozen=True)
-class StrategyParams:
-    """Tunable, backtestable scoring thresholds/weights (Phase 3)."""
-
-    weights: dict[str, int] = field(
-        default_factory=lambda: {
-            "uptrend": 30,
-            "above_ma_stack": 20,
-            "outperform_spy": 15,
-            "outperform_qqq": 15,
-            "volume_expansion": 10,
-            "macro_offense": 10,
-        }
-    )
-    volume_expansion_ratio: float = 1.5
-    # Legacy value retained for compatibility, NOT an approved research threshold.
-    # Snapshot RS is a 20-session return difference in decimal units; the research
-    # rs_strong event is suspended until its threshold/units are confirmed.
-    rs_strong: float = 1.2
-    vcp_contraction: float = 0.70
-
-
 DEFAULT_BACKTEST_HORIZONS: tuple[int, ...] = (5, 10, 20)
 
 
@@ -151,19 +115,16 @@ class AssistantConfig:
     market: MarketConfig = field(default_factory=MarketConfig)
     filings: FilingsConfig = field(default_factory=FilingsConfig)
     sec_monitor: SecMonitorConfig = field(default_factory=SecMonitorConfig)
-    llm: LLMConfig = field(default_factory=LLMConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     macro: MacroConfig = field(default_factory=MacroConfig)
     workbench: WorkbenchConfig = field(default_factory=WorkbenchConfig)
     fundamentals: FundamentalsConfig = field(default_factory=FundamentalsConfig)
     prices: PriceConfig = field(default_factory=PriceConfig)
-    strategy: StrategyParams = field(default_factory=StrategyParams)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     vault_ro: Path = DEFAULT_VAULT_RO
     draft_dir: Path = DEFAULT_DRAFT_DIR
     brief_time_local: str = "08:30"
     max_daily_focus_items: int = 3
-    model_default: str = "deepseek-chat"
 
 
 def load_config(path: str | Path | None = None) -> AssistantConfig:
@@ -202,10 +163,6 @@ def _config_from_dict(data: dict[str, Any]) -> AssistantConfig:
         cfg = replace(cfg, brief_time_local=str(data["brief_time_local"]))
     if "max_daily_focus_items" in data:
         cfg = replace(cfg, max_daily_focus_items=int(data["max_daily_focus_items"]))
-    if "model_default" in data:
-        cfg = replace(cfg, model_default=str(data["model_default"]))
-    if "llm" in data and isinstance(data["llm"], dict):
-        cfg = replace(cfg, llm=_dataclass_from_dict(data["llm"], cfg.llm))
     if "notify" in data and isinstance(data["notify"], dict):
         cfg = replace(cfg, notify=_dataclass_from_dict(data["notify"], cfg.notify))
     if "macro" in data and isinstance(data["macro"], dict):

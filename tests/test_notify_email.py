@@ -15,7 +15,7 @@ def _notification():
 
 def test_render_email_subject_has_prefix_and_title():
     subject, _ = render_email(_notification())
-    assert subject == "[Hermes] 📄 财报 · 2026-07-03"
+    assert subject == "[investment-assistant] 📄 财报 · 2026-07-03"
 
 
 def test_render_email_html_fields_bold_and_escaped():

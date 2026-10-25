@@ -1,1 +1,0 @@
-"""Hermes investment assistant orchestration."""

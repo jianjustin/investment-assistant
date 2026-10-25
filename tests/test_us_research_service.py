@@ -487,6 +487,9 @@ def test_financial_source_identity_survives_storage_view_and_watchlist_enrichmen
     assert s.view('MU')['statuses'][0]['last_success_details']['identity']['name'] == 'Micron Technology'
     monkeypatch.setenv('INVESTMENT_ASSISTANT_DATABASE_URL', 'TEMP-test-boundary')
     monkeypatch.setattr(wl, 'connect', lambda _: nullcontext(research_db))
+    # The research schema has no workbench tables; the earnings lookup is not under test here.
+    from investment_assistant.workbench import repository as wb_repo
+    monkeypatch.setattr(wb_repo, 'latest_earnings', lambda conn, ticker, *, cutoff_at: None)
     research_db.execute("INSERT INTO watchlist_items(ticker,status) VALUES ('MU','active'),('AAPL.US','active'),('TSLA.SH','active'),('ABC.DEF','active')")
     listed = wl.watchlist_rows(enriched=True)
     assert next(r for r in listed if r['ticker'] == 'MU')['name'] == 'Micron Technology'

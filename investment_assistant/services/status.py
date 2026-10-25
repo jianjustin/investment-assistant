@@ -4,7 +4,7 @@ import os
 import subprocess
 from typing import Any
 
-from investment_assistant.db import connect, get_latest_market_signal
+from investment_assistant.db import connect
 from investment_assistant.runtime_paths import DEFAULT_FILINGS_DIR
 
 
@@ -18,7 +18,8 @@ def database_status() -> dict[str, Any]:
         return {"ok": False, "error": "INVESTMENT_ASSISTANT_DATABASE_URL missing"}
     try:
         with connect(url) as conn:
-            return {"ok": True, "latest_market_signal": get_latest_market_signal(conn)}
+            conn.execute("SELECT 1")
+            return {"ok": True}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -31,16 +32,6 @@ def filing_status() -> dict[str, Any]:
 
 def operation_registry() -> list[dict[str, Any]]:
     return [
-        {
-            "id": "fetch_market_signals",
-            "label": "拉取市场信号",
-            "description": "按日期或日期区间计算市场信号，并写入 market_signals。",
-            "risk": "medium",
-            "enabled": True,
-            "requires_confirmation": True,
-            "method": "POST",
-            "endpoint": "/api/market/signals/fetch",
-        },
         {
             "id": "sync_filings",
             "label": "同步 Filings",

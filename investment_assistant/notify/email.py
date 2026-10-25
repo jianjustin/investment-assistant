@@ -9,7 +9,7 @@ from email.mime.text import MIMEText
 
 from investment_assistant.notify.message import Notification
 
-SUBJECT_PREFIX = "[Hermes]"
+SUBJECT_PREFIX = "[investment-assistant]"
 
 
 def _line_html(line: str) -> str:

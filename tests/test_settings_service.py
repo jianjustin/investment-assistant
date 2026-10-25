@@ -6,7 +6,7 @@ from investment_assistant.services import settings
 
 def test_effective_notify_config_no_db_returns_base(monkeypatch):
     monkeypatch.delenv("INVESTMENT_ASSISTANT_DATABASE_URL", raising=False)
-    base = NotifyConfig(webhooks={"daily": "file-url"})
+    base = NotifyConfig(webhooks={"signals": "file-url"})
     assert settings.effective_notify_config(base) is base
 
 
@@ -14,25 +14,25 @@ def test_effective_notify_config_overlays_db(monkeypatch):
     monkeypatch.setenv("INVESTMENT_ASSISTANT_DATABASE_URL", "postgres://x")
     monkeypatch.setattr(settings, "_with_conn", lambda fn: fn("CONN"))
     monkeypatch.setattr(settings.db, "get_notify_settings", lambda conn: {
-        "discord_enabled": False, "webhooks": {"daily": "db-url"},
-        "task_channels": {}, "task_enabled": {"metrics": False},
+        "discord_enabled": False, "webhooks": {"signals": "db-url"},
+        "task_channels": {}, "task_enabled": {"workbench": False},
     })
-    base = NotifyConfig(webhooks={"daily": "file-url", "signals": "s"})
+    base = NotifyConfig(webhooks={"earnings": "e", "signals": "file-url"})
     out = settings.effective_notify_config(base)
     assert out.discord_enabled is False
-    assert out.webhooks["daily"] == "db-url" and out.webhooks["signals"] == "s"  # 合并覆盖
-    assert out.task_enabled["metrics"] is False
+    assert out.webhooks["signals"] == "db-url" and out.webhooks["earnings"] == "e"  # 合并覆盖
+    assert out.task_enabled["workbench"] is False
 
 
 def test_read_notify_view_masks_webhooks(monkeypatch):
     monkeypatch.setenv("INVESTMENT_ASSISTANT_DATABASE_URL", "postgres://x")
     monkeypatch.setattr(settings, "_with_conn", lambda fn: fn("CONN"))
     monkeypatch.setattr(settings.db, "get_notify_settings", lambda conn: {
-        "discord_enabled": True, "webhooks": {"daily": "https://secret"},
-        "task_channels": {"metrics": "daily"}, "task_enabled": {"metrics": True},
+        "discord_enabled": True, "webhooks": {"signals": "https://secret"},
+        "task_channels": {"workbench": "signals"}, "task_enabled": {"workbench": True},
     })
     view = settings.read_notify_view()
-    assert view["webhooks"] == {"daily": {"configured": True}}  # 不回显明文
+    assert view["webhooks"] == {"signals": {"configured": True}}  # 不回显明文
     assert "https://secret" not in str(view)
 
 
@@ -46,7 +46,7 @@ def test_test_notify_channel_uses_candidate_url():
         def send(self, channel, payload):
             sent.append((channel, payload))
 
-    out = settings.test_notify_channel("daily", url="https://candidate", client=FakeClient())
+    out = settings.test_notify_channel("signals", url="https://candidate", client=FakeClient())
     assert out["ok"] is True and sent
 
 
@@ -55,7 +55,7 @@ def test_test_notify_channel_reports_failure():
         def send(self, channel, payload):
             raise RuntimeError("network")
 
-    out = settings.test_notify_channel("daily", url="https://x", client=Boom())
+    out = settings.test_notify_channel("signals", url="https://x", client=Boom())
     assert out["ok"] is False and "network" in out["error"]
 
 
@@ -68,7 +68,7 @@ def test_test_notify_channel_sanitizes_webhook_token_in_error():
                 "https://discord.com/api/webhooks/123/SECRETTOKEN"
             )
 
-    out = settings.test_notify_channel("daily", url="https://x", client=LeakyClient())
+    out = settings.test_notify_channel("signals", url="https://x", client=LeakyClient())
     assert out["ok"] is False
     assert "SECRETTOKEN" not in out["error"]
     assert "<webhook redacted>" in out["error"]
@@ -146,7 +146,7 @@ def test_test_notify_channel_email_uses_client():
             sent.append((subject, html_body))
 
     out = settings.test_notify_channel("email", client=FakeEmail())
-    assert out["ok"] is True and sent and sent[0][0].startswith("[Hermes]")
+    assert out["ok"] is True and sent and sent[0][0] == "✅ 测试邮件"
 
 
 def test_test_notify_channel_email_requires_password(monkeypatch):
@@ -173,3 +173,19 @@ def test_test_notify_channel_email_requires_sender(monkeypatch):
 def test_read_env_status_includes_smtp_password(monkeypatch):
     monkeypatch.delenv("SMTP_PASSWORD", raising=False)
     assert settings.read_env_status()["SMTP_PASSWORD"] is False
+
+
+def test_stored_legacy_keys_are_filtered(monkeypatch):
+    monkeypatch.setenv("INVESTMENT_ASSISTANT_DATABASE_URL", "postgres://x")
+    monkeypatch.setattr(settings, "_with_conn", lambda fn: fn("CONN"))
+    monkeypatch.setattr(settings.db, "get_notify_settings", lambda conn: {
+        "webhooks": {"daily": "x"},
+        "task_channels": {"metrics": "daily", "workbench": "earnings"},
+        "task_enabled": {"metrics": True, "workbench": True},
+    })
+    view = settings.read_notify_view()
+    assert "metrics" not in view["task_channels"] and view["task_channels"]["workbench"] == "earnings"
+    assert "daily" not in view["webhooks"]
+    effective = settings.effective_notify_config(NotifyConfig())
+    assert "metrics" not in effective.task_channels
+    assert "daily" not in effective.webhooks

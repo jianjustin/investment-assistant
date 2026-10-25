@@ -4,39 +4,18 @@ import importlib
 
 import pytest
 
-from investment_assistant.config import AssistantConfig, load_config
-from investment_assistant.hermes import deepseek_client
-
-
-def test_config_has_real_default_model():
-    cfg = AssistantConfig()
-    assert cfg.model_default == "deepseek-chat"
-    assert cfg.llm.model == "deepseek-chat"
-    assert cfg.llm.deep_research_model == "deepseek-reasoner"
-    assert cfg.llm.model != "deepseek-v4-pro"
+from investment_assistant.config import load_config
 
 
 def test_config_parses_nested_overrides(tmp_path):
     path = tmp_path / "cfg.json"
     path.write_text(
-        '{"llm": {"max_retries": 5}, "notify": {"channel": "email"},'
-        ' "prices": {"max_retries": 7}}',
+        '{"notify": {"channel": "email"}, "prices": {"max_retries": 7}}',
         encoding="utf-8",
     )
     cfg = load_config(path)
-    assert cfg.llm.max_retries == 5
     assert cfg.notify.channel == "email"
     assert cfg.prices.max_retries == 7
-
-
-def test_deepseek_returns_structured_error_without_key(monkeypatch):
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    result, status = deepseek_client.request_json_completion_verbose(
-        system_prompt="s", user_payload={"x": 1}
-    )
-    assert result is None
-    assert status["ok"] is False
-    assert "DEEPSEEK_API_KEY" in status["error"]
 
 
 def test_dashboard_refuses_public_bind_without_optin(monkeypatch):

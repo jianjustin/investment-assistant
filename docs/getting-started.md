@@ -33,13 +33,12 @@ cd web && npm install && npm run build && cd ..
 | `SCHEDULER_ENABLED` | 否 | `0` 关闭调度线程；本机入口以 `.env` 中的值为准 |
 | `HERMES_DASHBOARD_PORT` | 否 | 端口，默认 `8787` |
 | `HERMES_DASHBOARD_USER`、`SERVER_PWD` | 否 | HTTP Basic 认证；本机只监听 `127.0.0.1` |
-| `DISCORD_WEBHOOK_SIGNALS`、`DISCORD_WEBHOOK_DAILY`、`DISCORD_WEBHOOK_EARNINGS` | 否 | 各频道 webhook；也可在「设置 → 推送配置」填写，页面配置优先 |
+| `DISCORD_WEBHOOK_SIGNALS`、`DISCORD_WEBHOOK_EARNINGS` | 否 | 各频道 webhook；也可在「设置 → 推送配置」填写，页面配置优先 |
 | `SEC_DISCORD_BOT_TOKEN` | SEC 监控需要 | SEC 监控用 Bot 身份直接发 Discord |
 | `SMTP_PASSWORD` | 选邮件渠道时 | 邮件渠道密码 |
 | `FRED_API_KEY` | 否 | FRED 利差；未配置时运行报告记「未配置」 |
 | `ZHIPU_API_KEY` | 否 | Agent 轨道；未配置时 Agent 轨道记原因停下，规则轨道照常 |
 | `WORKBENCH_AGENT_PROVIDER` / `_MODEL` / `_BASE_URL` / `_DAILY_TOKENS` | 否 | Agent 开关（`off` 关闭）、模型、端点、每日 token 上限 |
-| `DEEPSEEK_API_KEY` | 否 | 仅 v1 遗留的 Hermes 宏观分析使用 |
 
 ### 配置文件（`config/local.json`，示例见 `config/investment-assistant.example.json`）
 

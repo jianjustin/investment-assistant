@@ -391,7 +391,7 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
                 entry['skips'] = sorted({f'{s.rule_id}:{s.reason}' for s in result['skips']})
                 group = repository.unit_candidates(conn, ticker, session)
                 unit = synthesis.synthesize(ticker, session, group, holding=book['position'] is not None,
-                                            market_status=repository.market_status(conn, session), now=now) \
+                                            now=now) \
                     if group and repository.decision_head(conn, ticker, session) is None else None
                 if unit is not None and unit['proposed_action'] == 'buy' and 'conflict' not in unit['labels']:
                     _generate_rule_plan(conn, ticker, session, ticker_bars, summary, now=now)
@@ -453,7 +453,7 @@ def today(*, now: datetime) -> dict[str, Any]:
             book = _book(conn, ticker)
             held = book['position'] is not None
             unit = synthesis.synthesize(ticker, signal_date, group['candidates'], holding=held,
-                                        market_status=repository.market_status(conn, signal_date), now=now)
+                                        now=now)
             since = signal_date - timedelta(days=NEWS_LOOKBACK_DAYS)
             unit.update(
                 candidates=group['candidates'], position=book['position'],
@@ -1010,7 +1010,7 @@ def _session_units(conn, session: date, *, now: datetime) -> dict[str, list[dict
         book = _book(conn, ticker)
         unit = synthesis.synthesize(ticker, group['signal_date'], group['candidates'],
                                     holding=book['position'] is not None,
-                                    market_status=repository.market_status(conn, group['signal_date']), now=now)
+                                    now=now)
         if unit is None:
             continue
         conflict_free_buy = unit['proposed_action'] == 'buy' and 'conflict' not in unit['labels']
@@ -1331,7 +1331,7 @@ def run_agent(ticker: str, signal_date: date, *, now: datetime, deps: Deps | Non
             raise ValueError(f'{ticker} {signal_date} 没有候选，不是决策单元')
         book = _book(conn, ticker)
         unit = synthesis.synthesize(ticker, signal_date, group, holding=book['position'] is not None,
-                                    market_status=repository.market_status(conn, signal_date), now=now)
+                                    now=now)
         if unit is None or unit['proposed_action'] != 'buy' or 'conflict' in unit['labels']:
             raise ValueError(f'{ticker} {signal_date} 不是无冲突的买入单元')
         prior = repository.agent_runs_for(conn, ticker, signal_date)
@@ -1382,7 +1382,7 @@ def agent_runs(*, now: datetime, since: date | None = None) -> dict[str, Any]:
             book = _book(conn, ticker)
             unit = synthesis.synthesize(ticker, signal_date, group['candidates'],
                                         holding=book['position'] is not None,
-                                        market_status=repository.market_status(conn, signal_date), now=now)
+                                        now=now)
             if unit is None or unit['proposed_action'] != 'buy' or 'conflict' in unit['labels']:
                 continue
             total += 1

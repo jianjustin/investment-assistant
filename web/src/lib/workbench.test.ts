@@ -9,7 +9,7 @@ afterEach(() => vi.unstubAllGlobals())
 
 const unit = {
   ticker: 'NVDA', signal_date: '2026-10-22', proposed_action: 'buy' as const, labels: [], candidate_ids: ['c1', 'c2'],
-  rule_ids: ['trend_reclaim'], entry_passed: false, market_status: null, holding: false,
+  rule_ids: ['trend_reclaim'], entry_passed: false, holding: false,
   candidates: [], brief: { id: 'b1', status: 'ok' as const }, filings: [], news: [], position: null,
 }
 

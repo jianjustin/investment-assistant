@@ -51,7 +51,6 @@ it('shows candidates, cited brief and undated news without inventing times', asy
   expect(screen.getByText(/支持一/)).toHaveTextContent('news:2')
   expect(screen.getByText(/反证一/)).toBeInTheDocument()
   expect(screen.getByText(/发布时间未知/)).toBeInTheDocument()
-  expect(screen.getByText(/大盘 green（仅背景）/)).toBeInTheDocument()
 })
 
 it('labels conflict, avoid, late entry and fallback or invalid briefs', async () => {

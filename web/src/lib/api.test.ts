@@ -37,7 +37,7 @@ describe('jobs/settings api wrappers', () => {
   })
 
   it('testNotifyChannel posts channel', async () => {
-    await api.testNotifyChannel({ channel: 'daily', url: 'u' })
+    await api.testNotifyChannel({ channel: 'signals', url: 'u' })
     expect((fetch as any).mock.calls[0][0]).toBe('/api/settings/notify/test')
   })
 })

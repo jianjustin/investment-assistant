@@ -146,7 +146,7 @@ export interface Backcheck {
 }
 export interface Unit {
   ticker: string; signal_date: string; proposed_action: Action; labels: string[]; candidate_ids: string[]
-  rule_ids: string[]; entry_passed: boolean; market_status: string | null; holding: boolean
+  rule_ids: string[]; entry_passed: boolean; holding: boolean
   candidates: Candidate[]; brief: Brief | null; filings: Filing[]; news: NewsItem[]; position: Position | null
   plan: Plan | null
   agent: AgentRun | null

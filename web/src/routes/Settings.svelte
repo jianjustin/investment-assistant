@@ -20,7 +20,7 @@
     discord_enabled: true,
     email: { from_addr: '', to_addr: '' },
   })
-  let webhookInput = $state<Record<string, string>>({ earnings: '', signals: '', daily: '' })
+  let webhookInput = $state<Record<string, string>>({ earnings: '', signals: '' })
   let testResult = $state<Record<string, string>>({})
 
   // jobs
@@ -42,7 +42,7 @@
       } else if (sub === 'discord') {
         ;[notify, env] = await Promise.all([api.getNotifySettings(), api.getEnvStatus()])
         if (!notify.email) notify.email = { from_addr: '', to_addr: '' }
-        webhookInput = { earnings: '', signals: '', daily: '' }
+        webhookInput = { earnings: '', signals: '' }
         testResult = {}
       } else if (sub === 'jobs') {
         jobs = (await api.getScheduledJobs()).jobs
@@ -68,7 +68,7 @@
 
   async function saveNotify() {
     const webhooks: Record<string, string> = {}
-    for (const ch of ['earnings', 'signals', 'daily']) {
+    for (const ch of ['earnings', 'signals']) {
       if (webhookInput[ch]?.trim()) webhooks[ch] = webhookInput[ch]
     }
     await api.patchNotifySettings({
@@ -79,7 +79,7 @@
       task_enabled: notify.task_enabled,
       task_channels: notify.task_channels,
     })
-    webhookInput = { earnings: '', signals: '', daily: '' }
+    webhookInput = { earnings: '', signals: '' }
     await load()
   }
 
@@ -163,7 +163,7 @@
         <input type="checkbox" bind:checked={notify.discord_enabled} />
         启用 Discord 推送
       </label>
-      {#each ['earnings', 'signals', 'daily'] as ch}
+      {#each ['earnings', 'signals'] as ch}
         <div class="space-y-1">
           <div class="text-sm font-medium">
             {ch}

@@ -10,17 +10,13 @@ from investment_assistant.config import AssistantConfig
 from investment_assistant.db import connect, due_scheduled_jobs, reschedule_job
 from investment_assistant.tasks import event_study as event_study_task
 from investment_assistant.tasks import filings as filings_task
-from investment_assistant.tasks import metrics as metrics_task
-from investment_assistant.tasks import nightly_scores as scores_task
 from investment_assistant.tasks import workbench as workbench_task
 from investment_assistant.tasks import workbench_review as workbench_review_task
 
 logger = logging.getLogger(__name__)
 
 REGISTRY: dict[str, Callable[[AssistantConfig], dict[str, Any]]] = {
-    "metrics": metrics_task.run,
     "filings": filings_task.run,
-    "scores": scores_task.run,
     "event_study": event_study_task.run,
     "workbench": workbench_task.run,
     "workbench_review": workbench_review_task.run,

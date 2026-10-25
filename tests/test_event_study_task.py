@@ -128,26 +128,6 @@ def test_explicit_unavailable_task_kind_raises_not_empty_success():
         event_study._core(AssistantConfig(), kinds=["eps_beat"])
 
 
-def test_actual_task_regime_uses_passed_market_config(monkeypatch):
-    from dataclasses import replace
-    from types import SimpleNamespace
-    import pandas as pd
-    import pytest
-    from investment_assistant.research.event_study import Event
-    cfg = AssistantConfig()
-    cfg = replace(cfg, market=replace(cfg.market, red_vix=99.0))
-    seen = []
-    monkeypatch.setattr(event_study, "collect_events", lambda *a, **kw: [Event("AAA", date(2024, 3, 1), "score_high")])
-    monkeypatch.setattr("investment_assistant.market.service.compute_market_signal_for_date",
-                        lambda market, d: seen.append((market, d)) or SimpleNamespace(market_status="green"))
-    monkeypatch.setattr("investment_assistant.config.load_config", lambda: pytest.fail("must use passed config"))
-    monkeypatch.setattr("investment_assistant.data.price.get_price_history_asof",
-                        lambda ticker, on, **kw: pd.DataFrame({"Close": [100.]}, index=pd.to_datetime([on])))
-    summary = event_study._core(cfg, asof=date(2024, 3, 8), kinds=["score_high"])
-    assert seen == [(cfg.market, date(2024, 3, 1))]
-    assert summary["results"]["score_high"]["by_regime"]["green"]["5"]["n"] == 1
-
-
 def test_task_source_unavailable_has_errors_not_zero_results():
     summary = event_study._core(AssistantConfig(), asof=date(2024, 3, 8))
     assert summary["results"] == {}

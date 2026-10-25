@@ -1,1 +1,0 @@
-"""Ticker trend scanning helpers."""

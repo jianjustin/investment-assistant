@@ -28,8 +28,7 @@ from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from investment_assistant.db import connect, get_latest_market_signal
-from investment_assistant.hermes.deepseek_client import DEEPSEEK_BASE_URL, deepseek_configured
+from investment_assistant.db import connect
 from investment_assistant.runtime_paths import DEFAULT_FILINGS_DIR
 
 # status precedence: down beats degraded beats unknown beats up.
@@ -109,16 +108,9 @@ def check_database() -> dict[str, Any]:
     start = time.monotonic()
     try:
         with connect(url) as conn:
-            latest = get_latest_market_signal(conn)
+            conn.execute("SELECT 1")
         latency = (time.monotonic() - start) * 1000
-        signal_date = None
-        if isinstance(latest, dict):
-            signal_date = latest.get("signal_date")
-        detail = f"连接正常，最新市场信号 {signal_date}" if signal_date else "连接正常"
-        return _check(
-            "database", "PostgreSQL", "infrastructure", "up", detail,
-            latency_ms=latency, meta={"latest_signal_date": str(signal_date) if signal_date else None},
-        )
+        return _check("database", "PostgreSQL", "infrastructure", "up", "连接正常", latency_ms=latency)
     except Exception as exc:  # noqa: BLE001
         latency = (time.monotonic() - start) * 1000
         return _check("database", "PostgreSQL", "infrastructure", "down", f"连接失败：{exc}", latency_ms=latency)
@@ -213,16 +205,6 @@ def check_scheduler() -> dict[str, Any]:
 # --- online services ------------------------------------------------------
 
 
-def check_deepseek() -> dict[str, Any]:
-    configured = deepseek_configured()
-    probe = _http_probe(DEEPSEEK_BASE_URL, timeout=6.0)
-    if not probe["reachable"]:
-        return _check("deepseek", "DeepSeek API", "online", "down", f"无法连接 {DEEPSEEK_BASE_URL}：{probe['error']}", latency_ms=probe["latency_ms"], meta={"configured": configured})
-    if not configured:
-        return _check("deepseek", "DeepSeek API", "online", "degraded", "可达，但 DEEPSEEK_API_KEY 未配置", latency_ms=probe["latency_ms"], meta={"configured": False})
-    return _check("deepseek", "DeepSeek API", "online", "up", f"可达，API Key 已配置 (HTTP {probe['code']})", latency_ms=probe["latency_ms"], meta={"configured": True})
-
-
 def check_sec_edgar() -> dict[str, Any]:
     ua = os.environ.get("SEC_USER_AGENT", "investment-assistant status-page")
     probe = _http_probe(
@@ -250,7 +232,6 @@ def check_discord() -> dict[str, Any]:
     webhooks = [
         os.environ.get("DISCORD_WEBHOOK_EARNINGS"),
         os.environ.get("DISCORD_WEBHOOK_SIGNALS"),
-        os.environ.get("DISCORD_WEBHOOK_DAILY"),
     ]
     configured = sum(1 for w in webhooks if w)
     probe = _http_probe("https://discord.com/api/v10/gateway", timeout=6.0)
@@ -258,7 +239,7 @@ def check_discord() -> dict[str, Any]:
         return _check("discord", "Discord 推送", "online", "down", f"不可达：{probe['error']}", latency_ms=probe["latency_ms"], meta={"configured_webhooks": configured})
     if configured == 0:
         return _check("discord", "Discord 推送", "online", "degraded", "API 可达，但未配置任何 Webhook", latency_ms=probe["latency_ms"], meta={"configured_webhooks": 0})
-    return _check("discord", "Discord 推送", "online", "up", f"可达，已配置 {configured}/3 个 Webhook", latency_ms=probe["latency_ms"], meta={"configured_webhooks": configured})
+    return _check("discord", "Discord 推送", "online", "up", f"可达，已配置 {configured}/2 个 Webhook", latency_ms=probe["latency_ms"], meta={"configured_webhooks": configured})
 
 
 def check_fred() -> dict[str, Any]:
@@ -278,7 +259,6 @@ CHECKS: list[Callable[[], dict[str, Any]]] = [
     check_daily_timer,
     check_scheduler,
     check_filings_storage,
-    check_deepseek,
     check_sec_edgar,
     check_yahoo_finance,
     check_discord,

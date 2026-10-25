@@ -17,7 +17,7 @@ def entry_passed(signal_date: date, now: datetime) -> bool:
 
 
 def synthesize(ticker: str, signal_date: date, candidates: list[dict[str, Any]], *, holding: bool,
-               market_status: str | None, now: datetime) -> dict[str, Any]:
+               now: datetime) -> dict[str, Any]:
     if not candidates:
         raise ValueError('a decision unit needs at least one candidate')
     actions = {c['action'] for c in candidates}
@@ -37,7 +37,5 @@ def synthesize(ticker: str, signal_date: date, candidates: list[dict[str, Any]],
         'ticker': ticker.upper(), 'signal_date': signal_date,
         'candidate_ids': [c['id'] for c in candidates], 'rule_ids': [c['rule_id'] for c in candidates],
         'proposed_action': proposed, 'labels': labels, 'holding': holding,
-        # Context only in v1: market status never filters or downgrades a candidate.
-        'market_status': market_status,
         'entry_passed': entry_passed(signal_date, now),
     }

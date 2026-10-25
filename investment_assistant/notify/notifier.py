@@ -6,18 +6,15 @@ from typing import Any
 from investment_assistant.notify.discord import DiscordChannel, DiscordClient, render_discord
 from investment_assistant.notify.email import EmailClient, render_email
 from investment_assistant.notify.message import Notification
-from investment_assistant.notify.templates import (
-    date_label_for,
-    filings_digest,
-    metrics_summary,
-    scores_summary,
-)
+from investment_assistant.notify.templates import date_label_for, filings_digest
 
 _BUILDERS = {
-    "metrics": metrics_summary,
     "filings": filings_digest,
-    "scores": scores_summary,
 }
+
+
+def _channel_names() -> frozenset[str]:
+    return frozenset(channel.value for channel in DiscordChannel)
 
 
 def _build_notification(task: str, status: str, summary: dict[str, Any], *,
@@ -45,6 +42,8 @@ def _send_discord(task: str, notification: Notification, notify_cfg, *, client=N
     channel_name = notify_cfg.task_channels.get(task)
     if not channel_name:
         return {"sent": False, "reason": "no_channel"}
+    if channel_name not in _channel_names():
+        return {"sent": False, "reason": f"unknown_channel: {channel_name}"}
     try:
         cli = client or DiscordClient.from_config(notify_cfg)
         cli.send(DiscordChannel(channel_name), render_discord(notification))
@@ -91,6 +90,8 @@ def send_notifications(task: str, notifications: list[Notification], notify_cfg,
     channel_name = notify_cfg.task_channels.get(task)
     if not channel_name:
         return {"sent": False, "messages": 0, "reason": "no_channel"}
+    if channel_name not in _channel_names():
+        return {"sent": False, "messages": 0, "reason": f"unknown_channel: {channel_name}"}
     try:
         cli = client or DiscordClient.from_config(notify_cfg)
         sent = 0

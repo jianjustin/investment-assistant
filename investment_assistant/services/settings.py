@@ -16,11 +16,21 @@ _ENV_KEYS = [
     "INVESTMENT_ASSISTANT_DATABASE_URL",
     "DISCORD_WEBHOOK_EARNINGS",
     "DISCORD_WEBHOOK_SIGNALS",
-    "DISCORD_WEBHOOK_DAILY",
     "SMTP_PASSWORD",
 ]
 
 _EMAIL_FIELDS = {"from_addr", "to_addr", "host", "port"}
+NOTIFYING_TASKS = ("filings", "workbench", "workbench_review")
+CHANNELS = ("earnings", "signals")
+
+
+def _filter_tasks(mapping: dict, default: dict) -> dict:
+    """Rows kept in notify_settings for removed tasks are ignored, not shown or written back."""
+    return {k: v for k, v in {**default, **(mapping or {})}.items() if k in NOTIFYING_TASKS}
+
+
+def _filter_channels(mapping: dict, default: dict) -> dict:
+    return {k: v for k, v in {**default, **(mapping or {})}.items() if k in CHANNELS}
 
 
 def _has_db() -> bool:
@@ -46,23 +56,23 @@ def effective_notify_config(base: NotifyConfig) -> NotifyConfig:
         base,
         channel=stored.get("channel") or base.channel,
         discord_enabled=stored.get("discord_enabled", base.discord_enabled),
-        webhooks={**base.webhooks, **(stored.get("webhooks") or {})},
+        webhooks=_filter_channels(stored.get("webhooks") or {}, base.webhooks),
         email={**base.email, **(stored.get("email") or {})},
-        task_channels={**base.task_channels, **(stored.get("task_channels") or {})},
-        task_enabled={**base.task_enabled, **(stored.get("task_enabled") or {})},
+        task_channels=_filter_tasks(stored.get("task_channels") or {}, base.task_channels),
+        task_enabled=_filter_tasks(stored.get("task_enabled") or {}, base.task_enabled),
     )
 
 
 def read_notify_view() -> dict[str, Any]:
     stored = _stored()
     base = NotifyConfig()
-    webhooks = {**base.webhooks, **(stored.get("webhooks") or {})}
+    webhooks = _filter_channels(stored.get("webhooks") or {}, base.webhooks)
     return {
         "channel": stored.get("channel") or base.channel,
         "discord_enabled": stored.get("discord_enabled", base.discord_enabled),
         "email": {**base.email, **(stored.get("email") or {})},  # 地址非敏感；密码只在环境变量
-        "task_channels": {**base.task_channels, **(stored.get("task_channels") or {})},
-        "task_enabled": {**base.task_enabled, **(stored.get("task_enabled") or {})},
+        "task_channels": _filter_tasks(stored.get("task_channels") or {}, base.task_channels),
+        "task_enabled": _filter_tasks(stored.get("task_enabled") or {}, base.task_enabled),
         "webhooks": {ch: {"configured": bool(url)} for ch, url in webhooks.items()},
         "degraded": not _has_db(),
     }
@@ -74,15 +84,20 @@ def update_notify(payload: dict[str, Any]) -> dict[str, Any]:
         return {"updated": False, "error": "invalid channel"}
     if not _has_db():
         return {"updated": False, "degraded": True}
-    webhooks = {k: v for k, v in (payload.get("webhooks") or {}).items() if str(v).strip()}  # 留空不覆盖
+    webhooks = {k: v for k, v in (payload.get("webhooks") or {}).items()
+                if k in CHANNELS and str(v).strip()}  # 留空不覆盖
     email = {k: v for k, v in (payload.get("email") or {}).items()
               if k in _EMAIL_FIELDS and str(v).strip()}
+    task_channels = {k: v for k, v in (payload.get("task_channels") or {}).items()
+                     if k in NOTIFYING_TASKS}
+    task_enabled = {k: v for k, v in (payload.get("task_enabled") or {}).items()
+                    if k in NOTIFYING_TASKS}
     _with_conn(lambda conn: db.update_notify_settings(
         conn,
         discord_enabled=payload.get("discord_enabled"),
         webhooks=webhooks or None,
-        task_channels=payload.get("task_channels"),
-        task_enabled=payload.get("task_enabled"),
+        task_channels=task_channels or None,
+        task_enabled=task_enabled or None,
         channel=channel,
         email=email or None,
     ))
@@ -100,7 +115,7 @@ def test_notify_channel(channel: str, url: str | None = None, *,
         if not target:
             return {"ok": False, "error": "no webhook configured"}
         client = DiscordClient(**{f"{c.value}_url": (target if c == ch else "") for c in DiscordChannel})
-    payload = {"content": "✅ Hermes 测试消息：webhook 配置正常，可安全忽略。"}
+    payload = {"content": "✅ 测试消息：webhook 配置正常，可安全忽略。"}
     try:
         client.send(ch, payload)
         return {"ok": True}
@@ -123,7 +138,7 @@ def _test_email(override: dict[str, Any], *, client=None) -> dict[str, Any]:
             return {"ok": False, "error": "no sender configured"}
         client = EmailClient.from_config(replace(cfg, email=merged))
     try:
-        client.send("[Hermes] ✅ 测试邮件", "<p>Hermes 测试邮件：SMTP 配置正常，可安全忽略。</p>")
+        client.send("✅ 测试邮件", "<p>测试邮件：SMTP 配置正常，可安全忽略。</p>")
         return {"ok": True}
     except Exception as exc:  # 测试失败结构化返回，不抛（SMTP 异常不携带密码）
         return {"ok": False, "error": str(exc)}

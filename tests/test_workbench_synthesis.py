@@ -13,8 +13,8 @@ def cand(rule_id, action):
     return {'id': uuid.uuid4(), 'rule_id': rule_id, 'action': action, 'rule_version': '1', 'inputs': {}}
 
 
-def unit(*cands, holding=False, market_status=None, now=datetime(2026, 10, 23, 1, 0, tzinfo=UTC)):
-    return synthesis.synthesize('NVDA', T, list(cands), holding=holding, market_status=market_status, now=now)
+def unit(*cands, holding=False, now=datetime(2026, 10, 23, 1, 0, tzinfo=UTC)):
+    return synthesis.synthesize('NVDA', T, list(cands), holding=holding, now=now)
 
 
 def test_buy_and_sell_together_is_a_conflict_defaulting_to_watch():
@@ -40,12 +40,6 @@ def test_same_direction_candidates_merge():
 
 def test_watch_only():
     assert unit(cand('abnormal_move', 'watch'))['proposed_action'] == 'watch'
-
-
-@pytest.mark.parametrize('status', ['red', 'green', None])
-def test_market_status_is_context_only(status):
-    u = unit(cand('trend_reclaim', 'buy'), market_status=status)
-    assert u['proposed_action'] == 'buy' and u['market_status'] == status
 
 
 @pytest.mark.parametrize('now, passed', [
@@ -93,3 +87,9 @@ def test_open_units_exclude_decided_ones(workbench_db):
     units = repository.open_candidate_groups(workbench_db, since=T - timedelta(days=7))
     assert [(u['ticker'], u['signal_date']) for u in units] == [('NVDA', T)]
     assert [c['id'] for c in units[0]['candidates']] == [a['id']]
+
+
+def test_unit_has_no_market_status():
+    u = synthesis.synthesize('NVDA', T, [cand('trend_reclaim', 'buy')],
+                             holding=False, now=datetime(2026, 10, 23, 1, 0, tzinfo=UTC))
+    assert 'market_status' not in u

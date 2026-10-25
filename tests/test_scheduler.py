@@ -193,3 +193,16 @@ def test_registry_has_workbench_review():
 
 def test_registry_has_no_ashares():
     assert 'ashares' not in scheduler.REGISTRY
+
+
+def test_removed_jobs_are_skipped_and_rescheduled(monkeypatch):
+    rescheduled = []
+    monkeypatch.setattr(scheduler, "due_scheduled_jobs",
+                        lambda conn, *, now: [{"name": "metrics", "time_local": "08:00",
+                                               "weekday_mask": "1-5", "timezone": "America/New_York"}])
+    monkeypatch.setattr(scheduler, "reschedule_job",
+                        lambda conn, name, next_run_at, last_run_at: rescheduled.append(name))
+    out = scheduler.run_due_jobs(None, AssistantConfig(), now=datetime(2026, 6, 29, 11, 0, tzinfo=UTC))
+    # A legacy row in scheduled_jobs must not crash the tick: warn, record, reschedule.
+    assert out == [{"name": "metrics", "status": "error", "error": "unregistered job"}]
+    assert rescheduled == ["metrics"]

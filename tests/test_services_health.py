@@ -128,3 +128,8 @@ def test_check_scheduler_first_tick_in_progress_is_visible(monkeypatch):
 
 def test_check_scheduler_registered_in_checks():
     assert health.check_scheduler in health.CHECKS
+
+
+def test_checks_have_no_deepseek():
+    assert not hasattr(health, "check_deepseek")
+    assert not any("deepseek" in getattr(c, "__name__", "") for c in health.CHECKS)

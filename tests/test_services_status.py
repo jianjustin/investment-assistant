@@ -4,7 +4,7 @@ from investment_assistant.services import status as status_svc
 
 def test_operation_registry_ids():
     ids = {op["id"] for op in status_svc.operation_registry()}
-    assert ids == {"fetch_market_signals", "sync_filings", "health_check"}
+    assert ids == {"sync_filings", "health_check"}
 
 
 def test_system_status_uses_systemctl(monkeypatch):

@@ -173,26 +173,6 @@ def test_legacy_only_source_is_excluded_and_not_cached_as_normal_zero(monkeypatc
     assert any("来源" in c and "不代表信号无效" in c for c in out["result"]["caveats"])
 
 
-def test_compute_actual_regime_uses_passed_nondefault_market_not_reloaded_default(monkeypatch):
-    from dataclasses import replace
-    from types import SimpleNamespace
-    import pandas as pd
-    from investment_assistant.config import AssistantConfig
-    from investment_assistant.research.event_study import Event
-    cfg = AssistantConfig()
-    cfg = replace(cfg, market=replace(cfg.market, red_vix=99.0))
-    seen = []
-    monkeypatch.setattr(research, "collect_events", lambda *a, **kw: [Event("AAA", date(2024, 3, 1), "score_high")])
-    monkeypatch.setattr("investment_assistant.market.service.compute_market_signal_for_date",
-                        lambda market, d: seen.append((market, d)) or SimpleNamespace(market_status="green"))
-    monkeypatch.setattr("investment_assistant.config.load_config", lambda: pytest.fail("must use passed config"))
-    monkeypatch.setattr("investment_assistant.data.price.get_price_history_asof",
-                        lambda ticker, on, **kw: pd.DataFrame({"Close": [100.]}, index=pd.to_datetime([on])))
-    result = research._compute("score_high", since=None, asof=date(2024, 3, 8), horizons=(5,), config=cfg)
-    assert seen == [(cfg.market, date(2024, 3, 1))]
-    assert result["by_regime"]["green"]["5"]["n"] == 1
-
-
 def test_v3_hash_cannot_reuse_v2_results(monkeypatch):
     args = ("score_high", None, date(2024, 3, 8), (5, 10, 20))
     assert research.SEMANTICS_VERSION.startswith("event-study-v3")

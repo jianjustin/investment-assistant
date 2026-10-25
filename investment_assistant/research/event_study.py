@@ -278,10 +278,9 @@ def run_event_study(
 
 
 def regime_fn_for_config(market: MarketConfig) -> RegimeFn:
-    """Bind the same market config used by the caller/cache key, without reloads."""
+    """Market-signal regimes were removed in v2.1.0; classifications stay neutral here."""
     def classify(d: date) -> str:
-        from investment_assistant.market.service import compute_market_signal_for_date
-        return compute_market_signal_for_date(market, d).market_status
+        return 'unknown'
     return classify
 
 

@@ -38,9 +38,10 @@ def test_sse_events_route_registered(client):
 
 
 def test_value_error_from_handler_returns_400(client, monkeypatch):
-    import investment_assistant.services.market as _market
-    monkeypatch.setattr(_market, "fetch_market_signals", lambda payload: (_ for _ in ()).throw(ValueError("bad date")))
-    resp = client.post("/api/market/signals/fetch", json={})
+    import investment_assistant.services.watchlist as _watchlist
+    monkeypatch.setattr(_watchlist, "add_watchlist_item",
+                        lambda payload: (_ for _ in ()).throw(ValueError("bad date")))
+    resp = client.post("/api/watchlist", json={"ticker": "BAD"})
     assert resp.status_code == 400
     assert resp.json() == {"error": "bad date"}
 
@@ -151,3 +152,9 @@ def test_lifespan_scheduler_skipped_without_database(monkeypatch):
     with TestClient(create_app()):
         pass
     assert not called
+
+
+def test_legacy_routes_removed(client):
+    for path in ("/api/hermes/agents", "/api/market/signals", "/api/tickers/trends",
+                 "/api/strategies/scores"):
+        assert client.get(path).status_code == 404, path

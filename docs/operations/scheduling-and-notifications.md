@@ -16,8 +16,6 @@
 | `workbench` | `tasks/workbench.py` | 北京 06:30，周二至周六 | `signals`（每日计划推送） |
 | `workbench_review` | `tasks/workbench_review.py` | 北京 08:00，每天，插入为关闭 | `signals`（周/月复盘推送） |
 | `filings` | `tasks/filings.py` | 美东 09:00，周一至周五 | `earnings`；开启 SEC 监控后改为 Bot 直发，见 [SEC 采集](../features/sec-filings.md) |
-| `metrics` | `tasks/metrics.py` | 美东 08:00，周一至周五 | `daily`（v1 遗留） |
-| `scores` | `tasks/nightly_scores.py` | 美东 18:00，周一至周五 | `signals`（v1 遗留） |
 | `event_study` | `tasks/event_study.py` | 无默认调度行 | —（v1 遗留） |
 
 迁移种子只是默认值。改时间或开关在「设置 → 定时任务」操作（`PATCH /api/jobs/scheduled/{name}`），下一个 tick 生效，不用重启。
@@ -43,7 +41,7 @@
 | `channel` | 全局单选：`discord` 或 `email` |
 | `discord_enabled` | Discord 总开关 |
 | `webhooks` | `{频道: url}`；未配置时退回环境变量 `DISCORD_WEBHOOK_SIGNALS` / `_DAILY` / `_EARNINGS` |
-| `task_channels` | 任务 → 频道；默认 `workbench`、`workbench_review`、`scores` → `signals`，`metrics` → `daily`，`filings` → `earnings` |
+| `task_channels` | 任务 → 频道；默认 `workbench`、`workbench_review` → `signals`，`filings` → `earnings` |
 | `task_enabled` | 每个任务的通知开关 |
 | `email` | 发件人、收件人、SMTP 主机与端口；密码只取环境变量 `SMTP_PASSWORD` |
 
