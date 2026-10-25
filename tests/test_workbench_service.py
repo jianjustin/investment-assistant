@@ -1172,3 +1172,70 @@ def test_agent_runs_coverage_ignores_interpret(db, scripted_model):
     view = service.agent_runs(now=NOW)
     assert view['coverage']['missing'] == [{'ticker': 'WTCH', 'signal_date': SESSION}]
     assert any(r['mode'] == 'interpret' for r in view['runs'])
+
+
+# --- three-track rows and the live view (P4 §4) ---
+
+def _decide(unit, final, *, plan_id=None, now=NOW):
+    return service.decide({
+        'request_id': str(uuid.uuid4()), 'ticker': unit['ticker'],
+        'signal_date': unit['signal_date'].isoformat(),
+        'candidate_ids': [str(c) for c in unit['candidate_ids']],
+        'proposed_action': unit['proposed_action'], 'final_action': final,
+        'decision': 'accept' if final != 'ignore' else 'reject', 'reason': '轨道对比用例',
+        'plan_id': str(plan_id) if plan_id else None}, now=now)['record']
+
+
+def test_track_rows_trace_ids(db, scripted_model):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    off = agent_deps(scripted_model, [], settings=_agent_settings(provider='off'))
+    service.run_batch(tickers=['MU'], now=NOW, deps=off)
+    view = service.today(now=NOW)
+    nvda_unit = next(u for u in view['units'] if u['ticker'] == 'NVDA')
+    mu_unit = next(u for u in view['units'] if u['ticker'] == 'MU')
+    agent_plan = repository.agent_plan(db, 'NVDA', SESSION)
+    nvda_decision = _decide(nvda_unit, 'buy', plan_id=agent_plan['id'])
+    _decide(mu_unit, 'ignore')
+    trade = service.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'NVDA', 'side': 'buy',
+                               'quantity': '10', 'price': '100.00', 'fee': '1',
+                               'executed_at': '2026-10-22T15:00:00+00:00',
+                               'decision_id': str(nvda_decision['id'])}, now=NOW)['record']
+    rows = {row['ticker']: row for row in service.tracks(now=NOW)['units']}
+    nvda = rows['NVDA']
+    assert nvda['rule']['plan_id'] == str(repository.rule_plan(db, 'NVDA', SESSION)['id'])
+    assert nvda['agent']['run_id'] == str(repository.latest_agent_run(db, 'NVDA', SESSION)['id'])
+    assert nvda['agent']['plan_id'] == str(agent_plan['id'])
+    assert nvda['actual']['decision_id'] == str(nvda_decision['id'])
+    assert nvda['actual']['buy_trade_ids'] == [str(trade['id'])]
+    assert nvda['actual']['plan_kind'] == 'agent'
+    mu = rows['MU']
+    assert mu['actual']['status'] == 'not_executed' and mu['actual']['r'] == 0.0
+
+
+def test_track_units_include_agent_only_unit(db, scripted_model):
+    db.execute('INSERT INTO signal_candidates (ticker, signal_date, action, rule_id, rule_version, inputs) '
+               "VALUES ('NVDA', %s, 'buy', 'trend_reclaim', '1', '{}')", [SESSION])
+    d = agent_deps(scripted_model, _ok_responses())
+    flat = FlatSources()
+    d.bar_fetcher, d.news_fetcher, d.filing_source, d.earnings_fetcher =         flat.bars, flat.news, flat, flat.earnings
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=d)      # ATR 跳过规则计划，Agent 照跑
+    units = repository.track_units(db, SESSION - timedelta(days=7), SESSION)
+    assert units == [{'ticker': 'NVDA', 'signal_date': SESSION}]
+
+
+def test_track_units_ignore_interpret_runs(db, scripted_model):
+    _watch_candidate(db)
+    d = _mixed_deps(scripted_model, _interpret_reply(), flat=('WTCH',))
+    service.run_batch(tickers=['WTCH'], now=NOW, deps=d)
+    assert repository.track_units(db, SESSION - timedelta(days=7), SESSION) == []
+
+
+def test_weekly_snapshot_has_tracks(db, scripted_model):
+    off = agent_deps(scripted_model, [], settings=_agent_settings(provider='off'))
+    service.run_batch(tickers=['NVDA', 'MU'], now=NOW, deps=off)
+    record = service.generate_weekly(SESSION - timedelta(days=SESSION.weekday()), now=NOW)
+    assert record['calc_version'] == 'review-4'
+    stats = record['stats']
+    assert stats['tracks']['summary']['all']['actual']['units'] == 2
+    assert all('ticker' in row and row['rule'] and row['agent'] and row['actual']
+               for row in stats['tracks']['units'])

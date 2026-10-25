@@ -24,6 +24,7 @@ from investment_assistant.workbench import pool as pool_module
 from investment_assistant.workbench import regime as regime_module
 from investment_assistant.workbench import discipline as _discipline_module
 from investment_assistant.workbench import plan_shadow as _plan_shadow_module
+from investment_assistant.workbench import tracks as _tracks_module
 
 NY = ZoneInfo('America/New_York')
 BENCHMARK = 'SPY'
@@ -725,6 +726,73 @@ def _week_discipline(conn, session: date, now: datetime) -> dict[str, Any]:
                                stop_events=stop_events, segments=segments, session=session)
 
 
+def _track_rows(conn, since: date, until: date, *, session: date, now: datetime) -> list[dict[str, Any]]:
+    """§4.4: one row per unit in the window — rule, agent and actual side by side,
+    every id traceable. Bars and books are cached per ticker within the transaction;
+    ids and dates are stringified so the rows freeze into JSONB snapshots as-is."""
+    rows: list[dict[str, Any]] = []
+    spy = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now, limit=400)
+    bars_by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for unit in repository.track_units(conn, since, until):
+        ticker, signal_date = unit['ticker'], unit['signal_date']
+        if ticker not in bars_by_ticker:
+            bars_by_ticker[ticker] = repository.read_bars(conn, ticker, session, cutoff_at=now, limit=400)
+        ticker_bars = bars_by_ticker[ticker]
+        splits = repository.split_events(conn, ticker)
+        rule = repository.rule_plan(conn, ticker, signal_date)
+        agent_plan = repository.agent_plan(conn, ticker, signal_date)
+        run = repository.latest_agent_run(conn, ticker, signal_date)
+        rule_outcome = (_plan_shadow_module.simulate(rule, ticker_bars, spy, splits=splits)
+                        if rule is not None and rule['status'] == 'ok' else None)
+        agent_outcome = (_plan_shadow_module.simulate(agent_plan, ticker_bars, spy, splits=splits)
+                         if agent_plan is not None and agent_plan['status'] == 'ok' else None)
+        rule_track = _tracks_module.plan_track(rule, rule_outcome)
+        agent_track = _tracks_module.agent_track(run, agent_plan, agent_outcome)
+        decision = repository.decision_head(conn, ticker, signal_date)
+        chosen = (repository.plan_by_id(conn, decision['plan_id'])
+                  if decision is not None and decision.get('plan_id') else None)
+        book = _book(conn, ticker)
+        buy_ids = ({t['id'] for t in repository.list_trades(conn, ticker)
+                    if t.get('voided_at') is None and t['side'] == 'buy'
+                    and decision is not None and t.get('decision_id') == decision['id']})
+        actual = _tracks_module.actual_track(
+            decision=decision, plan=chosen, buys=[{'id': tid} for tid in sorted(buy_ids, key=str)],
+            segments=[s for s in book['closed'] if s['buy_trade_id'] in buy_ids],
+            open_lots=[l for l in book['open'] if l['buy_trade_id'] in buy_ids],
+            last_close=Decimal(str(ticker_bars[-1]['close'])) if ticker_bars else None,
+            splits=splits, session=session,
+            unit_valid_until=max((p['valid_until'] for p in (rule, agent_plan, chosen)
+                                  if p is not None), default=None))
+        def tier_of(plan):
+            return ((plan.get('inputs') or {}).get('context') or {}).get('pool_tier') if plan else None
+        pool = review.pool_of(tier_of(rule) or tier_of(agent_plan),
+                              repository.pool_entry_at(conn, ticker, signal_date, cutoff_at=now))
+        rows.append({
+            'ticker': ticker, 'signal_date': signal_date.isoformat(), 'pool': pool,
+            'rule': {**rule_track, 'plan_id': str(rule_track['plan_id']) if rule_track['plan_id'] else None},
+            'agent': {**agent_track,
+                      'run_id': str(agent_track['run_id']) if agent_track['run_id'] else None,
+                      'plan_id': str(agent_track['plan_id']) if agent_track['plan_id'] else None},
+            'actual': {**actual,
+                       'decision_id': str(actual['decision_id']) if actual['decision_id'] else None,
+                       'buy_trade_ids': [str(tid) for tid in actual['buy_trade_ids']]},
+        })
+    return rows
+
+
+def tracks(*, now: datetime, since: date | None = None, until: date | None = None) -> dict[str, Any]:
+    """§4.5: the live three-track view, defaulting to the last 90 days of signal dates;
+    not frozen — weekly and monthly snapshots carry their own copy."""
+    session = bars.latest_closed_session(now)
+    since = since if since is not None else session - timedelta(days=90)
+    until = until if until is not None else session
+    with _tx() as conn:
+        rows = _track_rows(conn, since, until, session=session, now=now)
+    return {'session': session.isoformat(), 'since': since.isoformat(), 'until': until.isoformat(),
+            'calc_version': _tracks_module.TRACKS_VERSION, 'units': rows,
+            'summary': _tracks_module.summarize(rows)}
+
+
 def generate_weekly(week_start: date, *, notes: str = '', supersedes_id=None, now: datetime) -> dict[str, Any]:
     if week_start.isoweekday() != 1:
         raise ledger.LedgerError('week_start must be a Monday')
@@ -774,11 +842,13 @@ def generate_weekly(week_start: date, *, notes: str = '', supersedes_id=None, no
                 triggers.append({'pool': review.pool_of(
                     None, repository.pool_entry_at(conn, head['ticker'], head['signal_date'], cutoff_at=now)),
                     'rule_id': cand['rule_id']})
+        track_rows = _track_rows(conn, week_start, week_end, session=session, now=now)
         stats = review.weekly_stats(week_start, units, outcomes, repository.list_trades(conn), segments=segments,
                                     undecided=undecided,
                                     entry_opens={k: v.get('entry_price') for k, v in outcomes.items()},
                                     plan_outcomes=plan_outcomes, by_pool=review.pool_summary(triggers, plan_outcomes),
-                                    discipline=_week_discipline(conn, session, now))
+                                    discipline=_week_discipline(conn, session, now),
+                                    tracks={'units': track_rows, 'summary': _tracks_module.summarize(track_rows)})
         stats['generated_at'] = now.isoformat()
         return review.save_weekly(conn, week_start, stats, notes=notes, supersedes_id=supersedes_id)
 

@@ -754,6 +754,18 @@ def list_agent_runs(conn, since: date) -> list[dict[str, Any]]:
                       'FROM agent_runs r WHERE r.signal_date >= %s ORDER BY r.created_at, r.id', (since,))
 
 
+def track_units(conn, since: date, until: date) -> list[dict[str, Any]]:
+    """§4.1: units with a rule plan or a propose run in the window (union),
+    each pool membership decided later; ordered by (signal_date, ticker)."""
+    return _all(conn,
+                'SELECT u.ticker, u.signal_date FROM ('
+                "SELECT ticker, signal_date FROM trade_plans WHERE kind = 'rule' AND signal_date BETWEEN %s AND %s "
+                'UNION '
+                "SELECT ticker, signal_date FROM agent_runs WHERE mode = 'propose' AND signal_date BETWEEN %s AND %s"
+                ') u ORDER BY u.signal_date, u.ticker',
+                (since, until, since, until))
+
+
 def agent_tokens_on(conn, ny_date: date) -> int:
     """Tokens of runs whose started_at falls on that New York date (§4 daily cap)."""
     row = conn.execute("SELECT COALESCE(sum(input_tokens + output_tokens), 0) FROM agent_runs "

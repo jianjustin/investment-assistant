@@ -148,7 +148,7 @@ def test_weekly_review2_has_plans_and_discipline():
             'immature': {'early_take': 0, 'held_loser': 0}, 'planned_buys': 1, 'compliance_rate': 1.0}
     stats = review.weekly_stats(week, [], {}, [], segments=[], undecided=0, entry_opens={},
                                 plan_outcomes=plan_outcomes, discipline=disc)
-    assert stats['calc_version'] == 'review-3'
+    assert stats['calc_version'] == 'review-4'   # P4 起带 tracks 键
     assert stats['plans']['rule'] == {'count': 2, 'expired': 1, 'r_mean': 2.0, 'r_median': 2.0}
     assert stats['plans']['own'] == {'count': 1, 'expired': 0, 'r_mean': 1.0, 'r_median': 1.0}
     assert stats['discipline'] == disc
@@ -232,3 +232,10 @@ def test_pool_summary_ignores_agent_plans():
     out = review.pool_summary(triggers, plan_outcomes)
     assert out['core']['trend_reclaim'] == {'triggers': 1, 'plans': 1, 'expired': 0, 'filled': 1,
                                             'r_mean': 1.0, 'r_median': 1.0}
+
+
+def test_weekly_stats_without_tracks_keeps_shape():
+    stats = review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], undecided=0, entry_opens={})
+    assert stats['calc_version'] == 'review-4'
+    assert stats['tracks'] is None            # 旧调用方仍可用，无对比数据时为空
+    assert 'by_rule' in stats and 'plans' in stats and 'note' in stats

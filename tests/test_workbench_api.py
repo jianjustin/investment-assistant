@@ -250,3 +250,26 @@ def test_agent_run_routes(client, monkeypatch):
     resp = client.post('/api/workbench/agent-runs', json=body)
     assert resp.status_code == 200 and resp.json() == {'id': 'r9', 'status': 'ok', 'reason': None}
     assert client.post('/api/workbench/agent-runs', json={'ticker': 'AMD'}).status_code == 400
+
+
+def test_tracks_route_bad_date_400(client):
+    assert client.get('/api/workbench/review/tracks', params={'since': '2026-10-xx'}).status_code == 400
+
+
+def test_tracks_route_since_after_until_400(client):
+    resp = client.get('/api/workbench/review/tracks',
+                      params={'since': '2026-11-01', 'until': '2026-10-01'})
+    assert resp.status_code == 400
+
+
+def test_tracks_route_passes_dates(client, monkeypatch):
+    calls = {}
+
+    def tracks(*, now, since=None, until=None):
+        calls.update(since=since, until=until)
+        return {'units': [], 'summary': {}}
+    monkeypatch.setattr(service, 'tracks', tracks)
+    resp = client.get('/api/workbench/review/tracks',
+                      params={'since': '2026-10-01', 'until': '2026-10-22'})
+    assert resp.status_code == 200
+    assert calls == {'since': date(2026, 10, 1), 'until': date(2026, 10, 22)}

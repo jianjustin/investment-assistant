@@ -134,6 +134,15 @@ def generate_weekly(payload: dict[str, Any] = Body(default_factory=dict)):
                  supersedes_id=payload.get('supersedes_id') or None, now=_now())
 
 
+@router.get('/api/workbench/review/tracks')
+def review_tracks(since: str | None = None, until: str | None = None):
+    since_d = _date(since, 'since')
+    until_d = _date(until, 'until')
+    if since_d is not None and until_d is not None and since_d > until_d:
+        raise HTTPException(status_code=400, detail='since must not be after until')
+    return _call(service.tracks, now=_now(), since=since_d, until=until_d)
+
+
 @router.get('/api/workbench/monthly-reviews')
 def monthly_reviews():
     return {'reviews': _call(service.list_monthly)}

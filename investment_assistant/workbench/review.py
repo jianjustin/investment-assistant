@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from investment_assistant.data.calendar import add_trading_days, trading_days_between
 from investment_assistant.workbench import ledger, repository
 
-CALC_VERSION = 'review-3'
+CALC_VERSION = 'review-4'
 WINDOWS = (5, 10, 20)
 NY = ZoneInfo('America/New_York')
 
@@ -173,7 +173,8 @@ def pool_summary(triggers: list[dict], plan_outcomes: list[dict]) -> dict:
 def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[Any, dict[str, Any]],
                  trades: list[dict[str, Any]], *, segments: list[dict[str, Any]], undecided: int,
                  entry_opens: dict[Any, float], plan_outcomes: list[dict[str, Any]] | None = None,
-                 discipline: dict[str, Any] | None = None, by_pool: dict | None = None) -> dict[str, Any]:
+                 discipline: dict[str, Any] | None = None, by_pool: dict | None = None,
+                 tracks: dict[str, Any] | None = None) -> dict[str, Any]:
     """Snapshot for units whose signal_date falls in the week; values are excess returns vs SPY."""
     week_end = week_start + timedelta(days=6)
     by_rule: dict[str, list] = {}
@@ -208,6 +209,7 @@ def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[A
         'plans': _plan_summary(plan_outcomes or [], week_start, week_start + timedelta(days=6)),
         'by_pool': by_pool or {},
         'discipline': discipline or {},
+        'tracks': tracks,
         'note': '描述性统计，样本小且重叠，不代表规则有效。',
     }
 
