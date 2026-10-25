@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from investment_assistant.us_research.domain import stock_id
+from investment_assistant.data.identity import stock_id
 
 MAX_POOL = 100
 MAX_CORE = 15

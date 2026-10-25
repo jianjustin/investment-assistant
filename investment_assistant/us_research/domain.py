@@ -7,6 +7,8 @@ import math
 import re
 from datetime import date
 
+from investment_assistant.data.identity import stock_id
+
 
 # Separate attribution and investment scopes are intentional, not interchangeable aliases.
 CONCEPTS = {
@@ -44,13 +46,6 @@ INSTANT = frozenset({'cash', 'investments', 'debt', 'long_term_debt', 'short_ter
 NON_ADDITIVE = INSTANT | {'eps_diluted', 'weighted_shares'}
 
 
-def stock_id(ticker: str) -> str:
-    ticker = ticker.strip().upper() if isinstance(ticker, str) else ''
-    if not re.fullmatch(r'[A-Z][A-Z0-9]{0,9}(?:[.-][A-Z])?', ticker):
-        raise ValueError('Invalid US stock ticker')
-    if ticker.endswith(('.SH', '.SZ', '.BJ', '.HK')):
-        raise ValueError('Non-US stock identity')
-    return f'US:stock:{ticker}'
 
 
 def finite(value):

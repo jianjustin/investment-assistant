@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime
 from typing import Any, Callable
 
 from investment_assistant.config import AssistantConfig
-from investment_assistant.hermes.run_log import append_run
+from investment_assistant.tasks.run_log import append_run
 from investment_assistant.notify.notifier import dispatch
 
 

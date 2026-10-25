@@ -89,3 +89,9 @@ def test_record_keeps_db_row_when_run_log_is_not_writable(monkeypatch):
     assert saved["status"] == "success"
     assert saved["summary"]["downloaded_count"] == 0
     assert "denied" in saved["summary"]["run_log_error"]
+
+
+def test_harness_imports_run_log_from_tasks():
+    from investment_assistant.tasks import run_log
+
+    assert _harness.append_run is run_log.append_run

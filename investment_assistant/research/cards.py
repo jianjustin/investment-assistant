@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from investment_assistant import db
 from investment_assistant.research import card_repository as repo
-from investment_assistant.us_research.domain import stock_id as us_stock_id
+from investment_assistant.data.identity import stock_id as us_stock_id
 
 stock_id = us_stock_id
 

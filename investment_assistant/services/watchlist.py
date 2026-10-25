@@ -12,7 +12,7 @@ from investment_assistant.db import connect, delete_watchlist_item as db_delete_
 def validated_symbol(value: str) -> str:
     if not isinstance(value, str):
         raise ValueError('证券代码必须为字符串')
-    from investment_assistant.us_research.domain import stock_id as us_stock_id
+    from investment_assistant.data.identity import stock_id as us_stock_id
     return us_stock_id(value.strip().upper()).split(':')[-1]
 
 
@@ -49,7 +49,7 @@ def _enrich(row, conn):
     if conn is None or market is None:
         return result
     from investment_assistant.us_research import repository as us_repo
-    from investment_assistant.us_research.domain import stock_id as us_stock_id
+    from investment_assistant.data.identity import stock_id as us_stock_id
     from investment_assistant.research.card_repository import get_card
     sid = us_stock_id(row['ticker'])
     states = us_repo.states(conn, sid)

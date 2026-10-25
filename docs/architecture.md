@@ -64,10 +64,10 @@ tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、�
 | 模块 | 做什么 |
 | --- | --- |
 | `api/` | FastAPI 应用、Basic 认证、静态文件、路由 |
-| `tasks/scheduler.py`、`tasks/_harness.py`、`tasks/runner.py` | 调度线程、任务外壳、手动运行的后台执行 |
+| `tasks/scheduler.py`、`tasks/_harness.py`、`tasks/runner.py`、`tasks/run_log.py` | 调度线程、任务外壳、手动运行的后台执行、运行日志（JSONL） |
 | `notify/` | Discord（webhook 与 Bot）与邮件渠道、消息模板 |
 | `filings/` | SEC 下载器与 SEC 监控（正文事实、来源报告、历史去重） |
-| `data/` | 交易日历、HTTP 重试、行情读取与来源标注 |
+| `data/` | 交易日历、HTTP 重试、行情读取、来源标注、美股代码校验（`identity.py`） |
 | `services/watchlist.py`、`settings.py`、`jobs.py`、`status.py`、`health.py` | 观察名单（只认美股代码）、通知设置、任务与运行报告、系统状态 |
 | `db.py`、`migrate.py`、`config.py` | 连接池与通用 SQL、迁移入口、配置加载 |
 

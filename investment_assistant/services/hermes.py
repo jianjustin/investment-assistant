@@ -8,7 +8,7 @@ from investment_assistant.api.http import first, parse_csv, parse_int, parse_pay
 from investment_assistant.config import load_config
 from investment_assistant.hermes.decision_evidence import build_decision_evidence
 from investment_assistant.hermes.macro_analyst import analyze_macro_environment
-from investment_assistant.hermes.run_log import append_run
+from investment_assistant.tasks.run_log import append_run
 from investment_assistant.tasks import runner
 
 

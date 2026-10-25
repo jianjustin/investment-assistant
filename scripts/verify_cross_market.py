@@ -312,7 +312,7 @@ def read_bundle(api_url):
         conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
         bundle['active_tickers'] = sorted(r['ticker'] for r in list_watchlist_items(conn) if r['status'] == 'active' and r['ticker'] in EXPECTED_TICKERS)
         # Also retain unexpected active US identities, so exact identity assertions fail.
-        from investment_assistant.us_research.domain import stock_id
+        from investment_assistant.data.identity import stock_id
         for row in list_watchlist_items(conn):
             if row['status'] != 'active' or row['ticker'] in bundle['active_tickers']:
                 continue
