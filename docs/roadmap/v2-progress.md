@@ -1,5 +1,7 @@
 # Roadmap v2 进度
 
+> 已冻结（v2.0.0，2026-10-25）。之后只在「阶段证据」末尾追加验收记录；下一版的待办见 [backlog.md](backlog.md)。
+
 > 活文档，接替 v1 的 [08 活路线](../archive/roadmap-v1/08-living-collaboration.md)。路线本身见 [v2-decision-loop.md](v2-decision-loop.md)。
 > 本文不授权补采、真实库迁移、通知、部署或交易；这些动作单独点名。
 

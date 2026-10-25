@@ -1,44 +1,51 @@
 # 文档索引
 
-## 上手
+建议按这个顺序读：[architecture.md](architecture.md) 了解系统由哪些部分组成；[getting-started.md](getting-started.md) 在本机跑起来；再读 `features/` 了解每个功能。
+
+## 系统现在是什么样
 
 | 文档 | 内容 |
-|------|------|
-| [getting-started.md](getting-started.md) | 本机安装、配置、启动、跑测试 |
-| [architecture.md](architecture.md) | 模块分层与数据流（FastAPI + services + tasks + Svelte 5 前端） |
-| deployment-sealos.md（已于 v2.0.0 删除） | 云端部署（Sealos Starter Plan：镜像构建、数据库、双进程、验证清单） |
+| --- | --- |
+| [architecture.md](architecture.md) | 运行形态、代码分层、主线数据流、数据表分组、定时任务与前端 |
+| [getting-started.md](getting-started.md) | 安装、配置（`.env` 与配置文件）、建库、启动、测试 |
 
-## 功能验证手册（按前端五区）
+### 功能（features/）
 
-每个功能点包含：功能说明 + 手动入口（前端路径）+ API/CLI 入口 + 如何验证示例。
+每篇都写：做什么、页面与 API/CLI 入口、怎么验证一次、已知限制。
 
-| 区 | 文档 | 覆盖功能 |
-|----|------|---------|
-| 📊 数据 | [features/data.md](features/data.md) | 市场信号总览、趋势分析、技术面趋势、财报 |
-| 🎯 策略 | [features/strategy.md](features/strategy.md) | 策略评分、事件研究 |
-| 🤖 交易 | [features/trade.md](features/trade.md) | 宏观分析、决策证据、agent 注册表 |
-| 🔧 工具 | [features/tools.md](features/tools.md) | 任务中心（含按日期回补）、运行记录、SSE 事件流 |
-| ⚙️ 设置 | [features/settings.md](features/settings.md) | 系统状态、关注列表、Discord 推送、定时任务、认证 |
+| 文档 | 功能 |
+| --- | --- |
+| [daily-plan.md](features/daily-plan.md) | 每日流程、规则 v1、交易计划、持仓止损、每日推送 |
+| [agent-track.md](features/agent-track.md) | Agent 轨道：工具层、提议与反方、引用校验、预算、解读 |
+| [review.md](features/review.md) | 影子跟踪、纪律、三方对比、周/月复盘、资金与月度收益、复盘推送 |
+| [pool-and-context.md](features/pool-and-context.md) | 观察池分层、市场环境（广度、区制、行业、FRED）、上线前检查 |
+| [sec-filings.md](features/sec-filings.md) | SEC 下载器与 SEC 监控 |
+| [legacy/](features/legacy/README.md) | v1 遗留：Hermes、市场信号与策略评分、事件研究、美股财季数据与研究观察卡 |
 
-全部 API 的参数与响应可在服务运行时访问 `http://localhost:8787/docs`（OpenAPI）交互查看。
-
-## 模块深度参考
+### 运维（operations/）
 
 | 文档 | 内容 |
-|------|------|
-| [us-workbench.md](features/daily-plan.md) | 美股投研工作台：每日流程、规则 v1、复盘口径、时点与已知限制 |
-| [research-event-study.md](features/legacy/event-study.md) | 事件研究：方法、字段、CLI/API/前端三条验证路径 |
-| [cross-market-research.md](features/legacy/us-research.md) | A/美股关注、财季与来源、跨市场卡及指引、本地证据和待验收限制 |
-| ashare-research.md（已于 v2.0.0 删除） | A股接入、CNEquity审计、澜起真实验证、数据边界与本地运行 |
-| [scheduling-and-notifications.md](operations/scheduling-and-notifications.md) | 调度器 daemon、job_reports、Discord 通知机制 |
-| [sec-downloader.md](features/sec-filings.md) | SEC EDGAR filings 下载器 |
-| [sec-monitor-migration.md](features/sec-filings.md) | 本机接管 SEC 监控：正文事实、来源报告、历史去重、Discord 通知及回执 |
-| [hermes-usage.md](features/legacy/hermes.md) | Hermes（宏观/决策）概念与用法 |
+| --- | --- |
+| [local-service.md](operations/local-service.md) | LaunchAgent、启动链路、重启、日志与路径、认证 |
+| [scheduling-and-notifications.md](operations/scheduling-and-notifications.md) | 调度线程、任务注册表、运行报告、通知配置 |
+| [migrations-and-backup.md](operations/migrations-and-backup.md) | 迁移清单 001–021、真实库备份与执行、一次性测试库 |
 
 ## 方向与历史
 
 | 位置 | 内容 |
-|------|------|
-| [roadmap/](roadmap/README.md) | 当前 roadmap v2：长期路线、进度、沿用原则与 DoD |
-| [archive/roadmap-v1/](archive/roadmap-v1/README.md) | 已归档的 roadmap v1（2026-06-30 – 2026-10-23）及其状态、评审与形态文档 |
-| superpowers/（已于 v2.0.0 删除） | 各阶段的设计 spec 与实施 plan（历史工件，按日期命名，只增不改） |
+| --- | --- |
+| [roadmap/](roadmap/README.md) | 版本表、沿用原则、交付标准（DoD）；v2 路线与进度（已完成）；[backlog](roadmap/backlog.md) |
+| [specs/](specs/) | 各阶段的设计 spec |
+| [plans/](plans/) | 各阶段的实施 plan |
+| [archive/roadmap-v1/](archive/roadmap-v1/README.md) | roadmap v1 及其 spec、plan、评审 |
+
+## 维护规则
+
+| 类别 | 回答的问题 | 什么时候改 |
+| --- | --- | --- |
+| roadmap | 往哪走、为什么、走到哪一步了 | 方向变化时改；进度文档按周更新；版本完成后冻结 |
+| spec | 某个阶段为什么这样设计 | 写成后冻结，只增不改；命名 `specs/YYYY-MM-DD-<topic>-design.md` |
+| plan | 某个阶段怎么实施 | 写成后冻结，只增不改；命名 `plans/YYYY-MM-DD-<topic>.md` |
+| features / architecture / operations | 系统现在能做什么、怎么用、怎么验证 | 和代码在同一个提交里更新 |
+
+冻结文档只修失效链接，不改正文。`tests/test_docs_links.py` 会检查所有相对链接都指向存在的文件。

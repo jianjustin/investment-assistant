@@ -1,21 +1,23 @@
 # Roadmap
 
-> 当前版本：**v2**（2026-10-23）。v1（2026-06-30 – 2026-10-23）已归档到 [archive/roadmap-v1](../archive/roadmap-v1/README.md)，仅作历史参考。
+> v2 已完成，发布为 `v2.0.0`（2026-10-25）。下一版的候选项见 [backlog.md](backlog.md)。v1（2026-06-30 – 2026-10-23）已归档到 [archive/roadmap-v1](../archive/roadmap-v1/README.md)，仅作历史参考。
+> 从 v2 起，roadmap 版本即发布的大版本号。
 
 ## 文档
 
 | 文档 | 内容 | 更新方式 |
 | --- | --- | --- |
 | [v2-decision-loop.md](v2-decision-loop.md) | 长期路线：目标与成功标准、各环节设计、P1–P4 阶段、暂缓与不做、决策记录 | 方向变化时改，并在决策记录追加 |
-| [v2-progress.md](v2-progress.md) | 当前阶段、近期待办、阶段证据 | 每周回顾时只改有新证据的句子 |
-| [美股投研工作台](../features/daily-plan.md) | 已落地主线的使用说明 | 随代码更新 |
+| [v2-progress.md](v2-progress.md) | v2 各阶段状态与阶段证据 | 已冻结（v2.0.0），只追加验收证据 |
+| [backlog.md](backlog.md) | 下一版候选：v1 遗留的合并或删除、v2 暂缓项、未完成的使用验收 | 排期变化时改 |
 
 ## 版本
 
 | 版本 | 时间 | 主线 | 状态 |
 | --- | --- | --- | --- |
 | v1 | 2026-06-30 – 2026-10-23 | Phase 0 事件研究 → 数据地基 → 计划—执行—复盘 → 区制与校准 | 已归档；FastAPI 迁移、事件研究框架、美股工作台已落地，Phase 0 正式 Gate HOLD |
-| v2 | 2026-10-23 – | 数据 → 交易计划（规则主计划 + Agent 建议）→ Discord 投递 → 复盘 | P1 待开工 |
+| v2 | 2026-10-23 – 2026-10-25 | 数据 → 交易计划（规则主计划 + Agent 建议）→ Discord 投递 → 复盘 | 已完成，发布 `v2.0.0`；P1–P4 `engineering_done`，`user_acceptance_pending`；删除 A 股 |
+| 下一版 | — | 见 [backlog.md](backlog.md) | 未排期 |
 
 ## 沿用原则
 
