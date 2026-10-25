@@ -6,8 +6,25 @@ import json
 import math
 import re
 from datetime import date
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, ConfigDict
 
 from investment_assistant.data.identity import stock_id
+
+
+# Separate attribution and investment scopes are intentional
+
+class StrictModel(BaseModel):
+    """Strict payloads: no extra keys, no NaN. Inherited from the removed research cards."""
+
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+
+
+def valid_source_link(value: str) -> str:
+    if value and (urlparse(value).scheme not in {'http', 'https'} or not urlparse(value).netloc):
+        raise ValueError('来源链接须为http/https原文链接')
+    return value
 
 
 # Separate attribution and investment scopes are intentional, not interchangeable aliases.

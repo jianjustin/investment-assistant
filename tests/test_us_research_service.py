@@ -103,7 +103,7 @@ def test_view_asof_is_local_and_filters_all_datasets(research_db, monkeypatch, t
     v = s.view('MU', as_of='2026-01-01T00:00:00Z')
     assert v['financials'] == [] and v['filings'] == []
     assert v['market']['bars'] == [] and v['market']['quote'] == {}
-    assert v['guidance']['records'] == [] and v['card'] is None
+    assert v['guidance']['records'] == [] and 'card' not in v
     assert v['pit']['strict'] is False
     assert all(r['scope'] == 'current_collection_state' for r in v['statuses'])
     assert all(r['status'] == 'unavailable_at_cutoff' for r in v['statuses'])

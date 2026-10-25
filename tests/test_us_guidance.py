@@ -1,7 +1,35 @@
+import os
+from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
-from test_research_cards import card_db
+
+
+@pytest.fixture
+def card_db(monkeypatch):
+    """Connection-local TEMP tables for the us_research guidance store."""
+    url = os.environ.get('INVESTMENT_ASSISTANT_TEST_DATABASE_URL')
+    if not url:
+        pytest.skip('explicit URL required; TEMP tables only')
+    import psycopg
+    with psycopg.connect(url) as conn:
+        conn.execute('SET search_path TO pg_temp')
+        for name in ('013_ashare_research.sql', '014_us_research.sql'):
+            conn.execute(Path('migrations', name).read_text().split('-- Manual verification')[0].replace('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE'))
+        conn.execute('CREATE TEMP TABLE filings(id BIGINT,ticker TEXT,form TEXT,filing_date DATE,accession_number TEXT,primary_document TEXT,file_path TEXT,downloaded_at TIMESTAMPTZ,created_at TIMESTAMPTZ)')
+        conn.execute('CREATE TEMP TABLE watchlist_items(ticker TEXT,status TEXT)')
+        conn.commit()
+
+        @contextmanager
+        def connection():
+            yield conn
+
+        from investment_assistant.us_research import guidance, service
+        monkeypatch.setattr(guidance, 'connection', connection)
+        monkeypatch.setattr(service, 'connection', connection)
+        yield conn
+        conn.rollback()
 
 
 def guidance():
@@ -66,21 +94,18 @@ def test_cutoff_checks_seen_and_issued_and_comparison_inputs(card_db):
     assert guidance().comparisons([record],late,as_of='2026-04-02T00:00:00Z')[0]['status'] == 'not_comparable'
 
 
-def test_read_service_integrates_current_card_and_cutoff_guidance(card_db,monkeypatch):
+def test_read_service_integrates_current_and_cutoff_guidance(card_db,monkeypatch):
     from contextlib import contextmanager
     from investment_assistant.us_research import repository,service
-    from investment_assistant.research import cards
     @contextmanager
     def connection(): yield card_db
     monkeypatch.setattr(service,'connection',connection)
-    cards.save('MU',{'improvement':{'hypothesis':'thesis','products':'','expected_window':'','next_event':''}},0)
     repository.store_rows(card_db,'US:stock:MU','guidance',[{'natural_key':'g','payload':guide(),'disclosed_at':'2025-12-01T00:00:00Z'}],now=datetime(2026,4,1,tzinfo=UTC))
     repository.store_rows(card_db,'US:stock:MU','financials',[{'natural_key':'r','payload':{'metric':'revenue','value':105,'unit':'USD','basis':'us-gaap:consolidated','start':'2026-01-01','end':'2026-03-31','filed':'2026-04-01','accession':'a','concept':'Revenues'},'disclosed_at':'2026-04-01T00:00:00Z'}],now=datetime(2026,4,2,tzinfo=UTC))
     view=service.view('MU')
-    assert view['card']['version']==1
+    assert 'card' not in view
     assert view['guidance']['comparisons'][0]['status']=='in_range'
     historical=service.view('MU',as_of='2026-04-01T00:00:00Z')
-    assert historical['card'] is None
     assert historical['guidance']['comparisons'][0]['status']=='not_comparable'
     assert service.view('MU',as_of='2026-03-01T00:00:00Z')['guidance']['records']==[]
 

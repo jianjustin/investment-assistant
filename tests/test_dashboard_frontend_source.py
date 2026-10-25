@@ -97,14 +97,3 @@ def test_old_vanilla_ts_directories_are_deleted():
         assert not Path(path).exists(), f"should be deleted: {path}"
 
 
-def test_api_client_exports_event_study_functions():
-    api = Path("web/src/lib/api.ts").read_text(encoding="utf-8")
-    for fn in ["getEventStudyKinds", "getEventStudy"]:
-        assert fn in api, f"missing: {fn}"
-
-
-def test_strategy_zone_has_event_study_panel():
-    nav = Path("web/src/lib/components/SideNav.svelte").read_text(encoding="utf-8")
-    assert "event-study" in nav and "事件研究" in nav
-    strategy = Path("web/src/routes/Strategy.svelte").read_text(encoding="utf-8")
-    assert "getEventStudy" in strategy

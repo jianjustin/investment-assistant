@@ -206,3 +206,7 @@ def test_removed_jobs_are_skipped_and_rescheduled(monkeypatch):
     # A legacy row in scheduled_jobs must not crash the tick: warn, record, reschedule.
     assert out == [{"name": "metrics", "status": "error", "error": "unregistered job"}]
     assert rescheduled == ["metrics"]
+
+
+def test_registry_is_mainline_only():
+    assert set(scheduler.REGISTRY) == {"filings", "workbench", "workbench_review"}

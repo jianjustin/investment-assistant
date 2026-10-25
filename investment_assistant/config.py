@@ -10,16 +10,6 @@ from .runtime_paths import DEFAULT_CONFIG_PATH, DEFAULT_DRAFT_DIR, DEFAULT_FILIN
 
 
 @dataclass(frozen=True)
-class MarketConfig:
-    spy_ticker: str = "SPY"
-    vix_ticker: str = "^VIX"
-    ma_days: int = 200
-    history_days: int = 300
-    yellow_vix: float = 20.0
-    red_vix: float = 30.0
-
-
-@dataclass(frozen=True)
 class FilingsConfig:
     forms: list[str] = field(default_factory=lambda: ["10-Q", "10-K"])
     lookback_years: int = 3
@@ -98,21 +88,9 @@ class PriceConfig:
     backoff_seconds: float = 1.0
 
 
-DEFAULT_BACKTEST_HORIZONS: tuple[int, ...] = (5, 10, 20)
-
-
-@dataclass(frozen=True)
-class BacktestConfig:
-    """Forward-return horizons for the backtest and event-study engines."""
-
-    horizons: list[int] = field(default_factory=lambda: list(DEFAULT_BACKTEST_HORIZONS))
-    score_buckets: list[int] = field(default_factory=lambda: [40, 70])
-
-
 @dataclass(frozen=True)
 class AssistantConfig:
     watchlist: list[str] = field(default_factory=lambda: ["CRDO", "MU", "RKLB", "NVDA"])
-    market: MarketConfig = field(default_factory=MarketConfig)
     filings: FilingsConfig = field(default_factory=FilingsConfig)
     sec_monitor: SecMonitorConfig = field(default_factory=SecMonitorConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
@@ -120,7 +98,6 @@ class AssistantConfig:
     workbench: WorkbenchConfig = field(default_factory=WorkbenchConfig)
     fundamentals: FundamentalsConfig = field(default_factory=FundamentalsConfig)
     prices: PriceConfig = field(default_factory=PriceConfig)
-    backtest: BacktestConfig = field(default_factory=BacktestConfig)
     vault_ro: Path = DEFAULT_VAULT_RO
     draft_dir: Path = DEFAULT_DRAFT_DIR
     brief_time_local: str = "08:30"
@@ -149,8 +126,6 @@ def _config_from_dict(data: dict[str, Any]) -> AssistantConfig:
     cfg = AssistantConfig()
     if "watchlist" in data:
         cfg = replace(cfg, watchlist=_normalize_tickers(data["watchlist"]))
-    if "market" in data:
-        cfg = replace(cfg, market=_market_from_dict(data["market"], cfg.market))
     if "filings" in data:
         cfg = replace(cfg, filings=_filings_from_dict(data["filings"], cfg.filings))
     if "sec_monitor" in data and isinstance(data["sec_monitor"], dict):
@@ -171,8 +146,6 @@ def _config_from_dict(data: dict[str, Any]) -> AssistantConfig:
         cfg = replace(cfg, workbench=_validate_workbench(_dataclass_from_dict(data["workbench"], cfg.workbench)))
     if "prices" in data and isinstance(data["prices"], dict):
         cfg = replace(cfg, prices=_dataclass_from_dict(data["prices"], cfg.prices))
-    if "backtest" in data and isinstance(data["backtest"], dict):
-        cfg = replace(cfg, backtest=_dataclass_from_dict(data["backtest"], cfg.backtest))
     return cfg
 
 
@@ -196,22 +169,6 @@ def _dataclass_from_dict(data: dict[str, Any], base: Any) -> Any:
             values[key] = list(value)
         else:
             values[key] = value
-    return replace(base, **values)
-
-
-def _market_from_dict(data: dict[str, Any], base: MarketConfig) -> MarketConfig:
-    allowed = {
-        "spy_ticker": str,
-        "vix_ticker": str,
-        "ma_days": int,
-        "history_days": int,
-        "yellow_vix": float,
-        "red_vix": float,
-    }
-    values = {}
-    for key, caster in allowed.items():
-        if key in data:
-            values[key] = caster(data[key])
     return replace(base, **values)
 
 

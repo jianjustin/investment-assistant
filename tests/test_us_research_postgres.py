@@ -21,8 +21,6 @@ def research_db(monkeypatch):
         conn.execute('SET search_path TO pg_temp')
         sql = Path('migrations/014_us_research.sql').read_text().replace('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE')
         conn.execute(sql)
-        card_schema = Path('migrations/013_ashare_research.sql').read_text().split('CREATE TABLE IF NOT EXISTS research_observation_cards', 1)[1].split('-- Manual verification', 1)[0]
-        conn.execute(('CREATE TABLE IF NOT EXISTS research_observation_cards' + card_schema).replace('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE'))
         conn.execute('CREATE TEMP TABLE watchlist_items(ticker TEXT PRIMARY KEY,status TEXT,thesis TEXT,tags TEXT[],created_at TIMESTAMPTZ,updated_at TIMESTAMPTZ)')
         conn.execute('CREATE TEMP TABLE filings(id BIGINT,ticker TEXT,form TEXT,filing_date DATE,accession_number TEXT,primary_document TEXT,file_path TEXT,downloaded_at TIMESTAMPTZ,created_at TIMESTAMPTZ)')
         conn.commit()

@@ -7,9 +7,8 @@ from uuid import uuid4
 
 from pydantic import Field, field_validator, model_validator
 
-from investment_assistant.research.cards import Evidence, StrictModel
 from . import repository as repo
-from .domain import stock_id
+from .domain import StrictModel, stock_id, valid_source_link
 from .service import connection
 
 
@@ -27,7 +26,7 @@ class Guidance(StrictModel):
     note: str = Field(default='', max_length=5000)
     supersedes_id: int | None = Field(default=None, ge=1)
 
-    _valid_link = field_validator('source_url')(Evidence.valid_link.__func__)
+    _valid_link = field_validator('source_url')(valid_source_link)
 
     @field_validator('low', 'high', mode='before')
     @classmethod

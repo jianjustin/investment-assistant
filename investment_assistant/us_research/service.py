@@ -305,8 +305,6 @@ def view(ticker, *, as_of=None):
         rows = {ds: repo.read_rows(conn, sid, ds, as_of=cutoff) for ds in DATASETS}
         states = repo.states(conn, sid)
         guidance_records = repo.read_history(conn, sid, 'guidance', as_of=cutoff)
-        from investment_assistant.research.card_repository import get_card
-        card = get_card(conn, sid) if cutoff is None else None
     from .guidance import comparisons
     statuses = []
     for ds in DATASETS:
@@ -327,7 +325,7 @@ def view(ticker, *, as_of=None):
     currencies = {r['unit'] for r in rows['financials'] if re.fullmatch('[A-Z]{3}', r.get('unit', ''))}
     return {'security_id': sid, 'ticker': ticker, 'currency': quote.get('currency') or (next(iter(currencies)) if len(currencies) == 1 else None),
         'financials': financials, 'market': market, 'valuation': valuation_view(financials, market), 'statuses': statuses,
-        'template': research_template(ticker), 'card': card,
+        'template': research_template(ticker),
         'guidance': {'records': guidance_records, 'comparisons': comparisons(guidance_records, financials, as_of=cutoff),
                      'status': 'ready' if guidance_records else 'not_recorded', 'consensus': '未接入一致预期'},
         'filings': sorted(rows['filings'], key=lambda r: (r['filing_date'], r['id']), reverse=True),
