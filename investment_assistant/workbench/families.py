@@ -22,6 +22,17 @@ SEC_FILINGS_LOOKBACK_DAYS = 120   # covered = filing (or sec_8k row) within this
 FRED_STALE_DAYS = 7               # latest observation older than session - 7 days is lagging
 REASON_MAX_CHARS = 300            # stored failure reasons are truncated after redaction
 
+# One sentence per family on what its coverage counts (spec §4 展示定义; shown on the
+# card so the six different denominators are not misread, M04/D13).
+COVERAGE_NOTES = {
+    'bars': '覆盖 = 目标中最新日线等于最近已收盘交易日的数量，其余列为滞后。',
+    'sec_filings': '覆盖 = 近 120 天有申报记录（filings 行或 sec_8k）的标的数；无申报 ≠ 缺数据。',
+    'news': '覆盖 = 近 7 天有资讯标题的标的数（按 UTC 零点计窗口）。',
+    'atr': '覆盖 = 有 ≥ 15 根日线且最新一根为最近已收盘交易日的标的数。',
+    'fred': '覆盖 = 有观测值的序列数；最新观测早于 session 前 7 个自然日的列为滞后（覆盖与滞后独立）。',
+    'universe': '覆盖 = 范围文件成员数（合法区间 90–105）；超过 120 天未更新标「过期」。',
+}
+
 
 @dataclass(frozen=True)
 class Family:
@@ -139,11 +150,18 @@ def lagging(family_id: str, latest: date | datetime | None, *, session: date,
 
 def coverage(family_id: str, targets: list[str], latest: dict[str, Any], *,
              session: date, bar_counts: dict[str, int] | None = None) -> dict:
-    """Count targets whose latest data point is fresh; missing latest keys count as lagging."""
+    """Covered targets plus the lagging list.
+
+    FRED is special (spec §4): covered counts series with any observation, and
+    lagging (latest older than session - 7 days) is an independent freshness
+    flag — a series can be covered and lagging at once (I12). Everywhere else
+    covered means fresh, so missing latest keys count as lagging."""
     lagged = [t for t in targets
               if lagging(family_id, latest.get(t), session=session,
                          bar_count=None if bar_counts is None else bar_counts.get(t))]
-    return {'targets': len(targets), 'covered': len(targets) - len(lagged), 'lagging': lagged}
+    covered = (sum(1 for t in targets if latest.get(t) is not None) if family_id == 'fred'
+               else len(targets) - len(lagged))
+    return {'targets': len(targets), 'covered': covered, 'lagging': lagged}
 
 
 def targets(conn, family_id: str, *, universe_loader=None) -> tuple[list[str], list[str]]:
@@ -153,8 +171,9 @@ def targets(conn, family_id: str, *, universe_loader=None) -> tuple[list[str], l
     bars/atr lead with the benchmark and sector ETFs, the rest sorted;
     news/sec_filings follow the current pool plus holdings; fred lists the two
     series; universe is fetched from its file, not per member. Notes record
-    degraded inputs, never an error: `pool_empty` (no active watchlist tickers)
-    and `universe_unavailable` (the range file failed to load).
+    degraded inputs, never an error: `pool_empty` (no active watchlist tickers),
+    `pool_invalid` (a non-empty but invalid pool: over the caps or bad tags) and
+    `universe_unavailable` (the range file failed to load).
     """
     family = get(family_id)
     if family.id == 'universe':
@@ -166,9 +185,10 @@ def targets(conn, family_id: str, *, universe_loader=None) -> tuple[list[str], l
     notes: list[str] = []
     try:
         watch_pool = pool.from_watchlist(list_watchlist_items(conn))
-    except ValueError:
+    except ValueError as exc:
         watch_pool = None
-        notes.append('pool_empty')
+        # 非空但非法的池配置（超限/标签无效）与真空池分开说，不互相冒充（M08）。
+        notes.append('pool_empty' if str(exc).startswith('股票池为空') else 'pool_invalid')
     pool_tickers: set[str] = set(watch_pool.tickers if watch_pool is not None else ())
     pool_tickers |= {ticker for ticker, row in repository.pool_latest(conn).items()
                      if row['tier'] != 'removed' and row['source'] == 'screen'}

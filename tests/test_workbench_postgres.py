@@ -1015,6 +1015,17 @@ def test_targets_empty_watchlist_is_a_note(workbench_db):
     assert families.targets(workbench_db, 'news') == ([], ['pool_empty'])
 
 
+def test_targets_invalid_pool_is_its_own_note(workbench_db):
+    """非空但非法的池配置（核心超限）不再冒充 pool_empty（M08）。"""
+    from investment_assistant.workbench import families
+    rows = [(f'C{i:02d}', ['core']) for i in range(16)]
+    workbench_db.execute('INSERT INTO watchlist_items (ticker, status, tags) VALUES '
+                         + ', '.join(['(%s, \'active\', %s)'] * len(rows)),
+                         [v for row in rows for v in row])
+    targets, notes = families.targets(workbench_db, 'news')
+    assert targets == [] and notes == ['pool_invalid']
+
+
 def test_coverage_queries_take_latest_revision_and_cutoff(workbench_db):
     from decimal import Decimal
     from investment_assistant.workbench import repository
@@ -1055,6 +1066,13 @@ def test_coverage_queries_take_latest_revision_and_cutoff(workbench_db):
     # 只有 sec_8k 时也有值；两路都有时取较大者
     assert repository.latest_filing_dates(conn, ['F1', 'F2', 'F3'], cutoff_at=cutoff) == {
         'F1': date(2026, 10, 10), 'F2': date(2026, 10, 15), 'F3': date(2026, 10, 15)}
+    # 无 accepted_at（published_at 为空）的 sec_8k 不提供申报日依据：宁可漏计不可
+    # 用 fetched_at 冒充（I14）。
+    repository.store_news(conn, [
+        ({'source': 'sec_8k', 'title': 'F4 8-K undated', 'url': 'u-f4', 'publisher': 'SEC EDGAR',
+          'published_at': None}, ['F4']),
+    ], now=NOW)                                                 # 采集时间在窗口内，也不当申报日用
+    assert repository.latest_filing_dates(conn, ['F4'], cutoff_at=cutoff) == {}
 
     repository.store_macro(conn, 'BAMLH0A0HYM2', [{'obs_date': date(2026, 10, 20), 'value': Decimal('3.1')}],
                            now=NOW)

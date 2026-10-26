@@ -13,7 +13,7 @@ import psycopg
 import pytest
 
 from investment_assistant.data.calendar import add_trading_days
-from investment_assistant.workbench import data_view, families, service
+from investment_assistant.workbench import collect, data_view, families, service
 from investment_assistant.workbench.universe import Universe, UniverseError
 
 SESSION = date(2026, 10, 22)                         # Thursday
@@ -84,6 +84,25 @@ def test_fetch_single_ticker(db):
     assert fetch_row(db, 'run-1') == ('bars', 'workbench', 'manual_family', 'run-1', 'ticker', 'MU',
                                       SESSION, 'success', 1, 1)
     assert out['row']['ticker'] == 'MU' and out['row']['scope'] == 'ticker'
+
+
+def test_fetch_row_times_use_real_wall_clock(db):
+    """拉取行 started_at/finished_at 用真实墙钟（可注入），不再等于调用前的 now（I07）。"""
+    tick = iter([datetime(2026, 10, 22, 20, 0, tzinfo=UTC),
+                 datetime(2026, 10, 22, 20, 5, tzinfo=UTC)])   # 采集耗时 5 分钟
+
+    out = data_view.run_fetch('bars', 'MU', run_id='run-w', now=NOW, deps=deps(Sources()),
+                              wall_now=lambda: next(tick))
+    assert out['row']['started_at'] == datetime(2026, 10, 22, 20, 0, tzinfo=UTC)
+    assert out['row']['finished_at'] == datetime(2026, 10, 22, 20, 5, tzinfo=UTC)
+
+
+def test_validate_fetch_rejects_non_string_ticker():
+    """非字符串 ticker 是参数类型错误（路由 400），不是 .strip() 的 AttributeError（I06）。"""
+    with pytest.raises(ValueError, match='ticker 必须是字符串'):
+        data_view.validate_fetch('bars', 123)
+    with pytest.raises(ValueError, match='ticker 必须是字符串'):
+        data_view.validate_fetch('news', ['MU'])
 
 
 def test_fetch_normalizes_ticker():
@@ -192,3 +211,27 @@ def test_start_fetch_needs_migration(db):
     db.execute('DROP TABLE data_fetch_runs')
     with pytest.raises(service.Unavailable, match='024'):
         data_view.start_fetch('bars', None, now_fn=lambda: NOW, deps=deps(Sources()))
+
+
+def test_start_fetch_checks_workbench_tables_before_submit(db, monkeypatch):
+    """提交前安全检查工作台表：缺 price_bars 时 503 且不提交后台任务（I06）。"""
+    db.execute('DROP TABLE price_bars')
+    submitted = []
+    monkeypatch.setattr('investment_assistant.tasks.runner.submit',
+                        lambda *a, **k: submitted.append(a) or 'r')
+    with pytest.raises(service.Unavailable, match='price_bars'):
+        data_view.start_fetch('bars', None, now_fn=lambda: NOW, deps=deps(Sources()))
+    assert submitted == []
+
+
+def test_probe_unlock_failure_discards_connection(db, monkeypatch):
+    """探测解锁失败：物理丢弃该连接而不是把带锁会话还池，并把错误如实上抛（I01）。"""
+    def broken_unlock(conn, family_id):
+        raise RuntimeError('unlock boom')
+
+    discarded = []
+    monkeypatch.setattr(collect, 'unlock_family', broken_unlock)
+    monkeypatch.setattr(collect, 'discard_connection', discarded.append)
+    with pytest.raises(RuntimeError, match='unlock boom'):
+        data_view.start_fetch('bars', None, now_fn=lambda: NOW, deps=deps(Sources()))
+    assert len(discarded) == 1 and discarded[0] is db

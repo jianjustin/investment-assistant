@@ -21,7 +21,8 @@ SESSION = date(2026, 10, 22)                         # Thursday
 NOW = datetime(2026, 10, 22, 22, 30, tzinfo=UTC)     # 18:30 New York
 
 CARD_KEYS = {'id', 'title', 'purpose', 'kind', 'fetch_via', 'per_ticker', 'job', 'coverage',
-             'latest_at', 'last_run', 'last_success_at', 'evidence', 'notes'}
+             'latest_at', 'coverage_note', 'last_run', 'last_success_at', 'evidence', 'notes',
+             'current_error', 'fetch_runs_ready'}
 BUSINESS_TABLES = repository.WORKBENCH_TABLES + ('data_fetch_runs',)
 
 
@@ -70,9 +71,12 @@ def test_overview_has_six_cards_and_evidence(db):
     assert bars_card['coverage']['covered'] == 1 and 'NVDA' not in bars_card['coverage']['lagging']
     assert bars_card['job'] == {'name': 'workbench', 'enabled': True, 'next_run_at': None}
     assert bars_card['last_run'] == {'status': 'success', 'trigger': 'manual_family', 'scope': 'family',
-                                     'ticker': None, 'finished_at': NOW + timedelta(hours=1),
+                                     'ticker': None, 'job': 'workbench', 'reason': None,
+                                     'finished_at': NOW + timedelta(hours=1),
                                      'ok_count': 2, 'target_count': 2, 'failures': []}
     assert bars_card['last_success_at'] == NOW + timedelta(hours=1)
+    assert bars_card['fetch_runs_ready'] is True and bars_card['current_error'] is None
+    assert bars_card['coverage_note'] == families.COVERAGE_NOTES['bars']
 
     assert cards['sec_filings']['job']['name'] == 'filings'
     assert 'no_filing_is_not_missing' in cards['sec_filings']['notes']
@@ -128,13 +132,92 @@ def test_detail_rows_and_last_failure(db):
     assert detail['rows']
     for row in detail['rows']:
         assert set(row) == {'target', 'latest_at', 'lagging', 'last_failure'}
-        assert row['last_failure'] == 'whole family down'   # '*' 对每个 target 都算
+        assert row['last_failure'] == 'whole family down'   # workbench 全族 '*' 覆盖本次目标
     nvda = next(row for row in detail['rows'] if row['target'] == 'NVDA')
     assert nvda['latest_at'] == SESSION and nvda['lagging'] is False
 
     atr = data_view.family_detail('atr', now=NOW)          # ATR 详情取 bars 的记录
     assert atr['card']['id'] == 'atr' and [run['family'] for run in atr['runs']] == ['bars']
     assert data_view.family_detail('universe', now=NOW)['rows'] == []
+
+
+def test_ticker_scoped_wildcard_failure_stays_on_its_ticker(db):
+    """MU 单只 SEC 失败的 '*' 哨兵只作用于 MU，不污染 NVDA（I05）。"""
+    for ticker in ('MU', 'NVDA'):
+        db.execute("INSERT INTO watchlist_items (ticker, status, tags) VALUES (%s, 'active', '{}')",
+                   [ticker])
+    _run(db, family='sec_filings', scope='ticker', ticker='MU', status='failed', ok_count=0,
+         target_count=1, failures=[{'target': '*', 'reason': 'edgar down'}])
+    db.commit()
+
+    rows = {row['target']: row for row in data_view.family_detail('sec_filings', now=NOW)['rows']}
+    assert rows['MU']['last_failure'] == 'edgar down'
+    assert rows['NVDA']['last_failure'] is None   # 未采过 ≠ 失败
+
+
+def test_family_wildcard_failure_scopes_to_its_own_targets(db):
+    """filings monitor 的全族 '*' 失败只作用于该次调用的目标清单，不推广到当前池（I05/I03）。"""
+    for ticker in ('MU', 'NVDA'):
+        db.execute("INSERT INTO watchlist_items (ticker, status, tags) VALUES (%s, 'active', '{}')",
+                   [ticker])
+    _run(db, family='sec_filings', job='filings', trigger='scheduled', status='failed', ok_count=0,
+         target_count=1, failures=[{'target': '*', 'reason': 'edgar down'}],
+         detail={'targets_source': 'sec_monitor.watchlist_path', 'failed_targets': ['AAPL']})
+    db.commit()
+
+    rows = {row['target']: row for row in data_view.family_detail('sec_filings', now=NOW)['rows']}
+    assert set(rows) == {'MU', 'NVDA'}
+    assert all(row['last_failure'] is None for row in rows.values())   # AAPL 不在池里，不外溢
+
+
+def test_last_run_carries_job_and_skipped_reason(db):
+    _run(db, family='fred', status='skipped', target_count=2, ok_count=0,
+         detail={'reason': 'FRED_API_KEY 未配置'})
+    db.commit()
+
+    card = next(c for c in data_view.overview(now=NOW)['families'] if c['id'] == 'fred')
+    assert card['last_run']['status'] == 'skipped'
+    assert card['last_run']['reason'] == 'FRED_API_KEY 未配置'   # I11: 原因进卡片载荷
+    assert card['last_run']['job'] == 'workbench'                # I13: 实际任务路径
+    assert card['last_success_at'] is None                       # skipped 不前移最近成功
+
+
+def test_runs_newest_first_and_same_session_manual_plus_scheduled_append(db):
+    """同 session 的定时+手动两行都保留，最新在前（created_at 相同时按 id）；last_run 取
+    最新、last_success 取最新成功（M05）。"""
+    _bar(db)
+    base = NOW - timedelta(hours=3)
+    _run(db, run_id='sched', trigger='scheduled', finished_at=base, started_at=base)
+    _run(db, run_id='manual', trigger='manual_family', status='partial', ok_count=1,
+         finished_at=NOW - timedelta(hours=1))
+    db.commit()
+
+    detail = data_view.family_detail('bars', now=NOW)
+    assert [run['run_id'] for run in detail['runs']] == ['manual', 'sched']
+    card = detail['card']
+    assert card['last_run']['trigger'] == 'manual_family' and card['last_run']['status'] == 'partial'
+    assert card['last_success_at'] == NOW - timedelta(hours=1)   # partial 也算最近成功（spec §8）
+    assert data_view.overview(now=NOW)['families'][0]['last_run']['trigger'] == 'manual_family'
+
+
+def test_universe_card_exposes_current_error_not_a_fake_run(db, monkeypatch):
+    """当前范围文件坏了：历史成功拉取保留，文件错误独立暴露（M03）。"""
+    _run(db, family='universe', run_id='u-ok', finished_at=NOW - timedelta(hours=2))
+    db.commit()
+
+    def broken():
+        raise universe_module.UniverseError('bad member count: 2')
+
+    monkeypatch.setattr(universe_module, 'load', broken)
+    card = next(c for c in data_view.overview(now=NOW)['families'] if c['id'] == 'universe')
+    assert 'universe_unavailable' in card['notes']
+    assert 'bad member count: 2' in card['current_error']       # 原文诊断，不笼统称不可读
+    assert card['coverage'] == {'targets': 0, 'covered': 0, 'lagging': []}
+    assert card['last_run'] is not None and card['last_run']['status'] == 'success'  # 历史保留
+    assert card['last_success_at'] == NOW - timedelta(hours=2)
+
+    browse = data_view.browse('universe', now=NOW)
+    assert browse['has_data'] is False and 'bad member count: 2' in browse['current_error']
 
 
 def test_browse_bars_latest_revision_and_counts(db):
@@ -245,3 +328,38 @@ def test_reads_are_read_only(db):
                          'target_count, ok_count, started_at, finished_at) '
                          "VALUES ('bars', 'workbench', 'manual_family', 'family', 'failed', 1, 0, %s, %s)",
                          [NOW, NOW])
+
+
+def _news(conn, ticker, source, url, published_at, fetched_at=NOW):
+    repository.store_news(conn, [({'source': source, 'title': f'{ticker} {url}', 'url': url,
+                                   'publisher': 'p', 'published_at': published_at}, [ticker])],
+                          now=fetched_at)
+
+
+def test_browse_news_reads_whole_window_and_sec_survives_busy_news(db):
+    """窗口内完整读取：201 条 yfinance 不再静默截到 200，也不会把窗口内的 sec_8k
+    挤出 SEC 浏览（I10）。"""
+    recent = datetime(2026, 10, 20, 12, tzinfo=UTC)          # 窗口内（60 天）
+    for i in range(201):
+        _news(db, 'MU', 'yfinance', f'https://n.example/{i}', recent)
+    _news(db, 'MU', 'sec_8k', 'https://sec.example/old-8k',
+          datetime(2026, 10, 12, 14, tzinfo=UTC))            # 10 天前的 8-K，无 filings 行
+    db.commit()
+
+    news = data_view.browse('news', now=NOW, ticker='MU')
+    assert len(news['rows']) == 202                          # 全窗口，无第二个静默上限
+    sec = data_view.browse('sec_filings', now=NOW, ticker='MU')
+    assert sec['has_data'] is True and len(sec['sec_8k']) == 1
+    assert sec['sec_8k'][0]['url'] == 'https://sec.example/old-8k'
+
+
+def test_browse_marks_sec_8k_without_acceptance_as_unknown_filing_date(db):
+    """无 accepted_at 的 sec_8k：发布时间为空，标注「申报日未知」，不用采集日冒充（I14）。"""
+    _news(db, 'MU', 'sec_8k', 'https://sec.example/no-date', None,
+          fetched_at=datetime(2026, 10, 22, 14, tzinfo=UTC))
+    db.commit()
+
+    sec = data_view.browse('sec_filings', now=NOW, ticker='MU')
+    assert len(sec['sec_8k']) == 1
+    assert sec['sec_8k'][0]['published_at'] is None
+    assert sec['sec_8k'][0]['filing_date_note'] == '申报日未知'

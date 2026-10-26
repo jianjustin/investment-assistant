@@ -103,20 +103,29 @@ def store_news(conn, entries: list[tuple[dict[str, Any], list[str]]], *, now: da
 
 
 def read_news(conn, ticker: str, *, cutoff_at: datetime, since: datetime | None = None,
-              limit: int = 50) -> list[dict[str, Any]]:
-    """News known by ``cutoff_at``; undated items are kept and must be shown as such."""
+              limit: int | None = 50, source: str | None = None) -> list[dict[str, Any]]:
+    """News known by ``cutoff_at``; undated items are kept and must be shown as such.
+
+    ``source`` filters in SQL before any window/dedup, so one source's rows can
+    never be pushed out by another's volume (I10); ``limit=None`` reads the whole
+    window — the caller's window is the only cap."""
     clauses = ['t.ticker = %s', 'n.fetched_at <= %s', '(n.published_at IS NULL OR n.published_at <= %s)']
     params: list[Any] = [ticker.upper(), cutoff_at, cutoff_at]
     if since is not None:
         clauses.append('COALESCE(n.published_at, n.fetched_at) >= %s')
         params.append(since)
+    if source is not None:
+        clauses.append('n.source = %s')
+        params.append(source)
+    sql = ('SELECT n.id, n.source, n.title, n.url, n.publisher, n.published_at, n.fetched_at '
+           'FROM news_items n JOIN news_item_tickers t ON t.news_item_id = n.id '
+           f"WHERE {' AND '.join(clauses)} "
+           'ORDER BY COALESCE(n.published_at, n.fetched_at) DESC, n.id DESC')
+    if limit is not None:
+        sql += ' LIMIT %s'
+        params.append(limit)
     with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(
-            'SELECT n.id, n.source, n.title, n.url, n.publisher, n.published_at, n.fetched_at '
-            'FROM news_items n JOIN news_item_tickers t ON t.news_item_id = n.id '
-            f"WHERE {' AND '.join(clauses)} "
-            'ORDER BY COALESCE(n.published_at, n.fetched_at) DESC, n.id DESC LIMIT %s',
-            (*params, limit))
+        cur.execute(sql, params)
         return cur.fetchall()
 
 
@@ -1051,18 +1060,20 @@ def latest_filing_dates(conn, tickers, *, cutoff_at: datetime) -> dict[str, date
 
     Both sources are checked as known by ``cutoff_at`` (filings.created_at, news
     fetched_at); the news date is the New York calendar date of its published_at
-    (EDGAR acceptance time), falling back to fetched_at."""
+    (EDGAR acceptance time). sec_8k rows without a published_at have no filing-date
+    basis and are not counted — the fetch date must not masquerade as a filing
+    date; better undercounted than faked (I14)."""
     if not tickers:
         return {}
     rows = _all(conn, 'SELECT ticker, max(day) AS latest FROM ('
                       '  SELECT ticker, max(filing_date) AS day FROM filings '
                       '  WHERE ticker = ANY(%s) AND created_at <= %s GROUP BY ticker '
                       '  UNION ALL '
-                      '  SELECT t.ticker, (max(COALESCE(n.published_at, n.fetched_at)) '
+                      '  SELECT t.ticker, (max(n.published_at) '
                       "                    AT TIME ZONE 'America/New_York')::date AS day "
                       '  FROM news_items n JOIN news_item_tickers t ON t.news_item_id = n.id '
                       "  WHERE t.ticker = ANY(%s) AND n.source = 'sec_8k' AND n.fetched_at <= %s "
-                      '  AND (n.published_at IS NULL OR n.published_at <= %s) '
+                      '  AND n.published_at IS NOT NULL AND n.published_at <= %s '
                       '  GROUP BY t.ticker) days GROUP BY ticker',
                 (list(tickers), cutoff_at, list(tickers), cutoff_at, cutoff_at))
     return {row['ticker']: row['latest'] for row in rows}

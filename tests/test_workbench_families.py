@@ -40,3 +40,20 @@ def test_lagging_edges():
 def test_coverage_counts_missing_as_lagging():
     cov = families.coverage('bars', ['A', 'B', 'C'], {'A': S, 'B': date(2026, 10, 20)}, session=S)
     assert cov == {'targets': 3, 'covered': 1, 'lagging': ['B', 'C']}
+
+
+def test_fred_coverage_counts_any_observation_and_keeps_lagging_separate():
+    """FRED 口径（spec §4，I12）：covered=有观测值的序列数；滞后独立按 7 天阈值。
+    有值但旧 → 覆盖且滞后；无值 → 不覆盖且滞后。"""
+    old = date(2026, 10, 14)          # session 前 8 天：有观测值但滞后
+    cov = families.coverage('fred', ['BAMLH0A0HYM2', 'T10Y2Y'],
+                            {'BAMLH0A0HYM2': old, 'T10Y2Y': old}, session=S)
+    assert cov == {'targets': 2, 'covered': 2, 'lagging': ['BAMLH0A0HYM2', 'T10Y2Y']}
+    fresh = families.coverage('fred', ['BAMLH0A0HYM2', 'T10Y2Y'],
+                              {'BAMLH0A0HYM2': S, 'T10Y2Y': None}, session=S)
+    assert fresh == {'targets': 2, 'covered': 1, 'lagging': ['T10Y2Y']}
+
+
+def test_coverage_notes_exist_for_every_family():
+    for family in families.FAMILIES:
+        assert families.COVERAGE_NOTES[family.id]

@@ -68,3 +68,71 @@ def test_busy_fetch_is_409(client, monkeypatch):
     monkeypatch.setattr(data_view, 'start_fetch', raiser(data_view.FetchBusy('该族正在采集')))
     resp = client.post('/api/data/families/bars/fetch', json={})
     assert resp.status_code == 409 and resp.json()['error'] == '该族正在采集'
+
+
+# ------------------------------------------------- real-route error contract (I06)
+
+def test_non_string_ticker_is_400(client):
+    """非字符串 ticker 是参数类型错误（400），不是 .strip() 的 AttributeError（500）。"""
+    for bad in (123, ['MU'], True):
+        resp = client.post('/api/data/families/bars/fetch', json={'ticker': bad})
+        assert resp.status_code == 400, bad
+        assert 'ticker' in resp.json()['error']
+
+
+def test_unreachable_database_is_503_for_post_too(client, monkeypatch):
+    """连接异常在 GET 和 POST 一致映射 Unavailable（503），不返回 500（I06a）。"""
+    import psycopg
+
+    monkeypatch.setenv('INVESTMENT_ASSISTANT_DATABASE_URL', 'postgresql://test@127.0.0.1:1/postgres')
+
+    def dead_connect(url):
+        raise psycopg.OperationalError('connection refused')
+
+    monkeypatch.setattr(service, 'connect', dead_connect)
+    assert client.get('/api/data/families').status_code == 503
+    resp = client.post('/api/data/families/bars/fetch', json={})
+    assert resp.status_code == 503 and resp.json()['error'] == '数据库不可达'
+
+
+def test_post_checks_tables_and_024_before_submitting(workbench_db, monkeypatch):
+    """提交前在同一安全事务里检查工作台表与 024：缺任一 → 503 且不提交后台任务（I06b）。"""
+    import os
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+    from investment_assistant import db
+    from investment_assistant.api.app import create_app
+    from investment_assistant.workbench import data_view
+
+    url = os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']
+    schema = workbench_db.execute('SHOW search_path').fetchone()[0]
+    monkeypatch.setenv('INVESTMENT_ASSISTANT_DATABASE_URL',
+                       f'{url}?options=-csearch_path%3D{schema}')
+
+    submitted = []
+    monkeypatch.setattr('investment_assistant.tasks.runner.submit',
+                        lambda kind, job, **kw: submitted.append(kind) or 'fake-run')
+    client = TestClient(create_app())
+
+    # 健康 schema：POST 正常受理并提交后台任务
+    resp = client.post('/api/data/families/news/fetch', json={})
+    assert resp.status_code == 200 and resp.json() == {'run_id': 'fake-run', 'status': 'pending'}
+    assert submitted == ['data:news']
+
+    # 缺 024：503 且不提交
+    workbench_db.execute('DROP TABLE data_fetch_runs')
+    workbench_db.commit()
+    resp = client.post('/api/data/families/news/fetch', json={})
+    assert resp.status_code == 503 and '需执行迁移 024' in resp.json()['error']
+    assert submitted == ['data:news']
+
+    # 024 在但旧表缺：503 且不提交
+    workbench_db.execute(Path('migrations', '024_data_fetch_runs.sql').read_text(encoding='utf-8'))
+    workbench_db.execute('DROP TABLE price_bars')
+    workbench_db.commit()
+    resp = client.post('/api/data/families/bars/fetch', json={})
+    assert resp.status_code == 503 and '工作台数据表未就绪' in resp.json()['error']
+    assert 'price_bars' in resp.json()['error']
+    assert submitted == ['data:news']
+    db.close_pools()

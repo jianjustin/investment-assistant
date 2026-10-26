@@ -40,10 +40,13 @@ def _now() -> datetime:
 
 def validate_fetch(family_id: str, ticker: str | None) -> tuple[str, str | None]:
     """(family_id, normalized ticker) or the route's error: unknown family LookupError;
-    derived family / ticker on a non-per-ticker family / invalid ticker ValueError."""
+    derived family / ticker on a non-per-ticker family / non-string or invalid
+    ticker ValueError."""
     family = families.get(family_id)
     if family.kind == 'derived':
         raise ValueError('派生族，请拉取日线')
+    if ticker is not None and not isinstance(ticker, str):
+        raise ValueError('ticker 必须是字符串')
     if ticker is not None and not family.per_ticker:
         raise ValueError('该族不支持单只拉取')
     if ticker is not None:
@@ -55,22 +58,51 @@ def validate_fetch(family_id: str, ticker: str | None) -> tuple[str, str | None]
     return family_id, ticker
 
 
+def _unavailable_on_connection_error(exc: Exception) -> bool:
+    """True for a dead/unreachable database — psycopg's OperationalError family,
+    which the pool's PoolTimeout also belongs to — so POST matches GET's 503
+    contract (I06)."""
+    import psycopg
+
+    return isinstance(exc, psycopg.OperationalError)
+
+
 def start_fetch(family_id: str, ticker: str | None, *, now_fn: Callable[[], datetime] | None = None,
                 deps: service.Deps | None = None) -> dict[str, Any]:
     """Submit one family fetch in the background and return {'run_id', 'status': 'pending'}.
 
     The lock is only probed here, then released: the background task takes it for
     real, so a batch starting in between ends as {'status': 'busy'} instead of two
-    writers racing on the data tables (§6.4)."""
+    writers racing on the data tables (§6.4).
+
+    Before anything is submitted the database must be provably writable: the
+    workbench tables and migration 024 are checked in this same safe transaction,
+    and a failed probe unlock discards the connection instead of returning a
+    locked session to the pool (I06, I01)."""
     family_id, ticker = validate_fetch(family_id, ticker)
     now_fn = now_fn or _now
-    with service.connection() as conn:
-        if not repository.fetch_runs_ready(conn):
-            raise service.Unavailable('需执行迁移 024')
-        if family_id != 'universe':   # universe reads a file only; no lock to probe
-            if not collect.try_family_lock(conn, family_id):
-                raise FetchBusy('该族正在采集')
-            collect.unlock_family(conn, family_id)
+    try:
+        with service.connection() as conn:
+            missing = repository.missing_tables(conn)
+            if missing:
+                raise service.Unavailable(
+                    '工作台数据表未就绪（需执行迁移 016–020）：' + ', '.join(missing))
+            if not repository.fetch_runs_ready(conn):
+                raise service.Unavailable('需执行迁移 024')
+            if family_id != 'universe':   # universe reads a file only; no lock to probe
+                if not collect.try_family_lock(conn, family_id):
+                    raise FetchBusy('该族正在采集')
+                try:
+                    collect.unlock_family(conn, family_id)
+                except Exception:
+                    collect.discard_connection(conn)   # never return a locked session (I01)
+                    raise
+    except service.Unavailable:
+        raise
+    except Exception as exc:
+        if _unavailable_on_connection_error(exc):
+            raise service.Unavailable('数据库不可达') from None
+        raise
 
     def job(run_id: str) -> dict[str, Any]:
         return run_fetch(family_id, ticker, run_id=run_id, now=now_fn(), deps=deps)
@@ -80,28 +112,32 @@ def start_fetch(family_id: str, ticker: str | None, *, now_fn: Callable[[], date
 
 
 def run_fetch(family_id: str, ticker: str | None, *, run_id: str | None, now: datetime,
-              deps: service.Deps | None = None) -> dict[str, Any]:
+              deps: service.Deps | None = None,
+              wall_now: Callable[[], datetime] | None = None) -> dict[str, Any]:
     """The background body: hold the family lock, collect, append one manual_family row.
 
     Validated again so direct callers cannot bypass start_fetch's checks. The lock
     is held over the whole collection on a dedicated connection; without it the
     fetch reports busy and writes nothing. Per-target failures land in the row,
-    never abort the family."""
+    never abort the family. The row's timestamps are the real wall clock
+    (injectable, I07); ``now`` stays the data cutoff."""
     family_id, ticker = validate_fetch(family_id, ticker)
     deps = deps or service.Deps()
+    wall = wall_now or collect.wall_clock
     session = bars_module.latest_closed_session(now)
+    started_at = wall()
     with ExitStack() as stack:
         if family_id != 'universe':
             lock_conn = stack.enter_context(service.connection())
             if not collect.try_family_lock(lock_conn, family_id):
                 return {'status': 'busy'}
-            stack.callback(collect.unlock_family, lock_conn, family_id)
+            stack.callback(collect.release_family, lock_conn, family_id)
         else:
             lock_conn = None
         tally = _collect_family(family_id, ticker, session=session, now=now, deps=deps,
                                 conn=lock_conn)
-    row = tally.row(trigger='manual_family', run_id=run_id, session=session, started_at=now,
-                    finished_at=now, scope='ticker' if ticker is not None else 'family',
+    row = tally.row(trigger='manual_family', run_id=run_id, session=session, started_at=started_at,
+                    finished_at=wall(), scope='ticker' if ticker is not None else 'family',
                     ticker=ticker)
     return {'status': row['status'], 'row': row, 'data_status': collect.write_runs([row])}
 
@@ -122,7 +158,7 @@ def _collect_family(family_id: str, ticker: str | None, *, session, now: datetim
                 tally.ok(target)
         except service.Unavailable:
             raise
-        except Exception as exc:   # one listing call covers every target (§6.2 convention)
+        except Exception as exc:   # one listing call covers every target: '*' sentinel (I04)
             tally.fail('*', exc)
         return tally
     tally = collect.Tally(family_id, 'workbench')
@@ -182,7 +218,9 @@ BROWSE_ATR_LIMIT = 60
 BROWSE_NEWS_DAYS = 60
 BROWSE_FILINGS_DAYS = 180
 BROWSE_FRED_LIMIT = 120
-BROWSE_NEWS_LIMIT = 200          # 展示上限；窗口本身由 BROWSE_NEWS_DAYS 决定
+# news/sec browse read their whole window with no second, silent cap (I10): the
+# SQL filters by source first, so the 8-K listings are never pushed out by
+# yfinance headlines.
 BAR_NOTE = '拆股调整、未分红调整；adj_close 全调整'
 ATR_NOTE = '现算，与 `plan-1` 同一函数；不入库'
 
@@ -232,20 +270,25 @@ def _last_run_view(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if row is None:
         return None
     return {'status': row['status'], 'trigger': row['trigger'], 'scope': row['scope'],
-            'ticker': row['ticker'], 'finished_at': row['finished_at'],
+            'ticker': row['ticker'], 'job': row['job'],
+            'reason': (row.get('detail') or {}).get('reason'),
+            'finished_at': row['finished_at'],
             'ok_count': row['ok_count'], 'target_count': row['target_count'],
             'failures': (row['failures'] or [])[:5]}
 
 
 def _card(conn, family: families.Family, *, session: date, now: datetime, jobs, latest_runs,
-          success_at) -> dict[str, Any]:
+          success_at, ready: bool) -> dict[str, Any]:
     """One family's overview card: coverage and freshness computed at read time."""
     notes: list[str] = []
+    current_error: str | None = None
     if family.id == 'universe':
         try:
             loaded = universe_module.load()
-        except universe_module.UniverseError:
-            notes.append('universe_unavailable')   # 范围文件不可读：覆盖 0、时点为空，不影响其他卡
+        except universe_module.UniverseError as exc:
+            # 范围文件不可读/非法：覆盖 0、时点为空；真实原因独立暴露，不伪造拉取行（M03）
+            notes.append('universe_unavailable')
+            current_error = families.sanitize_reason(exc)
             coverage, latest_at = {'targets': 0, 'covered': 0, 'lagging': []}, None
         else:
             coverage = {'targets': len(loaded.tickers), 'covered': len(loaded.tickers), 'lagging': []}
@@ -270,11 +313,14 @@ def _card(conn, family: families.Family, *, session: date, now: datetime, jobs, 
         'job': ({'name': job_row['name'], 'enabled': job_row['enabled'],
                  'next_run_at': job_row['next_run_at']} if job_row is not None else None),
         'coverage': coverage, 'latest_at': latest_at,
+        'coverage_note': families.COVERAGE_NOTES[family.id],
         'last_run': _last_run_view(latest_runs.get(recorded)),
         'last_success_at': success_at.get(recorded),
         'evidence': (families.EVIDENCE + ' ' + families.ATR_EVIDENCE
                      if family.id == 'atr' else families.EVIDENCE),
         'notes': notes,
+        'current_error': current_error,
+        'fetch_runs_ready': ready,
     }
 
 
@@ -287,24 +333,40 @@ def overview(*, now: datetime) -> dict[str, Any]:
         latest_runs = repository.latest_fetch_runs(conn) if ready else {}
         success_at = repository.last_success_at(conn) if ready else {}
         cards = [_card(conn, family, session=session, now=now, jobs=jobs,
-                       latest_runs=latest_runs, success_at=success_at)
+                       latest_runs=latest_runs, success_at=success_at, ready=ready)
                  for family in families.FAMILIES]
     return {'session': session, 'evidence': families.EVIDENCE, 'fetch_runs_ready': ready,
             'families': cards}
 
 
 def _last_failures(runs: list[dict[str, Any]], targets: list[str]) -> dict[str, str]:
-    """Per target the newest failure reason among ``runs`` (newest first);
-    a whole-family failure ('*') counts for every target."""
+    """Per target the newest failure reason among ``runs`` (newest first).
+
+    A failure only ever belongs to the targets its own run covered (I05): a
+    ticker-scoped row — including its '*' whole-call sentinel — counts for that
+    ticker alone; a family-scoped '*' counts for that run's own target set
+    (``detail.failed_targets``), falling back to the current targets only for
+    workbench rows, never spreading another job's list (e.g. the filings monitor)
+    onto uncollected pool targets."""
     failure: dict[str, str] = {}
+    target_set = set(targets)
     for row in runs:
         for entry in row['failures'] or []:
             reason = entry.get('reason')
-            if entry.get('target') == '*':
-                for target in targets:
-                    failure.setdefault(target, reason)
-            else:
-                failure.setdefault(entry.get('target'), reason)
+            target = entry.get('target')
+            if row.get('scope') == 'ticker':
+                if target == '*' or target == row.get('ticker'):
+                    if row.get('ticker') in target_set:
+                        failure.setdefault(row['ticker'], reason)
+            elif target == '*':
+                scoped = (row.get('detail') or {}).get('failed_targets')
+                if scoped is None:
+                    scoped = targets if row.get('job') == 'workbench' else []
+                for name in scoped:
+                    if name in target_set:
+                        failure.setdefault(name, reason)
+            elif target in target_set:
+                failure.setdefault(target, reason)
     return failure
 
 
@@ -338,7 +400,7 @@ def family_detail(family_id: str, *, now: datetime) -> dict[str, Any]:
         latest_runs = repository.latest_fetch_runs(conn) if ready else {}
         success_at = repository.last_success_at(conn) if ready else {}
         card = _card(conn, family, session=session, now=now, jobs=jobs,
-                     latest_runs=latest_runs, success_at=success_at)
+                     latest_runs=latest_runs, success_at=success_at, ready=ready)
         runs = repository.fetch_runs(conn, recorded, 20) if ready else []
         rows = _detail_rows(conn, family, runs=runs, session=session, now=now)
     return {'card': card, 'runs': runs, 'rows': rows}
@@ -408,7 +470,7 @@ def _browse_atr(conn, ticker: str, *, session: date, now: datetime) -> dict[str,
 def _browse_news(conn, ticker: str, *, session: date, now: datetime) -> dict[str, Any]:
     rows = repository.read_news(conn, ticker, cutoff_at=now,
                                 since=_ny_midnight(session - timedelta(days=BROWSE_NEWS_DAYS)),
-                                limit=BROWSE_NEWS_LIMIT)
+                                limit=None)
     return {'family': 'news', 'key': ticker, 'has_data': bool(rows), 'rows': rows}
 
 
@@ -416,10 +478,18 @@ def _browse_filings(conn, ticker: str, *, session: date, now: datetime) -> dict[
     since = session - timedelta(days=BROWSE_FILINGS_DAYS)
     filings = repository.read_filings(conn, ticker, since=since, cutoff_at=now)
     known = {row['accession_number'].replace('-', '') for row in filings}
+    # Source-filtered first, then the whole window (I10): a busy news ticker can
+    # no longer push its 8-K listings out of the result.
     news = repository.read_news(conn, ticker, cutoff_at=now, since=_ny_midnight(since),
-                                limit=BROWSE_NEWS_LIMIT)
-    sec_8k = [item for item in news
-              if item['source'] == 'sec_8k' and not any(acc in item['url'] for acc in known)]
+                                limit=None, source='sec_8k')
+    sec_8k = []
+    for item in news:
+        if any(acc in item['url'] for acc in known):
+            continue
+        # Without an acceptance time there is no filing date basis; the fetched-at
+        # fallback must not masquerade as one (I14).
+        item['filing_date_note'] = None if item['published_at'] is not None else '申报日未知'
+        sec_8k.append(item)
     return {'family': 'sec_filings', 'key': ticker, 'has_data': bool(filings or sec_8k),
             'rows': len(filings) + len(sec_8k), 'filings': filings, 'sec_8k': sec_8k}
 
@@ -445,9 +515,10 @@ def _universe_note() -> str | None:
 def _browse_universe(conn, *, now: datetime) -> dict[str, Any]:
     try:
         loaded = universe_module.load()
-    except universe_module.UniverseError:
+    except universe_module.UniverseError as exc:
         return {'family': 'universe', 'key': None, 'has_data': False, 'rows': [], 'meta': None,
-                'notes': ['universe_unavailable']}
+                'notes': ['universe_unavailable'],
+                'current_error': families.sanitize_reason(exc)}
     latest = repository.latest_bar_dates(conn, list(loaded.tickers), cutoff_at=now)
     rows = [{'ticker': ticker, 'latest_bar': latest.get(ticker)} for ticker in loaded.tickers]
     return {'family': 'universe', 'key': None, 'has_data': bool(rows), 'rows': rows,
