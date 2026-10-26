@@ -1010,3 +1010,69 @@ def latest_account_record_at(conn) -> datetime | None:
         '(SELECT max(recorded_at) AS rec FROM account_snapshots) s, '
         '(SELECT max(recorded_at) AS rec, max(voided_at) AS void FROM cash_flows) f').fetchone()
     return row[0] if row else None
+
+# ---------------------------------------------------------------- coverage reads (v2.3 §8)
+
+
+def latest_bar_dates(conn, tickers, *, cutoff_at: datetime) -> dict[str, date]:
+    """Per ticker the newest bar date any revision of which was known by ``cutoff_at``."""
+    if not tickers:
+        return {}
+    rows = _all(conn, 'SELECT ticker, max(price_date) AS latest FROM price_bars '
+                      'WHERE ticker = ANY(%s) AND fetched_at <= %s GROUP BY ticker',
+                (list(tickers), cutoff_at))
+    return {row['ticker']: row['latest'] for row in rows}
+
+
+def bar_counts(conn, tickers, *, end_date: date, cutoff_at: datetime) -> dict[str, int]:
+    """Per ticker the distinct bar dates up to ``end_date`` known by ``cutoff_at``; revisions count once."""
+    if not tickers:
+        return {}
+    rows = _all(conn, 'SELECT ticker, count(DISTINCT price_date) AS n FROM price_bars '
+                      'WHERE ticker = ANY(%s) AND price_date <= %s AND fetched_at <= %s GROUP BY ticker',
+                (list(tickers), end_date, cutoff_at))
+    return {row['ticker']: row['n'] for row in rows}
+
+
+def latest_news_at(conn, tickers, *, cutoff_at: datetime) -> dict[str, datetime]:
+    """Per ticker the newest COALESCE(published_at, fetched_at) visible to read_news at ``cutoff_at``."""
+    if not tickers:
+        return {}
+    rows = _all(conn, 'SELECT t.ticker, max(COALESCE(n.published_at, n.fetched_at)) AS latest '
+                      'FROM news_items n JOIN news_item_tickers t ON t.news_item_id = n.id '
+                      'WHERE t.ticker = ANY(%s) AND n.fetched_at <= %s '
+                      'AND (n.published_at IS NULL OR n.published_at <= %s) '
+                      'GROUP BY t.ticker', (list(tickers), cutoff_at, cutoff_at))
+    return {row['ticker']: row['latest'] for row in rows}
+
+
+def latest_filing_dates(conn, tickers, *, cutoff_at: datetime) -> dict[str, date]:
+    """Per ticker the greater of the newest filing_date and the newest sec_8k news date.
+
+    Both sources are checked as known by ``cutoff_at`` (filings.created_at, news
+    fetched_at); the news date is the New York calendar date of its published_at
+    (EDGAR acceptance time), falling back to fetched_at."""
+    if not tickers:
+        return {}
+    rows = _all(conn, 'SELECT ticker, max(day) AS latest FROM ('
+                      '  SELECT ticker, max(filing_date) AS day FROM filings '
+                      '  WHERE ticker = ANY(%s) AND created_at <= %s GROUP BY ticker '
+                      '  UNION ALL '
+                      '  SELECT t.ticker, (max(COALESCE(n.published_at, n.fetched_at)) '
+                      "                    AT TIME ZONE 'America/New_York')::date AS day "
+                      '  FROM news_items n JOIN news_item_tickers t ON t.news_item_id = n.id '
+                      "  WHERE t.ticker = ANY(%s) AND n.source = 'sec_8k' AND n.fetched_at <= %s "
+                      '  AND (n.published_at IS NULL OR n.published_at <= %s) '
+                      '  GROUP BY t.ticker) days GROUP BY ticker',
+                (list(tickers), cutoff_at, list(tickers), cutoff_at, cutoff_at))
+    return {row['ticker']: row['latest'] for row in rows}
+
+
+def latest_macro_dates(conn, series_ids, *, cutoff_at: datetime) -> dict[str, date]:
+    """Per series the newest observation date any revision of which was known by ``cutoff_at``."""
+    if not series_ids:
+        return {}
+    rows = _all(conn, 'SELECT series_id, max(obs_date) AS latest FROM macro_observations '
+                      'WHERE series_id = ANY(%s) AND fetched_at <= %s GROUP BY series_id',
+                (list(series_ids), cutoff_at))
+    return {row['series_id']: row['latest'] for row in rows}

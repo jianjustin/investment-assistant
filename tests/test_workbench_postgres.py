@@ -965,3 +965,97 @@ def test_fetch_runs_table_not_required_by_workbench(workbench_db):
     workbench_db.execute('DROP TABLE data_fetch_runs')
     assert repository.missing_tables(workbench_db) == []
     assert repository.fetch_runs_ready(workbench_db) is False
+
+
+# --- family targets and coverage queries (v2.3 §4/§8) ---
+
+def _test_universe(*tickers):
+    from investment_assistant.workbench.universe import Universe
+    return Universe(name='nasdaq100', as_of=date(2026, 10, 1), source='hand', tickers=tickers)
+
+
+def test_targets_bars_union_and_notes(workbench_db):
+    from investment_assistant.workbench import families, repository
+    from investment_assistant.workbench.universe import UniverseError
+    conn = workbench_db
+    conn.execute("INSERT INTO watchlist_items (ticker, status, tags) "
+                 "VALUES ('AAA', 'active', %s), ('BBB', 'active', '{}')", [['core']])
+    repository.insert_pool_tiers(conn, [
+        {'ticker': 'CCC', 'tier': 'extended', 'sector_etf': None, 'source': 'screen'},
+        {'ticker': 'DDD', 'tier': 'removed', 'sector_etf': None, 'source': 'screen'}],
+        session=date(2026, 10, 19), now=NOW)
+    _trade(conn, 'EEE', 'buy')
+    loader = lambda: _test_universe('ZZZ', 'AAA')
+    bars, notes = families.targets(conn, 'bars', universe_loader=loader)
+    assert bars[:4] == ['SPY', 'SMH', 'XLK', 'QQQ']
+    assert set(bars) == {'SPY', 'SMH', 'XLK', 'QQQ', 'AAA', 'BBB', 'CCC', 'EEE', 'ZZZ'}
+    assert bars[4:] == sorted(bars[4:]) and notes == []
+    assert families.targets(conn, 'atr', universe_loader=loader)[0] == bars
+    news, news_notes = families.targets(conn, 'news', universe_loader=loader)
+    assert set(news) == {'AAA', 'BBB', 'CCC', 'EEE'} and news_notes == []
+    assert families.targets(conn, 'sec_filings', universe_loader=loader)[0] == news
+    assert families.targets(conn, 'fred') == (['BAMLH0A0HYM2', 'T10Y2Y'], [])
+    assert families.targets(conn, 'universe') == ([], [])
+    with pytest.raises(LookupError):
+        families.targets(conn, 'nope')
+
+    def broken_loader():
+        raise UniverseError('cannot read universe file')
+    again, notes2 = families.targets(conn, 'bars', universe_loader=broken_loader)
+    assert 'ZZZ' not in again and {'AAA', 'BBB', 'CCC', 'EEE'} <= set(again)
+    assert 'universe_unavailable' in notes2
+
+
+def test_targets_empty_watchlist_is_a_note(workbench_db):
+    from investment_assistant.workbench import families
+    assert families.targets(workbench_db, 'news') == ([], ['pool_empty'])
+
+
+def test_coverage_queries_take_latest_revision_and_cutoff(workbench_db):
+    from decimal import Decimal
+    from investment_assistant.workbench import repository
+    conn = workbench_db
+    cutoff = NOW + timedelta(minutes=90)
+    _bar(conn, price_date=date(2026, 10, 16), close=100, fetched_at=NOW)
+    _bar(conn, price_date=date(2026, 10, 19), close=104, fetched_at=NOW)
+    _bar(conn, price_date=date(2026, 10, 19), close=103, revision=2, fetched_at=NOW + timedelta(hours=1))
+    _bar(conn, price_date=date(2026, 10, 20), close=105, fetched_at=NOW + timedelta(hours=2))
+    # 同一日期的两个修订算一根；fetched_at 晚于 cutoff 的行整行不可见；无数据的 MU 不出现在结果里
+    assert repository.latest_bar_dates(conn, ['NVDA', 'MU'], cutoff_at=cutoff) == {'NVDA': date(2026, 10, 19)}
+    assert repository.bar_counts(conn, ['NVDA'], end_date=date(2026, 10, 23), cutoff_at=cutoff) == {'NVDA': 2}
+    assert repository.bar_counts(conn, ['NVDA'], end_date=date(2026, 10, 17), cutoff_at=cutoff) == {'NVDA': 1}
+
+    repository.store_news(conn, [
+        ({'source': 'yfinance', 'title': 'a', 'url': 'u-a', 'publisher': None,
+          'published_at': datetime(2026, 10, 21, 12, tzinfo=UTC)}, ['NVDA']),
+        ({'source': 'yfinance', 'title': 'b', 'url': 'u-b', 'publisher': None, 'published_at': None}, ['MU']),
+    ], now=NOW)
+    repository.store_news(conn, [
+        ({'source': 'yfinance', 'title': 'late', 'url': 'u-c', 'publisher': None,
+          'published_at': datetime(2026, 10, 22, 12, tzinfo=UTC)}, ['MU']),
+    ], now=NOW + timedelta(hours=2))
+    # 无 published_at 用 fetched_at；晚于 cutoff 抓到的行不算
+    assert repository.latest_news_at(conn, ['NVDA', 'MU'], cutoff_at=cutoff) == {
+        'NVDA': datetime(2026, 10, 21, 12, tzinfo=UTC), 'MU': NOW}
+
+    conn.execute(
+        'INSERT INTO filings (ticker, form, filing_date, accession_number, primary_document, file_path, created_at) '
+        "VALUES ('F1', '10-Q', %s, 'acc-1', 'd.htm', '/x', %s), ('F3', '8-K', %s, 'acc-2', 'd.htm', '/x', %s)",
+        [date(2026, 10, 10), NOW, date(2026, 10, 5), NOW])
+    repository.store_news(conn, [
+        ({'source': 'sec_8k', 'title': 'F2 8-K', 'url': 'u-f2', 'publisher': 'SEC EDGAR',
+          'published_at': datetime(2026, 10, 15, 14, tzinfo=UTC)}, ['F2']),
+        ({'source': 'sec_8k', 'title': 'F3 8-K', 'url': 'u-f3', 'publisher': 'SEC EDGAR',
+          'published_at': datetime(2026, 10, 15, 14, tzinfo=UTC)}, ['F3']),
+    ], now=NOW)
+    # 只有 sec_8k 时也有值；两路都有时取较大者
+    assert repository.latest_filing_dates(conn, ['F1', 'F2', 'F3'], cutoff_at=cutoff) == {
+        'F1': date(2026, 10, 10), 'F2': date(2026, 10, 15), 'F3': date(2026, 10, 15)}
+
+    repository.store_macro(conn, 'BAMLH0A0HYM2', [{'obs_date': date(2026, 10, 20), 'value': Decimal('3.1')}],
+                           now=NOW)
+    repository.store_macro(conn, 'BAMLH0A0HYM2', [{'obs_date': date(2026, 10, 21), 'value': Decimal('3.2')}],
+                           now=NOW + timedelta(hours=2))
+    repository.store_macro(conn, 'T10Y2Y', [{'obs_date': date(2026, 10, 21), 'value': Decimal('0.1')}], now=NOW)
+    assert repository.latest_macro_dates(conn, ['BAMLH0A0HYM2', 'T10Y2Y'], cutoff_at=cutoff) == {
+        'BAMLH0A0HYM2': date(2026, 10, 20), 'T10Y2Y': date(2026, 10, 21)}

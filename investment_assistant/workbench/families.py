@@ -1,8 +1,9 @@
 """Data family catalog for the Data menu (design 2026-10-26 §4).
 
-Static registry of the six families plus the pure display rules built on it:
-fetch status classification, failure-reason sanitisation, per-family staleness
-and coverage counts. No SQL, no IO; target lists and reads live elsewhere.
+Static registry of the six families plus the display rules built on it: fetch
+status classification, failure-reason sanitisation, per-family staleness and
+coverage counts, and the per-family target lists. ``targets`` is the only part
+that touches the database; row reads live in repository.py.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
-from investment_assistant.workbench import macro, plans, service
+from investment_assistant.workbench import macro, plans, pool, repository, service, universe
 
 EVIDENCE = '这里只展示采集事实。所有规则都未经验证（Phase 0 Gate HOLD）：数据完整不代表信号有效。'
 ATR_EVIDENCE = '`plan-1` 的计算输入，规则 `gate_hold`'
@@ -143,3 +144,43 @@ def coverage(family_id: str, targets: list[str], latest: dict[str, Any], *,
               if lagging(family_id, latest.get(t), session=session,
                          bar_count=None if bar_counts is None else bar_counts.get(t))]
     return {'targets': len(targets), 'covered': len(targets) - len(lagged), 'lagging': lagged}
+
+
+def targets(conn, family_id: str, *, universe_loader=None) -> tuple[list[str], list[str]]:
+    """The family's fetch targets as (targets, notes) (spec §4 「目标清单」 column).
+
+    One list for the batch loop and the data menu's manual fetch to align on.
+    bars/atr lead with the benchmark and sector ETFs, the rest sorted;
+    news/sec_filings follow the current pool plus holdings; fred lists the two
+    series; universe is fetched from its file, not per member. Notes record
+    degraded inputs, never an error: `pool_empty` (no active watchlist tickers)
+    and `universe_unavailable` (the range file failed to load).
+    """
+    family = get(family_id)
+    if family.id == 'universe':
+        return [], []
+    if family.id == 'fred':
+        return list(macro.MACRO_SERIES), []
+    from investment_assistant.db import list_watchlist_items
+
+    notes: list[str] = []
+    try:
+        watch_pool = pool.from_watchlist(list_watchlist_items(conn))
+    except ValueError:
+        watch_pool = None
+        notes.append('pool_empty')
+    pool_tickers: set[str] = set(watch_pool.tickers if watch_pool is not None else ())
+    pool_tickers |= {ticker for ticker, row in repository.pool_latest(conn).items()
+                     if row['tier'] != 'removed' and row['source'] == 'screen'}
+    pool_tickers |= {row['ticker'] for row in repository.list_trades(conn) if row['voided_at'] is None}
+    if family.id not in ('bars', 'atr'):
+        return sorted(pool_tickers), notes
+    head = [service.BENCHMARK, *pool.SECTOR_ETFS]
+    if universe_loader is None:
+        universe_loader = universe.load
+    try:
+        members = universe_loader().tickers
+    except universe.UniverseError:
+        notes.append('universe_unavailable')
+        members = ()
+    return head + sorted((pool_tickers | set(members)) - set(head)), notes
