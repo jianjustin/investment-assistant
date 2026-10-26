@@ -23,6 +23,7 @@ from investment_assistant.workbench import macro as macro_module
 from investment_assistant.workbench import pool as pool_module
 from investment_assistant.workbench import regime as regime_module
 from investment_assistant.workbench import screening
+from investment_assistant.workbench import universe as universe_module
 from investment_assistant.workbench import discipline as _discipline_module
 from investment_assistant.workbench import plan_shadow as _plan_shadow_module
 from investment_assistant.workbench import review_digest
@@ -228,12 +229,17 @@ def _breadth_tickers(manual: pool_module.Pool, universe_: Any) -> tuple[list[str
 
 def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_module.Pool | None = None,
               deps: Deps | None = None, skip_non_trading: bool = False, run_id: str | None = None,
-              breadth_tickers: list[str] | None = None) -> dict[str, Any]:
+              breadth_tickers: list[str] | None = None,
+              record_trigger: str | None = None) -> dict[str, Any]:
     """Collect -> market context -> rules -> units -> briefs for the latest settled session. Idempotent per session.
 
     The batch runs over the tiered watch pool read from the watchlist (holdings
     join regardless of tier); explicit tickers build an all-core pool for tests
     and manual overrides.
+
+    ``record_trigger`` set ('scheduled' / 'manual_batch') holds the per-family
+    advisory locks for the collection stage and appends one data_fetch_runs row
+    per recorded family afterwards; None keeps the batch exactly as before (v2.3 §6.2).
     """
     deps = deps or Deps()
     clock = deps.clock or _time_module.monotonic
@@ -264,116 +270,177 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
                     'regime': [], 'agent': []},
         'timings': {}}
 
+    # v2.3 §6.2: per-family outcome accounting, fed next to every collect call; None
+    # keeps the None-trigger path exactly as before Task 5 (no locks, no rows).
+    tallies = ({'bars': collect.Tally('bars', 'workbench'),
+                'news': collect.Tally('news', 'workbench'),
+                'sec_filings': collect.Tally('sec_filings', 'workbench'),
+                'fred': collect.Tally('fred', 'workbench', macro_module.MACRO_SERIES)}
+               if record_trigger is not None else None)
+    if tallies is not None and not explicit:   # no screen stage -> no universe row
+        tallies['universe'] = collect.Tally('universe', 'workbench', ('nasdaq100',))
+
     t_collect = clock()
-    # SPY and the industry ETFs collect bars only, before the screen stage: QQQ is its benchmark.
-    for ticker in [BENCHMARK, *ETF_TICKERS]:
-        try:
-            out = collect.bars_one(ticker, session=session, now=now, deps=deps,
-                                   lookback_days=HISTORY_DAYS)
-            if ticker == BENCHMARK:
-                summary['benchmark'] = {'bars': out['counts'],
-                                        'skipped_bars': [d.isoformat() for d in out['skipped']],
-                                        'news': None, 'candidates': [], 'skips': [], 'error': None}
-            else:
-                summary['etfs'][ticker] = f"inserted {out['counts']['inserted']}"
-        except Unavailable:
-            raise
-        except Exception as exc:
-            if ticker == BENCHMARK:
-                summary['benchmark'] = {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [],
-                                        'skips': [], 'error': f'bars: {exc}'}
-                summary['sources']['bars'].append(ticker)
-                summary['errors'].append(f'{ticker} bars: {exc}')
-            else:
-                summary['etfs'][ticker] = f'error: {exc}'
-                summary['sources']['etf_bars'].append(ticker)
-                summary['errors'].append(f'{ticker} etf_bars: {exc}')
-
-    # The screen stage: Nasdaq-100 candidates join the extended pool with source 'screen'.
-    # Explicit tickers/pool stay a manual override and skip it entirely.
-    stage = None
-    manual_pool = pool
-    if explicit:
-        summary['screen'] = {'status': 'skipped', 'reason': 'explicit_pool'}
-    else:
-        stage = screening.run_stage(session=session, now=now, manual=pool, held=held,
-                                    deps=deps, run_id=run_id)
-        summary['screen'] = stage['summary']
-        summary['sources']['bars'].extend(stage['fetch_failures'])
-        if stage['status'] == 'error':
-            summary['errors'].append(f"screen: {stage['summary']['error']}")
-        pool = pool_module.with_screen(pool, stage['members'])
-        with _tx() as conn:
-            tier_changes = _sync_pool(conn, pool, session, now)
-        # A held screen member is in the pool now; run it once, not again as an off-pool holding.
-        held = [t for t in held if t not in pool.tickers]
-        summary['pool'] = {**summary['pool'], 'extended': len(pool.extended), 'holdings': len(held),
-                           'screen': len(stage['members']), 'changes': tier_changes}
-    all_tickers = [*pool.tickers, *held]
-    if not pool.core:
-        summary['errors'].append('core_empty')
-
-    for ticker in all_tickers:
-        entry: dict[str, Any] = {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [], 'skips': [],
-                                 'error': None}
-        problems = []
-        try:
-            if ticker in (stage['fetched'] if stage is not None else ()):
-                entry['bars'] = 'collected_in_screen'   # news and earnings still collect below
-            else:
+    # v2.3 §6.4: one session advisory lock per fetched family over the whole collection
+    # stage, on a dedicated connection, acquired in a fixed order (a manual fetch holds
+    # a single lock, so no deadlock); universe only reads a file and takes no lock.
+    with ExitStack() as locks:
+        if record_trigger is not None:
+            locks.enter_context(collect.family_locks(['bars', 'news', 'sec_filings', 'fred']))
+        # SPY and the industry ETFs collect bars only, before the screen stage: QQQ is its benchmark.
+        for ticker in [BENCHMARK, *ETF_TICKERS]:
+            try:
                 out = collect.bars_one(ticker, session=session, now=now, deps=deps,
                                        lookback_days=HISTORY_DAYS)
-                entry['bars'] = out['counts']
-                entry['skipped_bars'] = [d.isoformat() for d in out['skipped']]
-        except Unavailable:
-            raise
-        except Exception as exc:
-            problems.append(f'bars: {exc}')
-            summary['sources']['bars'].append(ticker)
-        try:
-            entry['news'] = collect.news_one(ticker, now=now, deps=deps)
-        except Unavailable:
-            raise
-        except Exception as exc:
-            problems.append(f'news: {exc}')
-            summary['sources']['news'].append(ticker)
-        try:
-            row = earnings.fetch_next(ticker, fetcher=deps.earnings_fetcher, today=ny_date)
+                if tallies is not None:
+                    tallies['bars'].ok(ticker)
+                if ticker == BENCHMARK:
+                    summary['benchmark'] = {'bars': out['counts'],
+                                            'skipped_bars': [d.isoformat() for d in out['skipped']],
+                                            'news': None, 'candidates': [], 'skips': [], 'error': None}
+                else:
+                    summary['etfs'][ticker] = f"inserted {out['counts']['inserted']}"
+            except Unavailable:
+                raise
+            except Exception as exc:
+                if tallies is not None:
+                    tallies['bars'].fail(ticker, exc)
+                if ticker == BENCHMARK:
+                    summary['benchmark'] = {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [],
+                                            'skips': [], 'error': f'bars: {exc}'}
+                    summary['sources']['bars'].append(ticker)
+                    summary['errors'].append(f'{ticker} bars: {exc}')
+                else:
+                    summary['etfs'][ticker] = f'error: {exc}'
+                    summary['sources']['etf_bars'].append(ticker)
+                    summary['errors'].append(f'{ticker} etf_bars: {exc}')
+
+        # The screen stage: Nasdaq-100 candidates join the extended pool with source 'screen'.
+        # Explicit tickers/pool stay a manual override and skip it entirely.
+        stage = None
+        manual_pool = pool
+        if explicit:
+            summary['screen'] = {'status': 'skipped', 'reason': 'explicit_pool'}
+        else:
+            stage = screening.run_stage(session=session, now=now, manual=pool, held=held,
+                                        deps=deps, run_id=run_id)
+            summary['screen'] = stage['summary']
+            summary['sources']['bars'].extend(stage['fetch_failures'])
+            if tallies is not None:
+                # Screen-stage fetches count once here: the loop below does not fetch them again.
+                for fetched in stage['fetched']:
+                    tallies['bars'].ok(fetched)
+                for failed, reason in stage['fetch_reasons'].items():
+                    tallies['bars'].fail(failed, reason)
+                universe_tally = tallies['universe']
+                if stage['universe'] is not None:
+                    universe_tally.ok('nasdaq100')
+                    universe_tally.detail.update(name=stage['universe'].name,
+                                                 as_of=stage['universe'].as_of,
+                                                 tickers=len(stage['universe'].tickers),
+                                                 stale=universe_module.is_stale(stage['universe'], session))
+                else:
+                    universe_tally.fail('nasdaq100', stage['summary']['error'])
+            if stage['status'] == 'error':
+                summary['errors'].append(f"screen: {stage['summary']['error']}")
+            pool = pool_module.with_screen(pool, stage['members'])
             with _tx() as conn:
-                summary['earnings'][ticker] = repository.store_earnings(conn, ticker, row, now=now)['status']
-        except Unavailable:
-            raise
-        except Exception as exc:  # 采集失败不写库，也不冒充无财报
-            summary['earnings'][ticker] = f'error: {exc}'
-            summary['errors'].append(f'{ticker} earnings: {exc}')
-            summary['sources']['earnings'].append(ticker)
-        if problems:
-            entry['error'] = '; '.join(problems)
-            summary['errors'].extend(f'{ticker} {p}' for p in problems)
-        summary['tickers'][ticker] = entry
+                tier_changes = _sync_pool(conn, pool, session, now)
+            # A held screen member is in the pool now; run it once, not again as an off-pool holding.
+            held = [t for t in held if t not in pool.tickers]
+            summary['pool'] = {**summary['pool'], 'extended': len(pool.extended), 'holdings': len(held),
+                               'screen': len(stage['members']), 'changes': tier_changes}
+        all_tickers = [*pool.tickers, *held]
+        if not pool.core:
+            summary['errors'].append('core_empty')
 
-    try:
-        summary['filings'] = collect.sec_listing(all_tickers, session=session, now=now, deps=deps)
-    except Unavailable:
-        raise
-    except Exception as exc:
-        summary['filings'] = {'error': str(exc)}
-        summary['errors'].append(f'SEC listings: {exc}')
-        summary['sources']['sec'] = ['all']
+        for ticker in all_tickers:
+            entry: dict[str, Any] = {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [], 'skips': [],
+                                     'error': None}
+            problems = []
+            try:
+                if ticker in (stage['fetched'] if stage is not None else ()):
+                    entry['bars'] = 'collected_in_screen'   # news and earnings still collect below
+                else:
+                    out = collect.bars_one(ticker, session=session, now=now, deps=deps,
+                                           lookback_days=HISTORY_DAYS)
+                    if tallies is not None:
+                        tallies['bars'].ok(ticker)
+                    entry['bars'] = out['counts']
+                    entry['skipped_bars'] = [d.isoformat() for d in out['skipped']]
+            except Unavailable:
+                raise
+            except Exception as exc:
+                if tallies is not None:
+                    tallies['bars'].fail(ticker, exc)
+                problems.append(f'bars: {exc}')
+                summary['sources']['bars'].append(ticker)
+            try:
+                entry['news'] = collect.news_one(ticker, now=now, deps=deps)
+                if tallies is not None:
+                    tallies['news'].ok(ticker)
+            except Unavailable:
+                raise
+            except Exception as exc:
+                if tallies is not None:
+                    tallies['news'].fail(ticker, exc)
+                problems.append(f'news: {exc}')
+                summary['sources']['news'].append(ticker)
+            try:
+                row = earnings.fetch_next(ticker, fetcher=deps.earnings_fetcher, today=ny_date)
+                with _tx() as conn:
+                    summary['earnings'][ticker] = repository.store_earnings(conn, ticker, row, now=now)['status']
+            except Unavailable:
+                raise
+            except Exception as exc:  # 采集失败不写库，也不冒充无财报
+                summary['earnings'][ticker] = f'error: {exc}'
+                summary['errors'].append(f'{ticker} earnings: {exc}')
+                summary['sources']['earnings'].append(ticker)
+            if problems:
+                entry['error'] = '; '.join(problems)
+                summary['errors'].extend(f'{ticker} {p}' for p in problems)
+            summary['tickers'][ticker] = entry
 
-    # FRED: no key means not_configured, no request, no rows.
-    api_key = os.environ.get('FRED_API_KEY')
-    for series_id in macro_module.MACRO_SERIES:
         try:
-            summary['macro'][series_id] = collect.fred_series(series_id, session=session, now=now,
-                                                              deps=deps, api_key=api_key)
+            summary['filings'] = collect.sec_listing(all_tickers, session=session, now=now, deps=deps)
+            if tallies is not None:   # whole-call success: every ticker ok, none counted on failure
+                for ticker in all_tickers:
+                    tallies['sec_filings'].ok(ticker)
         except Unavailable:
             raise
         except Exception as exc:
-            summary['macro'][series_id] = f'error: {exc}'
-            summary['sources']['fred'].append(series_id)
-            summary['errors'].append(f'{series_id} fred: {exc}')
-    summary['timings']['collect'] = round(clock() - t_collect, 1)
+            summary['filings'] = {'error': str(exc)}
+            summary['errors'].append(f'SEC listings: {exc}')
+            summary['sources']['sec'] = ['all']
+            if tallies is not None:
+                tallies['sec_filings'].fail('*', exc)
+
+        # FRED: no key means not_configured, no request, no rows.
+        api_key = os.environ.get('FRED_API_KEY')
+        if tallies is not None and not api_key:
+            tallies['fred'].skip('FRED_API_KEY 未配置')
+        for series_id in macro_module.MACRO_SERIES:
+            try:
+                summary['macro'][series_id] = collect.fred_series(series_id, session=session, now=now,
+                                                                  deps=deps, api_key=api_key)
+                if tallies is not None and api_key:
+                    tallies['fred'].ok(series_id)
+            except Unavailable:
+                raise
+            except Exception as exc:
+                if tallies is not None:
+                    tallies['fred'].fail(series_id, exc)
+                summary['macro'][series_id] = f'error: {exc}'
+                summary['sources']['fred'].append(series_id)
+                summary['errors'].append(f'{series_id} fred: {exc}')
+        summary['timings']['collect'] = round(clock() - t_collect, 1)
+
+    if tallies is not None:
+        # Before the regime stage (§6.2). run_id stays NULL: the harness run id never
+        # reaches run_batch, so job + started_at locate the run report.
+        summary['data_status'] = collect.write_runs(
+            [tally.row(trigger=record_trigger, run_id=None, session=session, started_at=now,
+                       finished_at=now) for tally in tallies.values()])
 
     # Market context sits between collection and rules; pool bars exclude off-pool holdings.
     t_regime = clock()

@@ -1272,3 +1272,110 @@ def test_weekly_snapshot_has_tracks(db, scripted_model):
     assert stats['tracks']['summary']['all']['actual']['units'] == 2
     assert all('ticker' in row and row['rule'] and row['agent'] and row['actual']
                for row in stats['tracks']['units'])
+
+
+# ------------------------------------------------- fetch-run recording (v2.3 Task 5)
+
+def _universe_deps(sources, members):
+    """Deps over Sources plus a synthetic range, so the screen stage fetches the members."""
+    from investment_assistant.workbench import universe as universe_module
+    d = deps(sources)
+    d.universe = universe_module.Universe('test', SESSION, 'test', tuple(members))
+    return d
+
+
+def test_batch_records_five_families(db):
+    from investment_assistant.workbench import families
+    seed_watchlist(db, [('NVDA', ['core'])])
+    summary = service.run_batch(now=NOW, deps=_universe_deps(Sources(fail={'MU'}), ['MU']),
+                                record_trigger='scheduled')
+    rows = db.execute('SELECT family, job, trigger, run_id, scope, session, status, failures '
+                      'FROM data_fetch_runs ORDER BY family').fetchall()
+    assert len(rows) == 5
+    by_family = {row[0]: row for row in rows}
+    assert set(by_family) == set(families.RECORDED)
+    for row in rows:
+        assert row[1:6] == ('workbench', 'scheduled', None, 'family', SESSION)
+    assert by_family['bars'][6] == 'partial'
+    assert {'target': 'MU', 'reason': 'provider down'} in by_family['bars'][7]
+    assert by_family['fred'][6] == 'skipped'
+    assert by_family['universe'][6] == 'success'
+    assert summary['data_status'] == {'written': 5, 'error': None}
+
+
+def test_rerun_appends_new_status_rows(db):
+    seed_watchlist(db, [('NVDA', ['core'])])
+    d = _universe_deps(Sources(), ['MU'])
+    service.run_batch(now=NOW, deps=d, record_trigger='scheduled')
+    service.run_batch(now=NOW, deps=d, record_trigger='scheduled')
+    assert db.execute('SELECT count(*) FROM data_fetch_runs').fetchone()[0] == 10
+
+
+def test_fred_failure_reason_is_redacted(db, monkeypatch):
+    seed_watchlist(db, [('NVDA', ['core'])])
+    monkeypatch.setenv('FRED_API_KEY', 'k3y')
+
+    def macro_fetcher(url, *, params):
+        raise RuntimeError('bad k3y')
+
+    d = _universe_deps(Sources(), ['MU'])
+    d.macro_fetcher = macro_fetcher
+    service.run_batch(now=NOW, deps=d, record_trigger='scheduled')
+    status, failures = db.execute("SELECT status, failures FROM data_fetch_runs "
+                                  "WHERE family = 'fred'").fetchone()
+    assert status == 'failed'                                  # 两条序列逐只失败
+    assert failures[0]['reason'] == 'bad ***'
+
+
+def test_batch_survives_missing_fetch_runs_table(db):
+    seed_watchlist(db, [('NVDA', ['core'])])
+    d = _universe_deps(Sources(fail={'MU'}), ['MU'])
+    baseline = service.run_batch(now=NOW, deps=d, record_trigger='scheduled')
+    db.execute('DROP TABLE data_fetch_runs')
+    again = service.run_batch(now=NOW, deps=d, record_trigger='scheduled')
+    assert again['errors'] == baseline['errors']               # 记账失败不进 summary['errors']
+    assert again['data_status']['written'] == 0 and again['data_status']['error']
+
+
+def test_no_record_trigger_writes_nothing(db):
+    seed_watchlist(db, [('NVDA', ['core'])])
+    summary = service.run_batch(now=NOW, deps=_universe_deps(Sources(), ['MU']))
+    assert 'data_status' not in summary
+    assert db.execute('SELECT count(*) FROM data_fetch_runs').fetchone()[0] == 0
+
+
+def test_task_run_passes_trigger(db):
+    from investment_assistant.workbench import families
+    seed_watchlist(db, [('NVDA', ['core'])])
+    _task_run('manual')
+    rows = db.execute('SELECT family, trigger FROM data_fetch_runs').fetchall()
+    assert rows and {row[1] for row in rows} == {'manual_batch'}
+    assert {row[0] for row in rows} == set(families.RECORDED)
+
+
+def test_batch_waits_for_family_lock(db):
+    import os
+    import threading
+
+    seed_watchlist(db, [('NVDA', ['core'])])
+    url = os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']
+    schema = db.execute('SHOW search_path').fetchone()[0]      # 与 workbench_db 同一 schema
+    out = {}
+
+    def run():
+        out['summary'] = service.run_batch(now=NOW, deps=_universe_deps(Sources(), ['MU']),
+                                           record_trigger='scheduled')
+
+    with psycopg.connect(url, autocommit=True) as other:
+        other.execute(f'SET search_path TO {schema}')
+        other.execute("SELECT pg_advisory_lock(hashtext('data_family:news'))")
+        try:
+            thread = threading.Thread(target=run)
+            thread.start()
+            thread.join(0.5)
+            assert thread.is_alive()                          # 阻塞等 news 锁，未开始采集
+        finally:
+            other.execute("SELECT pg_advisory_unlock(hashtext('data_family:news'))")
+        thread.join(10)
+        assert not thread.is_alive()
+    assert out['summary']['data_status'] == {'written': 5, 'error': None}

@@ -3,13 +3,20 @@
 Each function owns exactly one fetch -> normalize -> store step and its own
 transaction (``service._tx``), so every caller keeps its try/except and its
 summary writes where they are. Exceptions always propagate unchanged.
+
+The rest of this module is the fetch-run bookkeeping the batch and the manual
+fetch feed (v2.3 §6): the per-family Tally, the append-only write, and the
+per-family advisory locks.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from typing import Any
 
 from investment_assistant.workbench import bars as bars_module
+from investment_assistant.workbench import families
 from investment_assistant.workbench import macro as macro_module
 from investment_assistant.workbench import news as news_module
 from investment_assistant.workbench import repository
@@ -78,3 +85,95 @@ def load_universe(deps: Any):
     if deps.universe_loader is not None:
         return deps.universe_loader()
     return universe_module.load()
+
+
+# ------------------------------------------------------------- fetch-run bookkeeping
+
+class Tally:
+    """Per-target outcome accounting for one family's fetch; ``row`` freezes it into
+    a data_fetch_runs row. The last write per target wins; failure reasons are
+    sanitised on the way in (redacted, truncated)."""
+
+    def __init__(self, family: str, job: str, targets: Iterable[str] = ()):
+        self.family = family
+        self.job = job
+        self.targets: list[str] = list(targets)
+        self.outcomes: dict[str, str | None] = {}   # target -> failure reason; None means ok
+        self.detail: dict[str, Any] = {}
+        self._skipped: str | None = None
+
+    def add_target(self, target: str) -> None:
+        if target not in self.targets:
+            self.targets.append(target)
+
+    def ok(self, target: str) -> None:
+        self.add_target(target)
+        self.outcomes[target] = None
+
+    def fail(self, target: str, reason: str) -> None:
+        self.add_target(target)
+        self.outcomes[target] = families.sanitize_reason(reason)
+
+    def skip(self, reason: str) -> None:
+        self._skipped = families.sanitize_reason(reason)
+        self.detail['reason'] = self._skipped
+
+    def row(self, *, trigger: str, run_id: str | None, session: date, started_at: datetime,
+            finished_at: datetime, scope: str = 'family', ticker: str | None = None) -> dict[str, Any]:
+        ok_count = sum(1 for target in self.targets
+                       if target in self.outcomes and self.outcomes[target] is None)
+        failures = sorted(({'target': target, 'reason': reason}
+                           for target, reason in self.outcomes.items() if reason is not None),
+                          key=lambda failure: failure['target'])
+        return {'family': self.family, 'job': self.job, 'trigger': trigger, 'run_id': run_id,
+                'scope': scope, 'ticker': ticker, 'session': session,
+                'status': families.classify(len(self.targets), ok_count, skipped_reason=self._skipped),
+                'target_count': len(self.targets), 'ok_count': ok_count,
+                'failures': failures, 'detail': self.detail,
+                'started_at': started_at, 'finished_at': finished_at}
+
+
+def write_runs(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Append every row in one transaction. A failure (including migration 024 not
+    run) is reported, never raised: ``{'written': n, 'error': None}`` or
+    ``{'written': 0, 'error': '...'}`` (design §6.2)."""
+    from investment_assistant.workbench import service as service_module
+
+    try:
+        with service_module._tx() as conn:
+            for row in rows:
+                repository.insert_fetch_run(conn, row)
+        return {'written': len(rows), 'error': None}
+    except Exception as exc:
+        return {'written': 0, 'error': families.sanitize_reason(exc)}
+
+
+def _lock_key(family_id: str) -> str:
+    return f'data_family:{family_id}'
+
+
+def try_family_lock(conn, family_id: str) -> bool:
+    """Take the family's session lock without waiting; the caller owns connection and unlock."""
+    return bool(conn.execute('SELECT pg_try_advisory_lock(hashtext(%s))',
+                             (_lock_key(family_id),)).fetchone()[0])
+
+
+def unlock_family(conn, family_id: str) -> None:
+    conn.execute('SELECT pg_advisory_unlock(hashtext(%s))', (_lock_key(family_id),))
+
+
+@contextmanager
+def family_locks(family_ids: Sequence[str]):
+    """Hold every family's session lock on one dedicated connection, taken and released
+    in the given order (design §6.4). Session-level, so the locks survive the commit and
+    die with the connection; a blocked acquire waits instead of failing."""
+    from investment_assistant.workbench import service as service_module
+
+    with service_module.connection() as conn:
+        for family_id in family_ids:
+            conn.execute('SELECT pg_advisory_lock(hashtext(%s))', (_lock_key(family_id),))
+        try:
+            yield conn
+        finally:
+            for family_id in family_ids:
+                conn.execute('SELECT pg_advisory_unlock(hashtext(%s))', (_lock_key(family_id),))

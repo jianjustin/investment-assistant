@@ -16,7 +16,9 @@ def run(config: AssistantConfig | None = None, *, trigger_source: str = 'schedul
     def batch() -> dict:
         # The batch reads its tiered pool from the watchlist table; the config watchlist stays for other tasks.
         summary = service.run_batch(now=moment, deps=deps,
-                                    skip_non_trading=trigger_source == 'scheduled')
+                                    skip_non_trading=trigger_source == 'scheduled',
+                                    record_trigger='scheduled' if trigger_source == 'scheduled'
+                                    else 'manual_batch')
         if trigger_source != 'scheduled':
             return summary  # 手动运行不推送
         from investment_assistant.services.settings import effective_notify_config
