@@ -15,14 +15,19 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def submit(kind: str, fn: Callable[[], dict[str, Any]]) -> str:
+def submit(kind: str, fn: Callable[..., dict[str, Any]], *, with_run_id: bool = False) -> str:
+    """Queue fn in the background and return its run_id.
+
+    with_run_id=True calls fn(run_id) with the returned run_id (v2.3 §7: the manual
+    fetch records its data_fetch_runs row under the same id); otherwise fn().
+    """
     run_id = f"{kind}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
     with _LOCK:
         _RUNS[run_id] = {"run_id": run_id, "kind": kind, "status": "pending", "created_at": _now()}
 
     def _worker() -> None:
         try:
-            result = fn()
+            result = fn(run_id) if with_run_id else fn()
             update: dict[str, Any] = {"status": "done", "result": result, "finished_at": _now()}
         except Exception as exc:  # structured record, not swallowed
             update = {"status": "error", "error": str(exc), "finished_at": _now()}

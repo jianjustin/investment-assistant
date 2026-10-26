@@ -26,3 +26,13 @@ def test_failure_recorded_structured():
 
 def test_get_unknown_returns_none():
     assert runner.get("nope") is None
+
+
+def test_submit_passes_run_id():
+    seen = []
+    rid = runner.submit("demo", lambda run_id: seen.append(run_id) or {"value": 1}, with_run_id=True)
+    for _ in range(50):
+        if seen:
+            break
+        time.sleep(0.02)
+    assert seen == [rid]
