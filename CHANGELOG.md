@@ -20,7 +20,7 @@
 ### 实现偏差与关联限制
 
 - **批处理记录的 `run_id` 为空**：采集阶段写记录时未接到任务 harness 的 `run_id`，目前只能用 `job` + `started_at` 对应运行报告；`filings` 在任务返回后记账，能保留任务的 `run_id`。
-- **单族手动拉取使用 runner 的 `run_id`**：记录关联 `tasks/runner` 的运行，而非 `job_reports.run_id`；它本就不写 `job_reports`，从族详情的运行记录入口或 `GET /api/runs/{run_id}` 查看。此关联方式是 spec §5.1 允许的另一种来源，不表示生成了任务报告。
+- **单族手动拉取使用 runner 的 `run_id`**：记录关联 `tasks/runner` 的运行，而非 `job_reports.run_id`；它本就不写 `job_reports`，结果经「数据」页轮询就地展示，或用 `GET /api/runs/{run_id}`（进程内）查询——「工具 → 运行记录」不显示它。此关联方式是 spec §5.1 允许的另一种来源，不表示生成了任务报告。
 
 ### 迁移与验收
 

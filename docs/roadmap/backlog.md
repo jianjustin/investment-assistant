@@ -68,3 +68,5 @@ v2 各阶段都是 `engineering_done`、`user_acceptance_pending`（详见 [v2 �
 | 财报日（`earnings_dates`）、`us_research` 财季数据单独成族 | 需要时 |
 | 卡片上的调度开关、按族的独立调度 | 不做（调度开关沿用任务中心） |
 | 手动拉取的命令行入口 | 需要时 |
+| 与 #投研-工作（Team B）衔接 | Team B 侧就绪时 |
+| 验证 / 回测专项 | 数据底座与覆盖证据积累后 |
