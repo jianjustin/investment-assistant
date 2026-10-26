@@ -51,8 +51,8 @@ class BatchSources(Sources):
     Range tickers get the screening-style series; SPY, the ETFs and the manual
     pool get test_workbench_service's default frame."""
 
-    def __init__(self):
-        super().__init__(fail={'SMH', 'BBB'}, fail_news={'AAA'})
+    def __init__(self, fail={'SMH', 'BBB'}, fail_news={'AAA'}):
+        super().__init__(fail=fail, fail_news=fail_news)
 
     def bars(self, ticker, start, end_exclusive):
         if ticker not in UNIVERSE:
@@ -71,8 +71,8 @@ class BatchSources(Sources):
         raise RuntimeError('edgar down')
 
 
-def batch_deps():
-    d = deps(BatchSources())
+def batch_deps(fail={'SMH', 'BBB'}, fail_news={'AAA'}):
+    d = deps(BatchSources(fail=fail, fail_news=fail_news))
     d.universe = universe_module.Universe('test', SESSION, 'test', UNIVERSE)
     return d
 
@@ -175,3 +175,33 @@ def test_characterization_watchlist_and_screen(db):
 def test_characterization_explicit_tickers(db):
     actual = _reduced(service.run_batch(tickers=['NVDA'], now=NOW, deps=batch_deps()))
     assert actual == EXPLICIT_EXPECTED
+
+
+def test_characterization_spy_failure(db):
+    """spec §6.1 guardrail the original capture skipped (M05): SPY's own bars
+    failing. The benchmark error must land in summary and the fetch-run row —
+    the denominator stays the real target set, '*' never appears. The screen's
+    benchmark is QQQ, so screening itself still succeeds here."""
+    seed_watchlist(db, [('AAA', ['core']), ('BBB', []), ('CCC', [])])
+    summary = service.run_batch(now=NOW, deps=batch_deps(fail={'SPY', 'SMH', 'BBB'}),
+                                record_trigger='scheduled')
+    assert {k: summary[k] for k in ('benchmark', 'etfs', 'sources', 'errors')} == {
+        'benchmark': {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [],
+                      'skips': [], 'error': 'bars: provider down'},
+        'etfs': {'QQQ': 'inserted 300', 'SMH': 'error: provider down', 'XLK': 'inserted 300'},
+        'sources': {'bars': ['SPY', 'BBB'], 'news': ['AAA'], 'earnings': [], 'sec': ['all'],
+                    'etf_bars': ['SMH'], 'fred': [], 'regime': [], 'agent': []},
+        'errors': ['SPY bars: provider down', 'SMH etf_bars: provider down',
+                   'AAA news: news down', 'BBB bars: provider down',
+                   'SEC listings: edgar down'],
+    }
+    # 4 (SPY/ETFs) + 29 screen-collected range tickers + 3 manual-pool tickers;
+    # SPY, SMH, BBB failed and nothing else.
+    row = db.execute("SELECT status, target_count, ok_count, failures FROM data_fetch_runs "
+                     "WHERE family = 'bars' ORDER BY id DESC LIMIT 1").fetchone()
+    assert row == ('partial', 36, 33, [{'target': 'BBB', 'reason': 'provider down'},
+                                       {'target': 'SMH', 'reason': 'provider down'},
+                                       {'target': 'SPY', 'reason': 'provider down'}])
+    sec = db.execute("SELECT status, target_count, failures FROM data_fetch_runs "
+                     "WHERE family = 'sec_filings' ORDER BY id DESC LIMIT 1").fetchone()
+    assert sec == ('failed', 23, [{'target': '*', 'reason': 'edgar down'}])   # 3 池 + 20 成员；哨兵无 N+1

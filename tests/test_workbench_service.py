@@ -1387,3 +1387,77 @@ def test_batch_waits_for_family_lock(db):
         thread.join(10)
         assert not thread.is_alive()
     assert out['summary']['data_status'] == {'written': 5, 'error': None}
+
+
+def test_batch_sec_whole_failure_keeps_real_denominator(db):
+    """SEC 列表整调用失败：'*' 是哨兵不是目标，分母固定为本次真实目标（I04）。"""
+    seed_watchlist(db, [('NVDA', ['core'])])
+
+    class SecDown(Sources):
+        def bars(self, ticker, start, end_exclusive):
+            frame = super().bars(ticker, start, end_exclusive)
+            if ticker == 'MU':   # 默认序列成交量过低会被 screen-1 判 illiquid，先保证入池
+                frame = frame.copy()
+                frame['Volume'] = 1_000_000
+            return frame
+
+        def discover(self, tickers, start, end):
+            raise RuntimeError('edgar down')
+
+    service.run_batch(now=NOW, deps=_universe_deps(SecDown(), ['MU']), record_trigger='scheduled')
+    row = db.execute("SELECT status, target_count, ok_count, failures, detail "
+                     "FROM data_fetch_runs WHERE family = 'sec_filings'").fetchone()
+    real_targets = {'NVDA', 'MU'}                               # 该次列表调用覆盖的 all_tickers
+    assert row[0] == 'failed'
+    assert row[1] == len(real_targets) and row[2] == 0          # 不多不少，没有 N+1
+    assert row[3] == [{'target': '*', 'reason': 'edgar down'}]
+    assert row[4]['failed_targets'] == sorted(real_targets)
+
+
+def test_batch_rows_use_real_wall_clock(db):
+    """拉取行时间戳用注入的真实墙钟，不再等于批处理 cutoff now（I07）。"""
+    seed_watchlist(db, [('NVDA', ['core'])])
+    tick = iter([datetime(2026, 10, 22, 21, 0, tzinfo=UTC),
+                 datetime(2026, 10, 22, 21, 9, tzinfo=UTC)])   # 采集阶段耗时 9 分钟
+    service.run_batch(now=NOW, deps=_universe_deps(Sources(), ['MU']), record_trigger='scheduled',
+                      wall_now=lambda: next(tick))
+    started, finished = db.execute(
+        'SELECT DISTINCT started_at, finished_at FROM data_fetch_runs').fetchone()
+    assert started == datetime(2026, 10, 22, 21, 0, tzinfo=UTC)
+    assert finished == datetime(2026, 10, 22, 21, 9, tzinfo=UTC)
+
+
+def test_screen_degradation_keeps_fetch_reasons_and_denominator(db):
+    """QQQ 基准缺失导致筛选降级时，范围标的 MU 的采集失败仍进 bars 记账（I09）：
+    非池成员不会再被逐股重试，丢在这里就永远丢了。"""
+    seed_watchlist(db, [('NVDA', ['core'])])                    # NVDA 在池里；MU 只在范围
+    service.run_batch(now=NOW, deps=_universe_deps(Sources(fail={'QQQ', 'MU'}), ['MU']),
+                      record_trigger='scheduled')
+    row = db.execute("SELECT r.status, r.failures, r.target_count, r.ok_count, "
+                     "s.summary->>'error' FROM data_fetch_runs r, screen_runs s "
+                     "WHERE r.family = 'bars' ORDER BY r.id DESC LIMIT 1").fetchone()
+    assert row[4] == 'benchmark_missing'
+    by_target = {f['target']: f['reason'] for f in row[1]}
+    assert by_target.get('MU') == 'provider down'               # 降级不丢失败原因
+    assert by_target.get('QQQ') == 'provider down'
+    assert row[0] == 'partial'
+    assert row[3] == row[2] - 2                                 # 分母含 MU，只有 QQQ+MU 失败
+
+
+def test_manual_targets_exclude_closed_positions_but_batch_keeps_them(db):
+    """已知兼容偏差（M01）：手动目标=观察池∪未平仓持仓；旧批处理循环仍采集已清仓
+    历史持仓。此测试钉住该偏差，防止被误称为与批处理完全一致。"""
+    from investment_assistant.workbench import families
+    seed_watchlist(db, [('AMD', ['core'])])
+    for offset, side in ((10, 'buy'), (9, 'sell')):
+        db.execute('INSERT INTO trades (request_id, request_hash, ticker, side, quantity, price, '
+                   'executed_at) VALUES (%s, %s, %s, %s, 10, 100, %s)',
+                   [uuid.uuid4(), f'flat-{side}', 'FLAT', side, NOW - timedelta(days=offset)])
+    db.commit()
+
+    manual, _ = families.targets(db, 'news')
+    assert manual == ['AMD']                                   # FLAT 已清仓：手动目标不含
+    service.run_batch(now=NOW, deps=_universe_deps(Sources(), []), record_trigger='scheduled')
+    target_count = db.execute("SELECT target_count FROM data_fetch_runs "
+                              "WHERE family = 'news' ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert target_count == 2                                   # 批处理仍采集 AMD + FLAT（旧行为）

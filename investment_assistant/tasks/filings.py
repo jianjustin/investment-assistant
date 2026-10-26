@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from investment_assistant.config import AssistantConfig, load_config
@@ -30,43 +32,101 @@ def _core(
     }
 
 
+def _monitor_targets(config: AssistantConfig) -> tuple[list[str], str | None]:
+    """The monitor's actual collection list: the watchlist file's 采集=是 rows.
+
+    Returns (targets, error): the error is kept in detail when even the list
+    cannot be read, so a failure's denominator is honestly unknown, never the
+    config.watchlist (I03)."""
+    from investment_assistant.filings.monitor_source import read_watchlist
+
+    try:
+        return read_watchlist(Path(config.sec_monitor.watchlist_path)), None
+    except Exception as exc:
+        return [], str(exc)
+
+
 def _record_fetch_run(result: dict[str, Any], *, config: AssistantConfig,
                       trigger_source: str, started_at: datetime) -> dict[str, Any]:
     """Append this run's one sec_filings row to data_fetch_runs (v2.3 §6.3).
 
-    Targets are this task's own config.watchlist, not the batch's pool. A write
-    failure is only reported (the return value), never changes the task result."""
-    from investment_assistant.workbench import collect
+    Targets are what this run actually collected (I03): the monitor reads its own
+    watchlist file (summary.tickers on success, the file itself on failure); the
+    downloader keeps config.watchlist. In the result protocol (I02): a per-ticker
+    error fails that ticker; 'collection' is the whole-call failure sentinel '*'
+    (no target is counted ok, '*' is not a target); non-ticker keys such as
+    'delivery' are not fabricated targets and land in detail.non_target_errors.
+    A write failure never changes the task result, and is printed to stderr as the
+    searchable trail for the scheduled path, where the returned data_status is
+    dropped (I08)."""
+    from investment_assistant.workbench import collect, families
 
     summary = result.get("summary") or {}
-    tally = collect.Tally("sec_filings", "filings", targets=config.watchlist)
+    trigger = "scheduled" if trigger_source == "scheduled" else "manual_batch"
+    if config.sec_monitor.enabled:
+        targets_source = "sec_monitor.watchlist_path"
+        tickers = summary.get("tickers")
+        if not isinstance(tickers, list) or not tickers:
+            tickers, targets_error = _monitor_targets(config)
+        else:
+            targets_error = None
+        mode = "monitor"
+    else:
+        targets_source = "config.watchlist"
+        tickers, targets_error, mode = list(config.watchlist), None, "downloader"
+
+    tally = collect.Tally("sec_filings", "filings", tickers)
+    tally.detail = {"targets_source": targets_source, "mode": mode}
+    if targets_error is not None:
+        tally.detail["targets_error"] = families.sanitize_reason(targets_error)
     errors = summary.get("errors")
+    call_failed = False
+    non_target_errors: dict[str, str] = {}
     if isinstance(errors, dict):
-        for ticker, reason in errors.items():
-            tally.fail(ticker, reason)
-        for ticker in config.watchlist:
-            if ticker not in errors:
-                tally.ok(ticker)
+        target_set = {t for t in tickers if isinstance(t, str)}
+        for key, reason in errors.items():
+            if key in target_set:
+                tally.fail(key, reason)
+            elif key == "collection":
+                tally.fail("*", reason)   # whole call down: no target completed collection
+                call_failed = True
+            else:   # e.g. 'delivery': a real problem, but not a collection target
+                non_target_errors[key] = families.sanitize_reason(reason)
+        if not call_failed:
+            for ticker in tickers:
+                if ticker not in tally.outcomes:
+                    tally.ok(ticker)
     elif isinstance(errors, list):
         for item in errors:
             if isinstance(item, dict):
-                tally.fail(item.get("ticker", "*"), item.get("error", item))
+                ticker = item.get("ticker")
+                if isinstance(ticker, str) and ticker in set(tickers):
+                    tally.fail(ticker, item.get("error", item))
+                else:
+                    tally.fail("*", item.get("error", item))
+                    call_failed = True
             else:
                 tally.fail("*", item)
-        for ticker in config.watchlist:
-            if ticker not in tally.outcomes:
-                tally.ok(ticker)
+                call_failed = True
+        if not call_failed:
+            for ticker in tickers:
+                if ticker not in tally.outcomes:
+                    tally.ok(ticker)
     elif summary.get("error"):
-        tally.fail("*", summary["error"])  # 整次失败：没有任何目标成功
+        tally.fail("*", summary["error"])   # 整次失败：没有任何目标成功
     else:
-        for ticker in config.watchlist:
+        for ticker in tickers:
             tally.ok(ticker)
-    tally.detail = {"targets_source": "config.watchlist",
-                    "mode": "monitor" if config.sec_monitor.enabled else "downloader"}
-    return collect.write_runs([tally.row(
-        trigger="scheduled" if trigger_source == "scheduled" else "manual_batch",
+    if non_target_errors:
+        tally.detail["non_target_errors"] = non_target_errors
+    data_status = collect.write_runs([tally.row(
+        trigger=trigger,
         run_id=result.get("run_id"), session=None,
         started_at=started_at, finished_at=datetime.now(UTC))])
+    if data_status.get("error"):
+        print(f"[data_fetch_runs] write failed family=sec_filings job=filings trigger={trigger} "
+              f"error={data_status['error']}", file=sys.stderr)
+    return data_status
 
 
 def run(

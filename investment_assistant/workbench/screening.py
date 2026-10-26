@@ -111,10 +111,14 @@ def run_stage(*, session: date, now: datetime, manual: pool_module.Pool, held: l
                                'flags': [], 'error': None, 'timing': 0.0}
     universe_: universe_module.Universe | None = None
     fetched: set[str] = set()
+    fetch_failures: list[str] = []
+    fetch_reasons: dict[str, str] = {}
 
     def fail(error: str) -> dict[str, Any]:
         """Carry the locked and retention-window members, nothing new. A loaded universe
-        still goes back for the regime breadth: only an unreadable one falls back."""
+        still goes back for the regime breadth: only an unreadable one falls back.
+        The collection outcomes collected so far survive the degraded return (I09):
+        the batch still accounts every attempted ticker, not just screen.evaluate's."""
         summary['status'] = 'error'
         summary['error'] = error
         _stamp(summary, clock)
@@ -129,7 +133,8 @@ def run_stage(*, session: date, now: datetime, manual: pool_module.Pool, held: l
         _persist(conn_factory, session=session, now=now, run_id=run_id, universe_=universe_,
                  status='error', summary=summary, results=[])
         return {'status': 'error', 'members': members, 'fetched': fetched, 'universe': universe_,
-                'fetch_failures': [], 'fetch_reasons': {}, 'summary': summary}
+                'fetch_failures': fetch_failures, 'fetch_reasons': fetch_reasons,
+                'summary': summary}
 
     try:
         universe_ = collect.load_universe(deps)

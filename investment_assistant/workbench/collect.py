@@ -10,9 +10,9 @@ per-family advisory locks.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from investment_assistant.workbench import bars as bars_module
@@ -89,21 +89,39 @@ def load_universe(deps: Any):
 
 # ------------------------------------------------------------- fetch-run bookkeeping
 
+def wall_clock() -> datetime:
+    """Real wall time for data_fetch_runs timestamps; injected in tests (I07)."""
+    return datetime.now(UTC)
+
+
 class Tally:
     """Per-target outcome accounting for one family's fetch; ``row`` freezes it into
     a data_fetch_runs row. The last write per target wins; failure reasons are
-    sanitised on the way in (redacted, truncated)."""
+    sanitised on the way in (redacted, truncated).
+
+    ``'*'`` is the whole-call failure sentinel, never a target: it does not enter
+    ``targets`` or the denominator. The denominator is the real target set —
+    frozen upfront with ``set_targets`` (what the call was about to collect) or
+    built per target by ``ok``/``fail``. A call failure with zero targets is
+    ``failed``, never a 0==0 ``success``."""
 
     def __init__(self, family: str, job: str, targets: Iterable[str] = ()):
         self.family = family
         self.job = job
-        self.targets: list[str] = list(targets)
+        self.targets: list[str] = []
         self.outcomes: dict[str, str | None] = {}   # target -> failure reason; None means ok
         self.detail: dict[str, Any] = {}
         self._skipped: str | None = None
+        self._call_failure: str | None = None
+        self.set_targets(targets)
+
+    def set_targets(self, targets: Iterable[str]) -> None:
+        """Freeze the call's real target set (the denominator) before collecting."""
+        for target in targets:
+            self.add_target(target)
 
     def add_target(self, target: str) -> None:
-        if target not in self.targets:
+        if target != '*' and target not in self.targets:
             self.targets.append(target)
 
     def ok(self, target: str) -> None:
@@ -111,6 +129,9 @@ class Tally:
         self.outcomes[target] = None
 
     def fail(self, target: str, reason: str) -> None:
+        if target == '*':
+            self._call_failure = families.sanitize_reason(reason)
+            return
         self.add_target(target)
         self.outcomes[target] = families.sanitize_reason(reason)
 
@@ -125,11 +146,19 @@ class Tally:
         failures = sorted(({'target': target, 'reason': reason}
                            for target, reason in self.outcomes.items() if reason is not None),
                           key=lambda failure: failure['target'])
+        detail = dict(self.detail)
+        if self._call_failure is not None:
+            failures.append({'target': '*', 'reason': self._call_failure})
+            # I05: a family-scoped '*' failure applies to this call's own targets only.
+            detail['failed_targets'] = sorted(self.targets)
+        status = ('skipped' if self._skipped else
+                  'failed' if self._call_failure is not None and ok_count == 0 else
+                  families.classify(len(self.targets), ok_count))
         return {'family': self.family, 'job': self.job, 'trigger': trigger, 'run_id': run_id,
                 'scope': scope, 'ticker': ticker, 'session': session,
-                'status': families.classify(len(self.targets), ok_count, skipped_reason=self._skipped),
+                'status': status,
                 'target_count': len(self.targets), 'ok_count': ok_count,
-                'failures': failures, 'detail': self.detail,
+                'failures': failures, 'detail': detail,
                 'started_at': started_at, 'finished_at': finished_at}
 
 
@@ -158,22 +187,76 @@ def try_family_lock(conn, family_id: str) -> bool:
                              (_lock_key(family_id),)).fetchone()[0])
 
 
-def unlock_family(conn, family_id: str) -> None:
-    conn.execute('SELECT pg_advisory_unlock(hashtext(%s))', (_lock_key(family_id),))
+def unlock_family(conn, family_id: str) -> bool:
+    """Release the family's session lock; False when this session did not hold it."""
+    return bool(conn.execute('SELECT pg_advisory_unlock(hashtext(%s))',
+                             (_lock_key(family_id),)).fetchone()[0])
+
+
+def discard_connection(conn) -> None:
+    """Physically close a pooled connection; the pool replaces it and every
+    session-level advisory lock on it dies with the session (I01)."""
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def _session_ready(conn) -> bool:
+    """True when a statement can run on this session: idle, or rolled back out of
+    an aborted transaction (session advisory locks survive the rollback)."""
+    from psycopg.pq import TransactionStatus
+
+    try:
+        if conn.info.transaction_status == TransactionStatus.IDLE:
+            return True
+        conn.rollback()
+        return conn.info.transaction_status == TransactionStatus.IDLE
+    except Exception:
+        return False
+
+
+def release_family(conn, family_id: str) -> None:
+    """Release one family lock without ever raising. When the session cannot be
+    proved clean (aborted beyond rollback, unlock refused) the connection is
+    physically discarded instead of returned to the pool: a session still holding
+    an advisory lock must never go back (I01)."""
+    try:
+        if _session_ready(conn) and unlock_family(conn, family_id):
+            return
+    except Exception:
+        pass
+    discard_connection(conn)
 
 
 @contextmanager
 def family_locks(family_ids: Sequence[str]):
     """Hold every family's session lock on one dedicated connection, taken and released
     in the given order (design §6.4). Session-level, so the locks survive the commit and
-    die with the connection; a blocked acquire waits instead of failing."""
+    die with the connection; a blocked acquire waits instead of failing.
+
+    Cleanup is protected from the first acquire on: every lock taken is tracked,
+    releasing one never stops the next, an aborted transaction is rolled back
+    first, and a session that cannot be proved clean is physically closed so its
+    locks die with it — never returned to the pool still holding one (I01)."""
     from investment_assistant.workbench import service as service_module
 
     with service_module.connection() as conn:
-        for family_id in family_ids:
-            conn.execute('SELECT pg_advisory_lock(hashtext(%s))', (_lock_key(family_id),))
+        acquired: list[str] = []
+        clean = True
         try:
-            yield conn
-        finally:
             for family_id in family_ids:
-                conn.execute('SELECT pg_advisory_unlock(hashtext(%s))', (_lock_key(family_id),))
+                try:
+                    conn.execute('SELECT pg_advisory_lock(hashtext(%s))', (_lock_key(family_id),))
+                except Exception:
+                    clean = False   # earlier locks may be held and the session may be aborted
+                    raise
+                acquired.append(family_id)
+            try:
+                yield conn
+            finally:
+                for family_id in reversed(acquired):
+                    release_family(conn, family_id)   # never raises; discards when unsure
+        finally:
+            if not clean:
+                discard_connection(conn)

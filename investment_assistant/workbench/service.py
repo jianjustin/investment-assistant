@@ -230,7 +230,8 @@ def _breadth_tickers(manual: pool_module.Pool, universe_: Any) -> tuple[list[str
 def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_module.Pool | None = None,
               deps: Deps | None = None, skip_non_trading: bool = False, run_id: str | None = None,
               breadth_tickers: list[str] | None = None,
-              record_trigger: str | None = None) -> dict[str, Any]:
+              record_trigger: str | None = None,
+              wall_now: Callable[[], datetime] | None = None) -> dict[str, Any]:
     """Collect -> market context -> rules -> units -> briefs for the latest settled session. Idempotent per session.
 
     The batch runs over the tiered watch pool read from the watchlist (holdings
@@ -240,6 +241,9 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
     ``record_trigger`` set ('scheduled' / 'manual_batch') holds the per-family
     advisory locks for the collection stage and appends one data_fetch_runs row
     per recorded family afterwards; None keeps the batch exactly as before (v2.3 §6.2).
+    ``wall_now`` (default real wall clock, I07) timestamps those rows' start and
+    finish; ``now`` keeps its old meaning as trading session, data fetched_at and
+    every computation cutoff.
     """
     deps = deps or Deps()
     clock = deps.clock or _time_module.monotonic
@@ -281,6 +285,11 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         tallies['universe'] = collect.Tally('universe', 'workbench', ('nasdaq100',))
 
     t_collect = clock()
+    # I07: the rows' timestamps are real wall clock (injectable), not the batch's
+    # cutoff ``now``; captured from the moment the collection stage starts.
+    if tallies is not None:
+        wall = wall_now or collect.wall_clock
+        collect_started_at = wall()
     # v2.3 §6.4: one session advisory lock per fetched family over the whole collection
     # stage, on a dedicated connection, acquired in a fixed order (a manual fetch holds
     # a single lock, so no deadlock); universe only reads a file and takes no lock.
@@ -401,9 +410,13 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
                 summary['errors'].extend(f'{ticker} {p}' for p in problems)
             summary['tickers'][ticker] = entry
 
+        # Freeze the denominator before the call: one SEC listing covers every
+        # ticker (I04); a whole-call failure is the '*' sentinel, not an N+1th target.
+        if tallies is not None:
+            tallies['sec_filings'].set_targets(all_tickers)
         try:
             summary['filings'] = collect.sec_listing(all_tickers, session=session, now=now, deps=deps)
-            if tallies is not None:   # whole-call success: every ticker ok, none counted on failure
+            if tallies is not None:
                 for ticker in all_tickers:
                     tallies['sec_filings'].ok(ticker)
         except Unavailable:
@@ -438,9 +451,11 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
     if tallies is not None:
         # Before the regime stage (§6.2). run_id stays NULL: the harness run id never
         # reaches run_batch, so job + started_at locate the run report.
+        collect_finished_at = wall()
         summary['data_status'] = collect.write_runs(
-            [tally.row(trigger=record_trigger, run_id=None, session=session, started_at=now,
-                       finished_at=now) for tally in tallies.values()])
+            [tally.row(trigger=record_trigger, run_id=None, session=session,
+                       started_at=collect_started_at, finished_at=collect_finished_at)
+             for tally in tallies.values()])
 
     # Market context sits between collection and rules; pool bars exclude off-pool holdings.
     t_regime = clock()
