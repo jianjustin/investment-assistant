@@ -239,6 +239,58 @@ describe('DataBrowse 单只拉取结果', () => {
     expect(screen.getByRole('button', { name: '只拉这一只' })).toBeEnabled()
   })
 
+  const outcomes: { name: string; message: string; run?: api.RunRecord }[] = [
+    { name: 'timeout', message: '仍在后台运行，稍后刷新' },
+    { name: 'error', message: '采集服务不可达', run: { run_id: 'one', status: 'error', error: '采集服务不可达' } },
+    { name: 'success', message: '拉取完成', run: { run_id: 'one', status: 'done', result: { status: 'success' } } },
+  ]
+
+  it.each(outcomes)('keeps $name for the same ticker refresh but hides it after switching ticker', async ({ message, run }) => {
+    if (run) vi.mocked(api.pollRun).mockResolvedValue(run)
+    else vi.mocked(api.pollRun).mockRejectedValue(new Error('run timeout'))
+    vi.mocked(api.browseData).mockImplementation(async (id, params) => params?.ticker === 'NVDA'
+      ? { family: id, key: 'NVDA', has_data: false, rows: [] }
+      : bars)
+    const view = mount('bars')
+    await screen.findByText('2026-10-22')
+    await fireEvent.click(screen.getByRole('button', { name: '只拉这一只' }))
+    expect(await screen.findByText(message)).toBeTruthy()
+    await waitFor(() => expect(screen.getByRole('button', { name: '只拉这一只' })).toBeEnabled())
+
+    await view.rerender({ family: family('bars'), targets: ['MU', 'NVDA'] })
+    await screen.findByRole('table', { name: '日线原始值' })
+    expect(screen.getByText(message)).toBeTruthy()
+
+    const input = screen.getByRole('combobox', { name: '标的' })
+    await fireEvent.input(input, { target: { value: 'nvda' } })
+    await fireEvent.submit(input.closest('form')!)
+    await screen.findByText('无数据，可点拉取')
+    expect(input).toHaveValue('NVDA')
+    expect(screen.queryByText(message)).toBeNull()
+    expect(api.fetchDataFamily).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(outcomes)('does not assign a late $name to a different family', async ({ message, run }) => {
+    let finish!: (value: api.RunRecord) => void
+    let reject!: (reason: Error) => void
+    vi.mocked(api.pollRun).mockImplementation(() => new Promise((resolve, fail) => {
+      finish = resolve
+      reject = fail
+    }))
+    const view = mount('bars')
+    await screen.findByText('2026-10-22')
+    await fireEvent.click(screen.getByRole('button', { name: '只拉这一只' }))
+    await waitFor(() => expect(api.pollRun).toHaveBeenCalledTimes(1))
+    await view.rerender({ family: family('news'), targets: ['MU', 'NVDA'] })
+    await waitFor(() => expect(api.browseData).toHaveBeenLastCalledWith('news', { ticker: 'MU' }))
+    if (run) finish(run)
+    else reject(new Error('run timeout'))
+    await waitFor(() => expect(screen.getByRole('button', { name: '只拉这一只' })).toBeEnabled())
+    expect(screen.queryByText(message)).toBeNull()
+    expect(api.fetchDataFamily).toHaveBeenCalledWith('bars', 'MU')
+    expect(api.browseData).toHaveBeenLastCalledWith('news', { ticker: 'MU' })
+  })
+
   it('uses a neutral 15-minute timeout message', async () => {
     vi.mocked(api.pollRun).mockRejectedValue(new Error('run timeout'))
     mount('bars')

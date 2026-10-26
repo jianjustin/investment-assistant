@@ -18,8 +18,10 @@
   let busy = $state(false)
   let fetchError = $state('')
   let fetchNote = $state('')
+  let fetchOrigin = $state<{ family: FamilyCard['id']; ticker: string } | null>(null)
   let generation = 0
   let byTicker = $derived(family.id !== 'fred' && family.id !== 'universe')
+  let showFetchResult = $derived(fetchOrigin?.family === family.id && fetchOrigin?.ticker === ticker)
 
   $effect(() => { if (!ticker && targets.length) ticker = targets[0] })
   $effect(() => { draft = ticker })
@@ -58,13 +60,16 @@
   async function fetchOne() {
     const target = draft.trim().toUpperCase()
     if (busy || !family.per_ticker || !target) return
+    const fetchId = fetchTarget(family)
+    // Keep asynchronous outcomes attached to the family/ticker that started the run.
+    fetchOrigin = { family: family.id, ticker: target }
     ticker = target
     draft = target
     busy = true
     fetchError = ''
     fetchNote = ''
     try {
-      const pending = await api.fetchDataFamily(fetchTarget(family), target)
+      const pending = await api.fetchDataFamily(fetchId, target)
       const run = await api.pollRun(pending.run_id, { timeoutMs: 900_000 })
       const outcome = run.result as {
         status?: string; data_status?: { error?: string | null }
@@ -168,8 +173,10 @@
       </select>
     </label>
   {/if}
-  {#if fetchError}<p class="text-xs text-red-600">{fetchError}</p>{/if}
-  {#if fetchNote}<p class="text-xs text-muted">{fetchNote}</p>{/if}
+  {#if showFetchResult}
+    {#if fetchError}<p class="text-xs text-red-600">{fetchError}</p>{/if}
+    {#if fetchNote}<p class="text-xs text-muted">{fetchNote}</p>{/if}
+  {/if}
   {#if error}
     <p role="alert" class="text-sm text-red-600">{error}</p>
   {:else if loading}
