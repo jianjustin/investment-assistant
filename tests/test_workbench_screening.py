@@ -237,6 +237,31 @@ def test_universe_fetch_failures_are_skips_not_filters(offline):
     assert batch['screen']['counts']['no_setup'] == 0          # they were skipped, not filtered
 
 
+def test_collect_returns_failure_reasons(offline):
+    from investment_assistant.workbench import pool as pool_module
+    from investment_assistant.workbench import screening
+
+    class RateLimitedSources(ScreenSources):
+        def bars(self, ticker, start, end_exclusive):
+            if ticker == 'XXX':
+                raise RuntimeError('rate limited')
+            return super().bars(ticker, start, end_exclusive)
+
+    seed_watchlist(offline)
+    deps = make_deps(RateLimitedSources(),
+                     universe=universe_module.Universe('test', S1, 'test', ('XXX', 'U00')))
+    # run_stage reads the benchmark from the store; outside run_batch nothing collected QQQ yet.
+    from investment_assistant.workbench import collect
+    collect.bars_one('QQQ', session=S1, now=evening(S1), deps=deps,
+                     lookback_days=screening.COLLECT_LOOKBACK_DAYS)
+    stage = screening.run_stage(session=S1, now=evening(S1),
+                                manual=pool_module.Pool(core=('SYNTH',), extended=(), sectors={}),
+                                held=[], deps=deps, run_id=None)
+    assert stage['status'] == 'success'
+    assert stage['fetch_reasons'] == {'XXX': 'rate limited'}
+    assert stage['fetch_failures'] == ['XXX']
+
+
 def test_universe_missing_carries_members(offline):
     seed_watchlist(offline)
     deps = make_deps()

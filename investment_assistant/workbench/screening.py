@@ -7,12 +7,12 @@ retention-window tickers, no new picks, and an error row lands in screen_runs.
 from __future__ import annotations
 
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from investment_assistant.data.calendar import add_trading_days
-from investment_assistant.workbench import bars as bars_module
+from investment_assistant.workbench import collect
 from investment_assistant.workbench import earnings as earnings_module
 from investment_assistant.workbench import pool as pool_module
 from investment_assistant.workbench import repository, screen
@@ -23,16 +23,8 @@ OVER_BUDGET_S = 600
 COLLECT_LOOKBACK_DAYS = 400
 
 
-def _load_universe(deps: Any):
-    if deps.universe is not None:
-        return deps.universe
-    if deps.universe_loader is not None:
-        return deps.universe_loader()
-    return universe_module.load()
-
-
 def _collect(conn_factory, *, session: date, now: datetime, targets: list[str],
-             deps: Any) -> tuple[set[str], list[str]]:
+             deps: Any) -> tuple[set[str], list[str], dict[str, str]]:
     """Collect daily bars and earnings for range tickers outside the manual pool.
 
     Bar failures are skips, never filters: they surface in the batch-level
@@ -40,16 +32,15 @@ def _collect(conn_factory, *, session: date, now: datetime, targets: list[str],
     failures leave the date unknown, which screen-1 only notes."""
     fetched: set[str] = set()
     failures: list[str] = []
+    reasons: dict[str, str] = {}
     for ticker in targets:
         try:
-            frame = bars_module.fetch_history(ticker, session - timedelta(days=COLLECT_LOOKBACK_DAYS),
-                                              session, fetcher=deps.bar_fetcher)
-            rows, _ = bars_module.normalize_history(frame)
-            with conn_factory() as conn:
-                repository.store_bars(conn, ticker, rows, now=now)
+            collect.bars_one(ticker, session=session, now=now, deps=deps,
+                             lookback_days=COLLECT_LOOKBACK_DAYS)
             fetched.add(ticker)
-        except Exception:
+        except Exception as exc:
             failures.append(ticker)
+            reasons[ticker] = str(exc)
             continue
         try:
             row = earnings_module.fetch_next(ticker, fetcher=deps.earnings_fetcher,
@@ -58,7 +49,7 @@ def _collect(conn_factory, *, session: date, now: datetime, targets: list[str],
                 repository.store_earnings(conn, ticker, row, now=now)
         except Exception:
             pass  # the next earnings date stays unknown; screen-1 notes it, never excludes
-    return fetched, failures
+    return fetched, failures, reasons
 
 
 def _pick_members(conn, *, session: date, now: datetime, manual: pool_module.Pool,
@@ -138,16 +129,16 @@ def run_stage(*, session: date, now: datetime, manual: pool_module.Pool, held: l
         _persist(conn_factory, session=session, now=now, run_id=run_id, universe_=universe_,
                  status='error', summary=summary, results=[])
         return {'status': 'error', 'members': members, 'fetched': fetched, 'universe': universe_,
-                'fetch_failures': [], 'summary': summary}
+                'fetch_failures': [], 'fetch_reasons': {}, 'summary': summary}
 
     try:
-        universe_ = _load_universe(deps)
+        universe_ = collect.load_universe(deps)
         if universe_module.is_stale(universe_, session):
             summary['flags'].append('universe_stale')
         targets = [t for t in universe_.tickers
                    if t not in manual.tickers and t != screen.BENCHMARK]
-        fetched, fetch_failures = _collect(conn_factory, session=session, now=now, targets=targets,
-                                          deps=deps)
+        fetched, fetch_failures, fetch_reasons = _collect(conn_factory, session=session, now=now,
+                                                          targets=targets, deps=deps)
         with conn_factory() as conn:
             bars_by_ticker = {t: repository.read_bars(conn, t, session, cutoff_at=now, limit=300)
                               for t in targets}
@@ -173,7 +164,8 @@ def run_stage(*, session: date, now: datetime, manual: pool_module.Pool, held: l
         _persist(conn_factory, session=session, now=now, run_id=run_id, universe_=universe_,
                  status='success', summary=summary, results=out['results'])
         return {'status': 'success', 'members': members, 'fetched': fetched,
-                'universe': universe_, 'fetch_failures': fetch_failures, 'summary': summary}
+                'universe': universe_, 'fetch_failures': fetch_failures,
+                'fetch_reasons': fetch_reasons, 'summary': summary}
     except universe_module.UniverseError as exc:
         return fail(f'universe: {exc}')
     except screen.BenchmarkMissing:

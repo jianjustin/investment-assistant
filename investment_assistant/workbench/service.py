@@ -14,8 +14,8 @@ from zoneinfo import ZoneInfo
 
 from investment_assistant.data.calendar import is_trading_day
 from investment_assistant.db import connect, list_watchlist_items
-from investment_assistant.workbench import (account, bars, briefs, chart, earnings, exits, ledger, monthly,
-                                               news, plans, positions, repository, review, rules, synthesis)
+from investment_assistant.workbench import (account, bars, briefs, chart, collect, earnings, exits, ledger, monthly,
+                                               plans, positions, repository, review, rules, synthesis)
 from investment_assistant.workbench.agent import graph as agent_graph
 from investment_assistant.workbench.agent import model as agent_model
 from investment_assistant.workbench.agent import tools as agent_tools
@@ -268,16 +268,14 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
     # SPY and the industry ETFs collect bars only, before the screen stage: QQQ is its benchmark.
     for ticker in [BENCHMARK, *ETF_TICKERS]:
         try:
-            frame_ = bars.fetch_history(ticker, session - timedelta(days=HISTORY_DAYS), session,
-                                        fetcher=deps.bar_fetcher)
-            rows_, skipped_ = bars.normalize_history(frame_)
-            with _tx() as conn:
-                counts = repository.store_bars(conn, ticker, rows_, now=now)
+            out = collect.bars_one(ticker, session=session, now=now, deps=deps,
+                                   lookback_days=HISTORY_DAYS)
             if ticker == BENCHMARK:
-                summary['benchmark'] = {'bars': counts, 'skipped_bars': [d.isoformat() for d in skipped_],
+                summary['benchmark'] = {'bars': out['counts'],
+                                        'skipped_bars': [d.isoformat() for d in out['skipped']],
                                         'news': None, 'candidates': [], 'skips': [], 'error': None}
             else:
-                summary['etfs'][ticker] = f"inserted {counts['inserted']}"
+                summary['etfs'][ticker] = f"inserted {out['counts']['inserted']}"
         except Unavailable:
             raise
         except Exception as exc:
@@ -323,23 +321,17 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
             if ticker in (stage['fetched'] if stage is not None else ()):
                 entry['bars'] = 'collected_in_screen'   # news and earnings still collect below
             else:
-                frame_ = bars.fetch_history(ticker, session - timedelta(days=HISTORY_DAYS), session,
-                                            fetcher=deps.bar_fetcher)
-                rows_, skipped = bars.normalize_history(frame_)
-                with _tx() as conn:
-                    entry['bars'] = repository.store_bars(conn, ticker, rows_, now=now)
-                entry['skipped_bars'] = [d.isoformat() for d in skipped]
+                out = collect.bars_one(ticker, session=session, now=now, deps=deps,
+                                       lookback_days=HISTORY_DAYS)
+                entry['bars'] = out['counts']
+                entry['skipped_bars'] = [d.isoformat() for d in out['skipped']]
         except Unavailable:
             raise
         except Exception as exc:
             problems.append(f'bars: {exc}')
             summary['sources']['bars'].append(ticker)
         try:
-            raw = news.fetch_yfinance(ticker, fetcher=deps.news_fetcher)
-            items, bad = news.normalize_yfinance(raw, ticker=ticker)
-            with _tx() as conn:
-                entry['news'] = {**repository.store_news(conn, [(i, [ticker]) for i in items], now=now),
-                                 'fetched': len(raw), 'skipped': bad}
+            entry['news'] = collect.news_one(ticker, now=now, deps=deps)
         except Unavailable:
             raise
         except Exception as exc:
@@ -361,15 +353,7 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         summary['tickers'][ticker] = entry
 
     try:
-        source = deps.filing_source
-        if source is None:
-            from investment_assistant.filings.monitor_source import EdgarSource
-            source = EdgarSource(SEC_EVIDENCE_DIR)
-        metas = source.discover(all_tickers, (session - timedelta(days=FILING_LOOKBACK_DAYS)).isoformat(),
-                                session.isoformat())
-        with _tx() as conn:
-            summary['filings'] = {**repository.store_news(conn, news.filing_news(metas), now=now),
-                                  'acceptance_filled': repository.fill_filing_acceptance(conn, metas)}
+        summary['filings'] = collect.sec_listing(all_tickers, session=session, now=now, deps=deps)
     except Unavailable:
         raise
     except Exception as exc:
@@ -381,14 +365,8 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
     api_key = os.environ.get('FRED_API_KEY')
     for series_id in macro_module.MACRO_SERIES:
         try:
-            if not api_key:
-                summary['macro'][series_id] = 'not_configured'
-            else:
-                rows_ = macro_module.fetch_series(
-                    series_id, start=session - timedelta(days=macro_module.MACRO_LOOKBACK_DAYS), end=session,
-                    api_key=api_key, fetcher=deps.macro_fetcher)
-                with _tx() as conn:
-                    summary['macro'][series_id] = repository.store_macro(conn, series_id, rows_, now=now)
+            summary['macro'][series_id] = collect.fred_series(series_id, session=session, now=now,
+                                                              deps=deps, api_key=api_key)
         except Unavailable:
             raise
         except Exception as exc:
