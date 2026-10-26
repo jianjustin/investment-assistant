@@ -27,6 +27,8 @@ export interface LastRun {
   trigger: string
   scope: string
   ticker: string | null
+  job: string                  // the task path this run actually went through
+  reason: string | null        // skipped reason (detail.reason), shown as-is
   finished_at: string | null
   ok_count: number
   target_count: number
@@ -43,10 +45,13 @@ export interface FamilyCard {
   job: FamilyJob | null
   coverage: FamilyCoverage
   latest_at: string | null
+  coverage_note: string      // one sentence on what this family's coverage counts
   last_run: LastRun | null
   last_success_at: string | null
   evidence: string
   notes: string[]
+  current_error: string | null   // e.g. the universe file's current load error
+  fetch_runs_ready: boolean
 }
 
 export interface DataOverview {
@@ -99,6 +104,7 @@ export interface BrowseResult {
   sec_8k?: Record<string, unknown>[]
   meta?: Record<string, unknown> | null
   notes?: string[]
+  current_error?: string | null   // e.g. why the universe file cannot load right now
 }
 
 export function kindLabel(kind: string): string {
@@ -128,7 +134,8 @@ const NOTE_TEXT: Record<string, string> = {
   universe_stale: '范围文件超过 120 天未更新',
   no_filing_is_not_missing: '无申报 ≠ 缺数据',
   pool_empty: '关注列表中没有可用的池标的',
-  universe_unavailable: '范围文件不可读',
+  pool_invalid: '观察池配置非法（超限或标签无效），无法确定目标清单',
+  universe_unavailable: '范围文件不可读或非法',
 }
 
 export function noteText(note: string): string {

@@ -20,8 +20,9 @@ const card = (id: FamilyId, overrides: Partial<FamilyCard> = {}): FamilyCard => 
   fetch_via: id === 'atr' ? 'bars' : null,
   per_ticker: ['bars', 'sec_filings', 'news'].includes(id),
   job: job(), coverage: { targets: 10, covered: 10, lagging: [] },
-  latest_at: '2026-10-22', last_run: null, last_success_at: null,
+  latest_at: '2026-10-22', coverage_note: '覆盖说明', last_run: null, last_success_at: null,
   evidence: id === 'atr' ? EVIDENCE + ' `plan-1` 的计算输入，规则 `gate_hold`' : EVIDENCE, notes: [],
+  current_error: null, fetch_runs_ready: true,
   ...overrides,
 })
 
@@ -70,7 +71,8 @@ describe('Data 总览', () => {
       news: {
         last_run: {
           status: 'partial', trigger: 'manual_batch', scope: 'family', ticker: null,
-          finished_at: '2026-10-22T08:00:00+00:00', ok_count: 3, target_count: 5,
+          job: 'workbench', reason: null, finished_at: '2026-10-22T08:00:00+00:00',
+          ok_count: 3, target_count: 5,
           failures: [{ target: 'MU', reason: '日线超时' }, { target: 'NVDA', reason: '网络错误' }],
         },
       },
@@ -81,6 +83,53 @@ describe('Data 总览', () => {
     expect(screen.getByText(fmtBeijing('2026-10-22T08:00:00+00:00'))).toBeTruthy()
     expect(screen.getByText('手动批处理')).toBeTruthy()
     expect(screen.getByText('3/5')).toBeTruthy()
+  })
+
+  it('shows the skipped reason and the actual job path of the last run', async () => {
+    // 真实无 key 载荷（I11/I13）：skipped 原因与实际 job 都可见，不只剩 0/2
+    vi.mocked(api.getDataFamilies).mockResolvedValue(overview(six({
+      fred: {
+        last_run: {
+          status: 'skipped', trigger: 'scheduled', scope: 'family', ticker: null,
+          job: 'workbench', reason: 'FRED_API_KEY 未配置',
+          finished_at: '2026-10-22T08:00:00+00:00', ok_count: 0, target_count: 2, failures: [],
+        },
+      },
+      sec_filings: {
+        last_run: {
+          status: 'failed', trigger: 'scheduled', scope: 'family', ticker: null,
+          job: 'filings', reason: null, finished_at: '2026-10-22T07:00:00+00:00',
+          ok_count: 0, target_count: 3,
+          failures: [{ target: '*', reason: 'edgar down' }],
+        },
+      },
+    })))
+    render(Data)
+    expect(await screen.findByText(/跳过原因：FRED_API_KEY 未配置/)).toBeTruthy()
+    const fredCard = screen.getByRole('article', { name: 'FRED 利差' })
+    expect(within(fredCard).getAllByText('workbench').length).toBeGreaterThan(0)
+    const secCard = screen.getByRole('article', { name: 'SEC 申报' })
+    expect(within(secCard).getAllByText('filings').length).toBeGreaterThan(0)   // 记录来源 ≠ 注册任务
+    expect(within(secCard).getByText(/edgar down/)).toBeTruthy()
+  })
+
+  it('shows last success time and the per-family coverage note', async () => {
+    vi.mocked(api.getDataFamilies).mockResolvedValue(overview(six({
+      bars: { last_success_at: '2026-10-22T06:30:00+00:00' },
+      fred: { coverage: { targets: 2, covered: 2, lagging: ['BAMLH0A0HYM2', 'T10Y2Y'] } },
+    })))
+    render(Data)
+    expect(await screen.findByText(/最近成功/)).toHaveTextContent(
+      fmtBeijing('2026-10-22T06:30:00+00:00'))
+    expect(screen.getAllByText(/（覆盖说明）/).length).toBeGreaterThan(0)   // M04：各族口径一句话
+  })
+
+  it('shows the universe file error separately from run history', async () => {
+    vi.mocked(api.getDataFamilies).mockResolvedValue(overview(six({
+      universe: { current_error: 'bad member count: 2', coverage: { targets: 0, covered: 0, lagging: [] } },
+    })))
+    render(Data)
+    expect(await screen.findByText(/当前范围文件错误：bad member count: 2/)).toBeTruthy()
   })
 
   it('shows migration notice', async () => {
@@ -331,6 +380,34 @@ describe('Data 详情', () => {
     finish(detail())
     await waitFor(() => expect(screen.queryByRole('article', { name: '日线' })).toBeNull())
     expect(screen.getByRole('combobox', { name: 'FRED 序列' })).toBeTruthy()
+  })
+
+  it('detail runs show the task path, its target source and skipped reasons', async () => {
+    vi.mocked(api.getDataFamily).mockResolvedValue(detail({
+      runs: [
+        run({ id: 21, family: 'sec_filings', job: 'filings', trigger: 'scheduled', status: 'failed',
+              target_count: 1, ok_count: 0, failures: [{ target: '*', reason: 'edgar down' }],
+              detail: { targets_source: 'sec_monitor.watchlist_path', mode: 'monitor' } }),
+        run({ id: 22, family: 'fred', trigger: 'scheduled', status: 'skipped',
+              target_count: 2, ok_count: 0, failures: [],
+              detail: { reason: 'FRED_API_KEY 未配置' } }),
+      ],
+    }))
+    render(Data, { sub: 'bars' })
+    const runs = within(await screen.findByRole('table', { name: '最近拉取' }))
+    expect(runs.getByText('sec_monitor.watchlist_path')).toBeTruthy()   // I13：目标来源如实展示
+    expect(runs.getByText(/跳过原因：FRED_API_KEY 未配置/)).toBeTruthy()  // I11：skipped 原因
+    expect(runs.getAllByText('filings').length).toBeGreaterThan(0)
+    expect(runs.getByText(/edgar down/)).toBeTruthy()
+  })
+
+  it('shows the migration notice from the detail card itself', async () => {
+    vi.mocked(api.getDataFamilies).mockResolvedValue(overview(six(), { fetch_runs_ready: true }))
+    vi.mocked(api.getDataFamily).mockResolvedValue(detail({
+      card: card('bars', { fetch_runs_ready: false }), runs: [], rows: [],
+    }))
+    render(Data, { sub: 'bars' })
+    expect(await screen.findByText('迁移 024 未执行')).toBeTruthy()   // M02：卡片自带 readiness
   })
 
   it('shows migration notice and empty detail tables', async () => {

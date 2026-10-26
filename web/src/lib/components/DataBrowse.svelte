@@ -119,6 +119,11 @@
       { key: 'accession_number', label: '申报编号' }, { key: 'primary_document', label: '主文档' },
       { key: 'accepted_at', label: '接收时间', format: fmtBeijing }, { key: 'items', label: '条目' },
     ],
+    sec_8k: [
+      { key: 'title', label: '标题 / 链接', link: 'url' }, { key: 'publisher', label: '发布者' },
+      { key: 'published_at', label: '发布时间', format: fmtBeijing },
+      { key: 'filing_date_note', label: '申报日期' },
+    ],
     fred: [{ key: 'obs_date', label: '观测日期' }, { key: 'value', label: '实际值' }, { key: 'revisions', label: '修订次数' }],
     universe: [{ key: 'ticker', label: '标的' }, { key: 'latest_bar', label: '最近日线日期' }],
   }
@@ -183,6 +188,7 @@
     <p class="text-sm text-muted">加载中…</p>
   {:else if result}
     {#each result.notes ?? [] as note}<p class="text-xs text-warn">{noteText(note)}</p>{/each}
+    {#if result.current_error}<p class="text-xs text-warn">{result.current_error}</p>{/if}
     {#if family.id === 'bars'}
       <p class="text-xs text-muted">{text(rows[0]?.note ?? '拆股调整、未分红调整；adj_close 全调整')}</p>
     {:else if family.id === 'atr'}
@@ -201,7 +207,7 @@
       <h3 class="text-sm font-medium">filings</h3>
       {@render rawTable('filings', result.filings ?? [], columns.sec_filings)}
       <h3 class="text-sm font-medium">sec_8k（未入 filings）</h3>
-      {@render rawTable('sec_8k（未入 filings）', result.sec_8k ?? [], columns.news)}
+      {@render rawTable('sec_8k（未入 filings）', result.sec_8k ?? [], columns.sec_8k)}
     {:else}
       {@render rawTable(tableNames[family.id], rows, columns[family.id])}
     {/if}

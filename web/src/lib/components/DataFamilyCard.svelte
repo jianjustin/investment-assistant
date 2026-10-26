@@ -58,14 +58,22 @@
       <span class="text-xs text-warn">（滞后 {card.coverage.lagging.length}）</span>
     {/if}
     · 最新 {latestText(card.latest_at)}
+    <span class="text-xs text-muted" title={card.coverage_note}>（{card.coverage_note}）</span>
   </p>
+  {#if card.current_error}
+    <p class="text-xs text-warn">当前范围文件错误：{card.current_error}</p>
+  {/if}
   {#if card.last_run}
     {@const run = card.last_run}
     <p class="flex flex-wrap items-center gap-1.5">
       最近拉取 <StatusPill status={run.status} />
-      · <span>{triggerLabel(run.trigger)}</span> · <span>{fmtBeijing(run.finished_at)}</span>
+      · <span>{triggerLabel(run.trigger)}</span> · <span>{run.scope === 'ticker' ? `单只 ${run.ticker}` : '全族'}</span>
+      · <span>{run.job}</span> · <span>{fmtBeijing(run.finished_at)}</span>
       · <span>{run.ok_count}/{run.target_count}</span>
     </p>
+    {#if run.status === 'skipped' && run.reason}
+      <p class="text-xs text-warn">跳过原因：{run.reason}</p>
+    {/if}
     {#if run.failures.length}
       <ul class="text-xs text-red-600 space-y-0.5">
         {#each run.failures as f (f.target + f.reason)}
@@ -75,6 +83,9 @@
     {/if}
   {:else}
     <p class="text-xs text-muted">最近拉取 无记录</p>
+  {/if}
+  {#if card.last_success_at}
+    <p class="text-xs text-muted">最近成功 {fmtBeijing(card.last_success_at)}</p>
   {/if}
   {#if card.notes.length}
     <ul class="text-xs text-amber-700 space-y-0.5">

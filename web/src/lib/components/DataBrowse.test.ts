@@ -10,7 +10,9 @@ const family = (id: FamilyId): FamilyCard => ({
   id, title: id, purpose: '用途', kind: id === 'atr' ? 'derived' : id === 'universe' ? 'manual' : 'fetched',
   fetch_via: id === 'atr' ? 'bars' : null, per_ticker: ['bars', 'news', 'sec_filings'].includes(id),
   job: null, coverage: { targets: 2, covered: 1, lagging: ['NVDA'] }, latest_at: '2026-10-22',
-  last_run: null, last_success_at: null, evidence: id === 'atr' ? EVIDENCE + ' `plan-1` 的计算输入，规则 `gate_hold`' : EVIDENCE, notes: [],
+  coverage_note: '覆盖说明', last_run: null, last_success_at: null,
+  evidence: id === 'atr' ? EVIDENCE + ' `plan-1` 的计算输入，规则 `gate_hold`' : EVIDENCE, notes: [],
+  current_error: null, fetch_runs_ready: true,
 })
 const bars: BrowseResult = {
   family: 'bars', key: 'MU', has_data: true, rows: [{
@@ -119,11 +121,13 @@ describe('DataBrowse 原始值', () => {
 
   it('sec shows both lists with count-shaped rows', async () => {
     vi.mocked(api.browseData).mockResolvedValue({
-      family: 'sec_filings', key: 'MU', has_data: true, rows: 2,
+      family: 'sec_filings', key: 'MU', has_data: true, rows: 3,
       filings: [{ id: 1, ticker: 'MU', form: '10-Q', filing_date: '2026-10-20',
         accession_number: '0001-26-000123', primary_document: 'quarter.htm',
         accepted_at: '2026-10-20T18:00:00+00:00', items: '2.02' }],
-      sec_8k: [{ ...newsRow, source: 'sec_8k', title: 'Unfiled 8-K' }],
+      sec_8k: [{ ...newsRow, source: 'sec_8k', title: 'Unfiled 8-K', filing_date_note: null },
+               { ...newsRow, id: 9, source: 'sec_8k', title: 'Undated 8-K', url: 'https://example.com/x',
+                 published_at: null, filing_date_note: '申报日未知' }],
     })
     mount('sec_filings')
     const filings = await screen.findByRole('table', { name: 'filings' })
@@ -134,6 +138,10 @@ describe('DataBrowse 原始值', () => {
     expect(filings).toHaveTextContent(fmtBeijing('2026-10-20T18:00:00+00:00'))
     const sec = screen.getByRole('table', { name: 'sec_8k（未入 filings）' })
     expect(within(sec).getByRole('link', { name: 'Unfiled 8-K' })).toHaveAttribute('href', newsRow.url)
+    // I14：无 accepted_at 的条目标注「申报日未知」，不用采集时间冒充申报日期
+    expect(within(sec).getByRole('columnheader', { name: '申报日期' })).toBeTruthy()
+    expect(within(sec).getByRole('cell', { name: '申报日未知' })).toBeTruthy()
+    expect(within(sec).getAllByRole('cell', { name: '—' }).length).toBeGreaterThan(0)
   })
 
   it('universe members', async () => {
@@ -159,9 +167,11 @@ describe('DataBrowse 原始值', () => {
 
   it('unavailable universe shows notes with null meta', async () => {
     vi.mocked(api.browseData).mockResolvedValue({ family: 'universe', key: null, has_data: false,
-      rows: [], meta: null, notes: ['universe_unavailable'] })
+      rows: [], meta: null, notes: ['universe_unavailable'],
+      current_error: 'bad member count: 2' })
     mount('universe')
-    expect(await screen.findByText('范围文件不可读')).toBeTruthy()
+    expect(await screen.findByText('范围文件不可读或非法')).toBeTruthy()
+    expect(screen.getByText('bad member count: 2')).toBeTruthy()   // M03：原文诊断可见
     expect(screen.getByText('无数据，可点拉取')).toBeTruthy()
   })
 

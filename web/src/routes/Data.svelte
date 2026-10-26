@@ -63,7 +63,7 @@
       {#if familyId}<a class="text-xs text-accent underline" href="#data">返回总览</a>{/if}
     </header>
     <p aria-label="证据说明" class="text-xs text-muted border border-border rounded p-2 bg-surface">{overview.evidence}</p>
-    {#if !overview.fetch_runs_ready}
+    {#if !overview.fetch_runs_ready || (familyId && detail && !detail.card.fetch_runs_ready)}
       <p class="text-xs text-warn border border-border rounded p-2 bg-surface"><span>迁移 024 未执行</span>：最近拉取不可见，拉取接口不可用。</p>
     {/if}
     {#if familyId && detail}
@@ -76,7 +76,7 @@
         <div class="overflow-x-auto border border-border rounded bg-surface">
           <table aria-label="最近拉取" class="w-full text-sm text-left whitespace-nowrap">
             <thead><tr class="text-muted">
-              <th class="px-3 py-2">触发来源</th><th>状态</th><th>成功/目标</th><th>范围</th>
+              <th class="px-3 py-2">触发来源</th><th>状态</th><th>成功/目标</th><th>范围</th><th>任务</th>
               <th>开始时间</th><th>完成时间</th><th>失败原因</th>
             </tr></thead>
             <tbody>
@@ -85,12 +85,18 @@
                   <td class="px-3 py-2">{triggerLabel(run.trigger)}</td>
                   <td><StatusPill status={run.status} /></td><td>{run.ok_count}/{run.target_count}</td>
                   <td>{run.scope === 'ticker' ? run.ticker : '全族'}</td>
+                  <td class="px-3 py-2">{run.job}{#if run.detail?.targets_source}
+                    <span class="block text-xs text-muted">{run.detail.targets_source}</span>
+                  {/if}</td>
                   <td>{fmtBeijing(run.started_at)}</td><td>{fmtBeijing(run.finished_at)}</td>
                   <td class="px-3 py-2 whitespace-normal min-w-40">
-                    {#each run.failures as failure}<p class="text-red-600">{failure.target}：{failure.reason}</p>{:else}—{/each}
+                    {#if run.status === 'skipped' && run.detail?.reason}
+                      <p class="text-warn">跳过原因：{run.detail.reason}</p>
+                    {/if}
+                    {#each run.failures as failure}<p class="text-red-600">{failure.target}：{failure.reason}</p>{:else}{#if run.status !== 'skipped'}—{/if}{/each}
                   </td>
                 </tr>
-              {:else}<tr><td colspan="7" class="px-3 py-3 text-muted">无记录</td></tr>{/each}
+              {:else}<tr><td colspan="8" class="px-3 py-3 text-muted">无记录</td></tr>{/each}
             </tbody>
           </table>
         </div>
