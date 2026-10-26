@@ -151,6 +151,24 @@ describe('Data 总览', () => {
 // Boundary regressions from self-review: a finished runner may be error or may
 // have lost the lock after the API's probe. Neither is an unqualified success.
 describe('Data 拉取结果', () => {
+  it('keeps fetch-record write errors visible after a successful overview refresh', async () => {
+    vi.mocked(api.pollRun).mockResolvedValue({
+      run_id: 'r1', status: 'done', result: {
+        status: 'success',
+        data_status: { written: 0, error: 'permission denied for table data_fetch_runs' },
+      },
+    })
+    vi.mocked(api.getDataFamilies).mockResolvedValueOnce(overview(six()))
+      .mockResolvedValue(overview(six({ bars: { coverage: { targets: 10, covered: 9, lagging: ['MU'] } } })))
+    render(Data)
+    const bars = within(await screen.findByRole('article', { name: '日线' }))
+    await fireEvent.click(bars.getByRole('button', { name: '拉取' }))
+    expect(await bars.findByText('9 / 10')).toBeTruthy()
+    expect(api.getDataFamilies).toHaveBeenCalledTimes(2)
+    expect(bars.getByText('采集记录写入失败：permission denied for table data_fetch_runs')).toHaveClass('text-red-600')
+    expect(bars.getByRole('button', { name: '拉取' })).toBeEnabled()
+  })
+
   it('shows runner error and refreshes the overview after completion', async () => {
     vi.mocked(api.pollRun).mockResolvedValue({ run_id: 'r1', status: 'error', error: '采集服务不可达' })
     render(Data)

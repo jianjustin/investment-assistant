@@ -22,10 +22,13 @@
     try {
       const pending = await api.fetchDataFamily(fetchTarget(card), undefined)
       const run = await api.pollRun(pending.run_id, { timeoutMs: 900_000 })
-      if ((run.result as { status?: string } | undefined)?.status === 'busy') {
+      const result = run.result as { status?: string; data_status?: { error?: string | null } } | undefined
+      if (result?.status === 'busy') {
         error = '该族正在采集'   // 探测后、持锁前被批处理抢到
       } else if (run.status === 'error') {
         error = run.error ?? '运行失败'
+      } else if (result?.data_status?.error) {
+        error = `采集记录写入失败：${result.data_status.error}`
       }
       await onfetched()
     } catch (e) {
