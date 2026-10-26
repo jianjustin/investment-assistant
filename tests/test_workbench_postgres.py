@@ -985,14 +985,18 @@ def test_targets_bars_union_and_notes(workbench_db):
         {'ticker': 'DDD', 'tier': 'removed', 'sector_etf': None, 'source': 'screen'}],
         session=date(2026, 10, 19), now=NOW)
     _trade(conn, 'EEE', 'buy')
+    _trade(conn, 'GGG', 'buy', executed_at=NOW - timedelta(days=1))   # 已清仓：不进目标
+    _trade(conn, 'GGG', 'sell')
     loader = lambda: _test_universe('ZZZ', 'AAA')
     bars, notes = families.targets(conn, 'bars', universe_loader=loader)
     assert bars[:4] == ['SPY', 'SMH', 'XLK', 'QQQ']
     assert set(bars) == {'SPY', 'SMH', 'XLK', 'QQQ', 'AAA', 'BBB', 'CCC', 'EEE', 'ZZZ'}
     assert bars[4:] == sorted(bars[4:]) and notes == []
+    assert 'GGG' not in bars and 'EEE' in bars   # 持仓 = 未平仓标的，已清仓的 GGG 不算
     assert families.targets(conn, 'atr', universe_loader=loader)[0] == bars
     news, news_notes = families.targets(conn, 'news', universe_loader=loader)
     assert set(news) == {'AAA', 'BBB', 'CCC', 'EEE'} and news_notes == []
+    assert 'GGG' not in news
     assert families.targets(conn, 'sec_filings', universe_loader=loader)[0] == news
     assert families.targets(conn, 'fred') == (['BAMLH0A0HYM2', 'T10Y2Y'], [])
     assert families.targets(conn, 'universe') == ([], [])

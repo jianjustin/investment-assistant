@@ -756,7 +756,7 @@ def locked_screen_tickers(conn, session: date, *, cutoff_at: datetime) -> set[st
         'SELECT DISTINCT ticker FROM trade_plans '
         "WHERE kind IN ('rule', 'own') AND status = 'ok' AND valid_until >= %s AND created_at <= %s",
         (session, cutoff_at)).fetchall()}
-    tickers |= _open_position_tickers(conn)
+    tickers |= open_position_tickers(conn)
     return tickers
 
 
@@ -773,7 +773,7 @@ def screen_lockable_tickers(conn) -> set[str]:
     return {row[0] for row in rows}
 
 
-def _open_position_tickers(conn) -> set[str]:
+def open_position_tickers(conn) -> set[str]:
     from investment_assistant.workbench import positions
 
     held: set[str] = set()

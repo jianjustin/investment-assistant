@@ -172,7 +172,7 @@ def targets(conn, family_id: str, *, universe_loader=None) -> tuple[list[str], l
     pool_tickers: set[str] = set(watch_pool.tickers if watch_pool is not None else ())
     pool_tickers |= {ticker for ticker, row in repository.pool_latest(conn).items()
                      if row['tier'] != 'removed' and row['source'] == 'screen'}
-    pool_tickers |= {row['ticker'] for row in repository.list_trades(conn) if row['voided_at'] is None}
+    pool_tickers |= repository.open_position_tickers(conn)   # 持仓：未作废成交得出的未平仓标的
     if family.id not in ('bars', 'atr'):
         return sorted(pool_tickers), notes
     head = [service.BENCHMARK, *pool.SECTOR_ETFS]
