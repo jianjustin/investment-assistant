@@ -19,6 +19,7 @@
 | [agent-track.md](features/agent-track.md) | Agent 轨道：工具层、提议与反方、引用校验、预算、解读 |
 | [review.md](features/review.md) | 影子跟踪、纪律、三方对比、周/月复盘、资金与月度收益、复盘推送 |
 | [pool-and-context.md](features/pool-and-context.md) | 观察池分层、每日筛选（纳指 100 `screen-1`、成员轮换、报告与只读回放）、市场环境（广度、区制、行业、FRED）、上线前检查 |
+| [data-menu.md](features/data-menu.md) | 「数据」菜单：数据族覆盖与最新时点、拉取记录、单族手动拉取、原始值浏览 |
 | [sec-filings.md](features/sec-filings.md) | SEC 下载器与 SEC 监控 |
 | [fundamentals.md](features/fundamentals.md) | 「标的」页的基本面一栏：美股财季数据与公司指引 |
 | [legacy/](features/legacy/README.md) | v1 遗留功能的墓碑页：逐项列出 v2.1.0 的删除与去向（旧实现见 tag `v2.0.0`） |

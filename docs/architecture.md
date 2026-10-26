@@ -51,6 +51,8 @@ tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、�
 | `workbench/bars.py`、`news.py`、`earnings.py`、`macro.py` | 采集：日线、资讯标题、财报日、FRED | yfinance、SEC、FRED |
 | `workbench/universe.py`、`screen.py` | 纳指 100 范围文件；`screen-1` 过滤、排序、成员轮换（纯函数） | 纯函数 |
 | `workbench/screening.py` | 筛选阶段编排：采集范围日线、写 `screen_runs` / `screen_results`、成员并池 | `service`、`repository` |
+| `workbench/collect.py` | 共用逐只采集函数（批处理、筛选与「数据」菜单手动拉取共用）、`Tally` 记账与每族 advisory lock | `service`、采集模块 |
+| `workbench/families.py` | 六个数据族注册表：用途、状态判定、原因脱敏、覆盖口径、目标清单（纯函数） | 纯函数 |
 | `workbench/pool.py`、`regime.py` | 观察池分层与来源；范围 ∪ 手动池的广度、区制、行业强弱 | 纯函数 |
 | `workbench/rules.py`、`synthesis.py` | 规则 v1 候选；合成每股每日一个决策单元 | 纯函数 |
 | `workbench/plans.py` | ATR、计划价位、有效期、财报提示、按风险定仓 | 纯函数 |
@@ -59,6 +61,7 @@ tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、�
 | `workbench/ledger.py`、`positions.py`、`exits.py`、`account.py` | 决定与成交（只追加）、FIFO 持仓、持仓止损、资金快照与出入金 | 纯函数 + SQL |
 | `workbench/plan_shadow.py`、`review.py`、`discipline.py`、`tracks.py`、`monthly.py`、`backcheck.py` | 影子跟踪、周度复盘、纪律、三方对比、月度收益与敏感性、上线前检查 | 纯函数 |
 | `workbench/digest.py`、`review_digest.py` | 每日推送与周/月复盘推送的数据 | 纯函数 |
+| `workbench/data_view.py` | 「数据」菜单用例：总览 / 详情 / 浏览（只读事务）与单族手动拉取，写 `data_fetch_runs` | `families`、`collect`、`repository`、`runner` |
 | `tasks/workbench.py`、`tasks/workbench_review.py` | 两个定时任务入口 | `workbench/service.py` |
 
 ### 共享底座
@@ -87,7 +90,7 @@ tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、�
 flowchart TD
     subgraph batch["06:30 北京（周二至周六）· 任务 workbench"]
         A["① 采集<br/>SPY / 行业 ETF 日线"] --> A2["① 筛选 screen-1<br/>纳指 100：范围日线 + 财报日 → 过滤排序 → 成员自动进扩展池"]
-        A2 --> B["① 采集（逐股）<br/>日线（筛选已采的跳过）/ 资讯 / 财报日 / SEC 列表 / FRED"]
+        A2 --> B["① 采集（逐股）<br/>日线（筛选已采的跳过）/ 资讯 / 财报日 / SEC 列表 / FRED<br/>每族追加一行拉取记录 data_fetch_runs"]
         B --> B2["② 市场环境<br/>范围 ∪ 手动池广度 → 区制；行业强弱"]
         B2 --> C["③ 规则 v1<br/>信号候选 → 决策单元"]
         C --> D["④ 规则计划 plan-1<br/>ATR 止损 · 2R 目标 · 按风险定仓 · 超限作废"]
@@ -115,6 +118,7 @@ flowchart TD
 | 组 | 表 |
 | --- | --- |
 | 共享底座 | `watchlist_items`、`scheduled_jobs`、`job_reports`、`notify_settings`、`filings` |
+| 数据底座 | `data_fetch_runs`（迁移 024，只追加：每次拉取一行成败与逐只原因，批处理、`filings` 任务与「数据」菜单共用） |
 | 工作台 · 采集 | `price_bars`、`news_items`、`news_item_tickers`、`earnings_dates`、`macro_observations` |
 | 工作台 · 信号与筛选 | `signal_candidates`、`signal_briefs`、`pool_tiers`（含 `source`）、`market_regimes`、`screen_runs`、`screen_results` |
 | 工作台 · 计划与执行 | `trade_plans`、`signal_decisions`、`trades`、`account_snapshots`、`cash_flows` |

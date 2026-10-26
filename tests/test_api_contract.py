@@ -32,6 +32,12 @@ def test_watchlist_get_falls_back_to_config_without_db(client):
     assert all(row["source"] == "config" for row in resp.json()["rows"])
 
 
+def test_data_routes_without_db(client):
+    resp = client.get("/api/data/families")
+    assert resp.status_code == 503
+    assert "数据库未配置" in resp.json()["error"]
+
+
 def test_delete_route_resolves(monkeypatch, client):
     import investment_assistant.services.watchlist as watchlist_svc
     monkeypatch.setattr(watchlist_svc, "delete_watchlist_item", lambda ticker: {"ticker": ticker, "deleted": True})
