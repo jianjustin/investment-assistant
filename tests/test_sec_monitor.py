@@ -262,7 +262,8 @@ def test_monitor_config_loads_and_routes_filings_task(tmp_path, monkeypatch):
     path.write_text(json.dumps({"sec_monitor": {"enabled": True, "start_date": "2026-10-01"}}))
     cfg = load_config(path)
     monkeypatch.setattr(monitor, "run_monitor", lambda *a, **kw: {"migrated": True})
-    assert filings.run(cfg) == {"migrated": True}
+    out = filings.run(cfg)
+    assert {k: v for k, v in out.items() if k != "data_status"} == {"migrated": True}
 
 
 def test_harness_reports_collector_error_without_duplicate_notification(monkeypatch):

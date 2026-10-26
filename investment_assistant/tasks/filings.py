@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from investment_assistant.config import AssistantConfig, load_config
@@ -30,6 +30,45 @@ def _core(
     }
 
 
+def _record_fetch_run(result: dict[str, Any], *, config: AssistantConfig,
+                      trigger_source: str, started_at: datetime) -> dict[str, Any]:
+    """Append this run's one sec_filings row to data_fetch_runs (v2.3 §6.3).
+
+    Targets are this task's own config.watchlist, not the batch's pool. A write
+    failure is only reported (the return value), never changes the task result."""
+    from investment_assistant.workbench import collect
+
+    summary = result.get("summary") or {}
+    tally = collect.Tally("sec_filings", "filings", targets=config.watchlist)
+    errors = summary.get("errors")
+    if isinstance(errors, dict):
+        for ticker, reason in errors.items():
+            tally.fail(ticker, reason)
+        for ticker in config.watchlist:
+            if ticker not in errors:
+                tally.ok(ticker)
+    elif isinstance(errors, list):
+        for item in errors:
+            if isinstance(item, dict):
+                tally.fail(item.get("ticker", "*"), item.get("error", item))
+            else:
+                tally.fail("*", item)
+        for ticker in config.watchlist:
+            if ticker not in tally.outcomes:
+                tally.ok(ticker)
+    elif summary.get("error"):
+        tally.fail("*", summary["error"])  # 整次失败：没有任何目标成功
+    else:
+        for ticker in config.watchlist:
+            tally.ok(ticker)
+    tally.detail = {"targets_source": "config.watchlist",
+                    "mode": "monitor" if config.sec_monitor.enabled else "downloader"}
+    return collect.write_runs([tally.row(
+        trigger="scheduled" if trigger_source == "scheduled" else "manual_batch",
+        run_id=result.get("run_id"), session=None,
+        started_at=started_at, finished_at=datetime.now(UTC))])
+
+
 def run(
     config: AssistantConfig,
     *,
@@ -37,22 +76,25 @@ def run(
     end_date: date | None = None,
     trigger_source: str = "scheduled",
 ) -> dict[str, Any]:
+    started_at = datetime.now(UTC)
     if config.sec_monitor.enabled:
         from investment_assistant.filings.monitor import run_monitor
 
         result = run_monitor(config, start_date=start_date, end_date=end_date, trigger_source=trigger_source)
-        return _local_research_after_success(result, config)
-    target_start = start_date or (date.today() - timedelta(days=1))  # 自然目标日 T-1
-    target_end = end_date or target_start
-    result = run_task(
-        "filings",
-        lambda: _core(config, start_date=start_date, end_date=end_date),
-        config=config,
-        target_start_date=target_start,
-        target_end_date=target_end,
-        trigger_source=trigger_source,
-    )
-    return _local_research_after_success(result, config)
+    else:
+        target_start = start_date or (date.today() - timedelta(days=1))  # 自然目标日 T-1
+        target_end = end_date or target_start
+        result = run_task(
+            "filings",
+            lambda: _core(config, start_date=start_date, end_date=end_date),
+            config=config,
+            target_start_date=target_start,
+            target_end_date=target_end,
+            trigger_source=trigger_source,
+        )
+    data_status = _record_fetch_run(result, config=config,
+                                    trigger_source=trigger_source, started_at=started_at)
+    return _local_research_after_success({**result, "data_status": data_status}, config)
 
 
 def _local_research_after_success(result, config):

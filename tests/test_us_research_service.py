@@ -232,7 +232,7 @@ def test_sec_success_hook_retains_original_result_and_runs_local_extraction(monk
     # Local refresh is the I/O boundary here; its database/parser path has real TEMP tests above.
     monkeypatch.setattr(service, 'refresh_local_filings', lambda tickers, **kw: {'tickers':tickers,'notifications':'disabled'})
     result = filings.run(AssistantConfig(sec_monitor=SecMonitorConfig(enabled=monitor)))
-    assert {k:v for k,v in result.items() if k!='research'} == original
+    assert {k:v for k,v in result.items() if k not in ('research','data_status')} == original
     assert result['research'] == {'tickers':['MU'],'notifications':'disabled'}
 
 
@@ -245,7 +245,8 @@ def test_failed_sec_run_does_not_add_research_or_replace_original_error(monkeypa
     monkeypatch.setattr(filings, 'run_task', lambda *a, **kw: copy.deepcopy(original))
     def forbidden(*a): pytest.fail('failed original SEC job started extraction')
     monkeypatch.setattr(service, 'refresh_local_filings', forbidden)
-    assert filings.run(AssistantConfig()) == original
+    result = filings.run(AssistantConfig())
+    assert {k: v for k, v in result.items() if k != 'data_status'} == original
 
 
 def test_sec_local_hook_failure_is_sanitized_and_preserves_original_success(monkeypatch):
@@ -443,7 +444,7 @@ def test_sec_hook_uses_supplied_config_for_real_local_files_and_exhibits(researc
         monkeypatch.setattr(filings,'run_task',lambda *a,**kw:copy.deepcopy(original))
     result = filings.run(supplied)
     assert result['research']['results'][0]['status']=='ready'
-    assert {k:v for k,v in result.items() if k!='research'}==original
+    assert {k:v for k,v in result.items() if k not in ('research','data_status')}==original
     parsed = s.view('MU')['filings']
     assert len(parsed)==1 and parsed[0]['path']==str(primary)
     assert [x['url'] for x in parsed[0]['analysis']['sources']]==[primary_url,exhibit_url]

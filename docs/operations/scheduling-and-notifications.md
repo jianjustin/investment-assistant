@@ -39,6 +39,8 @@
 
 采集阶段结束后（区制阶段之前），每个已记录的数据族向 `data_fetch_runs` 各追加一行（`job = workbench`，`trigger` 为 `scheduled` / `manual_batch`；显式 `tickers`/`pool` 的调用只写 `bars`、`news`、`sec_filings`、`fred` 四行，没有 `universe` 行）。写入在独立事务里，失败（包括迁移 024 未执行）只记在运行报告的 `summary.data_status`，不影响批处理结果。表结构与状态口径见[数据基础设计](../specs/2026-10-26-v2.3-data-foundation-design.md)。
 
+`filings` 任务（下载器与监控两种模式）结束后同样追加一行 `sec_filings`（`job = filings`，`trigger` 按 `trigger_source` 取 `scheduled` / `manual_batch`），记录带该次运行的 `run_id`。目标取 `config.watchlist`，与批处理的「当前池 + 持仓」不同，`detail.targets_source = 'config.watchlist'` 注明；写入失败只记在任务返回值的 `data_status`，不影响任务结果与运行报告。
+
 ## 通知
 
 配置是 `config.py` 的 `NotifyConfig`，「设置 → 推送配置」写入 `notify_settings` 后覆盖它：
