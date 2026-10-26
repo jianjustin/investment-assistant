@@ -35,7 +35,7 @@
 
 | 位置 | 内容 |
 | --- | --- |
-| [roadmap/](roadmap/README.md) | 版本表、沿用原则、交付标准（DoD）；v2 路线与进度（已完成）；[backlog](roadmap/backlog.md) |
+| [roadmap/](roadmap/README.md) | 版本表、沿用原则、交付标准（DoD）；v2 路线与进度（已完成）；[后续路线 v2-visibility](roadmap/v2-visibility.md)（当前）；[backlog](roadmap/backlog.md) |
 | [specs/](specs/) | 各阶段的设计 spec |
 | [plans/](plans/) | 各阶段的实施 plan |
 | [archive/roadmap-v1/](archive/roadmap-v1/README.md) | roadmap v1 及其 spec、plan、评审 |
