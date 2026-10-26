@@ -787,6 +787,53 @@ def _open_position_tickers(conn) -> set[str]:
     return held
 
 
+# ---------------------------------------------------------------- fetch runs (v2.3 §5)
+
+_FETCH_RUN_COLUMNS = ('id, family, job, trigger, run_id, scope, ticker, session, status, target_count, '
+                      'ok_count, failures, detail, started_at, finished_at, created_at')
+
+
+def insert_fetch_run(conn, row: dict[str, Any]) -> dict[str, Any]:
+    """Append one fetch-run row; `failures`/`detail` arrive as Python objects, JSON-encoded here.
+
+    `row` keys are the table columns except `id`/`created_at`, which the database sets."""
+    return _one(conn,
+                'INSERT INTO data_fetch_runs (family, job, trigger, run_id, scope, ticker, session, status, '
+                'target_count, ok_count, failures, detail, started_at, finished_at) '
+                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s) '
+                f'RETURNING {_FETCH_RUN_COLUMNS}',
+                (row['family'], row['job'], row['trigger'], row.get('run_id'), row['scope'], row.get('ticker'),
+                 row.get('session'), row['status'], row['target_count'], row['ok_count'],
+                 _plan_json(row.get('failures') or []), _plan_json(row.get('detail') or {}),
+                 row['started_at'], row['finished_at']))
+
+
+def fetch_runs_ready(conn) -> bool:
+    """True when migration 024 has run; the workbench itself does not require this table."""
+    return conn.execute("SELECT to_regclass('data_fetch_runs')").fetchone()[0] is not None
+
+
+def latest_fetch_runs(conn) -> dict[str, dict[str, Any]]:
+    """The newest run per family: {family: row}."""
+    return {row['family']: row for row in _all(
+        conn, f'SELECT DISTINCT ON (family) {_FETCH_RUN_COLUMNS} FROM data_fetch_runs '
+              'ORDER BY family, created_at DESC, id DESC', [])}
+
+
+def fetch_runs(conn, family: str, limit: int = 20) -> list[dict[str, Any]]:
+    """One family's runs, newest first."""
+    return _all(conn, f'SELECT {_FETCH_RUN_COLUMNS} FROM data_fetch_runs WHERE family = %s '
+                      'ORDER BY created_at DESC, id DESC LIMIT %s', (family, limit))
+
+
+def last_success_at(conn) -> dict[str, datetime]:
+    """Per family, the finished_at of the newest run that succeeded (status success or partial)."""
+    rows = conn.execute("SELECT DISTINCT ON (family) family, finished_at FROM data_fetch_runs "
+                        "WHERE status IN ('success', 'partial') "
+                        'ORDER BY family, finished_at DESC, id DESC').fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
 def last_push(conn, *, session: date | None = None) -> dict[str, Any] | None:
     """The newest recorded push result for the workbench task, optionally for one session."""
     if conn.execute("SELECT to_regclass('job_reports')").fetchone()[0] is None:

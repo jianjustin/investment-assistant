@@ -932,3 +932,36 @@ def test_monthly_missing_start_snapshot_stays_missing(workbench_db, monkeypatch)
     stats = service.generate_monthly(date(2026, 10, 1), now=datetime(2026, 11, 20, 22, 30, tzinfo=UTC))['stats']
     assert stats['return']['status'] == 'missing_snapshot'
     assert stats['tier'] is None                      # 缺快照不写 0%
+
+
+def _fetch_run(**overrides):
+    base = {'family': 'bars', 'job': 'workbench', 'trigger': 'scheduled', 'run_id': 'r1',
+            'scope': 'family', 'ticker': None, 'session': date(2026, 10, 23), 'status': 'success',
+            'target_count': 2, 'ok_count': 2, 'failures': [], 'detail': {},
+            'started_at': NOW, 'finished_at': NOW + timedelta(minutes=5)}
+    base.update(overrides)
+    return base
+
+
+def test_fetch_run_round_trip(workbench_db):
+    from investment_assistant.workbench import repository
+    conn = workbench_db
+    repository.insert_fetch_run(conn, _fetch_run(status='failed', ok_count=0,
+                                                 failures=[{'target': '*', 'reason': 'yahoo down'}]))
+    latest_bars = repository.insert_fetch_run(conn, _fetch_run(run_id='r2'))
+    repository.insert_fetch_run(conn, _fetch_run(family='fred', status='skipped', target_count=0, ok_count=0,
+                                                 detail={'reason': 'no FRED_API_KEY'}))
+    assert latest_bars['family'] == 'bars' and latest_bars['status'] == 'success'
+    assert latest_bars['failures'] == [] and latest_bars['created_at'] is not None
+    assert repository.latest_fetch_runs(conn)['bars']['status'] == 'success'
+    runs = repository.fetch_runs(conn, 'bars')
+    assert [r['status'] for r in runs] == ['success', 'failed']  # newest first
+    assert list(repository.last_success_at(conn)) == ['bars']
+
+
+def test_fetch_runs_table_not_required_by_workbench(workbench_db):
+    from investment_assistant.workbench import repository
+    assert 'data_fetch_runs' not in repository.WORKBENCH_TABLES
+    workbench_db.execute('DROP TABLE data_fetch_runs')
+    assert repository.missing_tables(workbench_db) == []
+    assert repository.fetch_runs_ready(workbench_db) is False

@@ -29,7 +29,7 @@
 | --- | --- |
 | [local-service.md](operations/local-service.md) | LaunchAgent、启动链路、重启、日志与路径、认证 |
 | [scheduling-and-notifications.md](operations/scheduling-and-notifications.md) | 调度线程、任务注册表、运行报告、通知配置 |
-| [migrations-and-backup.md](operations/migrations-and-backup.md) | 迁移清单 001–023、真实库备份与执行、一次性测试库 |
+| [migrations-and-backup.md](operations/migrations-and-backup.md) | 迁移清单 001–024、真实库备份与执行、一次性测试库 |
 
 ## 方向与历史
 
