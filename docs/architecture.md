@@ -140,4 +140,4 @@ flowchart TD
 
 调度细节见 [operations/scheduling-and-notifications.md](operations/scheduling-and-notifications.md)。
 
-前端（`web/`，Svelte 5）：主线入口是「今日」「标的」（K 线图与基本面）「复盘」（交易与持仓、对照组、周度、月度、资金、轨道对比、上线前检查）；「更多」下是共享底座的「工具」（任务中心、运行记录、SEC 文件）与「设置」（系统、关注列表、推送、定时任务、环境变量）。旧地址（#data、#technicals、#strategy、#trade）回落到「今日」。
+前端（`web/`，Svelte 5）：主线入口是「今日」「标的」（K 线图与基本面）「复盘」（交易与持仓、对照组、周度、月度、资金、轨道对比、上线前检查）；「数据」展示六族状态、族详情与原始值表格；「更多」下是共享底座的「工具」（任务中心、运行记录、SEC 文件）与「设置」（系统、关注列表、推送、定时任务、环境变量）。旧地址（#technicals、#strategy、#trade）回落到「今日」。

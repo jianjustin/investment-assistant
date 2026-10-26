@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/sve
 import Data from './Data.svelte'
 import * as api from '../lib/api'
 import { fmtBeijing } from '../lib/format'
-import type { DataOverview, FamilyCard, FamilyId, FamilyJob } from '../lib/data-families'
+import type { DataOverview, FamilyCard, FamilyDetail, FamilyId, FamilyJob, FetchRun } from '../lib/data-families'
 
 const EVIDENCE = '这里只展示采集事实。所有规则都未经验证（Phase 0 Gate HOLD）：数据完整不代表信号有效。'
 const TITLES: Record<FamilyId, string> = {
@@ -35,6 +35,8 @@ const overview = (families: FamilyCard[], extra: Partial<DataOverview> = {}): Da
 beforeEach(() => {
   vi.restoreAllMocks()
   vi.spyOn(api, 'getDataFamilies').mockResolvedValue(overview(six()))
+  vi.spyOn(api, 'getDataFamily').mockResolvedValue(detail())
+  vi.spyOn(api, 'browseData').mockResolvedValue({ family: 'bars', key: 'MU', has_data: false, rows: [] })
   vi.spyOn(api, 'fetchDataFamily').mockResolvedValue({ run_id: 'r1', status: 'pending' })
   vi.spyOn(api, 'pollRun').mockResolvedValue({ run_id: 'r1', status: 'done', result: { status: 'success' } })
 })
@@ -175,7 +177,7 @@ describe('Data 拉取结果', () => {
     await fireEvent.click(await screen.findByRole('button', { name: '重新加载' }))
     expect(await screen.findByText('采集服务不可达')).toHaveClass('text-red-600')
     expect(api.getDataFamilies).toHaveBeenCalledTimes(2)
-    expect(screen.getByRole('button', { name: '重新加载' })).toBeEnabled()
+    await waitFor(() => expect(screen.getByRole('button', { name: '重新加载' })).toBeEnabled())
   })
 
   it('shows busy result when the background task loses the lock', async () => {
@@ -183,7 +185,7 @@ describe('Data 拉取结果', () => {
     render(Data)
     await fireEvent.click(await screen.findByRole('button', { name: '重新加载' }))
     expect(await screen.findByText('该族正在采集')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '重新加载' })).toBeEnabled()
+    await waitFor(() => expect(screen.getByRole('button', { name: '重新加载' })).toBeEnabled())
   })
 })
 
@@ -213,5 +215,114 @@ describe('Data API wrappers', () => {
     await expect(api.getDataFamilies()).rejects.toThrow('需执行迁移 024')
     await expect(api.getDataFamily('bars')).rejects.toThrow('需执行迁移 024')
     await expect(api.browseData('bars', { ticker: 'MU' })).rejects.toThrow('需执行迁移 024')
+  })
+})
+
+
+const run = (overrides: Partial<FetchRun> = {}): FetchRun => ({
+  id: 11, created_at: '2026-10-22T08:00:00+00:00', family: 'bars', job: 'workbench',
+  trigger: 'manual_family', run_id: 'r1', scope: 'family', ticker: null, session: '2026-10-22',
+  status: 'partial', target_count: 2, ok_count: 1,
+  failures: [{ target: 'NVDA', reason: '源超时' }], detail: {},
+  started_at: '2026-10-22T07:00:00+00:00', finished_at: '2026-10-22T08:00:00+00:00',
+  ...overrides,
+})
+const detail = (extra: Partial<FamilyDetail> = {}): FamilyDetail => ({
+  card: card('bars'), runs: [run()], rows: [
+    { target: 'MU', latest_at: '2026-10-22', lagging: false, last_failure: '整族连接失败' },
+    { target: 'NVDA', latest_at: '2026-10-20', lagging: true, last_failure: '源超时' },
+  ], ...extra,
+})
+
+describe('Data 详情', () => {
+  it('detail shows runs and coverage rows', async () => {
+    render(Data, { sub: 'bars' })
+    const runs = within(await screen.findByRole('table', { name: '最近拉取' }))
+    expect(runs.getByText('手动拉取')).toBeTruthy()
+    expect(runs.getByText('partial')).toBeTruthy()
+    expect(runs.getByText('1/2')).toBeTruthy()
+    expect(runs.getByText(fmtBeijing('2026-10-22T08:00:00+00:00'))).toBeTruthy()
+    expect(runs.getByText(/NVDA.*源超时/)).toBeTruthy()
+    expect(screen.getByRole('link', { name: '运行记录' })).toHaveAttribute('href', '#tools/runs')
+    const coverage = within(screen.getByRole('table', { name: '逐目标覆盖' }))
+    expect(coverage.getByText('MU')).toBeTruthy()
+    expect(coverage.getByText('整族连接失败')).toBeTruthy()
+    expect(coverage.getByText('NVDA')).toBeTruthy()
+    expect(coverage.getByText('2026-10-20')).toBeTruthy()
+    expect(await screen.findByLabelText('证据说明')).toHaveTextContent(EVIDENCE)
+    const calls = vi.mocked(api.getDataFamily).mock.calls.length
+    await fireEvent.click(screen.getByRole('checkbox', { name: '仅看滞后' }))
+    expect(coverage.queryByText('MU')).toBeNull()
+    expect(coverage.getByText('NVDA')).toBeTruthy()
+    expect(api.getDataFamily).toHaveBeenCalledTimes(calls)
+    expect(api.browseData).toHaveBeenCalledWith('bars', { ticker: 'MU' })
+  })
+
+  it('unknown sub falls back to overview', async () => {
+    render(Data, { sub: 'signals' })
+    expect(await screen.findByRole('heading', { name: '数据' })).toBeTruthy()
+    expect(screen.getAllByRole('article')).toHaveLength(6)
+    expect(api.getDataFamily).not.toHaveBeenCalled()
+  })
+
+  it('keeps the card refresh wired to detail, runs, coverage and raw values', async () => {
+    vi.mocked(api.getDataFamily).mockResolvedValueOnce(detail()).mockResolvedValue(detail({
+      card: card('bars', { coverage: { targets: 2, covered: 1, lagging: ['NVDA'] } }),
+      runs: [run({ id: 12, status: 'success', ok_count: 2, failures: [] })],
+      rows: [{ target: 'MU', latest_at: '2026-10-23', lagging: false, last_failure: null }],
+    }))
+    render(Data, { sub: 'bars' })
+    await screen.findByRole('table', { name: '逐目标覆盖' })
+    await waitFor(() => expect(api.browseData).toHaveBeenCalledTimes(1))
+    await fireEvent.click(within(screen.getByRole('article', { name: '日线' })).getByRole('button', { name: '拉取' }))
+    expect(await screen.findByText('1 / 2')).toBeTruthy()
+    expect(within(screen.getByRole('table', { name: '最近拉取' })).getByText('success')).toBeTruthy()
+    expect(within(screen.getByRole('table', { name: '逐目标覆盖' })).getByText('2026-10-23')).toBeTruthy()
+    expect(api.getDataFamilies).toHaveBeenCalledTimes(2)
+    expect(api.getDataFamily).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(api.browseData).toHaveBeenCalledTimes(2))
+  })
+
+  it('single fetch refreshes detail without resetting the selected ticker', async () => {
+    render(Data, { sub: 'bars' })
+    const input = await screen.findByRole('combobox', { name: '标的' })
+    await fireEvent.input(input, { target: { value: 'nvda' } })
+    await fireEvent.submit(input.closest('form')!)
+    await waitFor(() => expect(api.browseData).toHaveBeenLastCalledWith('bars', { ticker: 'NVDA' }))
+    await fireEvent.click(screen.getByRole('button', { name: '只拉这一只' }))
+    await waitFor(() => expect(api.getDataFamily).toHaveBeenCalledTimes(2))
+    expect(api.fetchDataFamily).toHaveBeenCalledWith('bars', 'NVDA')
+    expect(input).toHaveValue('NVDA')
+    expect(api.browseData).toHaveBeenLastCalledWith('bars', { ticker: 'NVDA' })
+  })
+
+  it('shows detail backend errors instead of a placeholder', async () => {
+    vi.mocked(api.getDataFamily).mockRejectedValue(new Error('数据库不可达'))
+    render(Data, { sub: 'news' })
+    expect(await screen.findByRole('alert')).toHaveTextContent('数据库不可达')
+    expect(screen.queryByText(/建设中/)).toBeNull()
+  })
+
+  it('reacts to known sub changes and ignores stale detail responses', async () => {
+    let finish!: (v: FamilyDetail) => void
+    vi.mocked(api.getDataFamily).mockImplementation(id => id === 'bars'
+      ? new Promise(resolve => { finish = resolve })
+      : Promise.resolve(detail({ card: card('fred'), rows: [], runs: [] })))
+    const view = render(Data, { sub: 'bars' })
+    await waitFor(() => expect(api.getDataFamily).toHaveBeenCalledWith('bars'))
+    await view.rerender({ sub: 'fred' })
+    expect(await screen.findByRole('article', { name: 'FRED 利差' })).toBeTruthy()
+    finish(detail())
+    await waitFor(() => expect(screen.queryByRole('article', { name: '日线' })).toBeNull())
+    expect(screen.getByRole('combobox', { name: 'FRED 序列' })).toBeTruthy()
+  })
+
+  it('shows migration notice and empty detail tables', async () => {
+    vi.mocked(api.getDataFamilies).mockResolvedValue(overview(six(), { fetch_runs_ready: false }))
+    vi.mocked(api.getDataFamily).mockResolvedValue(detail({ runs: [], rows: [] }))
+    render(Data, { sub: 'bars' })
+    expect(await screen.findByText('迁移 024 未执行')).toBeTruthy()
+    expect(screen.getByRole('table', { name: '最近拉取' })).toHaveTextContent('无记录')
+    expect(screen.getByRole('table', { name: '逐目标覆盖' })).toHaveTextContent('无目标')
   })
 })
