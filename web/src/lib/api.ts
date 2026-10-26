@@ -1,3 +1,4 @@
+import type * as df from './data-families'
 export async function get<T>(path: string, options: { errorDetails?: boolean } = {}): Promise<T> {
   const r = await fetch(path, { headers: { Accept: 'application/json' }, cache: 'no-store' })
   if (!r.ok) {
@@ -107,6 +108,22 @@ export const runJob = (name: string, body: object = {}) =>
   post<{ run_id: string; status: string }>(`/api/jobs/${name}/run`, body)
 export const patchScheduledJob = (name: string, body: object) =>
   patch<unknown>(`/api/jobs/scheduled/${name}`, body)
+
+// data families (the Data menu; 503 details opt in so migration notices surface verbatim)
+export const getDataFamilies = () =>
+  get<df.DataOverview>('/api/data/families', { errorDetails: true })
+export const getDataFamily = (id: string) =>
+  get<df.FamilyDetail>(`/api/data/families/${encodeURIComponent(id)}`, { errorDetails: true })
+export const fetchDataFamily = (id: string, ticker?: string) =>
+  post<{ run_id: string; status: string }>(
+    `/api/data/families/${encodeURIComponent(id)}/fetch`, ticker ? { ticker } : {})
+export const browseData = (id: string, params: { ticker?: string; series?: string } = {}) => {
+  const q = new URLSearchParams()
+  if (params.ticker) q.set('ticker', params.ticker)
+  if (params.series) q.set('series', params.series)
+  return get<df.BrowseResult>(
+    `/api/data/browse/${encodeURIComponent(id)}?${q.toString()}`, { errorDetails: true })
+}
 
 // settings
 export const getNotifySettings = () => get<any>('/api/settings/notify')

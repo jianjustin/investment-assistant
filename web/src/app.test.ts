@@ -9,6 +9,22 @@ vi.mock('./lib/api', () => ({
   getWatchlist: vi.fn(async () => ({ rows: [] })),
   getOperations: vi.fn(async () => ({ operations: [] })),
   getServices: vi.fn(async () => ({})),
+  getDataFamilies: vi.fn(async () => ({
+    session: '2026-10-22',
+    evidence: '这里只展示采集事实。所有规则都未经验证（Phase 0 Gate HOLD）：数据完整不代表信号有效。',
+    fetch_runs_ready: true,
+    families: Object.entries({
+      bars: '日线', sec_filings: 'SEC 申报', news: '资讯', atr: 'ATR', fred: 'FRED 利差', universe: '纳指 100 范围',
+    }).map(([id, title]) => ({
+      id, title, purpose: `用途-${id}`,
+      kind: id === 'atr' ? 'derived' : id === 'universe' ? 'manual' : 'fetched',
+      fetch_via: id === 'atr' ? 'bars' : null,
+      per_ticker: ['bars', 'sec_filings', 'news'].includes(id),
+      job: null, coverage: { targets: 10, covered: 10, lagging: [] },
+      latest_at: '2026-10-22', last_run: null, last_success_at: null,
+      evidence: '这里只展示采集事实。所有规则都未经验证（Phase 0 Gate HOLD）：数据完整不代表信号有效。', notes: [],
+    })),
+  })),
   pollRun: vi.fn(async () => ({ status: 'done', result: {} })),
   getScheduledJobs: vi.fn(async () => ({ jobs: [], degraded: false })),
   getJobReports: vi.fn(async () => ({ reports: [], degraded: false })),
@@ -45,20 +61,22 @@ describe('app routing', () => {
     expect(getByRole('button', { name: /更多/ })).toBeInTheDocument()
   })
 
-  it('shows only tools and settings under more', async () => {
+  it('keeps tools and settings under more, with data in primary navigation', async () => {
     location.hash = '#tools'
-    const { getAllByText, queryByText } = render(App)
+    const { getAllByText, getByRole, queryByText } = render(App)
     expect(getAllByText('工具').length).toBeGreaterThan(0)
     expect(getAllByText('设置').length).toBeGreaterThan(0)
-    expect(queryByText('数据')).toBeNull()
+    expect(getByRole('link', { name: /数据/ })).toHaveAttribute('href', '#data')
     expect(queryByText('策略')).toBeNull()
     expect(queryByText('交易')).toBeNull()
   })
 
-  it('legacy data hash falls back to today', async () => {
+  it('legacy data hash opens the data overview rather than today', async () => {
     location.hash = '#data/us-research'
-    const { getAllByText, queryByText } = render(App)
-    expect(getAllByText('今日').length).toBeGreaterThan(0)
-    expect(queryByText('数据')).toBeNull()
+    const { findByRole, getAllByRole, getByRole, queryByRole } = render(App)
+    expect(await findByRole('heading', { name: '数据' })).toBeInTheDocument()
+    expect(getAllByRole('article')).toHaveLength(6)
+    expect(getByRole('link', { name: /数据/ })).toHaveAttribute('href', '#data')
+    expect(queryByRole('heading', { name: '今日' })).toBeNull()
   })
 })

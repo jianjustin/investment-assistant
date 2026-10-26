@@ -10,8 +10,10 @@ describe('parseHash', () => {
   it('falls back to today for unknown zone', () => {
     expect(parseHash('#nope')).toEqual({ zone: 'today', sub: undefined })
   })
-  it('legacy zones fall back to today', () => {
-    for (const hash of ['#data/signals', '#technicals/MU', '#strategy/scores', '#trade/macro']) {
+  it('routes the data zone; other legacy zones still fall back to today', () => {
+    expect(parseHash('#data')).toEqual({ zone: 'data', sub: undefined })
+    expect(parseHash('#data/signals')).toEqual({ zone: 'data', sub: 'signals' })
+    for (const hash of ['#technicals/MU', '#strategy/scores', '#trade/macro']) {
       expect(parseHash(hash)).toEqual({ zone: 'today', sub: undefined })
     }
   })

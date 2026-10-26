@@ -14,6 +14,7 @@
         { id: 'weekly', label: '周度复盘' },
       ],
     },
+    { id: 'data', label: '数据', icon: '🗄️' },
   ]
 
   // Shared-base entries stay reachable, folded under 更多.
