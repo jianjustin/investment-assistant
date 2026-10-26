@@ -37,7 +37,9 @@
 
   const reviewText = (t: wb.ScreenTrigger): string => {
     if (t.review === 'plan' && t.plan) {
-      return `入场 ${t.plan.entry_low}–${t.plan.entry_high} · 止损 ${t.plan.stop} · T1 ${t.plan.target1} · 建议 ${t.plan.shares} 股`
+      const shares = t.plan.shares != null ? `建议 ${t.plan.shares} 股`
+        : t.plan.sizing_status === 'no_equity' ? '缺资金快照，无法计算股数' : '无建议股数'
+      return `入场 ${t.plan.entry_low}–${t.plan.entry_high} · 止损 ${t.plan.stop} · T1 ${t.plan.target1} · ${shares}`
     }
     if (t.review === 'invalid') return `作废 ${t.invalid_reasons.join('、')}`
     return REVIEW_FALLBACK[t.review] ?? t.review

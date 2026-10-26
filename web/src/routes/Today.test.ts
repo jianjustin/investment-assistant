@@ -514,6 +514,18 @@ describe('今日 · 筛选卡片', () => {
     expect(await screen.findByText(/S11/)).toBeInTheDocument()
   })
 
+  it('screen trigger without an equity snapshot shows no null shares', async () => {
+    const report = screenReport({ triggers: [
+      { ticker: 'T1', rule_ids: ['trend_reclaim'], rs: 0.12, review: 'plan',
+        plan: { entry_low: 98.5, entry_high: 101.5, stop: 94, target1: 112, shares: null,
+                sizing_status: 'no_equity' }, invalid_reasons: [] }] })
+    respond = async () => json({ session: '2026-10-22', units: [], holdings: [], screen: report })
+    render(Today)
+    const card = await screen.findByRole('region', { name: '筛选' })
+    expect(card).toHaveTextContent('T1 112 · 缺资金快照，无法计算股数')
+    expect(card).not.toHaveTextContent('null')
+  })
+
   it('screen units carry a badge', async () => {
     respond = async () => json({ session: '2026-10-22', units: [
       unit({ ticker: 'U00', source: 'screen' }), unit({ ticker: 'NVDA', source: 'watchlist' })],

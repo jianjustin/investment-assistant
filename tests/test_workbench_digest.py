@@ -408,6 +408,16 @@ def test_screen_message_shapes():
     assert '移出 1' in fields['概览'] and '成员 20/40' in fields['概览']
 
 
+def test_screen_message_without_equity_snapshot():
+    # The real database had no equity snapshot: shares is None and must not print as "None".
+    report = screen_report()
+    report['triggers'][0]['plan'].update(shares=None, sizing_status='no_equity')
+    fields = {f.name: f.value for f in templates.workbench_digest(build(screen=report))[4].fields}
+    line = fields['今日触发 → 复核']
+    assert 'T1 112 · 缺资金快照，无法计算股数' in line
+    assert 'None' not in line and '建议' not in line
+
+
 def test_screen_message_none_and_error():
     msgs = templates.workbench_digest(build())
     assert len(msgs) == 5

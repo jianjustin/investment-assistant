@@ -184,6 +184,13 @@ def workbench_digest(digest: dict) -> list[Notification]:
     return [overview_msg, plans_msg, holdings_msg, pending_msg, _screen_message(session, digest.get('screen'))]
 
 
+def _screen_shares(plan: dict) -> str:
+    """Suggested size of a screen trigger's plan; no shares without an equity snapshot."""
+    if plan.get('shares') is not None:
+        return f"建议 {plan['shares']} 股"
+    return '缺资金快照，无法计算股数' if plan.get('sizing_status') == 'no_equity' else '无建议股数'
+
+
 def _screen_message(session: str, screen: dict | None):
     """The fifth message: the daily screen report (§9.1)."""
     fields: list[NotifyField] = []
@@ -209,7 +216,7 @@ def _screen_message(session: str, screen: dict | None):
         plan = t.get('plan') or {}
         if t.get('review') == 'plan':
             outcome = (f"入场 {plan.get('entry_low')}–{plan.get('entry_high')} · 止损 {plan.get('stop')}"
-                       f" · T1 {plan.get('target1')} · 建议 {plan.get('shares')} 股")
+                       f" · T1 {plan.get('target1')} · {_screen_shares(plan)}")
         elif t.get('review') == 'invalid':
             outcome = '作废 ' + '、'.join(str(r) for r in t.get('invalid_reasons') or [])
         else:
