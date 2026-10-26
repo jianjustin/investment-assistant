@@ -1344,6 +1344,14 @@ def test_no_record_trigger_writes_nothing(db):
     assert db.execute('SELECT count(*) FROM data_fetch_runs').fetchone()[0] == 0
 
 
+def test_explicit_tickers_write_four_families_only(db):
+    summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()),
+                                record_trigger='scheduled')
+    recorded = {row[0] for row in db.execute('SELECT family FROM data_fetch_runs').fetchall()}
+    assert recorded == {'bars', 'news', 'sec_filings', 'fred'}   # 没有筛选就没有 universe 行
+    assert summary['data_status'] == {'written': 4, 'error': None}
+
+
 def test_task_run_passes_trigger(db):
     from investment_assistant.workbench import families
     seed_watchlist(db, [('NVDA', ['core'])])
