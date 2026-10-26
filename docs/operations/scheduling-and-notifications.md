@@ -37,7 +37,7 @@
 
 工作台批处理（定时与手动）在采集阶段按固定顺序（`bars`、`news`、`sec_filings`、`fred`）持有会话级 Postgres advisory lock（键 `hashtext('data_family:<id>')`，专用连接、用完即放），避免与数据菜单的手动拉取同时写同一张数据表；`universe` 只读范围文件，不加锁。锁跨进程有效，命令行运行的批处理同样遵守。
 
-采集阶段结束后（区制阶段之前），每个已记录的数据族向 `data_fetch_runs` 各追加一行（`job = workbench`，`trigger` 为 `scheduled` / `manual_batch`；显式 `tickers`/`pool` 的调用不写记录，也没有 `universe` 行）。写入在独立事务里，失败（包括迁移 024 未执行）只记在运行报告的 `summary.data_status`，不影响批处理结果。表结构与状态口径见[数据基础设计](../specs/2026-10-26-v2.3-data-foundation-design.md)。
+采集阶段结束后（区制阶段之前），每个已记录的数据族向 `data_fetch_runs` 各追加一行（`job = workbench`，`trigger` 为 `scheduled` / `manual_batch`；显式 `tickers`/`pool` 的调用只写 `bars`、`news`、`sec_filings`、`fred` 四行，没有 `universe` 行）。写入在独立事务里，失败（包括迁移 024 未执行）只记在运行报告的 `summary.data_status`，不影响批处理结果。表结构与状态口径见[数据基础设计](../specs/2026-10-26-v2.3-data-foundation-design.md)。
 
 ## 通知
 
