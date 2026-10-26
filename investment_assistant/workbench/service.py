@@ -294,6 +294,7 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
     # The screen stage: Nasdaq-100 candidates join the extended pool with source 'screen'.
     # Explicit tickers/pool stay a manual override and skip it entirely.
     stage = None
+    manual_pool = pool
     if explicit:
         summary['screen'] = {'status': 'skipped', 'reason': 'explicit_pool'}
     else:
@@ -306,7 +307,9 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         pool = pool_module.with_screen(pool, stage['members'])
         with _tx() as conn:
             tier_changes = _sync_pool(conn, pool, session, now)
-        summary['pool'] = {**summary['pool'], 'extended': len(pool.extended),
+        # A held screen member is in the pool now; run it once, not again as an off-pool holding.
+        held = [t for t in held if t not in pool.tickers]
+        summary['pool'] = {**summary['pool'], 'extended': len(pool.extended), 'holdings': len(held),
                            'screen': len(stage['members']), 'changes': tier_changes}
     all_tickers = [*pool.tickers, *held]
     if not pool.core:
@@ -401,7 +404,7 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
             if breadth_tickers is not None:
                 breadth_sample = list(breadth_tickers)
             elif stage is not None:
-                breadth_sample, breadth_notes = _breadth_tickers(pool, stage['universe'])
+                breadth_sample, breadth_notes = _breadth_tickers(manual_pool, stage['universe'])
                 summary['errors'].extend(breadth_notes)
             else:
                 breadth_sample = watchlist
@@ -653,9 +656,16 @@ def push_closed(*, now: datetime, notify_cfg, client=None) -> dict[str, Any]:
 
 
 def screen_view(*, now: datetime, session: date | None = None, full: bool = False) -> dict[str, Any]:
-    """The screen report of one session (default the latest closed); None when no run exists."""
-    session = session if session is not None else bars.latest_closed_session(now)
+    """The screen report of one session (default the newest run, spec §9.2); None when no run exists.
+
+    The newest run, not the latest closed session: between the New York close and the
+    batch the closed session has no run yet, and the page should keep showing the last one."""
     with _tx() as conn:
+        if session is None:
+            run = repository.latest_screen_run(conn, session=None)
+            if run is None:
+                return {'report': None}
+            session = run['session']
         return {'report': screening.report(conn, session, now=now, full=full)}
 
 

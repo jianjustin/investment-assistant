@@ -64,11 +64,15 @@ def _collect(conn_factory, *, session: date, now: datetime, targets: list[str],
 def _pick_members(conn, *, session: date, now: datetime, manual: pool_module.Pool,
                   selected_today: list[str]) -> tuple[tuple[str, ...], list[str], list[str]]:
     """Members by spec §6.2 plus the hard pool cap: `100 - manual` outranks even locked
-    picks, so a full manual pool can never make with_screen raise and kill the batch."""
+    picks, so a full manual pool can never make with_screen raise and kill the batch.
+
+    A lock (valid plan or open position) only keeps tickers that came from the screen;
+    off-pool holdings and plans of never-screened tickers do not become screen members."""
     recent = repository.screen_selected_since(
         conn, add_trading_days(session, -(screen.RETENTION_SESSIONS - 1)),
         add_trading_days(session, -1))
-    locked = repository.locked_screen_tickers(conn, session, cutoff_at=now)
+    screened = repository.screen_lockable_tickers(conn) | set(recent) | set(selected_today)
+    locked = repository.locked_screen_tickers(conn, session, cutoff_at=now) & screened
     hard_cap = pool_module.MAX_POOL - len(manual.tickers)
     picked = screen.members(selected_today=selected_today, recent=recent, locked=locked,
                             manual=set(manual.tickers), cap=min(screen.MAX_MEMBERS, hard_cap))
@@ -78,13 +82,6 @@ def _pick_members(conn, *, session: date, now: datetime, manual: pool_module.Poo
         evicted = list(members[hard_cap:]) + evicted
         members = members[:hard_cap]
     return members, evicted, flags
-
-
-def _carryover_members(conn, *, session: date, now: datetime,
-                       manual: pool_module.Pool) -> tuple[tuple[str, ...], list[str]]:
-    """Members for a failed run: the locked and retention-window tickers, nothing new."""
-    members, _, _ = _pick_members(conn, session=session, now=now, manual=manual, selected_today=[])
-    return members
 
 
 def _stamp(summary: dict[str, Any], clock) -> None:
@@ -125,6 +122,8 @@ def run_stage(*, session: date, now: datetime, manual: pool_module.Pool, held: l
     fetched: set[str] = set()
 
     def fail(error: str) -> dict[str, Any]:
+        """Carry the locked and retention-window members, nothing new. A loaded universe
+        still goes back for the regime breadth: only an unreadable one falls back."""
         summary['status'] = 'error'
         summary['error'] = error
         _stamp(summary, clock)
@@ -138,7 +137,7 @@ def run_stage(*, session: date, now: datetime, manual: pool_module.Pool, held: l
         summary['members'] = list(members)
         _persist(conn_factory, session=session, now=now, run_id=run_id, universe_=universe_,
                  status='error', summary=summary, results=[])
-        return {'status': 'error', 'members': members, 'fetched': fetched, 'universe': None,
+        return {'status': 'error', 'members': members, 'fetched': fetched, 'universe': universe_,
                 'fetch_failures': [], 'summary': summary}
 
     try:
@@ -157,9 +156,6 @@ def run_stage(*, session: date, now: datetime, manual: pool_module.Pool, held: l
                                                   cutoff_at=now, limit=300)
             previous = {t for t, row in repository.pool_latest(conn).items()
                         if row.get('source') == 'screen' and row['tier'] != 'removed'}
-            members, evicted, member_flags = _pick_members(
-                conn, session=session, now=now, manual=manual,
-                selected_today=summary['selected'])
         out = screen.evaluate(session=session, bars_by_ticker=bars_by_ticker,
                               benchmark_bars=benchmark_bars, earnings_by_ticker=earnings_by_ticker)
         summary['counts'] = out['counts']

@@ -444,6 +444,22 @@ def test_locked_screen_tickers(workbench_db):
     assert repository.locked_screen_tickers(workbench_db, session, cutoff_at=cutoff) == {'OKP', 'HELD'}
 
 
+def test_screen_lockable_tickers(workbench_db):
+    from investment_assistant.workbench import repository
+    day1, day2 = date(2026, 10, 21), date(2026, 10, 22)
+    repository.insert_pool_tiers(workbench_db, [
+        {'ticker': 'SCR', 'tier': 'extended', 'sector_etf': None, 'source': 'screen'},
+        {'ticker': 'FLIP', 'tier': 'extended', 'sector_etf': None, 'source': 'screen'},
+        {'ticker': 'OLD', 'tier': 'extended', 'sector_etf': None, 'source': 'screen'},
+        {'ticker': 'MAN', 'tier': 'core', 'sector_etf': None}], session=day1, now=NOW)
+    repository.insert_pool_tiers(workbench_db, [
+        {'ticker': 'FLIP', 'tier': 'extended', 'sector_etf': None, 'source': 'watchlist'},
+        {'ticker': 'OLD', 'tier': 'removed', 'sector_etf': None, 'source': 'screen'}],
+        session=day2, now=NOW + timedelta(days=1))
+    # Screen members now, and picks flipped to the watchlist; never the manual-only or removed.
+    assert repository.screen_lockable_tickers(workbench_db) == {'SCR', 'FLIP'}
+
+
 def test_pool_entry_at_respects_effective_session_and_cutoff(workbench_db):
     from datetime import timedelta
     from investment_assistant.workbench import repository

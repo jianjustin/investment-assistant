@@ -265,6 +265,98 @@ def test_universe_missing_carries_members(offline):
     batch = service.run_batch(now=evening(day3), deps=make_deps(ScreenSources(qqq_last=add_trading_days(S1, 1))))
     assert batch['screen']['error'] == 'benchmark_missing'
     assert sorted(batch['screen']['members']) == sorted(baseline['screen']['members'])
+    assert 'regime_universe_missing' not in batch['errors']    # the universe itself loaded fine
+
+
+def _regime_sample(monkeypatch):
+    from investment_assistant.workbench import regime
+    seen = []
+    real = regime.snapshot
+
+    def spy(**kwargs):
+        seen.append(sorted(kwargs['pool_bars']))
+        return real(**kwargs)
+    monkeypatch.setattr(regime, 'snapshot', spy)
+    return seen
+
+
+def test_regime_breadth_sample_on_screen_errors(offline, monkeypatch):
+    seed_watchlist(offline)
+    deps = make_deps()
+    service.run_batch(now=evening(S1), deps=deps)
+    seen = _regime_sample(monkeypatch)
+
+    def broken_loader():
+        raise universe_module.UniverseError('config/universes/missing.json: cannot read')
+
+    # Unreadable universe: the manual pool alone, not the carried screen members.
+    day1 = add_trading_days(S1, 1)
+    batch = service.run_batch(now=evening(day1),
+                              deps=service.Deps(bar_fetcher=deps.bar_fetcher, news_fetcher=deps.news_fetcher,
+                                                filing_source=deps.filing_source,
+                                                earnings_fetcher=deps.earnings_fetcher,
+                                                universe_loader=broken_loader))
+    assert batch['screen']['members'] and seen[-1] == ['SYNTH']
+    # Missing QQQ: the universe loaded, so breadth keeps the universe sample.
+    day2 = add_trading_days(S1, 2)
+    batch = service.run_batch(now=evening(day2), deps=make_deps(ScreenSources(qqq_last=S1)))
+    assert batch['screen']['error'] == 'benchmark_missing'
+    assert set(seen[-1]) == set(UNIVERSE_TICKERS)
+
+
+class CountingSources(ScreenSources):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.news_calls = []
+
+    def news(self, ticker):
+        self.news_calls.append(ticker)
+        return []
+
+
+def _buy(conn, ticker, day):
+    import uuid
+    from decimal import Decimal
+    repository.insert_trade(conn, {
+        'request_id': uuid.uuid4(), 'ticker': ticker, 'side': 'buy', 'quantity': Decimal('10'),
+        'price': Decimal('100'), 'fee': Decimal('0'),
+        'executed_at': datetime.combine(day, time(15, 0), tzinfo=NY), 'decision_id': None, 'note': None},
+        'h', recorded_at=datetime.combine(day, time(16, 0), tzinfo=NY))
+    conn.commit()
+
+
+def test_off_pool_holding_stays_out_of_screen(offline):
+    # SYNB is held but never screened: it joins the batch as a holding, not as a screen member.
+    seed_watchlist(offline)
+    _buy(offline, 'SYNB', add_trading_days(S1, -5))
+    sources = CountingSources()
+    batch = service.run_batch(now=evening(S1), deps=make_deps(sources))
+    assert 'SYNB' not in batch['screen']['members']
+    assert batch['pool']['holdings'] == 1 and 'SYNB' in batch['tickers']
+    assert offline.execute("SELECT count(*) FROM pool_tiers WHERE ticker = 'SYNB'").fetchone()[0] == 0
+    assert sources.news_calls.count('SYNB') == 1
+
+
+def test_held_screen_member_runs_once(offline):
+    # U00 is picked on S1, bought, and drops out of every condition: the position keeps it
+    # a member past the retention window, and the batch runs it once, not again as a holding.
+    seed_watchlist(offline)
+    service.run_batch(now=evening(S1), deps=make_deps())
+    _buy(offline, 'U00', add_trading_days(S1, 1))
+    sources = CountingSources()
+    batch = service.run_batch(now=evening(add_trading_days(S1, 10)), deps=make_deps(sources))
+    assert 'U00' in batch['screen']['members'] and 'U00' not in batch['screen']['removed']
+    assert batch['pool']['holdings'] == 0
+    assert sources.news_calls.count('U00') == 1
+
+
+def test_screen_view_defaults_to_newest_run(offline):
+    # Before the next batch runs, the latest closed session has no run yet: show the last one.
+    seed_watchlist(offline)
+    service.run_batch(now=evening(S1), deps=make_deps())
+    report = service.screen_view(now=evening(add_trading_days(S1, 1)))['report']
+    assert report is not None and report['session'] == S1.isoformat()
+    assert service.screen_view(now=evening(S1), session=add_trading_days(S1, 1))['report'] is None
 
 
 def test_universe_stale_flag(offline):

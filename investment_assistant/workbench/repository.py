@@ -760,6 +760,19 @@ def locked_screen_tickers(conn, session: date, *, cutoff_at: datetime) -> set[st
     return tickers
 
 
+def screen_lockable_tickers(conn) -> set[str]:
+    """Tickers a lock may keep as screen members: still in the pool by their newest row and
+    screen-sourced at some point (a screen member now, or a pick since flipped to the watchlist).
+
+    Off-pool holdings and plans of tickers that never came from the screen stay out."""
+    rows = conn.execute(
+        'SELECT ticker FROM (SELECT DISTINCT ON (ticker) ticker, tier FROM pool_tiers '
+        '  ORDER BY ticker, effective_session DESC, recorded_at DESC, id DESC) latest '
+        "WHERE tier <> 'removed' AND EXISTS "
+        "  (SELECT 1 FROM pool_tiers p WHERE p.ticker = latest.ticker AND p.source = 'screen')").fetchall()
+    return {row[0] for row in rows}
+
+
 def _open_position_tickers(conn) -> set[str]:
     from investment_assistant.workbench import positions
 
