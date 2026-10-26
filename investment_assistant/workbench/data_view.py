@@ -1,23 +1,31 @@
-"""Use cases behind the Data menu (design 2026-10-26 §7): the manual single-family fetch.
+"""Use cases behind the Data menu (design 2026-10-26 §7–8).
 
-start_fetch is the route's entry: validate, refuse when migration 024 has not run,
-probe the family's advisory lock (409 when held) and submit the background job.
-run_fetch is that job: hold the lock (universe only reads a file and takes none),
-run the shared collectors over the family's targets, and append exactly one
-data_fetch_runs row — no rules, plans, candidates, pool changes, pushes or
-job_reports. The read half of the menu lives here too, in later tasks.
+The fetch half: start_fetch is the route's entry — validate, refuse when migration
+024 has not run, probe the family's advisory lock (409 when held) and submit the
+background job. run_fetch is that job: hold the lock (universe only reads a file
+and takes none), run the shared collectors over the family's targets, and append
+exactly one data_fetch_runs row — no rules, plans, candidates, pool changes,
+pushes or job_reports.
+
+The read half: overview (six family cards), family_detail (card, the last 20
+fetch runs, one coverage row per target) and browse (raw values over a fixed
+window). All three run in one read-only transaction and never collect: a missing
+ticker shows as「无数据」, not as a fetch or an error.
 """
 from __future__ import annotations
 
+import json
 import os
-from contextlib import ExitStack
-from datetime import UTC, datetime
-from typing import Any, Callable
+from contextlib import ExitStack, contextmanager
+from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
+from typing import Any, Callable, Iterator
 
+from investment_assistant import db
 from investment_assistant.data import identity
 from investment_assistant.tasks import runner
 from investment_assistant.workbench import bars as bars_module
-from investment_assistant.workbench import collect, families, repository, service
+from investment_assistant.workbench import collect, families, plans, repository, service
 from investment_assistant.workbench import macro as macro_module
 from investment_assistant.workbench import universe as universe_module
 
@@ -164,3 +172,284 @@ def _reload_universe(*, session, deps: service.Deps) -> collect.Tally:
     tally.detail.update(name=loaded.name, as_of=loaded.as_of, tickers=len(loaded.tickers),
                         stale=universe_module.is_stale(loaded, session))
     return tally
+
+
+# ---------------------------------------------------------------- read half (v2.3 §8)
+
+# Browse windows are fixed display definitions (spec §8), never rule parameters.
+BROWSE_BARS_LIMIT = 120
+BROWSE_ATR_LIMIT = 60
+BROWSE_NEWS_DAYS = 60
+BROWSE_FILINGS_DAYS = 180
+BROWSE_FRED_LIMIT = 120
+BROWSE_NEWS_LIMIT = 200          # 展示上限；窗口本身由 BROWSE_NEWS_DAYS 决定
+BAR_NOTE = '拆股调整、未分红调整；adj_close 全调整'
+ATR_NOTE = '现算，与 `plan-1` 同一函数；不入库'
+
+
+@contextmanager
+def _read_tx() -> Iterator[Any]:
+    """Read-only transaction for the menu's GET use cases (spec §8 只读性).
+
+    SET TRANSACTION READ ONLY comes first, so the database itself refuses any
+    write; commit on the way out simply ends the read-only transaction."""
+    import psycopg
+
+    try:
+        with service.connection() as conn:
+            conn.execute('SET TRANSACTION READ ONLY')
+            missing = repository.missing_tables(conn)
+            if missing:
+                raise service.Unavailable('工作台数据表未就绪（需执行迁移 016–020）：' + ', '.join(missing))
+            try:
+                yield conn
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+    except psycopg.OperationalError:
+        raise service.Unavailable('数据库不可达') from None
+
+
+def _ny_midnight(day: date) -> datetime:
+    return datetime.combine(day, time(), tzinfo=service.NY)
+
+
+def _latest_map(conn, family_id: str, targets: list[str], *, now: datetime) -> dict[str, Any]:
+    """Per target the family's newest data point visible at ``now`` (spec §4「最新时点」)."""
+    if not targets:
+        return {}
+    if family_id in ('bars', 'atr'):
+        return repository.latest_bar_dates(conn, targets, cutoff_at=now)
+    if family_id == 'news':
+        return repository.latest_news_at(conn, targets, cutoff_at=now)
+    if family_id == 'sec_filings':
+        return repository.latest_filing_dates(conn, targets, cutoff_at=now)
+    return repository.latest_macro_dates(conn, targets, cutoff_at=now)
+
+
+def _last_run_view(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {'status': row['status'], 'trigger': row['trigger'], 'scope': row['scope'],
+            'ticker': row['ticker'], 'finished_at': row['finished_at'],
+            'ok_count': row['ok_count'], 'target_count': row['target_count'],
+            'failures': (row['failures'] or [])[:5]}
+
+
+def _card(conn, family: families.Family, *, session: date, now: datetime, jobs, latest_runs,
+          success_at) -> dict[str, Any]:
+    """One family's overview card: coverage and freshness computed at read time."""
+    notes: list[str] = []
+    if family.id == 'universe':
+        try:
+            loaded = universe_module.load()
+        except universe_module.UniverseError:
+            notes.append('universe_unavailable')   # 范围文件不可读：覆盖 0、时点为空，不影响其他卡
+            coverage, latest_at = {'targets': 0, 'covered': 0, 'lagging': []}, None
+        else:
+            coverage = {'targets': len(loaded.tickers), 'covered': len(loaded.tickers), 'lagging': []}
+            latest_at = loaded.as_of
+            if universe_module.is_stale(loaded, session):
+                notes.append('universe_stale')
+    else:
+        targets, target_notes = families.targets(conn, family.id)
+        notes.extend(target_notes)
+        latest = _latest_map(conn, family.id, targets, now=now)
+        counts = (repository.bar_counts(conn, targets, end_date=session, cutoff_at=now)
+                  if family.id == 'atr' else None)
+        coverage = families.coverage(family.id, targets, latest, session=session, bar_counts=counts)
+        latest_at = max(latest.values()) if latest else None
+        if family.id == 'sec_filings':
+            notes.append('no_filing_is_not_missing')   # 无申报 ≠ 缺数据
+    recorded = 'bars' if family.id == 'atr' else family.id   # atr 从不单独拉取
+    job_row = jobs.get(family.job)
+    return {
+        'id': family.id, 'title': family.title, 'purpose': family.purpose, 'kind': family.kind,
+        'fetch_via': family.fetch_via, 'per_ticker': family.per_ticker,
+        'job': ({'name': job_row['name'], 'enabled': job_row['enabled'],
+                 'next_run_at': job_row['next_run_at']} if job_row is not None else None),
+        'coverage': coverage, 'latest_at': latest_at,
+        'last_run': _last_run_view(latest_runs.get(recorded)),
+        'last_success_at': success_at.get(recorded),
+        'evidence': (families.EVIDENCE + ' ' + families.ATR_EVIDENCE
+                     if family.id == 'atr' else families.EVIDENCE),
+        'notes': notes,
+    }
+
+
+def overview(*, now: datetime) -> dict[str, Any]:
+    """The Data menu's overview: six family cards, everything computed at read time."""
+    session = bars_module.latest_closed_session(now)
+    with _read_tx() as conn:
+        jobs = {job['name']: job for job in db.list_scheduled_jobs(conn)}
+        ready = repository.fetch_runs_ready(conn)
+        latest_runs = repository.latest_fetch_runs(conn) if ready else {}
+        success_at = repository.last_success_at(conn) if ready else {}
+        cards = [_card(conn, family, session=session, now=now, jobs=jobs,
+                       latest_runs=latest_runs, success_at=success_at)
+                 for family in families.FAMILIES]
+    return {'session': session, 'evidence': families.EVIDENCE, 'fetch_runs_ready': ready,
+            'families': cards}
+
+
+def _last_failures(runs: list[dict[str, Any]], targets: list[str]) -> dict[str, str]:
+    """Per target the newest failure reason among ``runs`` (newest first);
+    a whole-family failure ('*') counts for every target."""
+    failure: dict[str, str] = {}
+    for row in runs:
+        for entry in row['failures'] or []:
+            reason = entry.get('reason')
+            if entry.get('target') == '*':
+                for target in targets:
+                    failure.setdefault(target, reason)
+            else:
+                failure.setdefault(entry.get('target'), reason)
+    return failure
+
+
+def _detail_rows(conn, family: families.Family, *, runs: list[dict[str, Any]],
+                 session: date, now: datetime) -> list[dict[str, Any]]:
+    """One row per target: its latest point, whether it lags, its newest failure."""
+    if family.id == 'universe':
+        return []
+    targets, _ = families.targets(conn, family.id)
+    if not targets:
+        return []
+    latest = _latest_map(conn, family.id, targets, now=now)
+    counts = (repository.bar_counts(conn, targets, end_date=session, cutoff_at=now)
+              if family.id == 'atr' else None)
+    failure = _last_failures(runs, targets)
+    return [{'target': target,
+             'latest_at': latest.get(target),
+             'lagging': families.lagging(family.id, latest.get(target), session=session,
+                                         bar_count=None if counts is None else counts.get(target)),
+             'last_failure': failure.get(target)} for target in targets]
+
+
+def family_detail(family_id: str, *, now: datetime) -> dict[str, Any]:
+    """One family's card plus its last 20 fetch runs and per-target coverage table."""
+    family = families.get(family_id)   # 未知族 LookupError
+    session = bars_module.latest_closed_session(now)
+    recorded = 'bars' if family.id == 'atr' else family.id
+    with _read_tx() as conn:
+        jobs = {job['name']: job for job in db.list_scheduled_jobs(conn)}
+        ready = repository.fetch_runs_ready(conn)
+        latest_runs = repository.latest_fetch_runs(conn) if ready else {}
+        success_at = repository.last_success_at(conn) if ready else {}
+        card = _card(conn, family, session=session, now=now, jobs=jobs,
+                     latest_runs=latest_runs, success_at=success_at)
+        runs = repository.fetch_runs(conn, recorded, 20) if ready else []
+        rows = _detail_rows(conn, family, runs=runs, session=session, now=now)
+    return {'card': card, 'runs': runs, 'rows': rows}
+
+
+def browse(family_id: str, *, now: datetime, ticker: str | None = None,
+           series: str | None = None) -> dict[str, Any]:
+    """Raw values of one family over its fixed window (spec §8); never collects.
+
+    A never-collected ticker is an empty result, not an error; a per-ticker family
+    without its ``ticker`` argument and an unknown FRED series are ValueErrors."""
+    family = families.get(family_id)   # 未知族 LookupError
+    session = bars_module.latest_closed_session(now)
+    if family.id == 'fred':
+        if series is None:
+            raise ValueError('FRED 浏览需要 series 参数')
+        if series not in macro_module.MACRO_SERIES:
+            raise ValueError(f'未知序列：{series}')
+        key = series
+    elif family.id != 'universe':
+        if ticker is None:
+            raise ValueError('该族浏览需要 ticker 参数')
+        key = ticker.strip().upper()
+    else:
+        key = None
+    with _read_tx() as conn:
+        if family.id == 'bars':
+            return _browse_bars(conn, key, session=session, now=now)
+        if family.id == 'atr':
+            return _browse_atr(conn, key, session=session, now=now)
+        if family.id == 'news':
+            return _browse_news(conn, key, session=session, now=now)
+        if family.id == 'sec_filings':
+            return _browse_filings(conn, key, session=session, now=now)
+        if family.id == 'fred':
+            return _browse_fred(conn, key, session=session, now=now)
+        return _browse_universe(conn, now=now)
+
+
+def _browse_bars(conn, ticker: str, *, session: date, now: datetime) -> dict[str, Any]:
+    bars_ = repository.read_bars(conn, ticker, session, cutoff_at=now, limit=BROWSE_BARS_LIMIT)
+    revisions = (repository.bar_revision_counts(conn, ticker, since=bars_[0]['price_date'],
+                                                cutoff_at=now) if bars_ else {})
+    rows = [{'price_date': bar['price_date'], 'open': bar['open'], 'high': bar['high'],
+             'low': bar['low'], 'close': bar['close'], 'adj_close': bar['adj_close'],
+             'volume': bar['volume'], 'split_factor': bar['split_factor'],
+             'revisions': revisions.get(bar['price_date'], 0),
+             'fetched_at': bar['fetched_at'], 'note': BAR_NOTE}
+            for bar in reversed(bars_)]   # 新到旧；每日取截至现在的最新修订
+    return {'family': 'bars', 'key': ticker, 'has_data': bool(rows), 'rows': rows}
+
+
+def _browse_atr(conn, ticker: str, *, session: date, now: datetime) -> dict[str, Any]:
+    bars_ = repository.read_bars(conn, ticker, session, cutoff_at=now,
+                                 limit=BROWSE_ATR_LIMIT + plans.MIN_BARS)
+    values = []
+    for i in range(len(bars_)):
+        atr = plans.atr14(bars_[:i + 1])   # 截至该日的日线，与 plan-1 同一函数
+        if atr is not None:
+            close = bars_[i]['close']
+            values.append({'price_date': bars_[i]['price_date'], 'close': close,
+                           'atr': float(atr), 'atr_pct': float(atr) / close})
+    return {'family': 'atr', 'key': ticker, 'has_data': bool(values),
+            'rows': values[-BROWSE_ATR_LIMIT:], 'note': ATR_NOTE}
+
+
+def _browse_news(conn, ticker: str, *, session: date, now: datetime) -> dict[str, Any]:
+    rows = repository.read_news(conn, ticker, cutoff_at=now,
+                                since=_ny_midnight(session - timedelta(days=BROWSE_NEWS_DAYS)),
+                                limit=BROWSE_NEWS_LIMIT)
+    return {'family': 'news', 'key': ticker, 'has_data': bool(rows), 'rows': rows}
+
+
+def _browse_filings(conn, ticker: str, *, session: date, now: datetime) -> dict[str, Any]:
+    since = session - timedelta(days=BROWSE_FILINGS_DAYS)
+    filings = repository.read_filings(conn, ticker, since=since, cutoff_at=now)
+    known = {row['accession_number'].replace('-', '') for row in filings}
+    news = repository.read_news(conn, ticker, cutoff_at=now, since=_ny_midnight(since),
+                                limit=BROWSE_NEWS_LIMIT)
+    sec_8k = [item for item in news
+              if item['source'] == 'sec_8k' and not any(acc in item['url'] for acc in known)]
+    return {'family': 'sec_filings', 'key': ticker, 'has_data': bool(filings or sec_8k),
+            'rows': len(filings) + len(sec_8k), 'filings': filings, 'sec_8k': sec_8k}
+
+
+def _browse_fred(conn, series_id: str, *, session: date, now: datetime) -> dict[str, Any]:
+    obs = repository.read_macro(conn, series_id, end_date=session, cutoff_at=now,
+                                limit=BROWSE_FRED_LIMIT)
+    revisions = repository.macro_revision_counts(conn, series_id, cutoff_at=now)
+    rows = [{'obs_date': row['obs_date'], 'value': float(row['value']),
+             'revisions': revisions.get(row['obs_date'], 0)} for row in obs]
+    return {'family': 'fred', 'key': series_id, 'has_data': bool(rows), 'rows': rows}
+
+
+def _universe_note() -> str | None:
+    """The range file's free-form note; load() has already proved the file readable."""
+    try:
+        raw = json.loads(Path(universe_module.DEFAULT_PATH).read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return raw.get('note')
+
+
+def _browse_universe(conn, *, now: datetime) -> dict[str, Any]:
+    try:
+        loaded = universe_module.load()
+    except universe_module.UniverseError:
+        return {'family': 'universe', 'key': None, 'has_data': False, 'rows': [], 'meta': None,
+                'notes': ['universe_unavailable']}
+    latest = repository.latest_bar_dates(conn, list(loaded.tickers), cutoff_at=now)
+    rows = [{'ticker': ticker, 'latest_bar': latest.get(ticker)} for ticker in loaded.tickers]
+    return {'family': 'universe', 'key': None, 'has_data': bool(rows), 'rows': rows,
+            'meta': {'name': loaded.name, 'as_of': loaded.as_of, 'source': loaded.source,
+                     'note': _universe_note()}}

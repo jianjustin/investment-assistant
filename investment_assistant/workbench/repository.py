@@ -1076,3 +1076,19 @@ def latest_macro_dates(conn, series_ids, *, cutoff_at: datetime) -> dict[str, da
                       'WHERE series_id = ANY(%s) AND fetched_at <= %s GROUP BY series_id',
                 (list(series_ids), cutoff_at))
     return {row['series_id']: row['latest'] for row in rows}
+
+
+def bar_revision_counts(conn, ticker: str, *, since: date, cutoff_at: datetime) -> dict[date, int]:
+    """Per price_date from ``since`` on, how many revisions were known by ``cutoff_at``."""
+    rows = conn.execute('SELECT price_date, count(*) FROM price_bars '
+                        'WHERE ticker = %s AND price_date >= %s AND fetched_at <= %s '
+                        'GROUP BY price_date', (ticker.upper(), since, cutoff_at)).fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
+def macro_revision_counts(conn, series_id: str, *, cutoff_at: datetime) -> dict[date, int]:
+    """Per obs_date how many revisions of the series were known by ``cutoff_at``."""
+    rows = conn.execute('SELECT obs_date, count(*) FROM macro_observations '
+                        'WHERE series_id = %s AND fetched_at <= %s GROUP BY obs_date',
+                        (series_id, cutoff_at)).fetchall()
+    return {row[0]: row[1] for row in rows}
