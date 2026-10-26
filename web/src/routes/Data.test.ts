@@ -296,6 +296,22 @@ describe('Data 详情', () => {
     expect(api.browseData).toHaveBeenLastCalledWith('bars', { ticker: 'NVDA' })
   })
 
+  it('refreshes the current detail when an overview fetch finishes after navigation', async () => {
+    let finish!: (value: api.RunRecord) => void
+    vi.mocked(api.pollRun).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    const view = render(Data)
+    const bars = within(await screen.findByRole('article', { name: '日线' }))
+    await fireEvent.click(bars.getByRole('button', { name: '拉取' }))
+    await waitFor(() => expect(api.pollRun).toHaveBeenCalledTimes(1))
+    await view.rerender({ sub: 'bars' })
+    await screen.findByRole('table', { name: '逐目标覆盖' })
+    finish({ run_id: 'r1', status: 'done', result: { status: 'success' } })
+    await waitFor(() => expect(api.getDataFamilies).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(api.getDataFamily).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('table', { name: '逐目标覆盖' })).toBeTruthy()
+    expect(screen.getAllByRole('article')).toHaveLength(1)
+  })
+
   it('shows detail backend errors instead of a placeholder', async () => {
     vi.mocked(api.getDataFamily).mockRejectedValue(new Error('数据库不可达'))
     render(Data, { sub: 'news' })

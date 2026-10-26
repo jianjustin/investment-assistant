@@ -121,7 +121,7 @@
     {:else}
       <div class="grid gap-3 md:grid-cols-2">
         {#each overview.families as card (card.id)}
-          <DataFamilyCard {card} onfetched={() => load(null)} />
+          <DataFamilyCard {card} onfetched={() => load(familyId)} />
         {/each}
       </div>
     {/if}
