@@ -18,7 +18,7 @@
 | v1 | 2026-06-30 – 2026-10-23 | Phase 0 事件研究 → 数据地基 → 计划—执行—复盘 → 区制与校准 | 已归档；FastAPI 迁移、事件研究框架、美股工作台已落地，Phase 0 正式 Gate HOLD |
 | v2 | 2026-10-23 – 2026-10-25 | 数据 → 交易计划（规则主计划 + Agent 建议）→ Discord 投递 → 复盘 | 已完成，发布 `v2.0.0`；P1–P4 `engineering_done`，`user_acceptance_pending`；删除 A 股 |
 | v2.1 | 2026-10-25 | v1 遗留收拢：删除 Hermes、SPY/VIX 信号、趋势快照、策略评分、事件研究、研究观察卡；K 线图、基本面并入「标的」页，信号后超额并入 `backcheck-2`（[spec](../specs/2026-10-25-v2.1-legacy-consolidation-design.md)） | `engineering_done`、`user_acceptance_pending`；迁移 022 已于 10-25 在真实库执行，发布 `v2.1.0`；v2 路线收尾，不开 v3 |
-| v2.2 | 2026-10-25 – | 纳指 100 每日筛选自动进扩展池、`plan-1` 复核与筛选报告；`regime-2`；任务中心统一北京时间、任务自描述（[spec](../specs/2026-10-25-v2.2-screener-and-task-center-design.md)） | `engineering_done`、`user_acceptance_pending`、`runtime_unverified`（迁移 023 待真实库执行；手动验收 §11.2 与连续 5 个交易日定时验收 §11.3 待做） |
+| v2.2 | 2026-10-25 – | 纳指 100 每日筛选自动进扩展池、`plan-1` 复核与筛选报告；`regime-2`；任务中心统一北京时间、任务自描述（[spec](../specs/2026-10-25-v2.2-screener-and-task-center-design.md)） | `engineering_done`、`user_acceptance_pending`、`runtime_unverified`（迁移 023 已于 2026-10-26 在真实库执行，见[迁移记录](../operations/migrations-and-backup.md)；服务重启、手动验收 §11.2 与连续 5 个交易日定时验收 §11.3 待做） |
 | 下一版 | — | 见 [backlog.md](backlog.md) | 未排期 |
 
 ## 沿用原则

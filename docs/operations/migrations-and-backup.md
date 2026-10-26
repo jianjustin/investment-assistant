@@ -96,6 +96,21 @@ psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=
 
 单表恢复：`pg_restore -d "$INVESTMENT_ASSISTANT_DATABASE_URL" .local/us-workbench/backups/investment_assistant-v1-legacy-tables-20261025-204504.dump`，再按需插回两行调度。
 
+### 023 的真实库执行（逐步手动，每步先征得用户同意）
+
+023 只新增表和带默认值的列，旧代码照常运行，所以先迁移、后重启（反过来新代码会读不存在的列）。
+
+#### 执行记录（2026-10-26，手动 psql 执行）
+
+| 步骤 | 结果 |
+| --- | --- |
+| 1. 只读预检 | `schema_migrations` 最新仍为 `017_trade_plans.sql`；`screen_runs`、`screen_results` 不存在，`pool_tiers` 无 `source` 列、共 8 行；`public` 表数 32；`filings` 为 `America/New_York 20:30`（周一至周五，下次 2026-10-27 08:30 +0800） |
+| 2. 全库备份 | `.local/us-workbench/backups/investment_assistant-before-023-20261026-101340.dump`（4,235,781 字节，sha256 `dae881b7e2e0e263363a0934985cb079347e602012e73d4f2f6a2197d5515480`）；`pg_restore --list` 可读，32 张表与线上一致 |
+| 3. 执行 | 用户在终端手动执行（10:13 备份之后、10:25 核对之前），`psql --single-transaction -v ON_ERROR_STOP=1 -f migrations/023_screen_and_beijing_jobs.sql`；`schema_migrations` 仍只到 `017` |
+| 4. 验证 | `screen_runs`、`screen_results` 已建（各 0 行），索引 `idx_screen_runs_session`、`idx_screen_results_ticker` 在；`pool_tiers.source` 为 `text NOT NULL DEFAULT 'watchlist'`，CHECK `pool_tiers_source_check` 在，8 行旧数据全部为 `watchlist`；`filings` 为 `Asia/Shanghai 09:30`（周一至周五），`next_run_at` = 2026-10-27 09:30 +0800（周二，当天 09:30 已过）；`workbench`（06:30 周二至周六）与 `workbench_review`（08:00 每天）未变；`public` 表数 32 → 34 |
+
+服务重启与手动验收（spec §11.2）见 [roadmap](../roadmap/README.md) 的 v2.2 状态行。
+
 ## 一次性测试库
 
 数据库测试只在设置了 `INVESTMENT_ASSISTANT_TEST_DATABASE_URL` 时运行，每个测试在独立 schema 中建表、结束后删除。永远不要把它指向真实库。
