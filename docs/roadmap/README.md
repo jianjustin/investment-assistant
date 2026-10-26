@@ -20,7 +20,7 @@
 | v2 | 2026-10-23 – 2026-10-25 | 数据 → 交易计划（规则主计划 + Agent 建议）→ Discord 投递 → 复盘 | 已完成，发布 `v2.0.0`；P1–P4 `engineering_done`，`user_acceptance_pending`；删除 A 股 |
 | v2.1 | 2026-10-25 | v1 遗留收拢：删除 Hermes、SPY/VIX 信号、趋势快照、策略评分、事件研究、研究观察卡；K 线图、基本面并入「标的」页，信号后超额并入 `backcheck-2`（[spec](../specs/2026-10-25-v2.1-legacy-consolidation-design.md)） | `engineering_done`、`user_acceptance_pending`；迁移 022 已于 10-25 在真实库执行，发布 `v2.1.0`；v2 路线收尾，不开 v3 |
 | v2.2 | 2026-10-25 – | 纳指 100 每日筛选自动进扩展池、`plan-1` 复核与筛选报告；`regime-2`；任务中心统一北京时间、任务自描述（[spec](../specs/2026-10-25-v2.2-screener-and-task-center-design.md)） | `engineering_done`、`user_acceptance_pending`（迁移 023 已于 2026-10-26 在真实库执行、服务已重启跑 v2.2 代码，见[迁移记录](../operations/migrations-and-backup.md)；手动验收 §11.2 四条均已核对（真实批处理、只读回放、推送、任务中心），见[验收记录](v2.2-acceptance.md)；定时验收 §11.3 自 10-27 首次定时运行起积累） |
-| v2.3 | 2026-10-26 – | 数据底座与「数据」菜单：数据族状态层、单族手动拉取、原始数据浏览（[v2-visibility.md](v2-visibility.md)；[spec](../specs/2026-10-26-v2.3-data-foundation-design.md)） | spec 已写，待用户审阅；未开工 |
+| v2.3 | 2026-10-26 – | 数据底座与「数据」菜单：数据族状态层、单族手动拉取、原始数据浏览（[v2-visibility.md](v2-visibility.md)；[spec](../specs/2026-10-26-v2.3-data-foundation-design.md)、[plan](../plans/2026-10-26-v2.3-data-foundation.md)） | spec 已确认；plan 已写，待用户审阅；未开工 |
 | v2.4 | — | 计划推导链与批处理 workflow 底座（[v2-visibility.md](v2-visibility.md)） | 已确认，未开工 |
 | v2.5 | — | 当日运行全景、「标的」页认知重排（[v2-visibility.md](v2-visibility.md)） | 已确认，未开工 |
 | 下一版 | — | 见 [v2-visibility.md](v2-visibility.md) 与 [backlog.md](backlog.md) | v2.3 已排期 |
