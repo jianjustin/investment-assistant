@@ -526,6 +526,22 @@ describe('今日 · 筛选卡片', () => {
     expect(card).not.toHaveTextContent('null')
   })
 
+  it('splits today\'s picks, not the groups that passed', async () => {
+    // Real 2026-10-23 shape: 1 trigger + 20 setups passed, 20 picked -> 1 trigger + 19 setups picked.
+    const setups = Array.from({ length: 20 }, (_, i) => `S${i}`)
+    const report = screenReport({
+      counts: { universe: 94, data_skipped: 2, illiquid: 0, earnings_soon: 30, no_setup: 41,
+                trigger: 1, setup: 20, selected: 20 },
+      selected: ['T1', ...setups.slice(0, 19)],
+      triggers: [{ ticker: 'T1', rule_ids: ['trend_reclaim'], rs: 0.2, review: 'watch', plan: null,
+                   invalid_reasons: [] }] })
+    respond = async () => json({ session: '2026-10-22', units: [], holdings: [], screen: report })
+    render(Today)
+    const card = await screen.findByRole('region', { name: '筛选' })
+    expect(card).toHaveTextContent('通过过滤 21')
+    expect(card).toHaveTextContent('今日入选 20（触发 1 / 形态 19）')
+  })
+
   it('screen units carry a badge', async () => {
     respond = async () => json({ session: '2026-10-22', units: [
       unit({ ticker: 'U00', source: 'screen' }), unit({ ticker: 'NVDA', source: 'watchlist' })],

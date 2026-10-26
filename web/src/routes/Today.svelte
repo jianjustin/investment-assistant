@@ -191,8 +191,11 @@
           <p class="text-xs text-muted">沿用成员 {sc.members} 只</p>
         {:else}
           {@const counts = sc.counts ?? {}}
+          {@const picked = sc.selected ?? []}
+          <!-- Split today's picks, not the groups that passed: setups beyond the cut are not picked (same as the push). -->
+          {@const triggerPicked = (sc.triggers ?? []).filter((t) => picked.includes(t.ticker)).length}
           <p>范围 {counts.universe ?? 0} · 通过过滤 {(counts.trigger ?? 0) + (counts.setup ?? 0)}
-             · 今日入选 {(sc.selected ?? []).length}（触发 {counts.trigger ?? 0} / 形态 {counts.setup ?? 0}）
+             · 今日入选 {picked.length}（触发 {triggerPicked} / 形态 {picked.length - triggerPicked}）
              · 成员 {sc.members}/{sc.cap} · 移出 {(sc.removed ?? []).length}</p>
           {#if sc.universe?.stale}<p class="text-xs text-muted">提示 universe_stale（范围文件超过 120 天）</p>{/if}
           {#if (sc.flags ?? []).length}<p class="text-xs text-muted">提示 {(sc.flags ?? []).join('、')}</p>{/if}
