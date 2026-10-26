@@ -108,6 +108,7 @@ psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=
 | 2. 全库备份 | `.local/us-workbench/backups/investment_assistant-before-023-20261026-101340.dump`（4,235,781 字节，sha256 `dae881b7e2e0e263363a0934985cb079347e602012e73d4f2f6a2197d5515480`）；`pg_restore --list` 可读，32 张表与线上一致 |
 | 3. 执行 | 用户在终端手动执行（10:13 备份之后、10:25 核对之前），`psql --single-transaction -v ON_ERROR_STOP=1 -f migrations/023_screen_and_beijing_jobs.sql`；`schema_migrations` 仍只到 `017` |
 | 4. 验证 | `screen_runs`、`screen_results` 已建（各 0 行），索引 `idx_screen_runs_session`、`idx_screen_results_ticker` 在；`pool_tiers.source` 为 `text NOT NULL DEFAULT 'watchlist'`，CHECK `pool_tiers_source_check` 在，8 行旧数据全部为 `watchlist`；`filings` 为 `Asia/Shanghai 09:30`（周一至周五），`next_run_at` = 2026-10-27 09:30 +0800（周二，当天 09:30 已过）；`workbench`（06:30 周二至周六）与 `workbench_review`（08:00 每天）未变；`public` 表数 32 → 34 |
+| 5. 重启服务 | 重启前进程 pid 1196 启动于 2026-10-25 18:04（旧代码，`GET /api/workbench/screen` 为 404），无运行中任务；10:28:30 +0800 `launchctl kickstart -k`，新进程 pid 42156 启动于 10:29:00；`/api/health`：数据库、调度线程（轮询运行中）、SEC、Yahoo、Discord、FRED 均 up，3 项 `systemctl` 检查在 macOS 上为 down（重启前即如此，与本次无关）；`/api/workbench/screen`（`report: null`，尚无筛选记录）、`/api/workbench/today`、`/api/jobs/scheduled`、`/api/status` 均 200；`/api/jobs/scheduled` 三个任务都是 `Asia/Shanghai` 并带 `description` |
 
 服务重启与手动验收（spec §11.2）见 [roadmap](../roadmap/README.md) 的 v2.2 状态行。
 
