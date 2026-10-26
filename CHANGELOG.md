@@ -2,6 +2,31 @@
 
 版本号与 roadmap 版本对应：`v2.x` 对应 [roadmap v2](docs/roadmap/v2-decision-loop.md)。
 
+## v2.3.0 — 2026-10-26
+
+数据底座与「数据」菜单（[spec](docs/specs/2026-10-26-v2.3-data-foundation-design.md)、[实施 plan](docs/plans/2026-10-26-v2.3-data-foundation.md)）。状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`；工程落地不等于验收完成，工程自查未完成项见 [roadmap](docs/roadmap/README.md#v23-工程自查与验收边界)，全范围 code review 仍待完成。
+
+### 新增
+
+- **拉取记录表 `data_fetch_runs`**：迁移 024 新建只追加的记录表与索引；六族清单（日线、SEC 申报、资讯、ATR、FRED 利差、纳指 100 范围）集中定义用途与覆盖口径。覆盖和最新时点从数据表实算；ATR 从日线现算、不单独记拉取行。
+- **四个数据接口**：`GET /api/data/families`（六族总览）、`GET /api/data/families/{id}`（详情、最近 20 次记录、逐目标覆盖）、`POST /api/data/families/{id}/fetch`（后台手动拉取）、`GET /api/data/browse/{id}`（固定窗口原始值）。读取走只读事务，不在读取时补拉；手动拉取复用共用采集函数，可全族或单只（仅日线 / 资讯 / SEC），不跑规则、不生成计划或候选、不改池、不推送。同族采集用 PostgreSQL advisory lock 互斥。
+- **「数据」菜单**：位于「复盘」之后，六张状态卡展示用途、覆盖、最新时点、拉取成败与任务中心链接；详情有拉取记录、逐目标覆盖与「仅看滞后」、六族原始值浏览。ATR 按钮为「拉取日线」，范围为「重新加载」；页面常驻 Phase 0 Gate HOLD 证据说明，数据完整不代表信号有效。
+- **两条任务记录路径**：`workbench` 批处理在采集结束、区制之前按族追加记录，常规路径五族各一行，显式池跳过筛选时不写 `universe`；`filings` 任务的下载器 / 监控两种模式结束后追加 `sec_filings`，目标取自身 `config.watchlist`，用 `detail.targets_source` 区分批处理的池 + 持仓。记录写入失败只记 `data_status.error`，不改变原任务成败。
+
+### 变更
+
+- **旧地址行为**：`#data` 进入数据总览，`#data/<id>` 进入族详情；v1 遗留及未知 `#data/...`（如 `#data/signals`）现在回落到「数据」总览，不再回落到「今日」。
+
+### 实现偏差与关联限制
+
+- **批处理记录的 `run_id` 为空**：采集阶段写记录时未接到任务 harness 的 `run_id`，目前只能用 `job` + `started_at` 对应运行报告；`filings` 在任务返回后记账，能保留任务的 `run_id`。
+- **单族手动拉取使用 runner 的 `run_id`**：记录关联 `tasks/runner` 的运行，而非 `job_reports.run_id`；它本就不写 `job_reports`，从族详情的运行记录入口或 `GET /api/runs/{run_id}` 查看。此关联方式是 spec §5.1 允许的另一种来源，不表示生成了任务报告。
+
+### 迁移与验收
+
+- **024 待授权执行**：只建新表与索引，不改旧表；`data_fetch_runs` 不加入 `WORKBENCH_TABLES`。迁移未执行时覆盖与原始值仍可读，最近拉取不可见，手动拉取返回 503；任务记账失败不阻断原流程。真实库尚未执行 024，备份、迁移、服务重启均需后续单独授权。
+- **验收未完成**：本轮只有自动化测试与一次性测试库证据，没有真实浏览器用户验收，没有迁移后连续 5 个交易日运行证据；不宣称用户验收、定时验收或最终 review 已过。打 tag、推送不在本轮执行。
+
 ## v2.2.0 — 2026-10-25
 
 纳指 100 每日筛选与任务中心自描述（[spec](docs/specs/2026-10-25-v2.2-screener-and-task-center-design.md)）。状态：`engineering_done`、`user_acceptance_pending`（迁移 023 已于 2026-10-26 在真实库执行、服务已重启跑 v2.2 代码；§11.2/§11.3 验收证据积累中）。

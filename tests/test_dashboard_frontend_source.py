@@ -12,8 +12,8 @@ def test_svelte_entrypoint_and_app_root():
 
 
 def test_svelte_route_views_exist():
-    # v2 mainline routes: Today/Instrument/Review/Tools/Settings.
-    routes = ["Today", "Instrument", "Review", "Tools", "Settings"]
+    # v2.3 adds the Data menu after Review.
+    routes = ["Today", "Instrument", "Review", "Data", "Tools", "Settings"]
     for r in routes:
         path = Path(f"web/src/routes/{r}.svelte")
         assert path.exists(), str(path)
@@ -60,10 +60,11 @@ def test_api_client_exports_core_functions():
 
 
 def test_app_hash_router_covers_all_zones():
-    # v2.1.0: legacy zones (data/technicals/strategy/trade) are gone; parseHash falls back to today.
+    # v2.3 restores data; the other v2.1 legacy zones still fall back to today.
     router = Path("web/src/lib/router.ts").read_text(encoding="utf-8")
-    assert "export type Zone = 'today' | 'instrument' | 'review' | 'tools' | 'settings'" in router
-    for zone in ["data", "technicals", "strategy", "trade"]:
+    assert "export type Zone = 'today' | 'instrument' | 'review' | 'data' | 'tools' | 'settings'" in router
+    assert "export const zones: Zone[] = [...workbenchZones, 'data', 'tools', 'settings']" in router
+    for zone in ["technicals", "strategy", "trade"]:
         assert f"'{zone}'" not in router, f"legacy zone still routed: {zone}"
     app = Path("web/src/app.svelte").read_text(encoding="utf-8")
     assert "hashchange" in app
