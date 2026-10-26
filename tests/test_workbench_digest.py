@@ -454,3 +454,30 @@ def test_screen_message_respects_limits():
         assert len(f.value) <= 1024, f.name
     total = len(screen_msg.title) + sum(len(f.name) + len(f.value) + 8 for f in screen_msg.fields)
     assert total <= 6000
+
+
+def test_numeric_padding_is_trimmed_in_every_message():
+    # NUMERIC(…, 6) columns come back as D('250.770000'); the push must read 250.77, as the page does.
+    padded = {'entry_low': D('250.770000'), 'entry_high': D('264.370000'), 'stop': D('230.380000'),
+              'target1': D('311.940000')}
+    plan = plan_row(**padded, sizing={'status': 'sized', 'shares': 10, 'risk_amount': D('1000.000000'),
+                                      'snapshot_as_of': date(2026, 10, 20)})
+    agent = agent_ok()
+    agent['plan'].update(padded)
+    report = screen_report()
+    report['triggers'][0]['plan'].update(padded)
+    report['triggers'][0]['rs'] = D('0.217239')
+    report['setups'][0].update(rs=D('0.334444'), atr_pct=D('0.045600'))
+    market = market_row(macro={
+        'BAMLH0A0HYM2': {'value': D('3.400000'), 'obs_date': SESSION, 'change': D('0.6'), 'change_from': SESSION},
+        'T10Y2Y': {'value': D('0.310000'), 'obs_date': SESSION, 'change': D('0'), 'change_from': SESSION}})
+    msgs = templates.workbench_digest(build(units=[unit(plan=plan, agent=agent)], market=market, screen=report))
+    text = all_text(msgs)
+    assert '区间 250.77–264.37 · 止损 230.38 · T1 311.94' in text                  # rule plan line
+    assert '10 股 · 风险 1000' in text
+    assert 'Agent（glm-5.3）买入 · 区间 250.77–264.37 · 止损 230.38 · T1 311.94' in text
+    assert '入场 250.77–264.37 · 止损 230.38 · T1 311.94 · 建议 166 股' in text      # screen trigger
+    assert 'U00 · trend_reclaim · RS 0.217 ·' in text
+    assert 'S00 · RS 0.334 · ATR 4.56%' in text
+    assert 'HY OAS 3.4（20 期 +0.6）' in text and '2s10s 0.31（' in text
+    assert '0000' not in text

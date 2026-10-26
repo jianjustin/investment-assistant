@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from investment_assistant.notify.message import Notification, NotifyField
 from investment_assistant.workbench.regime import LABEL_TEXT
@@ -10,6 +11,16 @@ SOURCE_NAMES = {'bars': '日线', 'news': '资讯', 'earnings': '财报日期', 
                 'agent': 'Agent',
                 'fred': 'FRED', 'regime': '区制', 'budget': '耗时'}
 _SECTOR_STATE = {'strong': '强', 'weak': '弱', 'mixed': '分化'}
+
+
+def _num(value) -> str:
+    """A stored NUMERIC without its padding zeros: 250.770000 -> 250.77, 94.000000 -> 94."""
+    if value is None:
+        return '—'
+    try:
+        return format(Decimal(str(value)).normalize(), 'f')
+    except InvalidOperation:
+        return str(value)
 
 
 def _fred_missing_text(market: dict) -> str:
@@ -55,7 +66,7 @@ def _market_environment(market: dict | None) -> str:
             else:
                 # JSONB round-trips the FRED Decimals as strings; format numerically either way.
                 change = f"{float(view['change']):+}" if view.get('change') is not None else '无变化'
-                parts.append(f"{name} {view['value']}（20 期 {change}）")
+                parts.append(f"{name} {_num(view['value'])}（20 期 {change}）")
         lines.append(' · '.join(parts))
     return '\n'.join(lines)
 
@@ -128,7 +139,7 @@ def workbench_digest(digest: dict) -> list[Notification]:
         _clip_field(fields, '新计划', '今日无新计划')
     for p in plans:
         sizing = '缺资金快照，无法计算' if p.get('sizing_status') == 'no_equity' else (
-            f"{p.get('shares')} 股 · 风险 {p.get('risk_amount')}")
+            f"{p.get('shares')} 股 · 风险 {_num(p.get('risk_amount'))}")
         funding = f"资金日 {p['snapshot_as_of']}" if p.get('snapshot_as_of') else None
         notes = '；'.join([*(f"提示 {w}" for w in p.get('warnings', [])),
                            *(f"作废 {r}" for r in p.get('invalid_reasons', []))])
@@ -137,7 +148,8 @@ def workbench_digest(digest: dict) -> list[Notification]:
         sector_text = (f"行业 {sector['etf']} {_SECTOR_STATE.get(sector.get('state'), '数据不足')}"
                        if sector else '行业 未映射')
         context = f"区制 {LABEL_TEXT.get(p.get('regime_label'), '未知')} · 下次财报 {p.get('next_earnings') or '未知'} · {sector_text}"
-        band = (f"区间 {p['entry_low']}–{p['entry_high']} · 止损 {p['stop']} · T1 {p['target1']}"
+        band = (f"区间 {_num(p['entry_low'])}–{_num(p['entry_high'])} · 止损 {_num(p['stop'])}"
+                f" · T1 {_num(p['target1'])}"
                 if p.get('entry_low') is not None else None)   # agent-only units have no rule band
         position = f"仓位 {sizing}" if p.get('sizing_status') is not None else None
         field_name = f"【筛选】{p['ticker']}" if p.get('source') == 'screen' else p['ticker']
@@ -184,6 +196,15 @@ def workbench_digest(digest: dict) -> list[Notification]:
     return [overview_msg, plans_msg, holdings_msg, pending_msg, _screen_message(session, digest.get('screen'))]
 
 
+def _rs(value) -> str:
+    return '—' if value is None else f"{float(value):.3f}"
+
+
+def _pct(value) -> str:
+    """ATR / close as a percentage, like the page: 0.0456 -> 4.56%."""
+    return '—' if value is None else f"{float(value) * 100:.2f}%"
+
+
 def _screen_shares(plan: dict) -> str:
     """Suggested size of a screen trigger's plan; no shares without an equity snapshot."""
     if plan.get('shares') is not None:
@@ -215,16 +236,17 @@ def _screen_message(session: str, screen: dict | None):
     for t in screen.get('triggers') or []:
         plan = t.get('plan') or {}
         if t.get('review') == 'plan':
-            outcome = (f"入场 {plan.get('entry_low')}–{plan.get('entry_high')} · 止损 {plan.get('stop')}"
-                       f" · T1 {plan.get('target1')} · {_screen_shares(plan)}")
+            outcome = (f"入场 {_num(plan.get('entry_low'))}–{_num(plan.get('entry_high'))}"
+                       f" · 止损 {_num(plan.get('stop'))} · T1 {_num(plan.get('target1'))}"
+                       f" · {_screen_shares(plan)}")
         elif t.get('review') == 'invalid':
             outcome = '作废 ' + '、'.join(str(r) for r in t.get('invalid_reasons') or [])
         else:
             outcome = {'conflict': '冲突 / 回避', 'watch': '等待触发'}.get(t.get('review'), t.get('review', ''))
-        trigger_lines.append(f"{t.get('ticker')} · {'、'.join(t.get('rule_ids') or [])} · RS {t.get('rs')}"
+        trigger_lines.append(f"{t.get('ticker')} · {'、'.join(t.get('rule_ids') or [])} · RS {_rs(t.get('rs'))}"
                              f" · {outcome}")
     _clip_field(fields, '今日触发 → 复核', '\n'.join(trigger_lines) or '今日无触发')
-    setup_lines = [f"{s.get('ticker')} · RS {s.get('rs')} · ATR% {round(float(s.get('atr_pct') or 0), 4)}"
+    setup_lines = [f"{s.get('ticker')} · RS {_rs(s.get('rs'))} · ATR {_pct(s.get('atr_pct'))}"
                    for s in screen.get('setups') or []]
     if screen.get('setups_more'):
         setup_lines.append(f"另 {screen['setups_more']} 只见页面")
@@ -244,8 +266,8 @@ def _agent_line(agent: dict | None) -> str:
     if agent['status'] == 'ok':
         shares = (f"{agent['shares']} 股" if agent.get('shares') is not None
                   else '缺资金快照，无法计算')   # same wording as the rule plan line
-        line = (f"Agent（{agent['model']}）买入 · 区间 {agent['entry_low']}–{agent['entry_high']}"
-                f" · 止损 {agent['stop']} · T1 {agent['target1']} · {shares}；{agent['summary']}")
+        line = (f"Agent（{agent['model']}）买入 · 区间 {_num(agent['entry_low'])}–{_num(agent['entry_high'])}"
+                f" · 止损 {_num(agent['stop'])} · T1 {_num(agent['target1'])} · {shares}；{agent['summary']}")
         if agent.get('first_risk'):
             line += f"；反方：{agent['first_risk']}"
         voided = '；'.join(f"作废 {r}" for r in agent.get('invalid_reasons') or [])
