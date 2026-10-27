@@ -6,7 +6,7 @@
 
 当前版本：**v2.3.0**（2026-10-26），见 [CHANGELOG](CHANGELOG.md)。
 
-v2.3 状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`；迁移 024 尚未在真实库执行，真实浏览器用户验收与连续 5 个交易日定时运行证据尚缺。工程自查未完成项及后续验收条件见 [roadmap](docs/roadmap/README.md)。
+v2.3 状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`；迁移 024 尚未在真实库执行，真实浏览器用户验收与连续 5 个交易日定时运行证据尚缺。保留偏差及后续验收条件见 [roadmap](docs/roadmap/README.md)。
 
 ## 组成
 

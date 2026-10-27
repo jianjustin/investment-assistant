@@ -20,24 +20,32 @@
 | v2 | 2026-10-23 – 2026-10-25 | 数据 → 交易计划（规则主计划 + Agent 建议）→ Discord 投递 → 复盘 | 已完成，发布 `v2.0.0`；P1–P4 `engineering_done`，`user_acceptance_pending`；删除 A 股 |
 | v2.1 | 2026-10-25 | v1 遗留收拢：删除 Hermes、SPY/VIX 信号、趋势快照、策略评分、事件研究、研究观察卡；K 线图、基本面并入「标的」页，信号后超额并入 `backcheck-2`（[spec](../specs/2026-10-25-v2.1-legacy-consolidation-design.md)） | `engineering_done`、`user_acceptance_pending`；迁移 022 已于 10-25 在真实库执行，发布 `v2.1.0`；v2 路线收尾，不开 v3 |
 | v2.2 | 2026-10-25 – | 纳指 100 每日筛选自动进扩展池、`plan-1` 复核与筛选报告；`regime-2`；任务中心统一北京时间、任务自描述（[spec](../specs/2026-10-25-v2.2-screener-and-task-center-design.md)） | `engineering_done`、`user_acceptance_pending`（迁移 023 已于 2026-10-26 在真实库执行、服务已重启跑 v2.2 代码，见[迁移记录](../operations/migrations-and-backup.md)；手动验收 §11.2 四条均已核对（真实批处理、只读回放、推送、任务中心），见[验收记录](v2.2-acceptance.md)；定时验收 §11.3 自 10-27 首次定时运行起积累） |
-| v2.3 | 2026-10-26 – | 数据底座与「数据」菜单：数据族状态层、单族手动拉取、原始数据浏览（[v2-visibility.md](v2-visibility.md)；[spec](../specs/2026-10-26-v2.3-data-foundation-design.md)、[plan](../plans/2026-10-26-v2.3-data-foundation.md)） | `engineering_done`、`user_acceptance_pending`、`runtime_unverified`（代码与入口已落地，版本号 `v2.3.0`；迁移 024 尚未在真实库执行；真实浏览器用户验收、连续 5 个交易日定时证据与全范围 code review 尚缺；工程自查未完成项见[下文](#v23-工程自查与验收边界)，不等同于纯运行待验收） |
+| v2.3 | 2026-10-26 – | 数据底座与「数据」菜单：数据族状态层、单族手动拉取、原始数据浏览（[v2-visibility.md](v2-visibility.md)；[spec](../specs/2026-10-26-v2.3-data-foundation-design.md)、[plan](../plans/2026-10-26-v2.3-data-foundation.md)） | `engineering_done`、`user_acceptance_pending`、`runtime_unverified`（代码与入口已落地，版本号 `v2.3.0`；迁移 024 尚未在真实库执行；真实浏览器用户验收与连续 5 个交易日定时证据尚缺；全范围 final review 已完成并修复，保留偏差见[下文](#v23-工程自查与验收边界)） |
 | v2.4 | — | 计划推导链与批处理 workflow 底座（[v2-visibility.md](v2-visibility.md)） | 已确认，未开工 |
 | v2.5 | — | 当日运行全景、「标的」页认知重排（[v2-visibility.md](v2-visibility.md)） | 已确认，未开工 |
 | 下一版 | — | 见 [v2-visibility.md](v2-visibility.md) 与 [backlog.md](backlog.md) | v2.3 已排期 |
 
 ## v2.3 工程自查与验收边界
 
-以 [spec §4–§13](../specs/2026-10-26-v2.3-data-foundation-design.md#4-数据族清单) 对照代码；[实施 plan](../plans/2026-10-26-v2.3-data-foundation.md) 保持冻结。`engineering_done` 只表示工程入口已在仓库，以下工程缺口尚未修复，交由控制者全范围 review 集中裁决，不藏在 `runtime_unverified` 中：
+以 [spec §4–§13](../specs/2026-10-26-v2.3-data-foundation-design.md#4-数据族清单) 对照代码；[实施 plan](../plans/2026-10-26-v2.3-data-foundation.md) 保持冻结。全范围 final review 已于 2026-10-26 完成，意见集中修复在 `068debd`（记账事实：锁、目标、哨兵、墙钟）、`a14c1c0`（读取契约、浏览窗口、覆盖口径）、`ed4682c`（前端展示）、`03ccf6f`（文档）。2026-10-27 按 plan 复核工程部分：离线 pytest 921 passed / 323 skipped，一次性 PostgreSQL 1244 passed，前端 Vitest 233 passed，构建成功。
 
-- **状态与原因展示（§8–§11）**：FRED 未配置的原因在记录 `detail.reason` 中，但卡片 / 最近记录表只渲染 `failures`，`skipped` 原因未展示；卡片未展示已有的 `last_success_at`、最近拉取的 `scope` / `ticker`，记录表也未显示 `job` / `detail.targets_source` 来区分两路 SEC 目标。覆盖口径没有 §12 所述的悬浮说明。
-- **读取契约与降级（§8、§10）**：`fetch_runs_ready` 目前只在总览顶层，不在各卡片 / 独立详情返回；范围文件不可读时卡片只给通用 note、覆盖 0 和空时点，未合成带本次文件错误原文的 `failed` 最近状态，浏览也只有通用 note。
-- **覆盖与窗口（§4、§8）**：FRED 的 `covered` 当前排除了已有但滞后的序列，而 spec 写的是「有观测值的序列数」，滞后应另列；资讯与 SEC 补充列表查询还存在 200 条上限，SEC 在筛选 `sec_8k` / 去重前截断，不能保证列全固定窗口内原始值（既有 minor，未标为已修复）。
-- **测试契约（§11.1）**：四接口有 `tests/test_api_data.py` 的委托 / 错误映射与用例测试，但 `tests/test_api_contract.py` 只加入总览无库 503，未按 spec 在该文件钉住四接口完整字段与错误码。现有批处理特征测试显式覆盖 ETF / 个股 / 资讯 / SEC 失败与 FRED 未配置，但未显式包含 §6.1 要求的 SPY 失败。自动化全绿不能代替这些覆盖缺口。
-- **已知关联限制与待核实项（§5–§7、§12）**：批处理 `run_id` 为空；单族手动拉取带 runner `run_id` 而不写 `job_reports`（spec §5.1 允许 runner 来源，不能误称已有任务报告关联）。既有 minor 并未全部修复；连接实际来自 `psycopg_pool`，批处理锁部分获取异常后的清理仍待最终评审核实，本轮不重复技术评审，也不宣称已解决。范围加载失败记录用 `nasdaq100` 而非 §5.1 整族失败约定的 `*`；整族 `*` 失败是否影响原目标计数亦交最终评审集中核实。
+**自查曾列出、已修复的缺口**：
 
-此外，既有 [backlog](backlog.md) 未逐项列出 §3/§13 的「与 Team B 衔接」「验证 / 回测专项」不做项，属于文档覆盖差异，待集中 review 裁决补齐；未修改冻结 spec/plan。
+- **状态与原因展示**：卡片与最近记录表显示 `skipped` 原因、最近成功时间、单只 / 全族范围与实际 `job`；记录表有「任务」列（`job` + `detail.targets_source`），区分两路 SEC 目标；各族覆盖口径一句话内联并悬浮显示。
+- **读取契约与降级**：每张卡片（含独立详情）带 `fetch_runs_ready`；范围文件不可读时卡片与浏览以 `current_error` 显示文件错误原文，不伪造拉取行。
+- **覆盖与窗口**：FRED 覆盖为「有观测值的序列数」，滞后独立列出；资讯与 SEC 浏览先按来源过滤、窗口内完整读取，去掉 200 条上限；无接收时间的 `sec_8k` 标「申报日未知」，不计入最近申报日。
+- **记账与锁**：`*` 整族失败哨兵不进分母，空目标的整次失败记 `failed`；批处理锁部分获取异常后逐把释放，无法证明干净的会话物理丢弃、不还池（`tests/test_workbench_lock_pool.py` 用真实 `psycopg_pool` 验证）；拉取行时间戳用真实墙钟。
+- **测试与文档**：批处理特征测试补上 §6.1 要求的 SPY 失败；[backlog](backlog.md) 已补「与 Team B 衔接」「验证 / 回测专项」两条不做项。
 
-**后续使用验收**：迁移 024、真实服务重启、真实浏览器手动验收与原始值核对均未在本任务执行；用户尚未确认浏览可用；迁移后连续 5 个交易日的 `workbench` 五族 / `filings` 记录与日线推进证据也未积累。工程缺口与最终 review 由控制者集中处理，Task 13 的真实迁移、重启、tag、推送各自另行授权；没有这些证据前保持 `user_acceptance_pending`、`runtime_unverified`，不宣称发布 / 验收完成。
+**保留的偏差与限制**（已在 [CHANGELOG](../../CHANGELOG.md) 与[功能文档](../features/data-menu.md#已知限制)披露，不阻断 `engineering_done`）：
+
+- 批处理记录 `run_id` 为空；单族手动拉取带 runner `run_id`、不写 `job_reports`。
+- 范围加载失败记录的目标是 `nasdaq100`（照 plan Task 5），不是 spec §5.1 整族失败约定的 `*`；目标就是范围文件本身（分母 1），失败时状态同样是 `failed`。
+- `filings` 任务的目标按模式取实际采集清单：监控模式是 `sec_monitor.watchlist_path`，下载器模式是 `config.watchlist`，均与批处理的「当前池 + 持仓」不同。
+- 手动全族目标不含已清仓的历史持仓，旧批处理循环仍为其采集，批处理 `target_count` 可能更大。
+- `tests/test_api_contract.py` 只钉住总览无库 503；四接口的字段与错误码由 `tests/test_api_data.py` 覆盖（委托、错误映射，以及真实路由 + 一次性 schema 的 POST 四类错误码）。
+
+**后续使用验收**：迁移 024、真实服务重启、真实浏览器手动验收与原始值核对均未执行；用户尚未确认浏览可用；迁移后连续 5 个交易日的 `workbench` 五族 / `filings` 记录与日线推进证据也未积累。Task 13 的真实迁移、重启、tag、推送各自另行授权；没有这些证据前保持 `user_acceptance_pending`、`runtime_unverified`，不宣称发布 / 验收完成。
 
 ## 沿用原则
 
