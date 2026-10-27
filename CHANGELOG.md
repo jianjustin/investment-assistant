@@ -2,6 +2,35 @@
 
 版本号与 roadmap 版本对应：`v2.x` 对应 [roadmap v2](docs/roadmap/v2-decision-loop.md)。
 
+## v2.4.0 — 2026-10-27
+
+计划推导链与批处理 workflow 底座（[spec](docs/specs/2026-10-27-v2.4-derivation-and-workflow-design.md)、[实施 plan](docs/plans/2026-10-27-v2.4-derivation-and-workflow.md)）。状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`（迁移 025 待授权执行、真实库尚未运行 v2.4 代码；spec §12.2 手动验收与 §12.3 连续 5 个交易日定时验收待迁移执行后进行）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/README.md)。
+
+### 新增
+
+- **阶段证据表 `stage_runs`（迁移 025，待授权执行）**：每次 `workbench` 任务按固定注册表（`stages-1`：`collect`、`screen`、`regime`、`signals`、`plan`、`agent`、`push`）每阶段追加一行证据——状态、输入与产出计数、按原因分组的跳过、逐目标失败、降级、产出引用、耗时；每次运行恰好 7 行，`run_id` 与该次运行报告相同。表只追加、不进 `WORKBENCH_TABLES`：缺表时批处理照常完成，只记 `summary.stage_status.error`；推送阶段存在时序嵌套（筛选嵌在采集窗口里），展示顺序以注册表为准。
+- **计划推导链（`derivation-1`）**：`plan-1` 规则计划按代入值逐步重算（TR、ATR、入场区间、止损、T1、有效期、财报与环境提示、按风险定仓、状态），与已存值逐项比对；自定计划价位标「你的输入」、Agent 计划价位核对 `agent_runs` 引用，两者仓位按入场区间中点推导；触发段逐句复核候选冻结的取值（`holds` / `violated` / `not_frozen`）。推导不调用 `plans.py` 的计算函数，常量分开声明并由测试对齐，两份实现彼此对照。一致性结论 `consistent` / `mismatch` / `incomplete`。
+- **三个只读接口**：`GET /api/workbench/plans/{plan_id}/derivation`（完整推导 + 一致性 + 运行证据）、`GET /api/workbench/units/{ticker}/{signal_date}/derivation`（无计划单元的触发段 + 计划 id 列表）、`GET /api/workbench/stage-runs?session=…|run_id=…`（阶段证据按运行分组，附 `STAGES` 定义与 `stage_runs_ready`）。读取全在只读事务里执行，缺行如实标 `incomplete`，不在读取时补拉。
+- **只读 CLI**：`python -m investment_assistant.workbench.derivation check --since … [--until …] [--kind …]`（按日期区间逐份核对计划一致性，`status = ok` 的计划非 `consistent` 时退出码 1）与 `… derivation stages --session …`（核对每运行恰好 7 行、`run_id` 与 `job_reports` 对得上、时间窗内的运行都有阶段行）。
+- **前端推导视图**：`PlanDerivation` 组件四段展示（触发条件表、输入快照、逐项计算、校验）与一致性徽标，证据状态说明常驻；「今日」规则 / Agent 计划块「展开推导」、无计划单元「触发依据」（点开后才请求）；独立页 `#plan/<id>`（不进侧栏，无 id 回落「今日」）。
+
+### 变更
+
+- **批处理记录带上运行报告的 `run_id`**：`stage_runs`、`data_fetch_runs`、`signal_candidates`、`screen_runs` 四张表的新行都带该次 `workbench` 运行的 `job_reports.run_id`（harness 生成）——关掉 v2.3 的「批处理记录 `run_id` 为空」偏差；历史行不回填。手动批处理有两个 `run_id`：API 返回、页面轮询用的 runner `run_id`，与 harness 写 `job_reports` 的 `run_id`；数据库记录一律用后者。
+- **推导不一致进 `errors`**：批处理在 `plan` / `agent` 阶段之后只读回读并推导本次产出的计划，计数写进阶段 `detail.derivation`；出现 `mismatch` 或 `incomplete` 时阶段记 `degraded`、`summary['errors']` 追加 `derivation_mismatch: <ticker> <plan_id>`，运行报告状态随之为 `error`（缺陷应进运行报告；阶段证据写入失败则只记 `stage_status`，不进 `errors`）。校验只读，不改已存计划、不影响推送。
+- **「复盘」计划链接改去推导页**：轨道对比里的「计划 xxxx」链接从 `#instrument/<ticker>` 改为 `#plan/<plan_id>`。
+
+### 实现偏差与关联限制
+
+- **两处实现细化（spec 分层不变，仅文件归置不同）**：推导与阶段证据的只读用例放在新模块 `workbench/derivation_view.py`（spec §9 的「`api/routes` → 用例与纯函数 → `repository`」分层不变，只是多一个文件）；`data_view._read_tx` 提升为 `service.read_only_tx()`，供「数据」菜单与推导视图共用只读事务，行为不变。
+- **`push` 阶段 `input_count` 记实际发送数**：notifier 不暴露待发消息数，无法按 spec §4「待发消息数」记；已按已裁决口径记录。
+- **触发段看不到具体 8-K**：spec §7.2 的条件表把 `filing_ids` 列为 `earnings_gap_up` / `earnings_gap_down` / `new_filing` 的复核取值，但候选触发段输出未带 `inputs.filing_ids`，用户无法从页面看到是哪份 8-K 触发——已知 spec 缺口，按已知限制记录。
+
+### 迁移与验收
+
+- **025 待授权执行**：只建 `stage_runs` 表、约束与索引（`IF NOT EXISTS` 可重跑），不改旧表、不加种子行；真实库备份、执行、服务重启均需单独授权，结果追加到 [迁移记录](docs/operations/migrations-and-backup.md)。迁移未执行时推导接口照常返回（`run.ready = false`），`stage-runs` 接口返回 `stage_runs_ready = false`。
+- **验收未完成**：本轮只有自动化测试（离线与一次性 PostgreSQL 全量、前端 Vitest 与构建），没有真实浏览器用户验收，没有迁移后连续 5 个交易日的运行证据；不宣称用户验收或定时验收已过。打 tag、推送不在本轮执行，各自先征得用户同意。
+
 ## v2.3.0 — 2026-10-26
 
 数据底座与「数据」菜单（[spec](docs/specs/2026-10-26-v2.3-data-foundation-design.md)、[实施 plan](docs/plans/2026-10-26-v2.3-data-foundation.md)）。状态：`engineering_done`、`user_acceptance_pending`（迁移 024 已于 2026-10-27 在真实库执行、服务已重启跑 v2.3 代码；§11.2 手动验收已核对、用户已确认浏览可用，§11.3 定时验收待完成，见[验收记录](docs/roadmap/v2.3-acceptance.md)）；全范围 final review 已完成并修复，保留偏差与后续验收条件见 [roadmap](docs/roadmap/README.md#v23-工程自查与验收边界)。

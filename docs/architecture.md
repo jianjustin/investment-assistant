@@ -91,14 +91,14 @@ tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、�
 
 ```mermaid
 flowchart TD
-    subgraph batch["06:30 北京（周二至周六）· 任务 workbench"]
-        A["① 采集<br/>SPY / 行业 ETF 日线"] --> A2["① 筛选 screen-1<br/>纳指 100：范围日线 + 财报日 → 过滤排序 → 成员自动进扩展池"]
-        A2 --> B["① 采集（逐股）<br/>日线（筛选已采的跳过）/ 资讯 / 财报日 / SEC 列表 / FRED<br/>每族追加一行拉取记录 data_fetch_runs"]
-        B --> B2["② 市场环境<br/>范围 ∪ 手动池广度 → 区制；行业强弱"]
-        B2 --> C["③ 规则 v1<br/>信号候选 → 决策单元"]
-        C --> D["④ 规则计划 plan-1<br/>ATR 止损 · 2R 目标 · 按风险定仓 · 超限作废"]
-        D --> E["⑤ Agent 轨道<br/>提议 + 反方 · 引用校验 · token 预算；解读"]
-        E --> F["⑥ 推送 Discord<br/>核心池 + 持仓"]
+    subgraph batch["06:30 北京（周二至周六）· 任务 workbench · 每阶段一行 stage_runs 证据"]
+        A["① 采集 collect<br/>SPY / 行业 ETF 日线"] --> A2["② 筛选 screen<br/>screen-1：纳指 100 范围日线 + 财报日 → 过滤排序 → 成员自动进扩展池"]
+        A2 --> B["① 采集 collect（逐股）<br/>日线（筛选已采的跳过）/ 资讯 / 财报日 / SEC 列表 / FRED<br/>每族追加一行拉取记录 data_fetch_runs"]
+        B --> B2["③ 市场环境 regime<br/>regime-2：范围 ∪ 手动池广度 → 区制；行业强弱"]
+        B2 --> C["④ 信号 signals<br/>规则 v1：信号候选 → 决策单元"]
+        C --> D["⑤ 计划 plan<br/>plan-1：ATR 止损 · 2R 目标 · 按风险定仓 · 超限作废"]
+        D --> E["⑥ Agent 轨道 agent<br/>提议 + 反方 · 引用校验 · token 预算；解读"]
+        E --> F["⑦ 复核与推送 push<br/>今日视图 + 推送 Discord（核心池 + 持仓）"]
     end
     F --> G["你：「今日」采纳 / 否决 / 降级<br/>选执行依据：规则 / Agent / 自定"]
     G --> H["你：录入成交 → 持仓与止损"]
@@ -113,6 +113,8 @@ flowchart TD
 ```
 
 时点纪律：规则、计划和 Agent 工具只读运行截止时间之前已入库的数据；所有业务记录只追加，更正用新记录指向旧记录。手动运行批处理不推送。
+
+七个阶段（`collect`、`screen`、`regime`、`signals`、`plan`、`agent`、`push`）按 `workbench/stages.py` 注册表（`stages-1`）的定义展示，每次运行每阶段向 `stage_runs` 追加一行证据（计数、原因、产出引用、耗时）。`collect` 的时间窗口包住 `screen`（筛选自己采集范围日线，这部分记在 `collect` 的 `bars` 计数里），信号与计划在同一个逐只循环里交替执行；展示顺序以注册表为准，不以时间戳为准。
 
 ---
 
