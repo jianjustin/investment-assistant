@@ -141,3 +141,23 @@ const NOTE_TEXT: Record<string, string> = {
 export function noteText(note: string): string {
   return NOTE_TEXT[note] ?? note
 }
+
+/** Backend copy marks identifiers with Markdown backticks (`plan-1`); split it into
+ *  plain and code runs. An unbalanced backtick leaves the text as one plain run. */
+export function codeSegments(text: string): { text: string; code: boolean }[] {
+  const parts = text.split('`')
+  if (parts.length % 2 === 0) return [{ text, code: false }]
+  return parts.map((part, i) => ({ text: part, code: i % 2 === 1 })).filter(part => part.text)
+}
+
+/** What a card's evidence adds beyond the page banner (the ATR supplement); the
+ *  shared sentence is shown once at the top, not again on every card. */
+export function extraEvidence(evidence: string, pageEvidence = ''): string {
+  return pageEvidence && evidence.startsWith(pageEvidence)
+    ? evidence.slice(pageEvidence.length).trim() : evidence
+}
+
+/** Card notes minus those the coverage sentence already states (SEC's 无申报 ≠ 缺数据). */
+export function cardNotes(card: Pick<FamilyCard, 'notes' | 'coverage_note'>): string[] {
+  return card.notes.filter(note => !card.coverage_note?.includes(noteText(note)))
+}

@@ -67,7 +67,7 @@
       <p class="text-xs text-warn border border-border rounded p-2 bg-surface"><span>迁移 024 未执行</span>：最近拉取不可见，拉取接口不可用。</p>
     {/if}
     {#if familyId && detail}
-      <DataFamilyCard card={detail.card} onfetched={() => load(familyId)} />
+      <DataFamilyCard card={detail.card} pageEvidence={overview.evidence} onfetched={() => load(familyId)} />
       <section class="space-y-2">
         <div class="flex items-center justify-between">
           <h2 class="font-semibold">最近 20 次拉取</h2>
@@ -122,12 +122,12 @@
         </div>
       </section>
       {#key familyId}
-        <DataBrowse family={detail.card} {targets} onfetched={() => load(familyId)} />
+        <DataBrowse family={detail.card} {targets} pageEvidence={overview.evidence} onfetched={() => load(familyId)} />
       {/key}
     {:else}
       <div class="grid gap-3 md:grid-cols-2">
         {#each overview.families as card (card.id)}
-          <DataFamilyCard {card} onfetched={() => load(familyId)} />
+          <DataFamilyCard {card} pageEvidence={overview.evidence} onfetched={() => load(familyId)} />
         {/each}
       </div>
     {/if}

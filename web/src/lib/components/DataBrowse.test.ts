@@ -92,9 +92,14 @@ describe('DataBrowse 原始值', () => {
         { price_date: '2026-10-22', close: 120, atr: 4.8, atr_pct: 0.04 },
       ],
     })
-    mount('atr')
-    expect(await screen.findByText('现算，与 `plan-1` 同一函数；不入库')).toBeTruthy()
-    expect(screen.getByText(/`plan-1` 的计算输入，规则 `gate_hold`/)).toHaveTextContent(EVIDENCE)
+    render(DataBrowse, { family: family('atr'), targets: ['MU', 'NVDA'], pageEvidence: EVIDENCE })
+    const note = await screen.findByText((_, el) => el?.tagName === 'P'
+      && el.textContent === '现算，与 plan-1 同一函数；不入库')
+    expect(note.querySelector('code')?.textContent).toBe('plan-1')
+    // Only the ATR supplement: the page banner above already carries the shared evidence.
+    const evidence = screen.getByText((_, el) => el?.tagName === 'P'
+      && el.textContent === 'plan-1 的计算输入，规则 gate_hold')
+    expect(evidence).not.toHaveTextContent(EVIDENCE)
     const rows = within(screen.getByRole('table', { name: 'ATR 原始值' })).getAllByRole('row')
     expect(rows[1]).toHaveTextContent('2026-10-21')
     expect(rows[1]).toHaveTextContent('3.0%')

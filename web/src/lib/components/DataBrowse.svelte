@@ -1,13 +1,16 @@
 <script lang="ts">
   import * as api from '../api'
   import { fmtBeijing, fmtPct } from '../format'
-  import { fetchTarget, noteText, type BrowseResult, type FamilyCard } from '../data-families'
+  import { extraEvidence, fetchTarget, noteText, type BrowseResult, type FamilyCard } from '../data-families'
+  import CodeText from './CodeText.svelte'
 
-  let { family, targets, onfetched }: {
+  let { family, targets, onfetched, pageEvidence = '' }: {
     family: FamilyCard
     targets: string[]
     onfetched?: () => void | Promise<void>
+    pageEvidence?: string   // the page banner; only the family's supplement is repeated here
   } = $props()
+  let evidence = $derived(extraEvidence(family.evidence, pageEvidence))
 
   let ticker = $state('')
   let draft = $state('')
@@ -158,7 +161,7 @@
 
 <section aria-label="原始数据浏览" class="space-y-3 min-w-0">
   <h2 class="font-semibold">原始数据浏览</h2>
-  <p class="text-xs text-muted">{family.evidence}</p>
+  {#if evidence}<p class="text-xs text-muted"><CodeText text={evidence} /></p>{/if}
   {#if byTicker}
     <form onsubmit={selectTicker} class="flex flex-wrap items-center gap-2">
       <label class="text-sm" for="browse-ticker">标的</label>
@@ -192,7 +195,7 @@
     {#if family.id === 'bars'}
       <p class="text-xs text-muted">{text(rows[0]?.note ?? '拆股调整、未分红调整；adj_close 全调整')}</p>
     {:else if family.id === 'atr'}
-      <p class="text-xs text-muted">{result.note ?? '现算，与 `plan-1` 同一函数；不入库'}</p>
+      <p class="text-xs text-muted"><CodeText text={result.note ?? '现算，与 `plan-1` 同一函数；不入库'} /></p>
     {/if}
     {#if family.id === 'universe' && result.meta}
       <dl class="text-sm grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 break-words">

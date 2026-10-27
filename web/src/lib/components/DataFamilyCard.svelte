@@ -1,13 +1,19 @@
 <script lang="ts">
   import * as api from '../api'
   import StatusPill from './StatusPill.svelte'
+  import CodeText from './CodeText.svelte'
   import { fmtBeijing } from '../format'
   import {
-    fetchButtonLabel, fetchTarget, kindLabel, noteText, triggerLabel,
+    cardNotes, extraEvidence, fetchButtonLabel, fetchTarget, kindLabel, noteText, triggerLabel,
     type FamilyCard,
   } from '../data-families'
 
-  let { card, onfetched }: { card: FamilyCard; onfetched: () => void } = $props()
+  // pageEvidence: the banner the page already shows; the card then adds only its own supplement.
+  let { card, onfetched, pageEvidence = '' }: {
+    card: FamilyCard; onfetched: () => void; pageEvidence?: string
+  } = $props()
+  let evidence = $derived(extraEvidence(card.evidence, pageEvidence))
+  let notes = $derived(cardNotes(card))
 
   let busy = $state(false)
   let error = $state('')
@@ -50,7 +56,7 @@
     <h2 class="font-semibold"><a class="hover:underline" href="#data/{card.id}">{card.title}</a></h2>
     <span class="text-xs px-1.5 py-0.5 rounded bg-accent/10 text-accent">{kindLabel(card.kind)}</span>
   </div>
-  <p class="text-xs text-muted">{card.purpose}</p>
+  <p class="text-xs text-muted"><CodeText text={card.purpose} /></p>
   <p>覆盖
     <span class="{card.coverage.lagging.length ? 'text-warn font-medium' : ''}">
       {card.coverage.covered} / {card.coverage.targets}</span>
@@ -87,12 +93,12 @@
   {#if card.last_success_at}
     <p class="text-xs text-muted">最近成功 {fmtBeijing(card.last_success_at)}</p>
   {/if}
-  {#if card.notes.length}
+  {#if notes.length}
     <ul class="text-xs text-amber-700 space-y-0.5">
-      {#each card.notes as n (n)}<li>{noteText(n)}</li>{/each}
+      {#each notes as n (n)}<li>{noteText(n)}</li>{/each}
     </ul>
   {/if}
-  <p class="text-xs text-muted">{card.evidence}</p>
+  {#if evidence}<p class="text-xs text-muted"><CodeText text={evidence} /></p>{/if}
   {#if card.job}
     {@const job = card.job}
     <p class="text-xs text-muted">所属任务

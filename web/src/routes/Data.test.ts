@@ -57,6 +57,35 @@ describe('Data 总览', () => {
     expect(screen.getAllByText('采集')).toHaveLength(4)
   })
 
+  it('renders backtick spans as code, not raw backticks', async () => {
+    vi.mocked(api.getDataFamilies).mockResolvedValue(
+      overview(six({ bars: { purpose: '用于 `plan-1` 价位和 `screen-1` 筛选。' } })))
+    render(Data)
+    const article = await screen.findByRole('article', { name: '日线' })
+    expect(article.textContent).not.toContain('`')
+    expect([...article.querySelectorAll('code')].map(el => el.textContent)).toEqual(['plan-1', 'screen-1'])
+  })
+
+  it('does not repeat the page evidence on every card', async () => {
+    render(Data)
+    expect(await screen.findByLabelText('证据说明')).toHaveTextContent(EVIDENCE)
+    for (const article of screen.getAllByRole('article')) expect(article).not.toHaveTextContent(EVIDENCE)
+    const atr = screen.getByRole('article', { name: 'ATR' })
+    expect(atr).toHaveTextContent('plan-1 的计算输入，规则 gate_hold')
+    expect(atr.textContent).not.toContain('`')
+  })
+
+  it('does not repeat a note the coverage sentence already says', async () => {
+    vi.mocked(api.getDataFamilies).mockResolvedValue(overview(six({
+      sec_filings: { coverage_note: '覆盖 = 近 120 天有申报记录的标的数；无申报 ≠ 缺数据。',
+                     notes: ['no_filing_is_not_missing', 'pool_empty'] },
+    })))
+    render(Data)
+    const article = await screen.findByRole('article', { name: 'SEC 申报' })
+    expect(within(article).getAllByText(/无申报 ≠ 缺数据/)).toHaveLength(1)
+    expect(within(article).getByText('关注列表中没有可用的池标的')).toBeTruthy()
+  })
+
   it('highlights lagging coverage', async () => {
     vi.mocked(api.getDataFamilies).mockResolvedValue(
       overview(six({ bars: { coverage: { targets: 10, covered: 8, lagging: ['MU', 'NVDA'] } } })))
