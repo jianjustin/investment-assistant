@@ -162,19 +162,25 @@ class Tally:
                 'started_at': started_at, 'finished_at': finished_at}
 
 
-def write_runs(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Append every row in one transaction. A failure (including migration 024 not
-    run) is reported, never raised: ``{'written': n, 'error': None}`` or
-    ``{'written': 0, 'error': '...'}`` (design §6.2)."""
+def write_runs_with_ids(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], list[int]]:
+    """Append every row in one transaction; also return the inserted ids.
+
+    The first element is exactly ``write_runs``' return value, the second the
+    inserted rows' ids in order (``[]`` when nothing was written). A failure
+    (including migration 024 not run) is reported, never raised (design §6.2)."""
     from investment_assistant.workbench import service as service_module
 
     try:
         with service_module._tx() as conn:
-            for row in rows:
-                repository.insert_fetch_run(conn, row)
-        return {'written': len(rows), 'error': None}
+            ids = [repository.insert_fetch_run(conn, row)['id'] for row in rows]
+        return {'written': len(rows), 'error': None}, ids
     except Exception as exc:
-        return {'written': 0, 'error': families.sanitize_reason(exc)}
+        return {'written': 0, 'error': families.sanitize_reason(exc)}, []
+
+
+def write_runs(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Append every row in one transaction; see ``write_runs_with_ids``."""
+    return write_runs_with_ids(rows)[0]
 
 
 def _lock_key(family_id: str) -> str:

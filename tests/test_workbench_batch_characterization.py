@@ -205,3 +205,53 @@ def test_characterization_spy_failure(db):
     sec = db.execute("SELECT status, target_count, failures FROM data_fetch_runs "
                      "WHERE family = 'sec_filings' ORDER BY id DESC LIMIT 1").fetchone()
     assert sec == ('failed', 23, [{'target': '*', 'reason': 'edgar down'}])   # 3 池 + 20 成员；哨兵无 N+1
+
+
+# ------------------------------------------------------- v2.4 §6.3 stages 护栏
+# 开启阶段记账（recorder 不写库）时，summary 与不传 stages 逐字段相同；
+# stage_status 由 Task 5 的任务层加，这里还没有。
+
+
+def _stage_recorder(rows, run_id):
+    from investment_assistant.workbench import stages
+    return stages.StageRecorder(run_id, 'manual_batch', SESSION, writer=rows.append)
+
+
+def test_characterization_watchlist_and_screen_with_stages(db):
+    seed_watchlist(db, [('AAA', ['core']), ('BBB', []), ('CCC', [])])
+    rows = []
+    actual = _reduced(service.run_batch(now=NOW, deps=batch_deps(),
+                                        stages=_stage_recorder(rows, 'run-ch-a')))
+    assert actual == WATCHLIST_EXPECTED
+
+
+def test_characterization_explicit_tickers_with_stages(db):
+    rows = []
+    actual = _reduced(service.run_batch(tickers=['NVDA'], now=NOW, deps=batch_deps(),
+                                        stages=_stage_recorder(rows, 'run-ch-b')))
+    assert actual == EXPLICIT_EXPECTED
+
+
+def test_characterization_spy_failure_with_stages(db):
+    seed_watchlist(db, [('AAA', ['core']), ('BBB', []), ('CCC', [])])
+    rows = []
+    summary = service.run_batch(now=NOW, deps=batch_deps(fail={'SPY', 'SMH', 'BBB'}),
+                                record_trigger='scheduled', stages=_stage_recorder(rows, 'run-ch-c'))
+    assert {k: summary[k] for k in ('benchmark', 'etfs', 'sources', 'errors')} == {
+        'benchmark': {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [],
+                      'skips': [], 'error': 'bars: provider down'},
+        'etfs': {'QQQ': 'inserted 300', 'SMH': 'error: provider down', 'XLK': 'inserted 300'},
+        'sources': {'bars': ['SPY', 'BBB'], 'news': ['AAA'], 'earnings': [], 'sec': ['all'],
+                    'etf_bars': ['SMH'], 'fred': [], 'regime': [], 'agent': []},
+        'errors': ['SPY bars: provider down', 'SMH etf_bars: provider down',
+                   'AAA news: news down', 'BBB bars: provider down',
+                   'SEC listings: edgar down'],
+    }
+    row = db.execute("SELECT status, target_count, ok_count, failures FROM data_fetch_runs "
+                     "WHERE family = 'bars' ORDER BY id DESC LIMIT 1").fetchone()
+    assert row == ('partial', 36, 33, [{'target': 'BBB', 'reason': 'provider down'},
+                                       {'target': 'SMH', 'reason': 'provider down'},
+                                       {'target': 'SPY', 'reason': 'provider down'}])
+    sec = db.execute("SELECT status, target_count, failures FROM data_fetch_runs "
+                     "WHERE family = 'sec_filings' ORDER BY id DESC LIMIT 1").fetchone()
+    assert sec == ('failed', 23, [{'target': '*', 'reason': 'edgar down'}])

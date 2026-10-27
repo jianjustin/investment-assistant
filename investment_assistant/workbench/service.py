@@ -23,6 +23,7 @@ from investment_assistant.workbench import macro as macro_module
 from investment_assistant.workbench import pool as pool_module
 from investment_assistant.workbench import regime as regime_module
 from investment_assistant.workbench import screening
+from investment_assistant.workbench import stages as stages_module
 from investment_assistant.workbench import universe as universe_module
 from investment_assistant.workbench import discipline as _discipline_module
 from investment_assistant.workbench import plan_shadow as _plan_shadow_module
@@ -231,7 +232,8 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
               deps: Deps | None = None, skip_non_trading: bool = False, run_id: str | None = None,
               breadth_tickers: list[str] | None = None,
               record_trigger: str | None = None,
-              wall_now: Callable[[], datetime] | None = None) -> dict[str, Any]:
+              wall_now: Callable[[], datetime] | None = None,
+              stages: stages_module.StageRecorder | None = None) -> dict[str, Any]:
     """Collect -> market context -> rules -> units -> briefs for the latest settled session. Idempotent per session.
 
     The batch runs over the tiered watch pool read from the watchlist (holdings
@@ -244,11 +246,16 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
     ``wall_now`` (default real wall clock, I07) timestamps those rows' start and
     finish; ``now`` keeps its old meaning as trading session, data fetched_at and
     every computation cutoff.
+    ``stages`` (v2.4 §6.2) is the task layer's stage recorder: accounting next to
+    the existing code for collect / screen / regime, never changing the control
+    flow; None keeps the batch exactly as before.
     """
     deps = deps or Deps()
     clock = deps.clock or _time_module.monotonic
     ny_date = now.astimezone(NY).date()
     if skip_non_trading and not is_trading_day(ny_date):
+        if stages is not None:   # 非交易日：前 6 个阶段整段跳过，push 留给任务层（v2.4 §4）
+            stages.skip_many(stages_module.STAGE_IDS[:-1], 'not_trading_day')
         return {'status': 'skipped', 'reason': 'not a trading day in New York', 'ny_date': ny_date.isoformat()}
     session = bars.latest_closed_session(now)
     started = clock()
@@ -274,13 +281,15 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
                     'regime': [], 'agent': []},
         'timings': {}}
 
-    # v2.3 §6.2: per-family outcome accounting, fed next to every collect call; None
-    # keeps the None-trigger path exactly as before Task 5 (no locks, no rows).
+    # v2.3 §6.2 / v2.4 §6.2: per-family outcome accounting, fed next to every collect
+    # call. record_trigger holds the locks and writes data_fetch_runs; stages alone
+    # still builds the tallies for the collect stage's counts — no locks, no rows;
+    # with neither set the path stays exactly as before (no tallies at all).
     tallies = ({'bars': collect.Tally('bars', 'workbench'),
                 'news': collect.Tally('news', 'workbench'),
                 'sec_filings': collect.Tally('sec_filings', 'workbench'),
                 'fred': collect.Tally('fred', 'workbench', macro_module.MACRO_SERIES)}
-               if record_trigger is not None else None)
+               if record_trigger is not None or stages is not None else None)
     if tallies is not None and not explicit:   # no screen stage -> no universe row
         tallies['universe'] = collect.Tally('universe', 'workbench', ('nasdaq100',))
 
@@ -290,6 +299,9 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
     if tallies is not None:
         wall = wall_now or collect.wall_clock
         collect_started_at = wall()
+    # v2.4 §4: collect 的窗口从 SPY 采集前开始，包住嵌在其中的 screen，止于 fetch 行落库。
+    c_acc = stages.open('collect') if stages is not None else None
+    c_started = clock() if c_acc is not None else 0.0
     # v2.3 §6.4: one session advisory lock per fetched family over the whole collection
     # stage, on a dedicated connection, acquired in a fixed order (a manual fetch holds
     # a single lock, so no deadlock); universe only reads a file and takes no lock.
@@ -330,9 +342,29 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         manual_pool = pool
         if explicit:
             summary['screen'] = {'status': 'skipped', 'reason': 'explicit_pool'}
+            if stages is not None:   # 显式池：整阶段跳过（v2.4 §4）
+                stages.skip('screen', 'explicit_pool')
         else:
+            s_acc = stages.open('screen') if stages is not None else None
+            s_started = clock() if s_acc is not None else 0.0
             stage = screening.run_stage(session=session, now=now, manual=pool, held=held,
                                         deps=deps, run_id=run_id)
+            if s_acc is not None:
+                s_acc.duration_ms += (clock() - s_started) * 1000
+                s_acc.input(len(stage['universe'].tickers) if stage['universe'] is not None else 0)
+                s_acc.output(len(stage['summary']['selected']))
+                if stage['summary']['screen_run_id'] is not None:
+                    s_acc.set_ref('screen_run_id', stage['summary']['screen_run_id'])
+                error = stage['summary']['error']
+                if error is None:
+                    stages.finish('screen')
+                elif error.startswith('universe:') or error == 'benchmark_missing':
+                    # 范围文件加载失败或 QQQ 缺当日数据、沿用成员：降级不是失败（§4）
+                    s_acc.degrade('universe_load_failed' if error.startswith('universe:')
+                                  else 'benchmark_missing', error)
+                    stages.finish('screen')
+                else:
+                    stages.finish('screen', failed=error)
             summary['screen'] = stage['summary']
             summary['sources']['bars'].extend(stage['fetch_failures'])
             if tallies is not None:
@@ -363,6 +395,7 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         if not pool.core:
             summary['errors'].append('core_empty')
 
+        e_ok = e_failed = 0                 # 财报日成败（collect 阶段 detail.earnings，v2.4 §4）
         for ticker in all_tickers:
             entry: dict[str, Any] = {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [], 'skips': [],
                                      'error': None}
@@ -399,12 +432,17 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
                 row = earnings.fetch_next(ticker, fetcher=deps.earnings_fetcher, today=ny_date)
                 with _tx() as conn:
                     summary['earnings'][ticker] = repository.store_earnings(conn, ticker, row, now=now)['status']
+                if c_acc is not None:
+                    e_ok += 1
             except Unavailable:
                 raise
             except Exception as exc:  # 采集失败不写库，也不冒充无财报
                 summary['earnings'][ticker] = f'error: {exc}'
                 summary['errors'].append(f'{ticker} earnings: {exc}')
                 summary['sources']['earnings'].append(ticker)
+                if c_acc is not None:
+                    c_acc.fail(f'earnings:{ticker}', exc)
+                    e_failed += 1
             if problems:
                 entry['error'] = '; '.join(problems)
                 summary['errors'].extend(f'{ticker} {p}' for p in problems)
@@ -432,6 +470,8 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         api_key = os.environ.get('FRED_API_KEY')
         if tallies is not None and not api_key:
             tallies['fred'].skip('FRED_API_KEY 未配置')
+        if c_acc is not None and not api_key:
+            c_acc.degrade('fred_not_configured', 'FRED_API_KEY 未配置')
         for series_id in macro_module.MACRO_SERIES:
             try:
                 summary['macro'][series_id] = collect.fred_series(series_id, session=session, now=now,
@@ -450,13 +490,29 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
 
     if tallies is not None:
         collect_finished_at = wall()
-        summary['data_status'] = collect.write_runs(
-            [tally.row(trigger=record_trigger, run_id=run_id, session=session,
-                       started_at=collect_started_at, finished_at=collect_finished_at)
-             for tally in tallies.values()])
+        fetch_rows = [tally.row(trigger=record_trigger, run_id=run_id, session=session,
+                                started_at=collect_started_at, finished_at=collect_finished_at)
+                      for tally in tallies.values()]
+        if record_trigger is not None:
+            summary['data_status'], fetch_ids = collect.write_runs_with_ids(fetch_rows)
+        else:
+            fetch_ids = []           # 只记账不落 fetch 行（v2.4 §6.2）
+        if c_acc is not None:
+            # 计数与失败取自 v2.3 四个 Tally 的冻结行（universe 若有在其后，§4）。
+            for row in fetch_rows[:4]:
+                c_acc.input(row['target_count'])
+                c_acc.output(row['ok_count'])
+                for failure in row['failures']:
+                    c_acc.fail(f"{row['family']}:{failure['target']}", failure['reason'])
+            if fetch_ids:
+                c_acc.set_ref('data_fetch_runs', fetch_ids[:4])
+            c_acc.detail['earnings'] = {'targets': len(all_tickers), 'ok': e_ok, 'failed': e_failed}
+            c_acc.duration_ms += (clock() - c_started) * 1000
+            stages.finish('collect')
 
     # Market context sits between collection and rules; pool bars exclude off-pool holdings.
     t_regime = clock()
+    r_acc = stages.open('regime') if stages is not None else None
     try:
         with _tx() as conn:
             if breadth_tickers is not None:
@@ -488,6 +544,22 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         summary['regime'] = f'error: {exc}'
         summary['sources']['regime'] = ['all']
         summary['errors'].append(f'regime: {exc}')
+        if stages is not None:   # 区制异常：failed（v2.4 §4）
+            stages.finish('regime', failed=exc)
+    else:
+        if r_acc is not None:
+            r_acc.input(len(breadth_sample))
+            r_acc.output(1)      # 写入或已存的快照（§4）
+            r_acc.set_ref('market_regime_id', out['record']['id'])
+            if snap['label'] == 'insufficient':
+                r_acc.degrade('label_insufficient', '')      # 广度样本不足
+            for series_id, state in macro_status.items():
+                if state != 'ok':
+                    r_acc.degrade('macro_not_ok', f'{series_id}:{state}')
+            if out['status'] == 'conflict':
+                r_acc.degrade('conflict', '')
+            r_acc.duration_ms += (clock() - t_regime) * 1000
+            stages.finish('regime')
     summary['timings']['regime'] = round(clock() - t_regime, 1)
 
     t_rules = clock()
