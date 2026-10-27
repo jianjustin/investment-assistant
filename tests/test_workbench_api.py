@@ -2,7 +2,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from investment_assistant.workbench import ledger, service
+from investment_assistant.workbench import derivation_view, ledger, service
 
 
 def raiser(exc):
@@ -335,3 +335,103 @@ def test_screen_replay_route(client, monkeypatch):
     resp = client.post('/api/workbench/screen/replay', json={})
     assert resp.status_code == 200 and seen['sessions'] == 5
     assert resp.json()['reports'][0]['session'] == '2026-10-22'
+
+
+PLAN_ID = '6f1d1c1e-6666-4444-8888-000000000001'
+
+
+def test_plan_derivation_route_delegates(client, monkeypatch):
+    seen = {}
+
+    def plan_derivation(plan_id):
+        seen['plan_id'] = plan_id
+        return {'derivation_version': 'derivation-1', 'plan': {'id': 'p1'},
+                'trigger': [{'rule_id': 'trend_reclaim'}], 'inputs': {}, 'steps': [], 'checks': [],
+                'consistency': {'status': 'consistent'}, 'evidence': '证据状态',
+                'trigger_note': '触发段只复核冻结取值', 'run': {'ready': True, 'run_id': 'r1'}}
+
+    monkeypatch.setattr(derivation_view, 'plan_derivation', plan_derivation)
+    resp = client.get(f'/api/workbench/plans/{PLAN_ID}/derivation')
+    assert resp.status_code == 200
+    assert seen == {'plan_id': PLAN_ID}                                  # id 原样传给用例
+    body = resp.json()
+    assert body['trigger'] == {'note': '触发段只复核冻结取值',        # 说明收进 trigger 段，不是顶层键
+                               'candidates': [{'rule_id': 'trend_reclaim'}]}
+    assert 'trigger_note' not in body and body['run'] == {'ready': True, 'run_id': 'r1'}
+
+
+def test_unit_derivation_route_delegates(client, monkeypatch):
+    seen = {}
+
+    def unit_derivation(ticker, signal_date):
+        seen.update(ticker=ticker, signal_date=signal_date)
+        return {'derivation_version': 'derivation-1', 'trigger': [], 'consistency': {'status': 'consistent'},
+                'evidence': '证据状态', 'note': '触发段只复核冻结取值', 'plan_ids': [PLAN_ID]}
+
+    monkeypatch.setattr(derivation_view, 'unit_derivation', unit_derivation)
+    resp = client.get('/api/workbench/units/AAPL/2026-10-22/derivation')
+    assert resp.status_code == 200 and resp.json()['plan_ids'] == [PLAN_ID]
+    assert seen == {'ticker': 'AAPL', 'signal_date': date(2026, 10, 22)}  # ticker 原样、日期已解析
+    assert client.get('/api/workbench/units/AAPL/2026-13-01/derivation').status_code == 400
+
+
+def test_stage_runs_route_delegates_and_serializes_stages(client, monkeypatch):
+    from investment_assistant.workbench import stages as stages_module
+    seen = {}
+
+    def stage_runs_view(*, session=None, run_id=None):
+        seen.update(session=session, run_id=run_id)
+        return {'stages': list(stages_module.STAGES[:2]), 'stage_runs_ready': True,
+                'runs': [{'run_id': 'r1', 'rows': [{'stage': 'collect', 'session': date(2026, 10, 22),
+                                                    'started_at': None}]}]}
+
+    monkeypatch.setattr(derivation_view, 'stage_runs_view', stage_runs_view)
+    resp = client.get('/api/workbench/stage-runs', params={'session': '2026-10-22'})
+    assert resp.status_code == 200
+    assert seen == {'session': date(2026, 10, 22), 'run_id': None}
+    body = resp.json()
+    assert body['stages'] == [{'id': s.id, 'title': s.title, 'purpose': s.purpose}
+                              for s in stages_module.STAGES[:2]]          # StageDef 显式序列化成 dict
+    assert body['stage_runs_ready'] is True
+    assert body['runs'][0]['rows'][0]['session'] == '2026-10-22'
+    assert client.get('/api/workbench/stage-runs', params={'run_id': 'r1'}).status_code == 200
+    assert seen == {'session': None, 'run_id': 'r1'}
+
+
+def test_derivation_bad_uuid_is_400(client):
+    assert client.get('/api/workbench/plans/not-a-uuid/derivation').status_code == 400
+
+
+def test_derivation_unknown_plan_is_404(client, monkeypatch):
+    monkeypatch.setattr(derivation_view, 'plan_derivation', raiser(LookupError(f'计划不存在：{PLAN_ID}')))
+    assert client.get(f'/api/workbench/plans/{PLAN_ID}/derivation').status_code == 404
+
+
+def test_unit_derivation_bad_ticker_is_400(client):
+    assert client.get('/api/workbench/units/1234/2026-10-22/derivation').status_code == 400
+
+
+def test_unit_derivation_without_candidates_is_404(client, monkeypatch):
+    monkeypatch.setattr(derivation_view, 'unit_derivation', raiser(LookupError('该单元没有候选')))
+    assert client.get('/api/workbench/units/NVDA/2026-10-22/derivation').status_code == 404
+
+
+def test_stage_runs_needs_exactly_one_param(client):
+    assert client.get('/api/workbench/stage-runs').status_code == 400                     # 两个都缺
+    assert client.get('/api/workbench/stage-runs',
+                      params={'session': '2026-10-22', 'run_id': 'r1'}).status_code == 400  # 两个都给
+
+
+def test_stage_runs_bad_session_is_400(client):
+    assert client.get('/api/workbench/stage-runs', params={'session': '2026-13-01'}).status_code == 400
+
+
+@pytest.mark.parametrize('path, target, kwargs', [
+    (f'/api/workbench/plans/{PLAN_ID}/derivation', 'plan_derivation', {}),
+    ('/api/workbench/units/NVDA/2026-10-22/derivation', 'unit_derivation', {}),
+    ('/api/workbench/stage-runs', 'stage_runs_view', {'params': {'session': '2026-10-22'}}),
+])
+def test_derivation_routes_503_without_db(client, monkeypatch, path, target, kwargs):
+    monkeypatch.setattr(derivation_view, target, raiser(service.Unavailable('工作台数据表未就绪')))
+    resp = client.get(path, **kwargs)
+    assert resp.status_code == 503 and '未就绪' in resp.json()['error']

@@ -46,3 +46,29 @@ def test_delete_route_resolves(monkeypatch, client):
     assert resp.json() == {"ticker": "NVDA", "deleted": True}
     resp_nope = client.delete("/api/nope")
     assert resp_nope.status_code == 404
+
+
+DERIVATION_PATHS = {
+    "/api/workbench/plans/{plan_id}/derivation",
+    "/api/workbench/units/{ticker}/{signal_date}/derivation",
+    "/api/workbench/stage-runs",
+}
+
+
+def test_derivation_and_stage_runs_routes_in_openapi(client):
+    spec = client.get("/openapi.json").json()
+    assert DERIVATION_PATHS <= set(spec["paths"])
+    for path in DERIVATION_PATHS:
+        assert set(spec["paths"][path].keys()) == {"get"}          # 全部是只读 GET
+
+
+def test_plan_derivation_response_top_level_keys(client, monkeypatch):
+    from investment_assistant.workbench import derivation_view
+    use_case = {"derivation_version": "derivation-1", "plan": {"id": "p1"}, "trigger": [],
+                "inputs": {}, "steps": [], "checks": [], "consistency": {"status": "consistent"},
+                "evidence": "evidence", "trigger_note": "note", "run": {"ready": True}}
+    monkeypatch.setattr(derivation_view, "plan_derivation", lambda plan_id: dict(use_case))
+    resp = client.get("/api/workbench/plans/6f1d1c1e-6666-4444-8888-000000000001/derivation")
+    assert resp.status_code == 200
+    assert set(resp.json().keys()) == {"derivation_version", "plan", "trigger", "inputs", "steps",
+                                       "checks", "consistency", "evidence", "run"}

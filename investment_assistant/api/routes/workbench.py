@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException
 
 from investment_assistant.tasks import runner
-from investment_assistant.workbench import ledger, service
+from investment_assistant.workbench import derivation_view, ledger, service
 
 router = APIRouter()
 
@@ -227,3 +227,24 @@ def review_push(payload: dict[str, Any] = Body(default_factory=dict)):
     from investment_assistant.services.settings import effective_notify_config
     return _call(service.push_review, kind, period, now=_now(),
                  notify_cfg=effective_notify_config(load_config().notify), trigger_source='manual')
+
+
+@router.get('/api/workbench/plans/{plan_id}/derivation')
+def plan_derivation_view(plan_id: str):
+    result = _call(derivation_view.plan_derivation, plan_id)
+    # 用例把触发段说明放在顶层 trigger_note；接口契约里它属于 trigger 段，不是顶层键
+    result['trigger'] = {'note': result.pop('trigger_note'), 'candidates': result['trigger']}
+    return result
+
+
+@router.get('/api/workbench/units/{ticker}/{signal_date}/derivation')
+def unit_derivation_view(ticker: str, signal_date: str):
+    return _call(derivation_view.unit_derivation, ticker, _date(signal_date, 'signal_date'))
+
+
+@router.get('/api/workbench/stage-runs')
+def stage_runs(session: str | None = None, run_id: str | None = None):
+    result = _call(derivation_view.stage_runs_view, session=_date(session, 'session'), run_id=run_id)
+    result['stages'] = [{'id': s.id, 'title': s.title, 'purpose': s.purpose}   # StageDef 显式序列化
+                        for s in result['stages']]
+    return result
