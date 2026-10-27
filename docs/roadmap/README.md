@@ -11,6 +11,7 @@
 | [v2-progress.md](v2-progress.md) | v2 各阶段状态与阶段证据 | 已冻结（v2.0.0），只追加验收证据 |
 | [v2.2-acceptance.md](v2.2-acceptance.md) | v2.2 手动触发验收（§11.2）与定时验收（§11.3）的证据 | 每完成一项验收追加 |
 | [v2.3-acceptance.md](v2.3-acceptance.md) | v2.3 手动触发验收（§11.2）与定时验收（§11.3）的证据 | 每完成一项验收追加 |
+| [v2.4-acceptance.md](v2.4-acceptance.md) | v2.4 手动触发验收（§12.2）与定时验收（§12.3）的证据 | 每完成一项验收追加 |
 | [v2-visibility.md](v2-visibility.md) | v2.3–v2.5 路线：数据、计划推导、运行全景的透明 | 方向变化时改，并在决策记录追加 |
 | [v2-agent-collab.md](v2-agent-collab.md) | v2.6–v2.9 路线：知识层、运行时切换、Agent 一级入口、多 agent 对抗 | 方向变化时改，并在决策记录追加 |
 | [backlog.md](backlog.md) | 下一版候选：v1 遗留的合并或删除、v2 暂缓项、未完成的使用验收 | 排期变化时改 |
@@ -24,7 +25,7 @@
 | v2.1 | 2026-10-25 | v1 遗留收拢：删除 Hermes、SPY/VIX 信号、趋势快照、策略评分、事件研究、研究观察卡；K 线图、基本面并入「标的」页，信号后超额并入 `backcheck-2`（[spec](../specs/2026-10-25-v2.1-legacy-consolidation-design.md)） | `engineering_done`、`user_acceptance_pending`；迁移 022 已于 10-25 在真实库执行，发布 `v2.1.0`；v2 路线收尾，不开 v3 |
 | v2.2 | 2026-10-25 – | 纳指 100 每日筛选自动进扩展池、`plan-1` 复核与筛选报告；`regime-2`；任务中心统一北京时间、任务自描述（[spec](../specs/2026-10-25-v2.2-screener-and-task-center-design.md)） | `engineering_done`、`user_acceptance_pending`（迁移 023 已于 2026-10-26 在真实库执行、服务已重启跑 v2.2 代码，见[迁移记录](../operations/migrations-and-backup.md)；手动验收 §11.2 四条均已核对（真实批处理、只读回放、推送、任务中心），见[验收记录](v2.2-acceptance.md)；定时验收 §11.3 自 10-27 首次定时运行起积累） |
 | v2.3 | 2026-10-26 – | 数据底座与「数据」菜单：数据族状态层、单族手动拉取、原始数据浏览（[v2-visibility.md](v2-visibility.md)；[spec](../specs/2026-10-26-v2.3-data-foundation-design.md)、[plan](../plans/2026-10-26-v2.3-data-foundation.md)） | `engineering_done`、`user_acceptance_pending`（版本号 `v2.3.0`；迁移 024 已于 2026-10-27 在真实库执行、服务已重启跑 v2.3 代码，见[迁移记录](../operations/migrations-and-backup.md)；手动验收 §11.2 五条已核对、用户已于 10-27 确认浏览可用，见[验收记录](v2.3-acceptance.md)；定时验收 §11.3 自 10-28 起积累；全范围 final review 已完成并修复，保留偏差见[下文](#v23-工程自查与验收边界)） |
-| v2.4 | 2026-10-27 – | 计划推导链与批处理 workflow 底座：7 阶段证据 `stage_runs`、run_id 接通、单份计划推导视图与「推导 = 重算」自动校验（[v2-visibility.md](v2-visibility.md)；[spec](../specs/2026-10-27-v2.4-derivation-and-workflow-design.md)、[plan](../plans/2026-10-27-v2.4-derivation-and-workflow.md)） | `engineering_done`、`user_acceptance_pending`、`runtime_unverified`（版本号 `v2.4.0`；实施见 [plan](../plans/2026-10-27-v2.4-derivation-and-workflow.md)；迁移 025 待授权执行，真实库尚未运行 v2.4 代码，spec §12.2 手动验收与 §12.3 连续 5 个交易日定时验收待迁移后进行；已知偏差——`push` 阶段 `input_count` 记实际发送数、触发段未带 `filing_ids`——见 [CHANGELOG](../../CHANGELOG.md)） |
+| v2.4 | 2026-10-27 – | 计划推导链与批处理 workflow 底座：7 阶段证据 `stage_runs`、run_id 接通、单份计划推导视图与「推导 = 重算」自动校验（[v2-visibility.md](v2-visibility.md)；[spec](../specs/2026-10-27-v2.4-derivation-and-workflow-design.md)、[plan](../plans/2026-10-27-v2.4-derivation-and-workflow.md)） | `engineering_done`、`user_acceptance_pending`（版本号 `v2.4.0`；迁移 025 已于 2026-10-27 在真实库执行、服务已重启跑 v2.4 代码，见[迁移记录](../operations/migrations-and-backup.md)；手动验收 §12.2 五条已核对、用户已于 10-27 确认推导可读，见[验收记录](v2.4-acceptance.md)；定时验收 §12.3 自 10-28 起积累；已知偏差——`push` 阶段 `input_count` 记实际发送数、触发段未带 `filing_ids`——见 [CHANGELOG](../../CHANGELOG.md)） |
 | v2.5 | — | 当日运行全景、「标的」页认知重排（[v2-visibility.md](v2-visibility.md)） | 已确认，未开工 |
 | v2.6 | — | 知识层：概念卡 + 我的知识，在系统内展示（「知识」菜单 + 就地展开），Agent 可引用、受截止时间约束（[v2-agent-collab.md](v2-agent-collab.md)） | 已确认，未开工 |
 | v2.7 | — | Agent 运行时可切换、本地 CLI 为主：工具层 MCP + 适配器（Claude Code / codex / pi，API 模型挂在 pi），删除智谱，LangGraph 保留为编排层（[v2-agent-collab.md](v2-agent-collab.md)） | 已确认，未开工 |
