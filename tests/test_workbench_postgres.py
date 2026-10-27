@@ -967,6 +967,70 @@ def test_fetch_runs_table_not_required_by_workbench(workbench_db):
     assert repository.fetch_runs_ready(workbench_db) is False
 
 
+# --- stage runs (v2.4 §5) ---
+
+def _stage_run(**overrides):
+    base = {'run_id': 'r1', 'job': 'workbench', 'trigger': 'scheduled',
+            'session': date(2026, 10, 23), 'stage': 'collect', 'stages_version': 'stages-1',
+            'status': 'success', 'reason': None, 'input_count': 2, 'output_count': 2,
+            'skips': [], 'failures': [], 'degradations': [], 'outputs': {}, 'detail': {},
+            'started_at': NOW, 'finished_at': NOW + timedelta(minutes=5), 'duration_ms': 300000}
+    base.update(overrides)
+    return base
+
+
+def test_stage_run_for_plan_prefers_inserting_row(workbench_db):
+    from investment_assistant.workbench import repository
+    conn = workbench_db
+    plan = str(uuid.uuid4())
+    repository.insert_stage_run(conn, _stage_run(run_id='r1', stage='plan',
+                                                 outputs={'inserted': [plan], 'existing': []}))
+    repository.insert_stage_run(conn, _stage_run(run_id='r2', stage='plan',
+                                                 outputs={'inserted': [], 'existing': [plan]}))
+    assert repository.stage_run_for_plan(conn, plan)['run_id'] == 'r1'
+    agent_plan = str(uuid.uuid4())
+    repository.insert_stage_run(conn, _stage_run(run_id='r3', stage='agent',
+                                                 outputs={'agent_run_ids': [7], 'plan_ids': [agent_plan]}))
+    assert repository.stage_run_for_plan(conn, agent_plan)['run_id'] == 'r3'
+    assert repository.stage_run_for_plan(conn, str(uuid.uuid4())) is None
+
+
+def test_stage_runs_round_trip_queries(workbench_db):
+    from investment_assistant.workbench import repository
+    conn = workbench_db
+    repository.insert_stage_run(conn, _stage_run(run_id='r1', stage='collect'))
+    repository.insert_stage_run(conn, _stage_run(run_id='r1', stage='push', status='skipped',
+                                                 reason='manual_run', input_count=0, output_count=0,
+                                                 duration_ms=0))
+    repository.insert_stage_run(conn, _stage_run(run_id='r2', stage='collect', session=date(2026, 10, 24)))
+    assert [row['stage'] for row in repository.stage_runs_for_run(conn, 'r1')] == ['collect', 'push']
+    assert {row['run_id'] for row in repository.stage_runs_for_session(conn, date(2026, 10, 23))} == {'r1'}
+    assert repository.stage_runs_for_session(conn, date(2026, 10, 24))[0]['run_id'] == 'r2'
+
+
+def test_workbench_reports_between(workbench_db):
+    from investment_assistant.workbench import repository
+    conn = workbench_db
+    conn.execute("INSERT INTO job_reports (task, run_id, status, started_at, trigger_source) VALUES "
+                 "('workbench', 'r1', 'success', %s, 'scheduled'), "
+                 "('workbench', 'r2', 'success', %s, 'manual'), "
+                 "('filings', 'r3', 'success', %s, 'scheduled')",
+                 [NOW, NOW + timedelta(hours=2), NOW + timedelta(hours=1)])
+    reports = repository.workbench_reports_between(conn, NOW, NOW + timedelta(hours=5))
+    assert [(row['run_id'], row['trigger_source']) for row in reports] == [('r1', 'scheduled'), ('r2', 'manual')]
+    assert reports[0]['started_at'] == NOW
+    assert repository.workbench_reports_between(conn, NOW + timedelta(hours=5),
+                                                NOW + timedelta(hours=10)) == []
+
+
+def test_stage_runs_ready_false_without_table(workbench_db):
+    from investment_assistant.workbench import repository
+    assert repository.stage_runs_ready(workbench_db) is True
+    workbench_db.execute('DROP TABLE stage_runs')
+    assert repository.missing_tables(workbench_db) == []
+    assert repository.stage_runs_ready(workbench_db) is False
+
+
 # --- family targets and coverage queries (v2.3 §4/§8) ---
 
 def _test_universe(*tickers):

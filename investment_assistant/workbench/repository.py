@@ -846,6 +846,65 @@ def last_success_at(conn, *, scope: str | None = None) -> dict[str, datetime]:
     return {row[0]: row[1] for row in rows}
 
 
+# --- stage runs (v2.4 §5) ---
+
+_STAGE_RUN_COLUMNS = ('id, run_id, job, trigger, session, stage, stages_version, status, reason, input_count, '
+                      'output_count, skips, failures, degradations, outputs, detail, started_at, finished_at, '
+                      'duration_ms, created_at')
+
+
+def insert_stage_run(conn, row: dict[str, Any]) -> dict[str, Any]:
+    """Append one stage-run row; the five JSONB columns arrive as Python objects, encoded here.
+
+    `row` keys are the table columns except `id`/`created_at`, which the database sets."""
+    return _one(conn,
+                'INSERT INTO stage_runs (run_id, job, trigger, session, stage, stages_version, status, reason, '
+                'input_count, output_count, skips, failures, degradations, outputs, detail, started_at, '
+                'finished_at, duration_ms) '
+                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, '
+                f'%s::jsonb, %s, %s, %s) RETURNING {_STAGE_RUN_COLUMNS}',
+                (row['run_id'], row['job'], row['trigger'], row.get('session'), row['stage'],
+                 row['stages_version'], row['status'], row.get('reason'), row['input_count'],
+                 row['output_count'], _plan_json(row.get('skips') or []),
+                 _plan_json(row.get('failures') or []), _plan_json(row.get('degradations') or []),
+                 _plan_json(row.get('outputs') or {}), _plan_json(row.get('detail') or {}),
+                 row['started_at'], row['finished_at'], row['duration_ms']))
+
+
+def stage_runs_ready(conn) -> bool:
+    """True when migration 025 has run; the workbench itself does not require this table."""
+    return conn.execute("SELECT to_regclass('stage_runs')").fetchone()[0] is not None
+
+
+def stage_runs_for_run(conn, run_id: str) -> list[dict[str, Any]]:
+    """One run's stage rows, oldest first."""
+    return _all(conn, f'SELECT {_STAGE_RUN_COLUMNS} FROM stage_runs WHERE run_id = %s ORDER BY created_at, id',
+                (run_id,))
+
+
+def stage_runs_for_session(conn, session: date) -> list[dict[str, Any]]:
+    """One session's stage rows across runs, oldest first."""
+    return _all(conn, f'SELECT {_STAGE_RUN_COLUMNS} FROM stage_runs WHERE session = %s ORDER BY created_at, id',
+                (session,))
+
+
+def stage_run_for_plan(conn, plan_id: str) -> dict[str, Any] | None:
+    """The earliest plan/agent stage row that inserted the plan (agent rows via outputs.plan_ids).
+
+    Not the candidate's run_id: a candidate may have been written by an earlier run."""
+    return _one(conn, f'SELECT {_STAGE_RUN_COLUMNS} FROM stage_runs '
+                      "WHERE stage IN ('plan', 'agent') "
+                      "AND (outputs->'inserted' ? %s OR outputs->'plan_ids' ? %s) "
+                      'ORDER BY created_at, id LIMIT 1', (plan_id, plan_id))
+
+
+def workbench_reports_between(conn, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    """workbench run reports with started_at in [start, end), oldest first."""
+    return _all(conn, "SELECT run_id, started_at, trigger_source FROM job_reports "
+                      "WHERE task = 'workbench' AND started_at >= %s AND started_at < %s "
+                      'ORDER BY started_at, id', (start, end))
+
+
 def last_push(conn, *, session: date | None = None) -> dict[str, Any] | None:
     """The newest recorded push result for the workbench task, optionally for one session."""
     if conn.execute("SELECT to_regclass('job_reports')").fetchone()[0] is None:

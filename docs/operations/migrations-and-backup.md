@@ -29,6 +29,7 @@
 | 022 | 删除 v1 遗留：`strategy_scores`、`ticker_signal_snapshots`、`market_signals`、`event_studies`、`research_observation_card_versions`、`research_observation_cards` 六张表与 `metrics`、`scores`、`event_study` 调度行；`job_reports` 历史与已冻结的 `backcheck-1` 记录保留 | 共享 |
 | 023 | v2.2：`screen_runs`、`screen_results`、`pool_tiers.source`（默认 `watchlist`）；`filings` 任务改为北京 09:30（只改仍是纽约时区的行） | 主线 + 共享 |
 | 024 | v2.3：`data_fetch_runs`：每次某族被拉取一次追加一行记录成败与原因；只建表与索引，不动旧表（2026-10-27 已在真实库执行，见下文） | 主线 |
+| 025 | v2.4：`stage_runs`：每次 `workbench` 任务、每个阶段追加一行证据（计数、原因、产出引用、耗时）；只建表与索引，不动旧表（未在真实库执行，待授权） | 主线 |
 
 另需一次：`python -m investment_assistant.workbench.agent setup` 由 LangGraph `PostgresSaver.setup()` 建检查点表，不进本项目迁移。
 
