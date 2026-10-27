@@ -1,4 +1,5 @@
 import type * as df from './data-families'
+import type { Derivation, UnitDerivation } from './derivation'
 export async function get<T>(path: string, options: { errorDetails?: boolean } = {}): Promise<T> {
   const r = await fetch(path, { headers: { Accept: 'application/json' }, cache: 'no-store' })
   if (!r.ok) {
@@ -185,3 +186,11 @@ export interface USResearchView {
 export const getUSResearch = (ticker:string,asOf?:string) => get<USResearchView>(`/api/us-research/${encodeURIComponent(ticker)}${asOf?'?'+new URLSearchParams({as_of:asOf}):''}`)
 export const syncUSResearch = (ticker:string,retry=false) => post<{run_id:string;status:string}>('/api/us-research/sync',{symbols:[ticker],retry_failed:retry})
 export const appendUSGuidance = (ticker:string,body:GuidanceInput) => post<{record:GuidanceRecord}>(`/api/us-research/${encodeURIComponent(ticker)}/guidance`,body)
+
+// derivation views (v2.4): 503 details opt in so the backend reason surfaces verbatim
+export const getPlanDerivation = (planId: string) =>
+  get<Derivation>(`/api/workbench/plans/${encodeURIComponent(planId)}/derivation`, { errorDetails: true })
+export const getUnitDerivation = (ticker: string, signalDate: string) =>
+  get<UnitDerivation>(
+    `/api/workbench/units/${encodeURIComponent(ticker)}/${encodeURIComponent(signalDate)}/derivation`,
+    { errorDetails: true })

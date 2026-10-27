@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import { registerNavigationGuard } from '../lib/navigation-guard'
   import Drawer from '../lib/components/Drawer.svelte'
+  import PlanDerivation from '../lib/components/PlanDerivation.svelte'
   import * as wb from '../lib/workbench'
 
   type Basis = wb.Basis
@@ -20,6 +21,14 @@
   let screenExpanded = $state(false)
   let screenFull = $state<wb.ScreenReport | null>(null)
   let screenError = $state('')
+  // 展开状态只在内存里，不进地址（设计 §10）；三种入口按 kind 区分。
+  let derivationOpen = $state<Record<string, boolean>>({})
+  const derivationShown = (kind: 'plan' | 'agent' | 'trigger', u: wb.Unit): boolean =>
+    !!derivationOpen[`${kind}|${keyOf(u)}`]
+  const toggleDerivation = (kind: 'plan' | 'agent' | 'trigger', u: wb.Unit) => {
+    const key = `${kind}|${keyOf(u)}`
+    derivationOpen[key] = !derivationOpen[key]
+  }
 
   async function expandScreen() {
     if (!view || !view.screen) return
@@ -267,6 +276,16 @@
         {/each}
       </ul>
 
+      {#if !u.plan && !agentPlanOf(u)}
+        <div class="text-sm space-y-1">
+          <button class="text-xs text-accent underline" aria-expanded={derivationShown('trigger', u)}
+                  onclick={() => toggleDerivation('trigger', u)}>触发依据</button>
+          {#if derivationShown('trigger', u)}
+            <PlanDerivation unit={{ ticker: u.ticker, signal_date: u.signal_date }} />
+          {/if}
+        </div>
+      {/if}
+
       <div class="text-sm border-l-2 border-border pl-2 space-y-1">
         {#if !u.brief}
           <p class="text-muted">尚无解读</p>
@@ -314,6 +333,11 @@
           {#each p.invalid_reasons as r}<p class="text-red-600">作废：{r}</p>{/each}
           {#each p.warnings as w}<p class="text-xs text-muted">提示：{w}</p>{/each}
           <p class="text-xs text-muted">证据：未验证</p>
+          <div class="space-y-1">
+            <button class="text-xs text-accent underline" aria-expanded={derivationShown('plan', u)}
+                    onclick={() => toggleDerivation('plan', u)}>展开推导</button>
+            {#if derivationShown('plan', u)}<PlanDerivation planId={p.id} />{/if}
+          </div>
         </div>
       {/if}
 
@@ -343,6 +367,13 @@
             {/if}
             {#if a.plan?.status === 'invalid'}
               <p class="text-red-600">Agent 计划已作废：{a.plan.invalid_reasons.join('、')}</p>
+            {/if}
+            {#if a.plan}
+              <div class="space-y-1">
+                <button class="text-xs text-accent underline" aria-expanded={derivationShown('agent', u)}
+                        onclick={() => toggleDerivation('agent', u)}>展开推导</button>
+                {#if derivationShown('agent', u)}<PlanDerivation planId={a.plan.id} />{/if}
+              </div>
             {/if}
           {:else if a.status === 'rejected' || a.status === 'error' || a.status === 'skipped'}
             <p class="font-medium">Agent 未给出建议</p>

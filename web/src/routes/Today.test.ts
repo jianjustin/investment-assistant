@@ -474,6 +474,79 @@ it('shows the model name on an interpret brief', async () => {
 })
 
 
+describe('derivation expansion', () => {
+  const planDerivation = (over: Record<string, unknown> = {}) => ({
+    derivation_version: 'derivation-1',
+    plan: { id: 'p1', ticker: 'NVDA', signal_date: '2026-10-22', kind: 'rule', plan_version: 'plan-1', status: 'ok' },
+    trigger: { note: '触发段只复核候选冻结的取值是否满足阈值，不从原始日线重算均线。', candidates: [] },
+    inputs: {}, steps: [], checks: [],
+    consistency: { status: 'consistent', mismatches: [], missing: [] },
+    evidence: '规则 v1 与 `plan-1` 都未经验证（Phase 0 Gate HOLD）。推导一致只说明算术正确，不说明规则有效。',
+    run: { ready: true, run_id: 'run-9', stage: 'plan', status: 'success',
+           derivation: { checked: 1, consistent: 1, mismatch: 0, incomplete: 0 } },
+    ...over,
+  })
+
+  const agentWithPlan = () => ({
+    id: 'r1', status: 'ok', model: 'glm-5.3', agent_version: 'agent-1',
+    output: { action: 'buy', summary: '回踩修复放量',
+              levels: { entry_low: { value: '98.50', refs: ['call:1'] },
+                        entry_high: { value: '101.50', refs: ['call:1'] },
+                        stop: { value: '96.00', refs: ['call:1'] },
+                        target1: { value: '108.00', refs: ['call:1'] } },
+              thesis: [] },
+    counter: null,
+    plan: { id: 'ap1', ticker: 'NVDA', signal_date: '2026-10-22', kind: 'agent', plan_version: 'agent-1', status: 'ok',
+            entry_low: '98.50', entry_high: '101.50', stop: '96.00', target1: '108.00', ref_price: 100, atr: 0,
+            valid_from: '2026-10-23', valid_until: '2026-10-27',
+            sizing: { status: 'sized', shares: 166, risk_amount: 1000, snapshot_as_of: '2026-10-20' },
+            invalid_reasons: [], warnings: [] },
+    input_tokens: 1, output_tokens: 1, created_at: '2026-10-22T23:00:00Z',
+  })
+
+  it('rule plan has 展开推导 and fetches on click only', async () => {
+    respond = async (url: string) => url.includes('/derivation')
+      ? json(planDerivation())
+      : json({ session: '2026-10-22', units: [unit({ plan: plan() })], holdings: [] })
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    expect(calls.filter(c => c.url.includes('derivation'))).toHaveLength(0)   // 点开前不请求
+    await fireEvent.click(screen.getByRole('button', { name: '展开推导' }))
+    await waitFor(() => expect(calls.some(c => c.url === '/api/workbench/plans/p1/derivation')).toBe(true))
+    expect(await screen.findByText('推导与重算一致')).toBeInTheDocument()
+  })
+
+  it('agent plan block has 展开推导', async () => {
+    respond = async (url: string) => url.includes('/derivation')
+      ? json(planDerivation({ plan: { id: 'ap1', ticker: 'NVDA', signal_date: '2026-10-22', kind: 'agent',
+                                      plan_version: 'agent-1', status: 'ok' } }))
+      : json({ session: '2026-10-22', units: [unit({ plan: null, agent: agentWithPlan() })], holdings: [] })
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    await fireEvent.click(screen.getByRole('button', { name: '展开推导' }))
+    await waitFor(() => expect(calls.some(c => c.url === '/api/workbench/plans/ap1/derivation')).toBe(true))
+    expect(await screen.findByText('推导与重算一致')).toBeInTheDocument()
+  })
+
+  it('unit without plan shows 触发依据', async () => {
+    respond = async (url: string) => url.includes('/derivation')
+      ? json({ derivation_version: 'derivation-1',
+               trigger: [{ candidate_id: 'c1', rule_id: 'trend_reclaim', rule_version: '1', action: 'buy',
+                           clauses: [{ text: 'close > ma20', operands: { 'values.close': 110.75, 'values.ma20': 108.2 },
+                                      result: 'holds' }] }],
+               consistency: { status: 'consistent', mismatches: [], missing: [] },
+               evidence: '规则 v1 与 `plan-1` 都未经验证（Phase 0 Gate HOLD）。推导一致只说明算术正确，不说明规则有效。',
+               note: '触发段只复核候选冻结的取值是否满足阈值，不从原始日线重算均线。', plan_ids: [] })
+      : json({ session: '2026-10-22', units: [unit()], holdings: [] })
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    await fireEvent.click(screen.getByRole('button', { name: '触发依据' }))
+    await waitFor(() => expect(calls.some(c => c.url === '/api/workbench/units/NVDA/2026-10-22/derivation')).toBe(true))
+    expect(await screen.findByText('触发段只复核候选冻结的取值是否满足阈值，不从原始日线重算均线。')).toBeInTheDocument()
+    expect(screen.getByText('成立')).toBeInTheDocument()
+  })
+})
+
 const screenReport = (over: Record<string, unknown> = {}) => ({
   session: '2026-10-22', calc_version: 'screen-1', status: 'success', error: null,
   universe: { name: 'nasdaq100', as_of: '2026-10-22', stale: false },
