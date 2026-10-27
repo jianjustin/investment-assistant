@@ -157,13 +157,14 @@ class StageRecorder:
 
     def __init__(self, run_id: str, trigger: str, session: date | None, *,
                  writer: Callable[[dict], None] | None = None,
-                 wall_now: Callable[[], datetime] = collect.wall_clock,
+                 wall_now: Callable[[], datetime] | None = None,
                  clock: Callable[[], float] = time.monotonic):
         self.run_id = run_id
         self.trigger = trigger
         self.session = session
         self._writer = write_stage_row if writer is None else writer
-        self._wall_now = wall_now
+        # looked up at call time: collect -> families -> service -> stages is an import cycle
+        self._wall_now = collect.wall_clock if wall_now is None else wall_now
         self._clock = clock
         self._accs: dict[str, StageAcc] = {}
         self._started_at: dict[str, datetime] = {}

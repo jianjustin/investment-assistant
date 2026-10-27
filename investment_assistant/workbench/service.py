@@ -88,6 +88,30 @@ def _tx():
         raise Unavailable('数据库不可达') from None
 
 
+@contextmanager
+def read_only_tx():
+    """Read-only transaction for the GET use cases (data menu spec §8, derivation spec §9 只读性).
+
+    SET TRANSACTION READ ONLY comes first, so the database itself refuses any
+    write; commit on the way out simply ends the read-only transaction."""
+    import psycopg
+
+    try:
+        with connection() as conn:
+            conn.execute('SET TRANSACTION READ ONLY')
+            missing = repository.missing_tables(conn)
+            if missing:
+                raise Unavailable('工作台数据表未就绪（需执行迁移 016–020）：' + ', '.join(missing))
+            try:
+                yield conn
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+    except psycopg.OperationalError:
+        raise Unavailable('数据库不可达') from None
+
+
 def _book(conn, ticker: str) -> dict[str, Any]:
     return positions.build(repository.list_trades(conn, ticker), splits=repository.split_events(conn, ticker))
 

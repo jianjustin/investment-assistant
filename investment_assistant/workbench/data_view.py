@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import json
 import os
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
 from investment_assistant import db
 from investment_assistant.data import identity
@@ -225,28 +225,8 @@ BAR_NOTE = '拆股调整、未分红调整；adj_close 全调整'
 ATR_NOTE = '现算，与 `plan-1` 同一函数；不入库'
 
 
-@contextmanager
-def _read_tx() -> Iterator[Any]:
-    """Read-only transaction for the menu's GET use cases (spec §8 只读性).
-
-    SET TRANSACTION READ ONLY comes first, so the database itself refuses any
-    write; commit on the way out simply ends the read-only transaction."""
-    import psycopg
-
-    try:
-        with service.connection() as conn:
-            conn.execute('SET TRANSACTION READ ONLY')
-            missing = repository.missing_tables(conn)
-            if missing:
-                raise service.Unavailable('工作台数据表未就绪（需执行迁移 016–020）：' + ', '.join(missing))
-            try:
-                yield conn
-                conn.commit()
-            except BaseException:
-                conn.rollback()
-                raise
-    except psycopg.OperationalError:
-        raise service.Unavailable('数据库不可达') from None
+# The read-only transaction lives in service now; the old private name stays for existing callers.
+_read_tx = service.read_only_tx
 
 
 def _ny_midnight(day: date) -> datetime:
@@ -352,7 +332,7 @@ def _card(conn, family: families.Family, *, session: date, now: datetime, jobs, 
 def overview(*, now: datetime) -> dict[str, Any]:
     """The Data menu's overview: six family cards, everything computed at read time."""
     session = bars_module.latest_closed_session(now)
-    with _read_tx() as conn:
+    with service.read_only_tx() as conn:
         jobs = {job['name']: job for job in db.list_scheduled_jobs(conn)}
         ready = repository.fetch_runs_ready(conn)
         run_facts = _run_facts(conn, ready)
@@ -418,7 +398,7 @@ def family_detail(family_id: str, *, now: datetime) -> dict[str, Any]:
     family = families.get(family_id)   # 未知族 LookupError
     session = bars_module.latest_closed_session(now)
     recorded = 'bars' if family.id == 'atr' else family.id
-    with _read_tx() as conn:
+    with service.read_only_tx() as conn:
         jobs = {job['name']: job for job in db.list_scheduled_jobs(conn)}
         ready = repository.fetch_runs_ready(conn)
         run_facts = _run_facts(conn, ready)
@@ -449,7 +429,7 @@ def browse(family_id: str, *, now: datetime, ticker: str | None = None,
         key = ticker.strip().upper()
     else:
         key = None
-    with _read_tx() as conn:
+    with service.read_only_tx() as conn:
         if family.id == 'bars':
             return _browse_bars(conn, key, session=session, now=now)
         if family.id == 'atr':

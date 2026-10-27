@@ -73,6 +73,20 @@ def read_bars(conn, ticker: str, end_date: date, *, cutoff_at: datetime, limit: 
     return list(reversed(rows))
 
 
+_BAR_BY_ID_COLUMNS = f"id, ticker, price_date, revision, fetched_at, {', '.join(BAR_VALUES)}"
+
+
+def bars_by_ids(conn, ids: list[int]) -> list[dict[str, Any]]:
+    """The exact bar rows (any revision) named by ``ids``, in the order given.
+
+    Numbers stay ``Decimal``; an id that reads back nothing is simply absent."""
+    if not ids:
+        return []
+    found = {row['id']: row for row in _all(
+        conn, f'SELECT {_BAR_BY_ID_COLUMNS} FROM price_bars WHERE id = ANY(%s)', ([int(i) for i in ids],))}
+    return [found[int(i)] for i in ids if int(i) in found]
+
+
 def _news_hash(item: dict[str, Any]) -> str:
     payload = {k: item.get(k) for k in ('title', 'publisher')}
     payload['published_at'] = item['published_at'].isoformat() if item.get('published_at') else None
@@ -404,6 +418,12 @@ def plan_by_id(conn, plan_id) -> dict[str, Any] | None:
     return _one(conn, f'SELECT {_PLAN_COLUMNS} FROM trade_plans WHERE id = %s', (plan_id,))
 
 
+def plans_for_unit(conn, ticker: str, signal_date: date) -> list[dict[str, Any]]:
+    """Every plan of one decision unit (rule, own, agent), oldest first."""
+    return _all(conn, f'SELECT {_PLAN_COLUMNS} FROM trade_plans WHERE ticker = %s AND signal_date = %s '
+                      'ORDER BY created_at, id', (ticker.upper(), signal_date))
+
+
 def plans_since(conn, since: date) -> list[dict[str, Any]]:
     return _all(conn, f'SELECT {_PLAN_COLUMNS} FROM trade_plans WHERE signal_date >= %s '
                       'ORDER BY signal_date, created_at, id', (since,))
@@ -423,6 +443,10 @@ def snapshot_head(conn) -> dict[str, Any] | None:
     return _one(conn, f'SELECT {_SNAPSHOT_COLUMNS} FROM account_snapshots s WHERE NOT EXISTS '
                       '(SELECT 1 FROM account_snapshots x WHERE x.supersedes_id = s.id) '
                       'ORDER BY recorded_at DESC, created_at DESC LIMIT 1', ())
+
+
+def snapshot_by_id(conn, snapshot_id) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_SNAPSHOT_COLUMNS} FROM account_snapshots WHERE id = %s', (snapshot_id,))
 
 
 def insert_snapshot(conn, rec: dict[str, Any], digest: str, *, recorded_at: datetime) -> dict[str, Any]:
@@ -488,6 +512,10 @@ def latest_earnings(conn, ticker: str, *, cutoff_at: datetime) -> dict[str, Any]
     """The newest earnings answer known by ``cutoff_at``."""
     return _one(conn, f'SELECT {_EARNINGS_COLUMNS} FROM earnings_dates WHERE ticker = %s AND fetched_at <= %s '
                       'ORDER BY fetched_at DESC, created_at DESC LIMIT 1', (ticker.upper(), cutoff_at))
+
+
+def earnings_row_by_id(conn, earnings_id) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_EARNINGS_COLUMNS} FROM earnings_dates WHERE id = %s', (earnings_id,))
 
 
 _MONTHLY_COLUMNS = 'id, month, calc_version, stats, notes, supersedes_id, created_at'
@@ -600,6 +628,10 @@ def store_regime(conn, snap: dict[str, Any], *, now: datetime | None = None) -> 
                         f'{", created_at" if now is not None else ""}) '
                         f'VALUES ({placeholders}) RETURNING {_REGIME_COLUMNS}', params)
     return {'status': 'inserted', 'record': record}
+
+
+def regime_by_id(conn, regime_id) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_REGIME_COLUMNS} FROM market_regimes WHERE id = %s', (regime_id,))
 
 
 def regime_for(conn, session: date, *, cutoff_at: datetime) -> dict[str, Any] | None:

@@ -58,6 +58,7 @@ tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、�
 | `workbench/rules.py`、`synthesis.py` | 规则 v1 候选；合成每股每日一个决策单元 | 纯函数 |
 | `workbench/plans.py` | ATR、计划价位、有效期、财报提示、按风险定仓 | 纯函数 |
 | `workbench/derivation.py` | 计划推导链（`derivation-1`）：按代入值独立重算 `plan-1` 规则计划的每一步（TR、ATR、价位、有效期、财报与环境提示、定仓、状态），与已存值逐项比对，给出 `consistent` / `mismatch` / `incomplete`；自定计划（价位为用户输入）与 Agent 计划（价位核对 `agent_runs.output.levels`）按入场区间中点定仓；触发段 `derive_trigger` / `derive_unit` 按 `CONDITIONS` 逐句复核候选冻结的取值（`holds` / `violated` / `not_frozen`，`violated` 计入不一致）；常量与 `plans.py` 分开声明、由测试对齐；不调用 `plans.py` 的计算函数 | 纯函数（只依赖交易日历） |
+| `workbench/derivation_view.py` | 推导与阶段证据的只读用例：`load_rows` 只按计划 `inputs` 里的 id 回读日线、财报日、快照、区制、Agent 运行与规则计划（都是只追加的表，读到的就是生成时那一行）；`plan_derivation`（推导 + `trigger_note` + 运行证据 `run`，运行证据取插入该计划的 `plan` / `agent` 阶段行）、`unit_derivation`（只有触发段 + 该单元计划 id）、`stage_runs_view`（按 `run_id` 分组、按注册表排序）、`check_plans`（批处理用，同一只读事务里批量推导）；全部在 `service.read_only_tx()` 里执行，不调用外部数据源，缺行如实标 `incomplete` | `derivation`、`stages`、`repository`、`service` |
 | `workbench/agent/` | Agent 轨道：工具层、LangGraph 图（提议 + 反方 / 解读）、引用校验、模型接入 | LangGraph、智谱、PostgresSaver |
 | `workbench/briefs.py` | 由 Agent 运行构造决策单元的解读 | 纯函数 |
 | `workbench/ledger.py`、`positions.py`、`exits.py`、`account.py` | 决定与成交（只追加）、FIFO 持仓、持仓止损、资金快照与出入金 | 纯函数 + SQL |
