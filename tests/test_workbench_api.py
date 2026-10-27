@@ -100,12 +100,18 @@ def test_scheduled_task_uses_db_pool(monkeypatch):
     monkeypatch.setattr(workbench.service, 'run_batch', run_batch)
     monkeypatch.setattr(workbench.service, 'push',
                         lambda **_: {'session': '2026-10-22', 'sent': True, 'messages': 4})
+    rows = []
+    monkeypatch.setattr(workbench.stages_module, 'write_stage_row', rows.append)   # 不碰真实库
     workbench.run(AssistantConfig(watchlist=['NVDA', '688008.SH']), now=datetime(2026, 10, 22, 22, tzinfo=UTC))
     assert recorded['task'] == 'workbench' and recorded['notify'] is False
     assert 'tickers' not in recorded['batch_kwargs']
     assert recorded['batch_kwargs']['skip_non_trading'] is True
+    assert recorded['batch_kwargs']['stages'].run_id == 'workbench-fake-run'
     assert recorded['summary'] == {'pool': {'core': 2, 'extended': 3, 'holdings': 0, 'changes': []},
-                                   'push': {'session': '2026-10-22', 'sent': True, 'messages': 4}}
+                                   'push': {'session': '2026-10-22', 'sent': True, 'messages': 4},
+                                   'stage_status': {'written': 7, 'error': None}}
+    push = [row for row in rows if row['stage'] == 'push']        # 桩批处理没记前六阶段：close 补 not_reached
+    assert len(rows) == 7 and push[0]['status'] == 'success' and push[0]['output_count'] == 4
 
 
 def test_trade_list_endpoint(client, monkeypatch):

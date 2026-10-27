@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import uuid
 import time as _time_module
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from decimal import Decimal
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -173,8 +173,11 @@ def plan_context(conn, ticker: str, session: date, *, now: datetime,
 
 
 def _generate_rule_plan(conn, ticker: str, session: date, ticker_bars: list[dict[str, Any]], summary: dict[str, Any],
-                        *, now: datetime) -> None:
-    """Build and store the rule plan for a fresh buy unit; record skip/conflict in the summary."""
+                        *, now: datetime) -> dict[str, Any] | None:
+    """Build and store the rule plan for a fresh buy unit; record skip/conflict in the summary.
+
+    Returns None when the plan was skipped, else ``{'status': inserted|existing|conflict, 'id': plan_id}``
+    for the stage accounting (v2.4 §4); the summary is written exactly as before."""
     from investment_assistant.config import load_config
 
     entry = repository.pool_entry_at(conn, ticker, session, cutoff_at=now)
@@ -189,11 +192,39 @@ def _generate_rule_plan(conn, ticker: str, session: date, ticker_bars: list[dict
         context=plan_context(conn, ticker, session, now=now, screen_ref=screen_ref))
     if 'skip' in plan:
         summary['plans'][ticker] = f"skip: {plan['skip']}"
-        return
+        return None
     out = repository.store_plan(conn, plan)
     summary['plans'][ticker] = out['status']
     if out['status'] == 'conflict':
         summary['conflicts'].append({'ticker': ticker, 'rule_id': 'rule_plan', 'id': str(out['record']['id'])})
+    return {'status': out['status'], 'id': out['record']['id']}
+
+
+def _note_signals(acc: stages_module.StageAcc, ticker: str, noted: dict[str, Any]) -> None:
+    """Fold one committed ticker's candidates, rule skips and unit action into the signals stage."""
+    for rule_id, out in noted['candidates']:
+        if out['status'] == 'conflict':
+            acc.degrade('conflict', f'{ticker}:{rule_id}')
+            continue
+        acc.output()
+        acc.ref('inserted' if out['status'] == 'inserted' else 'existing', out['id'])
+    for reason in noted['skips']:
+        acc.skip(reason, ticker)
+    if 'action' in noted:
+        units = acc.detail.setdefault('units', {})
+        units[noted['action']] = units.get(noted['action'], 0) + 1
+
+
+def _note_plan(acc: stages_module.StageAcc, ticker: str, planned: dict[str, Any] | None,
+               summary_text: str) -> None:
+    """Fold one rule-plan attempt into the plan stage: a skip keeps its reason, a stored plan its id."""
+    if planned is None:
+        acc.skip(summary_text.removeprefix('skip: '), ticker)
+        return
+    acc.output()
+    acc.ref('inserted' if planned['status'] == 'inserted' else 'existing', planned['id'])
+    if planned['status'] == 'conflict':
+        acc.degrade('conflict', ticker)
 
 
 def _sync_pool(conn, pool_: pool_module.Pool, session: date, now: datetime) -> list[dict[str, Any]]:
@@ -545,7 +576,7 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         summary['sources']['regime'] = ['all']
         summary['errors'].append(f'regime: {exc}')
         if stages is not None:   # 区制异常：failed（v2.4 §4）
-            stages.finish('regime', failed=exc)
+            stages.finish('regime', failed=str(exc) or type(exc).__name__)
     else:
         if r_acc is not None:
             r_acc.input(len(breadth_sample))
@@ -563,27 +594,49 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
     summary['timings']['regime'] = round(clock() - t_regime, 1)
 
     t_rules = clock()
+    sig_acc = stages.open('signals') if stages is not None else None
+    plan_acc = stages.open('plan') if stages is not None else None
+    for acc_ in (sig_acc, plan_acc):   # 空跑与重跑时两个列表也在（inserted 为 []，v2.4 §4）
+        if acc_ is not None:
+            acc_.outputs.update({'inserted': [], 'existing': []})
     for ticker in all_tickers:
         entry = summary['tickers'][ticker]
+        if sig_acc is not None:
+            sig_acc.input()
+        phase = 'signals'          # 异常归到出错的那个阶段
+        noted: dict[str, Any] = {}  # 本只的记账，事务提交后才并入阶段（回滚的写入不进证据）
         try:
             with _tx() as conn:
                 ticker_bars = repository.read_bars(conn, ticker, session, cutoff_at=now)
                 events, _ = _filing_events(conn, ticker, session, now)
                 book = _book(conn, ticker)
                 _, plan_state = _position_plan_state(conn, ticker, book, ticker_bars, session, now=now)
-                result = rules.evaluate(ticker, session, ticker_bars, events, book['position'], plan_state=plan_state)
-                for cand in result['candidates']:
-                    out = repository.store_candidate(conn, ticker, session, cand, run_id=run_id)
-                    if out['status'] == 'conflict':
-                        summary['conflicts'].append({'ticker': ticker, 'rule_id': cand.rule_id, 'id': str(out['id'])})
+                with (sig_acc.timing() if sig_acc is not None else nullcontext()):
+                    result = rules.evaluate(ticker, session, ticker_bars, events, book['position'],
+                                            plan_state=plan_state)
+                    stored_candidates = []
+                    for cand in result['candidates']:
+                        out = repository.store_candidate(conn, ticker, session, cand, run_id=run_id)
+                        stored_candidates.append((cand.rule_id, out))
+                        if out['status'] == 'conflict':
+                            summary['conflicts'].append({'ticker': ticker, 'rule_id': cand.rule_id, 'id': str(out['id'])})
                 entry['candidates'] = [c.rule_id for c in result['candidates']]
                 entry['skips'] = sorted({f'{s.rule_id}:{s.reason}' for s in result['skips']})
+                noted['candidates'] = stored_candidates
+                noted['skips'] = entry['skips']
                 group = repository.unit_candidates(conn, ticker, session)
                 unit = synthesis.synthesize(ticker, session, group, holding=book['position'] is not None,
                                             now=now) \
                     if group and repository.decision_head(conn, ticker, session) is None else None
+                if unit is not None:
+                    noted['action'] = unit['proposed_action']
                 if unit is not None and unit['proposed_action'] == 'buy' and 'conflict' not in unit['labels']:
-                    _generate_rule_plan(conn, ticker, session, ticker_bars, summary, now=now)
+                    phase = 'plan'
+                    if plan_acc is not None:
+                        plan_acc.input()
+                    with (plan_acc.timing() if plan_acc is not None else nullcontext()):
+                        noted['plan'] = _generate_rule_plan(conn, ticker, session, ticker_bars, summary, now=now)
+                    noted['planned'] = True
                 # Briefs come from the agent stage only (P4 §7.3): propose for
                 # conflict-free buys, interpret for everything else on the main list.
         except Unavailable:
@@ -591,8 +644,25 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         except Exception as exc:
             entry['error'] = '; '.join(filter(None, [entry['error'], f'rules: {exc}']))
             summary['errors'].append(f'{ticker} rules: {exc}')
+            if stages is not None:
+                (plan_acc if phase == 'plan' else sig_acc).fail(ticker, exc)
+        else:
+            if stages is not None:
+                _note_signals(sig_acc, ticker, noted)
+                if noted.get('planned'):
+                    _note_plan(plan_acc, ticker, noted['plan'], summary['plans'][ticker])
+    if stages is not None:
+        stages.finish('signals')
+        stages.finish('plan')
     summary['timings']['rules'] = round(clock() - t_rules, 1)
-    _agent_stage(session, now=now, deps=deps, summary=summary, started=started, clock=clock)
+    a_acc = stages.open('agent') if stages is not None else None
+    unavailable = _agent_stage(session, now=now, deps=deps, summary=summary, started=started, clock=clock,
+                               acc=a_acc)
+    if stages is not None:
+        if unavailable is not None:    # 不可用压过「空跑成功」：整阶段 skipped（v2.4 §4）
+            stages.skip('agent', f'agent_unavailable: {unavailable}')
+        else:
+            stages.finish('agent')
     summary['timings']['total'] = round(clock() - started, 1)
     if summary['timings']['total'] > BATCH_BUDGET_S:
         summary['errors'].append(f"batch_over_budget: {summary['timings']['total']}")
@@ -1431,8 +1501,13 @@ def _run_interpret_unit(unit: dict, *, now: datetime, deps: Deps, settings, atte
 
 
 def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str, Any],
-                 started: float, clock: Callable[[], float]) -> None:
-    """The agent track after all rule plans (§8.1): skip rules, then one unit at a time."""
+                 started: float, clock: Callable[[], float],
+                 acc: stages_module.StageAcc | None = None) -> str | None:
+    """The agent track after all rule plans (§8.1): skip rules, then one unit at a time.
+
+    ``acc`` (v2.4 §4) collects the stage accounting next to ``record`` and the skip branches. Returns the
+    unavailable reason (disabled / not_configured) or None, so the caller can close an unavailable stage
+    as skipped rather than as an empty success."""
     t_agent = clock()
     settings = deps.agent_settings if deps.agent_settings is not None else agent_model.settings_from_env()
     if settings.config_error:
@@ -1456,6 +1531,16 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
             summary['briefs'][unit['ticker']] = brief_status(run)
         tokens['input'] += run['input_tokens'] or 0
         tokens['output'] += run['output_tokens'] or 0
+        if acc is not None:
+            acc.ref('agent_run_ids', run['id'])
+            if run['status'] in ('ok', 'pass'):
+                acc.output()
+            if run['status'] == 'ok' and run.get('mode', 'propose') == 'propose' and run.get('plan_id') is not None:
+                acc.ref('plan_ids', run['plan_id'])      # 只收本次 ok 运行新增的 Agent 计划
+            elif run['status'] == 'skipped':
+                acc.skip(run['reason'], unit['ticker'])
+            elif run['status'] == 'error':
+                acc.fail(unit['ticker'], run['reason'])
         if run['status'] == 'error':
             summary['sources']['agent'].append(unit['ticker'])
             if run['reason'] == 'quota_exhausted':
@@ -1479,8 +1564,12 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
                 prior = repository.agent_runs_for(conn, unit['ticker'], unit['signal_date'], mode=mode)
             done = ('ok', 'pass') if mode == 'propose' else ('ok',)
             if any(r['status'] in done for r in prior):
+                if acc is not None:
+                    acc.skip('already_completed', unit['ticker'])
                 return
             if any(r['status'] == 'skipped' and r['reason'] == 'max_attempts' for r in prior):
+                if acc is not None:
+                    acc.skip('max_attempts', unit['ticker'])
                 return
             attempt = len(prior) + 1
             if clock() - started >= AGENT_DEADLINE_S:
@@ -1505,9 +1594,13 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
             raise
         except Exception as exc:   # §2: an agent failure never drags the rule track
             summary['errors'].append(f"{unit['ticker']} agent: {exc}")
+            if acc is not None:
+                acc.fail(unit['ticker'], exc)
 
     with _tx() as conn:
         groups = _session_units(conn, session, now=now)
+    if acc is not None:
+        acc.input(sum(len(units) for units in groups.values()))
 
     def propose(unit: dict, attempt: int) -> dict:
         return _run_agent_unit(unit, now=now, deps=deps, settings=settings, attempt=attempt)
@@ -1525,6 +1618,10 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
     summary['agent'] = {'runs': runs, 'briefs': briefs, 'tokens': tokens,
                        'quota_exhausted': quota_exhausted}
     summary['timings']['agent'] = round(clock() - t_agent, 1)
+    if acc is not None:
+        acc.detail['tokens'] = dict(tokens)
+        acc.duration_ms += (clock() - t_agent) * 1000
+    return unavailable
 
 
 class AgentConflict(RuntimeError):

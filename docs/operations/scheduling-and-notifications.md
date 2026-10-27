@@ -42,6 +42,15 @@
 
 `filings` 任务（下载器与监控两种模式）结束后同样追加一行 `sec_filings`（`job = filings`，`trigger` 按 `trigger_source` 取 `scheduled` / `manual_batch`），记录带该次运行的 `run_id`。目标按模式取实际采集清单：监控模式是监控观察名单文件（`sec_monitor.watchlist_path` 中「采集=是」的成员；成功时即 `summary.tickers`），下载器模式是 `config.watchlist`，与批处理的「当前池 + 持仓」不同，`detail.targets_source` 如实注明。整次采集失败记一条 `{"target": "*"}` 哨兵（不进 `target_count`）；Discord 投递这类非标的错误记在 `detail.non_target_errors`，不伪造成采集目标。写入失败只记在任务返回值的 `data_status`，不影响任务结果与运行报告；定时路径的返回值字段会被调度器丢弃，因此同时向 stderr 打一行 `[data_fetch_runs] write failed family=sec_filings job=filings trigger=<trigger> error=<脱敏原因>` 作为可检索落点。
 
+## 批处理阶段证据
+
+每次 `workbench` 任务（定时、手动、非交易日）向 `stage_runs` 追加恰好 7 行，阶段顺序固定为 `collect`、`screen`、`regime`、`signals`、`plan`、`agent`、`push`，`run_id` 与 `job_reports` 的 `run_id` 相同，`trigger` 为 `scheduled` / `manual_batch`。每行记状态（`success` / `partial` / `degraded` / `failed` / `skipped`）、输入与产出计数、按原因分组的跳过、逐目标失败、降级、产出引用（数据拉取行、筛选、区制、候选、计划、Agent 运行的 id）与耗时。前六个阶段由批处理在各自的位置记，`push` 由任务层记；表只追加，不在 `WORKBENCH_TABLES` 里，缺表不影响批处理。
+
+- 整阶段跳过的原因：`not_trading_day`（纽约休市，前六个阶段）、`explicit_pool`（`screen`）、`manual_run`（手动运行不推送）、`already_pushed`、`task_disabled`、`agent_unavailable: <原因>`（缺 key 或关闭，压过「当天没有单元」的空跑成功）、`not_reached`（运行正常结束但该阶段没有执行）。
+- 中途抛异常：已写的阶段保留，出错的阶段与其后未写的阶段记 `failed`，原因 `aborted: <异常摘要>`，仍是 7 行。
+- 休市日的 `push` 发的是休市一行，记 `detail.closed = true`。
+- 写入失败（含迁移 025 未执行）只记在运行报告 `summary.stage_status = {"written": n, "error": …}`，不进 `summary.errors`，不改变任务状态。任务因异常失败时运行报告只有 `error`，没有 `stage_status`。
+
 ## 通知
 
 配置是 `config.py` 的 `NotifyConfig`，「设置 → 推送配置」写入 `notify_settings` 后覆盖它：
