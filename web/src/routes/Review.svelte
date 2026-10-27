@@ -350,7 +350,7 @@
               <td><a class="text-accent" href={`#instrument/${u.ticker}`}>{u.ticker}</a></td>
               <td>{u.signal_date}</td>
               <td>{u.pool === 'core' ? '核心' : '扩展'}</td>
-              <td>{wb.TRACK_STATUS_TEXT[u.rule.status]} {wb.rText(u.rule.r)}{#if u.rule.plan_id} · <a class="text-accent" href={`#instrument/${u.ticker}`}>计划 {String(u.rule.plan_id).slice(0, 8)}</a>{/if}</td>
+              <td>{wb.TRACK_STATUS_TEXT[u.rule.status]} {wb.rText(u.rule.r)}{#if u.rule.plan_id} · <a class="text-accent" href={`#plan/${u.rule.plan_id}`}>计划 {String(u.rule.plan_id).slice(0, 8)}</a>{/if}</td>
               <td>{wb.TRACK_STATUS_TEXT[u.agent.status]} {wb.rText(u.agent.r)}{#if u.agent.run_id} · <button class="text-accent underline" onclick={() => openRun(u.agent.run_id!)}>{String(u.agent.run_id).slice(0, 8)}</button>{/if}</td>
               <td>{wb.TRACK_STATUS_TEXT[u.actual.status]} {wb.rText(u.actual.r)}{#if u.actual.plan_kind} · 照{wb.KIND_TEXT[u.actual.plan_kind]}{/if}</td>
             </tr>

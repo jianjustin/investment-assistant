@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { parseHash } from './router'
+import { render, screen } from '@testing-library/svelte'
+import SideNav from './components/SideNav.svelte'
+import { parseHash, workbenchZones, zones } from './router'
 
 describe('parseHash', () => {
   it('parses the workbench zones with subs', () => {
@@ -19,5 +21,17 @@ describe('parseHash', () => {
   })
   it('query parameters never become part of route sub', () => {
     expect(parseHash('#tools/runs?task=filings')).toEqual({ zone: 'tools', sub: 'runs' })
+  })
+  it('routes #plan/<id> to the plan zone; #plan without an id falls back to today', () => {
+    expect(zones).toContain('plan')
+    expect(workbenchZones).not.toContain('plan')   // 独立页，不属于工作台分区
+    expect(parseHash('#plan/abc')).toEqual({ zone: 'plan', sub: 'abc' })
+    expect(parseHash('#plan')).toEqual({ zone: 'today', sub: undefined })
+  })
+  it('keeps the plan zone out of the side nav', () => {
+    render(SideNav, { current: 'plan', sub: 'abc' })
+    expect(screen.queryByText('计划')).toBeNull()
+    const hrefs = screen.getAllByRole('link').map(a => a.getAttribute('href'))
+    expect(hrefs.every(href => !href!.startsWith('#plan'))).toBe(true)
   })
 })

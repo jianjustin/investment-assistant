@@ -8,6 +8,7 @@
   import Instrument from './routes/Instrument.svelte'
   import Review from './routes/Review.svelte'
   import Data from './routes/Data.svelte'
+  import Plan from './routes/Plan.svelte'
   import { guardHashNavigation } from './lib/navigation-guard'
   import { parseHash, type Zone } from './lib/router'
 
@@ -41,5 +42,7 @@
     <Tools {sub} />
   {:else if zone === 'settings'}
     <Settings {sub} />
+  {:else if zone === 'plan'}
+    <Plan sub={sub!} />
   {/if}
 </AppShell>

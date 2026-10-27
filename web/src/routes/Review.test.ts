@@ -313,6 +313,17 @@ it('tracks tab shows summary by pool and unit rows', async () => {
   expect(screen.getAllByText(/照Agent/).length).toBeGreaterThan(0)  // plan_kind
 })
 
+it('links the plan id to the standalone plan page, not the instrument page', async () => {
+  respond = async (url) => {
+    if (url.includes('/review/tracks')) return json(trackView)
+    return json({})
+  }
+  render(Review, { sub: 'tracks' })
+  const link = await screen.findByRole('link', { name: '计划 p1' })
+  expect(link.getAttribute('href')).toBe('#plan/p1')
+  expect(link.getAttribute('href')).not.toBe('#instrument/NVDA')
+})
+
 it('expands an agent run tool calls from a track row', async () => {
   respond = async (url) => {
     if (url.includes('/review/tracks')) return json(trackView)
