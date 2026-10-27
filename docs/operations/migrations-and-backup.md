@@ -29,7 +29,7 @@
 | 022 | 删除 v1 遗留：`strategy_scores`、`ticker_signal_snapshots`、`market_signals`、`event_studies`、`research_observation_card_versions`、`research_observation_cards` 六张表与 `metrics`、`scores`、`event_study` 调度行；`job_reports` 历史与已冻结的 `backcheck-1` 记录保留 | 共享 |
 | 023 | v2.2：`screen_runs`、`screen_results`、`pool_tiers.source`（默认 `watchlist`）；`filings` 任务改为北京 09:30（只改仍是纽约时区的行） | 主线 + 共享 |
 | 024 | v2.3：`data_fetch_runs`：每次某族被拉取一次追加一行记录成败与原因；只建表与索引，不动旧表（2026-10-27 已在真实库执行，见下文） | 主线 |
-| 025 | v2.4：`stage_runs`：每次 `workbench` 任务、每个阶段追加一行证据（计数、原因、产出引用、耗时）；只建表与索引，不动旧表（未在真实库执行，待授权） | 主线 |
+| 025 | v2.4：`stage_runs`：每次 `workbench` 任务、每个阶段追加一行证据（计数、原因、产出引用、耗时）；只建表与索引，不动旧表（2026-10-27 已在真实库手动执行，见下文） | 主线 |
 
 另需一次：`python -m investment_assistant.workbench.agent setup` 由 LangGraph `PostgresSaver.setup()` 建检查点表，不进本项目迁移。
 
@@ -129,6 +129,20 @@ psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=
 | 5. 重启服务 | 10:05:19 +0800 `launchctl kickstart -k`，新进程 pid 96706 启动于 10:05:49；`/api/health`：数据库、调度线程（轮询运行中）、Yahoo、Discord、FRED up，SEC 首次探测为代理 SSL 中断、数秒后复查 up，3 项 `systemctl` 检查在 macOS 上为 down（与本次无关）；`/api/data/families`、`/api/data/families/bars`、`/api/data/browse/bars?ticker=MU`、`/api/workbench/today`、`/api/jobs/scheduled`、`/api/status` 均 200 |
 
 手动验收（spec §11.2）见 [v2.3 验收记录](../roadmap/v2.3-acceptance.md)。
+
+### 025 的真实库执行（逐步手动，每步先征得用户同意）
+
+025 只新增一张表，旧代码照常运行；新代码在没表时也只降级（`stage_status.error`）。先迁移、后重启。
+
+#### 执行记录（2026-10-27，手动 psql 执行）
+
+| 步骤 | 结果 |
+| --- | --- |
+| 1. 只读预检 | `stage_runs` 不存在；`public` 表数 35；`schema_migrations` 最新仍为 `017_trade_plans.sql`；`job_reports` 无 `running` 行；服务进程 pid 6694 启动于 2026-10-27 10:47（v2.4 代码提交之前） |
+| 2. 全库备份 | `.local/us-workbench/backups/investment_assistant-before-025-20261027-175527.dump`（5,372,345 字节，sha256 `1c46d0030a78bb0455add9f7277f38649224e2f0adef93e1c52b982533465f97`）；`pg_restore --list` 可读，35 张表与线上一致 |
+| 3. 执行 | 17:55:36 +0800，`psql --single-transaction -v ON_ERROR_STOP=1 -f migrations/025_stage_runs.sql`（`CREATE TABLE`、`CREATE INDEX`）；`schema_migrations` 仍只到 `017` |
+| 4. 验证 | `stage_runs` 0 行，索引 `stage_runs_pkey`、`stage_runs_run_id_stage_key`、`idx_stage_runs_session` 在，CHECK 约束 9 条；`public` 表数 35 → 36；`trade_plans` 8、`signal_candidates` 12、`job_reports` 65、`data_fetch_runs` 7、`scheduled_jobs` 3，与预检相同 |
+| 5. 重启服务 | 17:55:42 +0800 `launchctl kickstart -k`，新进程 pid 97239 启动于 17:56:12；`/api/health`：数据库、调度线程（轮询运行中）、SEC、Discord、FRED up，Yahoo 首次探测为代理 SSL 中断、复查 up，3 项 `systemctl` 检查在 macOS 上为 down（与本次无关）；`/api/workbench/today`、`/api/workbench/stage-runs?session=2026-10-26`（`stage_runs_ready: true`）、`/api/data/families`、`/api/jobs/scheduled`、`/api/status` 均 200 |
 
 ## 一次性测试库
 
