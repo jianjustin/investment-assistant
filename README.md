@@ -6,7 +6,7 @@
 
 当前版本：**v2.4.0**（2026-10-27），见 [CHANGELOG](CHANGELOG.md)。
 
-v2.4 状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`（迁移 025 待授权执行，真实库尚未运行 v2.4 代码）；手动验收与连续 5 个交易日定时验收待迁移后进行。实现偏差与已知限制见 [CHANGELOG](CHANGELOG.md) 与 [roadmap](docs/roadmap/README.md)。v2.3 的定时验收证据仍在积累（见[验收记录](docs/roadmap/v2.3-acceptance.md)）。
+v2.4 状态：`engineering_done`、`user_acceptance_pending`（迁移 025 已于 2026-10-27 在真实库执行；手动验收已核对、用户已确认推导可读，连续 5 个交易日定时验收自 10-28 起积累，见[验收记录](docs/roadmap/v2.4-acceptance.md)）。实现偏差与已知限制见 [CHANGELOG](CHANGELOG.md) 与 [roadmap](docs/roadmap/README.md)。v2.3 的定时验收证据仍在积累（见[验收记录](docs/roadmap/v2.3-acceptance.md)）。
 
 ## 组成
 

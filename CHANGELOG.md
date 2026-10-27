@@ -4,11 +4,11 @@
 
 ## v2.4.0 — 2026-10-27
 
-计划推导链与批处理 workflow 底座（[spec](docs/specs/2026-10-27-v2.4-derivation-and-workflow-design.md)、[实施 plan](docs/plans/2026-10-27-v2.4-derivation-and-workflow.md)）。状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`（迁移 025 待授权执行、真实库尚未运行 v2.4 代码；spec §12.2 手动验收与 §12.3 连续 5 个交易日定时验收待迁移执行后进行）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/README.md)。
+计划推导链与批处理 workflow 底座（[spec](docs/specs/2026-10-27-v2.4-derivation-and-workflow-design.md)、[实施 plan](docs/plans/2026-10-27-v2.4-derivation-and-workflow.md)）。状态：`engineering_done`、`user_acceptance_pending`（迁移 025 已于 2026-10-27 在真实库执行、服务已重启跑 v2.4 代码；§12.2 手动验收已核对、用户已确认推导可读，§12.3 连续 5 个交易日定时验收待完成，见[验收记录](docs/roadmap/v2.4-acceptance.md)）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/README.md)。
 
 ### 新增
 
-- **阶段证据表 `stage_runs`（迁移 025，待授权执行）**：每次 `workbench` 任务按固定注册表（`stages-1`：`collect`、`screen`、`regime`、`signals`、`plan`、`agent`、`push`）每阶段追加一行证据——状态、输入与产出计数、按原因分组的跳过、逐目标失败、降级、产出引用、耗时；每次运行恰好 7 行，`run_id` 与该次运行报告相同。表只追加、不进 `WORKBENCH_TABLES`：缺表时批处理照常完成，只记 `summary.stage_status.error`；推送阶段存在时序嵌套（筛选嵌在采集窗口里），展示顺序以注册表为准。
+- **阶段证据表 `stage_runs`（迁移 025）**：每次 `workbench` 任务按固定注册表（`stages-1`：`collect`、`screen`、`regime`、`signals`、`plan`、`agent`、`push`）每阶段追加一行证据——状态、输入与产出计数、按原因分组的跳过、逐目标失败、降级、产出引用、耗时；每次运行恰好 7 行，`run_id` 与该次运行报告相同。表只追加、不进 `WORKBENCH_TABLES`：缺表时批处理照常完成，只记 `summary.stage_status.error`；推送阶段存在时序嵌套（筛选嵌在采集窗口里），展示顺序以注册表为准。
 - **计划推导链（`derivation-1`）**：`plan-1` 规则计划按代入值逐步重算（TR、ATR、入场区间、止损、T1、有效期、财报与环境提示、按风险定仓、状态），与已存值逐项比对；自定计划价位标「你的输入」、Agent 计划价位核对 `agent_runs` 引用，两者仓位按入场区间中点推导；触发段逐句复核候选冻结的取值（`holds` / `violated` / `not_frozen`）。推导不调用 `plans.py` 的计算函数，常量分开声明并由测试对齐，两份实现彼此对照。一致性结论 `consistent` / `mismatch` / `incomplete`。
 - **三个只读接口**：`GET /api/workbench/plans/{plan_id}/derivation`（完整推导 + 一致性 + 运行证据）、`GET /api/workbench/units/{ticker}/{signal_date}/derivation`（无计划单元的触发段 + 计划 id 列表）、`GET /api/workbench/stage-runs?session=…|run_id=…`（阶段证据按运行分组，附 `STAGES` 定义与 `stage_runs_ready`）。读取全在只读事务里执行，缺行如实标 `incomplete`，不在读取时补拉。
 - **只读 CLI**：`python -m investment_assistant.workbench.derivation check --since … [--until …] [--kind …]`（按日期区间逐份核对计划一致性，`status = ok` 的计划非 `consistent` 时退出码 1）与 `… derivation stages --session …`（核对每运行恰好 7 行、`run_id` 与 `job_reports` 对得上、时间窗内的运行都有阶段行）。
