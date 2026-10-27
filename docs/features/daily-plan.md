@@ -51,6 +51,21 @@
 
 价位四舍五入到 0.01。重跑结果相同就返回原计划；结果不同则记入运行报告的冲突列表，不覆盖原计划。采纳时提交自定价位，会另存一份 `own` 计划，和决定在同一事务里写入，建议股数按新价位重算。
 
+## 计划推导
+
+每份计划的价位都能只用它 `inputs` 指向的已存行重算出来（只读回读，按 id 取行，修订过的新行不会被误取）。批处理在 `plan` 与 `agent` 阶段结束前对本阶段产出的计划做一次核对，计数写进阶段行的 `detail.derivation`；有计划判为 `mismatch` / `incomplete` 时该阶段记 `degraded`，运行报告的 `errors` 多一条 `derivation_mismatch: <标的> <计划id>`——已存计划、推送内容与其他阶段不受影响。
+
+命令行核对（只读，两个子命令都在只读事务里执行，时间按北京时间显示）：
+
+```bash
+.venv/bin/python -m investment_assistant.workbench.derivation check --since 2026-10-28 [--until 2026-10-31] [--kind rule|own|agent]
+.venv/bin/python -m investment_assistant.workbench.derivation stages --session 2026-10-28
+```
+
+- `check`：逐份列出 `plan_id`、标的、信号日、种类、`status`、一致性结论（`consistent` / `mismatch` / `incomplete`）与差异明细，末行汇总；`--until` 按信号日截止（含当日），`--kind` 只看一种计划。任何 `status = ok` 的计划不是 `consistent` 时退出码 1（作废计划照常列出，不影响退出码）。
+- `stages`：按 `run_id` 分组列出该 session 的阶段行（阶段、状态、计数、推导计数、原因）。核对三件事：每个运行恰好 7 行、每个运行都在 `job_reports` 里、时间窗（当日纽约 16:00 到下一交易日纽约 16:00 之间开始）内的 `workbench` 运行报告都有阶段行——没有的列为「缺证据」。任一项不满足，或 `stage_runs` 表还没建（迁移 025 未执行），退出码 1。
+- 两个子命令参数错误或数据库不可用时退出码 2。
+
 ## 持仓止损
 
 持仓的计划取「当前未平仓批次中最近一笔、且其决定关联了计划的买入」。有计划的持仓用 `plan_stop`（T 日最低价 ≤ 当前止损）和 `plan_target`（开仓以来首次触及 T1，卖出一半，只触发一次）；触及 T1 之后，当前止损 = max(开仓以来最高收盘 − 3 ATR, 持仓成本)，收盘后更新、次日生效。没有计划的持仓仍按 `position_drawdown` 判断。

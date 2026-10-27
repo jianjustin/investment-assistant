@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from investment_assistant.data.calendar import is_trading_day
 from investment_assistant.db import connect, list_watchlist_items
-from investment_assistant.workbench import (account, bars, briefs, chart, collect, earnings, exits, ledger, monthly,
+from investment_assistant.workbench import (account, bars, briefs, chart, collect, earnings, exits, families, ledger, monthly,
                                                plans, positions, repository, review, rules, synthesis)
 from investment_assistant.workbench.agent import graph as agent_graph
 from investment_assistant.workbench.agent import model as agent_model
@@ -253,6 +253,30 @@ def _note_plan(acc: stages_module.StageAcc, ticker: str, planned: dict[str, Any]
         counts[planned['plan_status']] += 1
     if planned['status'] == 'conflict':
         acc.degrade('conflict', ticker)
+
+
+def _check_derivations(acc: stages_module.StageAcc, plan_ids: list[Any], summary: dict[str, Any]) -> None:
+    """Re-derive this stage's plans read-only and fold the verdicts into the stage (v2.4 §8).
+
+    Counts go to ``acc.detail['derivation']``; a ``mismatch`` / ``incomplete`` plan, or a check that raises,
+    degrades the stage and adds ``derivation_mismatch: ...`` to ``summary['errors']``. Nothing else changes:
+    plans, pushes and every other stage are untouched, and no failure here escapes."""
+    from investment_assistant.workbench import derivation_view     # derivation_view imports this module
+
+    try:
+        result = derivation_view.check_plans([str(i) for i in dict.fromkeys(plan_ids)])
+        bad = [item for item in result['items'] if item['status'] in ('mismatch', 'incomplete')]
+        errors = [f"derivation_mismatch: {item['ticker'] or '*'} {item['plan_id']}" for item in bad]
+        counts = f"mismatch {result['mismatch']}, incomplete {result['incomplete']}"
+        acc.detail['derivation'] = result
+    except Exception as exc:    # noqa: BLE001 - the check is accounting; it must never fail the batch
+        reason = families.sanitize_reason(exc)
+        acc.degrade('derivation_check_error', reason)
+        summary['errors'].append(f'derivation_mismatch: * {reason}')
+        return
+    if bad:
+        acc.degrade('derivation_mismatch', counts)
+        summary['errors'].extend(errors)
 
 
 def _sync_pool(conn, pool_: pool_module.Pool, session: date, now: datetime) -> list[dict[str, Any]]:
@@ -681,6 +705,7 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
                     _note_plan(plan_acc, ticker, noted['plan'], summary['plans'][ticker])
     if stages is not None:
         stages.finish('signals')
+        _check_derivations(plan_acc, plan_acc.outputs['inserted'] + plan_acc.outputs['existing'], summary)
         stages.finish('plan')
     summary['timings']['rules'] = round(clock() - t_rules, 1)
     a_acc = stages.open('agent') if stages is not None else None
@@ -690,6 +715,7 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         if unavailable is not None:    # 不可用压过「空跑成功」：整阶段 skipped（v2.4 §4）
             stages.skip('agent', f'agent_unavailable: {unavailable}')
         else:
+            _check_derivations(a_acc, a_acc.outputs.get('plan_ids', []), summary)
             stages.finish('agent')
     summary['timings']['total'] = round(clock() - started, 1)
     if summary['timings']['total'] > BATCH_BUDGET_S:

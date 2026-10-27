@@ -937,6 +937,15 @@ def workbench_reports_between(conn, start: datetime, end: datetime) -> list[dict
                       'ORDER BY started_at, id', (start, end))
 
 
+def workbench_run_ids(conn, run_ids: list[str]) -> set[str]:
+    """The given run ids that have a workbench report in job_reports."""
+    if not run_ids:
+        return set()
+    rows = _all(conn, "SELECT run_id FROM job_reports WHERE task = 'workbench' AND run_id = ANY(%s)",
+                (list(run_ids),))
+    return {row['run_id'] for row in rows}
+
+
 def last_push(conn, *, session: date | None = None) -> dict[str, Any] | None:
     """The newest recorded push result for the workbench task, optionally for one session."""
     if conn.execute("SELECT to_regclass('job_reports')").fetchone()[0] is None:

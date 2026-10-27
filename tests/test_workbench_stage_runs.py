@@ -353,3 +353,161 @@ def test_missing_stage_runs_table_does_not_fail_batch(wired):
     assert status['written'] == 0 and status['error']
     assert without['summary']['errors'] == with_table['summary']['errors']
     assert without['status'] == with_table['status']
+
+
+# ---------------------------------------------------------------- derivation check after the batch (v2.4 §8)
+
+def _plan_snapshot(db) -> list[tuple]:
+    return db.execute('SELECT id, ticker, stop, target1, entry_low, entry_high, sizing::text, status '
+                      'FROM trade_plans ORDER BY id').fetchall()
+
+
+def test_batch_derivation_counts_clean(db):
+    summary = service.run_batch(tickers=['NVDA', 'MU'], now=NOW, deps=deps(Sources()), run_id='run-clean',
+                                stages=_recorder('run-clean'))
+    plan = _rows(db, 'run-clean')['plan']
+    count = db.execute('SELECT count(*) FROM trade_plans').fetchone()[0]
+    assert count == 2 and plan['status'] == 'success'
+    derived = plan['detail']['derivation']
+    assert derived['checked'] == count and derived['consistent'] == count
+    assert derived['mismatch'] == 0 and derived['incomplete'] == 0
+    assert sorted(i['plan_id'] for i in derived['items']) == sorted(plan['outputs']['inserted'])
+    assert not [e for e in summary['errors'] if e.startswith('derivation_mismatch')]
+
+    # 重跑：已存计划（existing）同样被校验
+    again = service.run_batch(tickers=['NVDA', 'MU'], now=NOW, deps=deps(Sources()), run_id='run-clean-2',
+                              stages=_recorder('run-clean-2'))
+    plan2 = _rows(db, 'run-clean-2')['plan']
+    assert plan2['outputs']['inserted'] == [] and len(plan2['outputs']['existing']) == 2
+    assert plan2['detail']['derivation']['checked'] == 2 and plan2['detail']['derivation']['mismatch'] == 0
+    assert not [e for e in again['errors'] if e.startswith('derivation_mismatch')]
+
+
+def test_batch_without_recorder_does_not_check(db, monkeypatch):
+    from investment_assistant.workbench import derivation_view
+
+    def boom(_):
+        raise AssertionError('stages=None 时不得校验')
+
+    monkeypatch.setattr(derivation_view, 'check_plans', boom)
+    summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
+    assert summary['errors'] == [] and summary['plans'] == {'NVDA': 'inserted'}
+
+
+def test_batch_derivation_detects_tampered_plan(db):
+    """真实篡改：改掉已存的 stop，重跑时 existing 计划被推导判为 mismatch。没有校验这条测试会失败。"""
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()), run_id='run-orig',
+                      stages=_recorder('run-orig'))
+    db.execute('UPDATE trade_plans SET stop = stop + 1')
+    db.commit()
+    before = _plan_snapshot(db)
+    summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()), run_id='run-tampered',
+                                stages=_recorder('run-tampered'))
+    plan_id = str(before[0][0])
+    row = _rows(db, 'run-tampered')['plan']
+    derived = row['detail']['derivation']
+    assert derived['mismatch'] == 1 and derived['consistent'] == 0
+    assert [(i['plan_id'], i['status']) for i in derived['items']] == [(plan_id, 'mismatch')]
+    assert row['status'] == 'degraded'
+    assert f'derivation_mismatch: NVDA {plan_id}' in summary['errors']
+    assert _plan_snapshot(db) == before
+
+
+def test_batch_derivation_mismatch_reported(wired, monkeypatch):
+    """注入一份 mismatch：plan 阶段 degraded，errors 有一条；计划行与推送里的计划行与未注入时相同。"""
+    from investment_assistant.workbench import derivation_view, digest
+
+    seed_watchlist(wired, [('NVDA', ['core'])])
+    _sent(monkeypatch)
+    built = []
+    real_build = digest.build
+
+    def build(**kwargs):
+        out = real_build(**kwargs)
+        built.append(out['plans'])
+        return out
+
+    monkeypatch.setattr(digest, 'build', build)
+    clean = _task_run('scheduled')
+    wired.commit()
+    assert clean['summary']['errors'] == [] and len(built) == 1 and built[0]
+    plans_before = _plan_snapshot(wired)
+    assert len(plans_before) == 1
+
+    wired.execute('DELETE FROM job_reports')            # 让第二次定时运行不被「今日已推送」挡住
+    wired.execute('DELETE FROM stage_runs')
+    wired.commit()
+    real_check = derivation_view.check_plans
+
+    def injected(plan_ids):
+        out = real_check(plan_ids)
+        out['items'][0]['status'] = 'mismatch'
+        out['consistent'] -= 1
+        out['mismatch'] += 1
+        return out
+
+    monkeypatch.setattr(derivation_view, 'check_plans', injected)
+    result = _task_run('scheduled')
+    wired.commit()
+    plan_id = str(plans_before[0][0])
+    assert result['summary']['errors'] == [f'derivation_mismatch: NVDA {plan_id}']
+    assert result['status'] == 'error'
+    row = _rows(wired, result['run_id'])['plan']
+    assert row['status'] == 'degraded'
+    assert [d['kind'] for d in row['degradations']] == ['derivation_mismatch']
+    assert row['detail']['derivation']['mismatch'] == 1
+    assert _plan_snapshot(wired) == plans_before
+    assert len(built) == 2 and built[1] == built[0]
+
+
+def test_batch_derivation_check_error(db, monkeypatch):
+    from investment_assistant.workbench import derivation_view
+
+    base = service.run_batch(tickers=['NVDA', 'MU'], now=NOW, deps=deps(Sources()), run_id='run-base',
+                             stages=_recorder('run-base'))
+    plans_before = _plan_snapshot(db)
+
+    def boom(_):
+        raise RuntimeError('derivation exploded')
+
+    monkeypatch.setattr(derivation_view, 'check_plans', boom)
+    summary = service.run_batch(tickers=['NVDA', 'MU'], now=NOW, deps=deps(Sources()), run_id='run-boom',
+                                stages=_recorder('run-boom'))
+    assert summary['errors'] == ['derivation_mismatch: * derivation exploded']
+    assert summary['plans'] == {'NVDA': 'existing', 'MU': 'existing'} and base['plans'] == {
+        'NVDA': 'inserted', 'MU': 'inserted'}
+    rows = _rows(db, 'run-boom')
+    assert set(rows) == set(stages_module.STAGE_IDS[:-1])            # push 由任务层记
+    assert rows['plan']['status'] == 'degraded'
+    assert rows['plan']['degradations'] == [{'kind': 'derivation_check_error', 'detail': 'derivation exploded'}]
+    assert 'derivation' not in rows['plan']['detail']
+    assert _plan_snapshot(db) == plans_before
+
+    def bad_id(_):
+        raise ValueError('计划 id 不是合法的 UUID：x')
+
+    monkeypatch.setattr(derivation_view, 'check_plans', bad_id)
+    again = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()), run_id='run-badid',
+                              stages=_recorder('run-badid'))
+    assert again['errors'] == ['derivation_mismatch: * 计划 id 不是合法的 UUID：x']
+
+
+def test_agent_stage_checks_only_its_own_plans(db, scripted_model):
+    d = agent_deps(scripted_model, _ok_responses('AAA'))
+    summary = service.run_batch(tickers=['AAA'], now=NOW, deps=d, run_id='run-agent-check',
+                                stages=_recorder('run-agent-check'))
+    rows = _rows(db, 'run-agent-check')
+    [agent_plan] = rows['agent']['outputs']['plan_ids']
+    derived = rows['agent']['detail']['derivation']
+    assert derived['checked'] == 1 and derived['consistent'] == 1
+    assert [i['plan_id'] for i in derived['items']] == [agent_plan]
+    assert rows['plan']['detail']['derivation']['checked'] == 1          # 规则计划只在 plan 阶段
+    assert [i['plan_id'] for i in rows['plan']['detail']['derivation']['items']] != [agent_plan]
+    assert not [e for e in summary['errors'] if e.startswith('derivation_mismatch')]
+
+
+def test_skipped_agent_stage_has_no_derivation(db, scripted_model):
+    d = agent_deps(scripted_model, [], settings=_agent_settings(api_key=None))
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=d, run_id='run-noagent2', stages=_recorder('run-noagent2'))
+    row = _rows(db, 'run-noagent2')['agent']
+    assert row['status'] == 'skipped' and 'derivation' not in row['detail']
