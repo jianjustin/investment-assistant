@@ -14,13 +14,13 @@ from investment_assistant.workbench import derivation, plans, repository
 SIGNAL = date(2026, 10, 21)
 
 
-def _bars(n=15, close=100):
-    """Bars with constant TR=2 and the given close, ids 1..n."""
+def _bars(n=15, close=100, tr=2):
+    """Bars with constant TR=``tr`` and the given close, ids 1..n."""
     out = []
     start = date(2026, 10, 1)
     for i in range(n):
         d = add_trading_days(start, i) if i else start
-        out.append({'id': i + 1, 'price_date': d, 'open': close, 'high': close + 2, 'low': close,
+        out.append({'id': i + 1, 'price_date': d, 'open': close, 'high': close + tr, 'low': close,
                     'close': close, 'adj_close': close, 'volume': 1000, 'split_factor': 1.0, 'revision': 1})
     return out
 
@@ -293,9 +293,10 @@ def test_incomplete_outranks_mismatch():
 
 def test_unimplemented_kind_is_incomplete_not_a_crash():
     plan, rows = _make()
-    plan['kind'] = 'own'
+    plan['kind'] = 'other'
     result = derivation.derive_plan(plan, rows)
     assert result['consistency']['status'] == 'incomplete'
+    assert result['consistency']['missing'] == ['no_derivation:other']
 
 
 def test_atr_step_shows_fourteen_true_ranges():
@@ -357,3 +358,530 @@ def test_inputs_section_shows_frozen_rows():
     assert inputs['regime']['label'] == 'risk_on'
     no_snap, rows2 = _make(snapshot=None)
     assert derivation.derive_plan(no_snap, rows2)['inputs']['snapshot'] is None
+
+
+# ---------------------------------------------------------------- rule plan: boundaries (carry-overs)
+
+def test_atr_rounding_is_half_up_not_half_even():
+    """TR 0.03 on 15 bars: atr 0.030000, entry_low 99.985 -> 99.99 half-up (half-even would give 99.98)."""
+    plan, rows = _make(bars=_bars(tr=Decimal('0.03')))
+    result = derivation.derive_plan(plan, rows)
+    assert _step(result, 'atr')['result'] == '0.030000'
+    assert _step(result, 'entry_low')['result'] == '99.99'
+    assert _step(result, 'entry_high')['result'] == '100.02'
+    assert _step(result, 'stop')['result'] == '99.94'
+    assert _step(result, 'target1')['result'] == '100.12'
+    assert plan['entry_low'] == Decimal('99.99')   # what plans.py stored
+    assert result['consistency'] == {'status': 'consistent', 'mismatches': [], 'missing': []}
+
+
+@pytest.mark.parametrize('offset,flag_key,expected', [
+    ('valid_from', 'invalid_reasons', ['earnings_in_validity']),
+    ('valid_until', 'invalid_reasons', ['earnings_in_validity']),
+    ('after_valid_until', 'warnings', ['earnings_within_10d']),
+    ('signal', 'warnings', ['earnings_within_10d']),
+    ('before_signal', 'warnings', ['earnings_unknown']),
+    ('t10', 'warnings', ['earnings_within_10d']),
+    ('after_t10', 'warnings', []),
+])
+def test_earnings_date_boundaries(offset, flag_key, expected):
+    dates = {'valid_from': add_trading_days(SIGNAL, 1), 'valid_until': add_trading_days(SIGNAL, 3),
+             'after_valid_until': add_trading_days(SIGNAL, 4), 'signal': SIGNAL,
+             'before_signal': add_trading_days(SIGNAL, -1), 't10': add_trading_days(SIGNAL, 10),
+             'after_t10': add_trading_days(SIGNAL, 11)}
+    plan, rows = _make(earnings=_earnings(dates[offset]))
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency']['status'] == 'consistent', result['consistency']
+    assert _step(result, flag_key)['result'] == expected
+    assert _step(result, flag_key)['stored'] == expected
+
+
+def test_cap_ties_pick_the_earlier_cap():
+    # equity 100000: risk budget 1000 / per-share risk 4 = 250; 0.2525 × 100000 / 101 = 250 exactly.
+    plan, rows = _make(params=WorkbenchConfig(single_cap=0.2525))
+    result = derivation.derive_plan(plan, rows)
+    assert (_step(result, 'cap_risk')['result'], _step(result, 'cap_single')['result']) == ('250', '250')
+    assert _step(result, 'applied_cap')['result'] == 'risk' == plan['sizing']['applied_cap']
+    assert _step(result, 'sizing.status')['result'] == 'sized'
+    assert result['consistency']['status'] == 'consistent'
+    # single and total tie below the risk cap: 'single' comes before 'total'.
+    plan, rows = _make(params=WorkbenchConfig(risk_pct=0.05, single_cap=0.2525, total_cap=0.2525))
+    result = derivation.derive_plan(plan, rows)
+    assert (_step(result, 'cap_single')['result'], _step(result, 'cap_total')['result']) == ('250', '250')
+    assert _step(result, 'applied_cap')['result'] == 'single' == plan['sizing']['applied_cap']
+    assert result['consistency']['status'] == 'consistent'
+
+
+# ---------------------------------------------------------------- own plans
+
+OWN_LEVELS = {'entry_low': Decimal('98.5'), 'entry_high': Decimal('101.25'), 'stop': Decimal('95'),
+              'target1': Decimal('110')}
+
+
+def _make_own(*, bars=None, earnings=None, snapshot='default', exposure=None, params=None, context=None,
+              rule_plan='default', levels=None):
+    bars = bars or _bars()
+    snapshot = _snapshot() if snapshot == 'default' else snapshot
+    rule_plan = {'id': uuid.uuid4(), 'atr': Decimal('2')} if rule_plan == 'default' else rule_plan
+    plan = plans.build_own_plan(
+        rule_plan=rule_plan, levels=levels or OWN_LEVELS, ticker='AAA', signal_date=SIGNAL, bars=bars,
+        earnings_row=earnings, snapshot=snapshot, exposure=exposure or _exposure(),
+        params=params or WorkbenchConfig(), context=context)
+    plan['id'] = uuid.uuid4()
+    rows = _rows(bars, earnings, snapshot)
+    rows.rule_plan = rule_plan
+    return plan, rows
+
+
+def test_own_plan_consistent_and_sources():
+    # The rule plan would be invalid (earnings in validity, no room); the own plan keeps them as warnings.
+    plan, rows = _make_own(earnings=_earnings(date(2026, 10, 23)), exposure=_exposure('30000', '30000'))
+    assert plan['status'] == 'ok' and {'earnings_in_validity', 'no_room'} <= set(plan['warnings'])
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency'] == {'status': 'consistent', 'mismatches': [], 'missing': []}, result['consistency']
+    assert result['plan']['kind'] == 'own'
+    for key in ('entry_low', 'entry_high', 'stop', 'target1'):
+        step = _step(result, key)
+        assert step['source'] == 'user_input' and step['consistent'] is None and step['stored'] is None
+        assert Decimal(step['result']) == OWN_LEVELS[key]
+    assert _step(result, 'status')['result'] == 'ok' and _step(result, 'status')['consistent'] is True
+    assert _step(result, 'invalid_reasons')['result'] == []
+    assert {'earnings_in_validity', 'no_room'} <= set(_step(result, 'warnings')['result'])
+    assert result['checks'][0]['key'] == 'levels_ordered' and result['checks'][0]['holds'] is True
+    assert all(s['consistent'] is not False for s in result['steps'])
+
+
+def test_own_plan_sizing_uses_entry_midpoint():
+    plan, rows = _make_own()
+    result = derivation.derive_plan(plan, rows)
+    mid = _step(result, 'entry_mid')
+    assert mid['result'] == '99.875' and mid['formula'] == '(entry_low + entry_high) / 2'
+    risk = _step(result, 'per_share_risk')
+    assert risk['result'] == '4.875' and risk['substitutions'] == {'entry_mid': '99.875', 'stop': '95'}
+    assert risk['consistent'] is True
+    assert _step(result, 'ref_price')['result'] == '100.000000'   # frozen close, not the sizing reference
+    assert _step(result, 'shares')['consistent'] is True
+
+
+def test_own_plan_tamper_is_mismatch():
+    plan, rows = _make_own()
+    plan['sizing']['shares'] += 1
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency']['status'] == 'mismatch'
+    assert [m['key'] for m in result['consistency']['mismatches']] == ['shares']
+    plan, rows = _make_own()
+    plan['status'] = 'invalid'
+    assert derivation.derive_plan(plan, rows)['consistency']['mismatches'][0]['key'] == 'status'
+
+
+def test_own_plan_atr_fallback_sources():
+    bars = _bars(n=14)
+    rule_plan = {'id': uuid.uuid4(), 'atr': Decimal('3.5')}
+    plan, rows = _make_own(bars=bars, rule_plan=rule_plan)
+    assert plan['atr'] == Decimal('3.5')
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency']['status'] == 'consistent', result['consistency']
+    atr = _step(result, 'atr')
+    assert atr['source'] == '取规则计划' and atr['result'] == '3.5' and atr['consistent'] is True
+    assert not any(k.startswith('tr_') for k in _keys(result))
+
+    plan, rows = _make_own(bars=bars, rule_plan=None)
+    assert plan['atr'] == 0
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency']['status'] == 'consistent', result['consistency']
+    atr = _step(result, 'atr')
+    assert atr['source'] == '无 ATR' and atr['result'] == '0' and atr['consistent'] is True
+
+    plan, rows = _make_own(bars=bars, rule_plan={'id': uuid.uuid4(), 'atr': None})
+    assert _step(derivation.derive_plan(plan, rows), 'atr')['source'] == '无 ATR'
+
+
+def test_own_plan_atr_from_bars_when_fifteen():
+    plan, rows = _make_own(rule_plan={'id': uuid.uuid4(), 'atr': Decimal('9')})
+    result = derivation.derive_plan(plan, rows)
+    assert _step(result, 'atr')['source'] == 'formula' and _step(result, 'atr')['result'] == '2.000000'
+    assert len([k for k in _keys(result) if k.startswith('tr_')]) == 14
+
+
+def test_own_plan_fallback_without_rule_plan_row_is_incomplete():
+    bars = _bars(n=14)
+    plan, rows = _make_own(bars=bars)
+    rows.rule_plan = None   # based_on_id points at a row that was not read back
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency']['status'] == 'incomplete'
+    assert result['consistency']['missing'] == [f"trade_plans:{plan['based_on_id']}"]
+    # with fifteen bars the rule plan is not needed
+    plan, rows = _make_own()
+    rows.rule_plan = None
+    assert derivation.derive_plan(plan, rows)['consistency']['status'] == 'consistent'
+
+
+def test_own_plan_bars_not_matching_ids_is_incomplete():
+    plan, rows = _make_own()
+    rows.bars = rows.bars[:10]
+    assert 'bar_ids' in derivation.derive_plan(plan, rows)['consistency']['missing']
+
+
+# ---------------------------------------------------------------- agent plans
+
+def _make_agent(*, bars=None, earnings=None, snapshot='default', exposure=None, params=None, context=None,
+                run_id='run-1', levels=None):
+    bars = bars or _bars()
+    snapshot = _snapshot() if snapshot == 'default' else snapshot
+    levels = levels or OWN_LEVELS
+    plan = plans.build_agent_plan(
+        levels=levels, agent_run_id=run_id, model='m', ticker='AAA', signal_date=SIGNAL, bars=bars,
+        earnings_row=earnings, snapshot=snapshot, exposure=exposure or _exposure(),
+        params=params or WorkbenchConfig(), context=context)
+    plan['id'] = uuid.uuid4()
+    rows = _rows(bars, earnings, snapshot)
+    rows.agent_run = {'id': run_id, 'status': 'ok', 'output': {'levels': {
+        key: {'value': str(value), 'refs': [f'call:{i}', 'call:9']} for i, (key, value) in enumerate(levels.items())}}}
+    return plan, rows
+
+
+def test_agent_plan_checks_output():
+    plan, rows = _make_agent()
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency'] == {'status': 'consistent', 'mismatches': [], 'missing': []}, result['consistency']
+    assert result['plan']['kind'] == 'agent' and result['plan']['plan_version'] == 'agent-1'
+    for i, key in enumerate(('entry_low', 'entry_high', 'stop', 'target1')):
+        step = _step(result, key)
+        assert step['source'] == 'agent_output' and step['consistent'] is True
+        assert step['refs'] == [f'call:{i}', 'call:9']
+        assert Decimal(step['result']) == Decimal(step['stored']) == OWN_LEVELS[key]
+    assert _step(result, 'per_share_risk')['substitutions'] == {'entry_mid': '99.875', 'stop': '95'}
+    assert 'refs' not in _step(result, 'atr')
+
+    plan, rows = _make_agent()
+    rows.agent_run['output']['levels']['stop']['value'] = '94.00'
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency']['status'] == 'mismatch'
+    assert [m['key'] for m in result['consistency']['mismatches']] == ['stop']
+    assert result['consistency']['mismatches'][0] == {'key': 'stop', 'result': '94.00', 'stored': '95'}
+
+
+def test_agent_plan_missing_run_is_incomplete():
+    plan, rows = _make_agent()
+    rows.agent_run = None
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency']['status'] == 'incomplete'
+    assert result['consistency']['missing'] == ['agent_runs:run-1']
+    # the rest still shows
+    assert _step(result, 'atr')['consistent'] is True and 'entry_mid' in _keys(result)
+
+    plan, rows = _make_agent()
+    del rows.agent_run['output']['levels']['target1']
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency']['status'] == 'incomplete'
+    assert result['consistency']['missing'] == ['agent_runs.output.levels.target1']
+
+    plan, rows = _make_agent()
+    rows.agent_run['output'] = None
+    assert derivation.derive_plan(plan, rows)['consistency']['status'] == 'incomplete'
+
+
+def test_agent_plan_without_atr_degrades_to_breakeven():
+    plan, rows = _make_agent(bars=_bars(n=14))
+    assert plan['atr'] == 0
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency']['status'] == 'consistent', result['consistency']
+    atr = _step(result, 'atr')
+    assert atr['result'] == '0' and '移动止损退化为保本' in atr['formula'] and atr['source'] == '无 ATR'
+    # fifteen bars: ATR is computed, no breakeven note
+    plan, rows = _make_agent()
+    assert '移动止损退化为保本' not in _step(derivation.derive_plan(plan, rows), 'atr')['formula']
+
+
+def test_agent_plan_invalid_reasons_stay_invalid():
+    plan, rows = _make_agent(earnings=_earnings(date(2026, 10, 23)), exposure=_exposure('30000', '30000'))
+    assert plan['status'] == 'invalid'
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency']['status'] == 'consistent', result['consistency']
+    assert _step(result, 'status')['result'] == 'invalid'
+    assert set(_step(result, 'invalid_reasons')['result']) == {'earnings_in_validity', 'no_room'}
+
+
+@pytest.mark.parametrize('maker', [_make_own, _make_agent])
+@pytest.mark.parametrize('name', ['no_equity', 'earnings_within_10d', 'risk_off', 'capped_total'])
+def test_variant_plans_consistent_across_scenarios(maker, name):
+    plan, rows = maker(**VARIANTS[name])
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency'] == {'status': 'consistent', 'mismatches': [], 'missing': []}, result['consistency']
+
+
+@pytest.mark.parametrize('maker', [_make_own, _make_agent])
+def test_variant_plan_json_roundtrip_and_purity(maker, monkeypatch):
+    plan, rows = maker(earnings=_earnings(date(2026, 10, 23)),
+                       context={**CONTEXT_BASE, 'next_earnings': date(2026, 10, 23)})
+    stored = copy.deepcopy(plan)
+    stored['sizing'] = json.loads(repository._plan_json(plan['sizing']))
+    stored['inputs'] = json.loads(repository._plan_json(plan['inputs']))
+
+    def boom(*a, **k):
+        raise AssertionError('derivation must not call plans math')
+
+    for name in ('rule_levels', 'size', 'atr14', 'earnings_flags', 'validity', 'context_flags', 'levels_ordered',
+                 '_cent', '_freeze', '_floor'):
+        monkeypatch.setattr(plans, name, boom)
+    before = copy.deepcopy(rows)
+    result = derivation.derive_plan(stored, rows)
+    assert result['consistency']['status'] == 'consistent', result['consistency']
+    assert rows == before
+    json.dumps(result)
+
+
+# ---------------------------------------------------------------- trigger section
+
+def _cand(rule_id, values, thresholds=None, *, version='1', action='buy', **extra):
+    return {'id': uuid.uuid4(), 'rule_id': rule_id, 'rule_version': version, 'action': action,
+            'inputs': {'signal_date': '2026-10-21', 'bar_ids': [1], 'values': values,
+                       'thresholds': {} if thresholds is None else thresholds, **extra}}
+
+
+def _results(rule_id, values, thresholds=None):
+    out = derivation.derive_trigger([_cand(rule_id, values, thresholds)])
+    assert len(out) == 1 and out[0]['rule_id'] == rule_id
+    return [c['result'] for c in out[0]['clauses']]
+
+
+H, V, N = 'holds', 'violated', 'not_frozen'
+TREND_RECLAIM = {'close': 110.0, 'ma20': 105.0, 'ma50': 100.0, 'ma200': 90.0}
+VOLUME_BREAKOUT = {'close': 105.0, 'prior_high': 104.0, 'volume': 2000, 'avg_volume_50': 1000.0, 'ma50': 100.0}
+GAP = {'open': 103.0, 'close': 104.0, 'prev_close': 100.0, 'gap': 0.03}
+GAP_DOWN = {'open': 97.0, 'close': 96.5, 'prev_close': 100.0, 'gap': -0.03}
+DRAWDOWN = {'close': 91.0, 'avg_cost': 100.0, 'high_since_opened': 100.0, 'from_cost': -0.09, 'from_high': -0.09,
+            'triggered': ['cost']}
+
+TRIGGER_CASES = [
+    ('trend_reclaim', TREND_RECLAIM, {'days_below_ma20': 3}, [H, H, N]),
+    ('trend_reclaim', {**TREND_RECLAIM, 'ma50': 120.0}, {'days_below_ma20': 3}, [V, H, N]),
+    ('trend_reclaim', {**TREND_RECLAIM, 'ma200': 105.0}, {'days_below_ma20': 3}, [V, H, N]),
+    ('trend_reclaim', {**TREND_RECLAIM, 'ma20': 111.0}, {'days_below_ma20': 3}, [H, V, N]),
+    ('trend_reclaim', {k: v for k, v in TREND_RECLAIM.items() if k != 'ma200'}, {}, [N, H, N]),
+    ('trend_reclaim', {**{k: v for k, v in TREND_RECLAIM.items() if k != 'ma200'}, 'ma50': 120.0}, {}, [V, H, N]),
+    ('volume_breakout', VOLUME_BREAKOUT, {'lookback': 20, 'volume_multiple': 1.5}, [H, H, H]),
+    ('volume_breakout', {**VOLUME_BREAKOUT, 'volume': 1400}, {'lookback': 20, 'volume_multiple': 1.5}, [H, V, H]),
+    ('volume_breakout', {**VOLUME_BREAKOUT, 'volume': 1500}, {'lookback': 20, 'volume_multiple': 1.5}, [H, H, H]),
+    ('volume_breakout', {**VOLUME_BREAKOUT, 'close': 104.0, 'ma50': 105.0}, {'volume_multiple': 1.5}, [V, H, V]),
+    ('volume_breakout', VOLUME_BREAKOUT, {}, [H, N, H]),
+    ('earnings_gap_up', GAP, {'gap': 0.03}, [H, H]),
+    ('earnings_gap_up', {**GAP, 'gap': 0.029}, {'gap': 0.03}, [V, H]),
+    ('earnings_gap_up', {**GAP, 'close': 102.5}, {'gap': 0.03}, [H, V]),
+    ('earnings_gap_up', GAP, {}, [N, H]),
+    ('trend_break', {'close': 99.0, 'ma50': 100.0}, {'days_above_ma50': 10}, [N, H]),
+    ('trend_break', {'close': 101.0, 'ma50': 100.0}, {'days_above_ma50': 10}, [N, V]),
+    ('earnings_gap_down', GAP_DOWN, {'gap': 0.03}, [H, H]),
+    ('earnings_gap_down', {**GAP_DOWN, 'gap': -0.02}, {'gap': 0.03}, [V, H]),
+    ('earnings_gap_down', {**GAP_DOWN, 'close': 98.0}, {'gap': 0.03}, [H, V]),
+    ('position_drawdown', DRAWDOWN, {'cost_stop': 0.08, 'trailing_stop': 0.12}, [H]),
+    ('position_drawdown', {**DRAWDOWN, 'from_cost': -0.05, 'from_high': -0.13}, {'cost_stop': 0.08,
+                                                                                  'trailing_stop': 0.12}, [H]),
+    ('position_drawdown', {**DRAWDOWN, 'from_cost': -0.05, 'from_high': -0.05}, {'cost_stop': 0.08,
+                                                                                  'trailing_stop': 0.12}, [V]),
+    ('position_drawdown', {**DRAWDOWN, 'from_cost': -0.05, 'from_high': None}, {'cost_stop': 0.08,
+                                                                                 'trailing_stop': 0.12}, [N]),
+    ('position_drawdown', DRAWDOWN, {}, [N]),
+    ('abnormal_move', {'return': -0.06, 'stdev_20': 0.02}, {'sigma': 2.5}, [H, H]),
+    ('abnormal_move', {'return': 0.04, 'stdev_20': 0.02}, {'sigma': 2.5}, [H, V]),
+    ('abnormal_move', {'return': 0.0, 'stdev_20': 0.02}, {'sigma': 2.5}, [V, V]),
+    ('plan_stop', {'low': 92.0, 'stop': 95.0, 'mode': 'initial'}, {}, [H]),
+    ('plan_stop', {'low': 95.0, 'stop': 95.0, 'mode': 'initial'}, {}, [H]),
+    ('plan_stop', {'low': 96.0, 'stop': 95.0, 'mode': 'initial'}, {}, [V]),
+    ('plan_target', {'high': 113.0, 'target1': 112.0, 'sell_fraction': 0.5}, {}, [H, N]),
+    ('plan_target', {'high': 111.0, 'target1': 112.0, 'sell_fraction': 0.5}, {}, [V, N]),
+    ('new_filing', {'forms': ['8-K', '10-Q']}, {}, [H, N]),
+    ('new_filing', {'forms': ['S-1']}, {}, [V, N]),
+    ('new_filing', {'forms': []}, {}, [V, N]),
+    ('new_filing', {}, {}, [N, N]),
+]
+
+
+@pytest.mark.parametrize('rule_id,values,thresholds,expected', TRIGGER_CASES)
+def test_trigger_clauses_three_states(rule_id, values, thresholds, expected):
+    assert _results(rule_id, values, thresholds) == expected
+
+
+def test_every_rule_in_rules_py_has_conditions():
+    from investment_assistant.workbench import rules
+    assert set(derivation.CONDITIONS) == {*rules.PRICE_RULES, 'new_filing'}
+    assert set(derivation.CONDITIONS) == {c[0] for c in TRIGGER_CASES}
+    assert rules.RULE_VERSION == '1' and derivation.CONDITION_VERSIONS == ('1',)
+    for rule_id, clauses in derivation.CONDITIONS.items():
+        assert clauses and all(isinstance(c.text, str) and callable(c.check) for c in clauses), rule_id
+
+
+def test_trigger_clause_shape_and_operands():
+    cand = _cand('volume_breakout', {**VOLUME_BREAKOUT, 'volume': 1400}, {'lookback': 20, 'volume_multiple': 1.5})
+    [out] = derivation.derive_trigger([cand])
+    assert set(out) == {'candidate_id', 'rule_id', 'rule_version', 'action', 'clauses'}
+    assert out['candidate_id'] == str(cand['id']) and out['rule_version'] == '1' and out['action'] == 'buy'
+    assert [c['text'] for c in out['clauses']] == [
+        'close > prior_high', 'volume ≥ 1.5 × avg_volume_50', 'close > ma50']
+    assert [c['result'] for c in out['clauses']] == [H, V, H]
+    assert out['clauses'][1]['operands'] == {'values.volume': '1400', 'values.avg_volume_50': '1000.0',
+                                             'thresholds.volume_multiple': '1.5'}
+    assert all(set(c) == {'text', 'operands', 'result'} for c in out['clauses'])
+    json.dumps(out)
+    [third] = derivation.derive_trigger([_cand('trend_reclaim', TREND_RECLAIM, {'days_below_ma20': 3})])
+    assert third['clauses'][2]['result'] == N and third['clauses'][2]['text'] == '此前连续 3 日收于 MA20 之下'
+    assert third['clauses'][0]['text'] == 'close > ma50 > ma200'
+    # an operand that was not frozen shows as None
+    [partial] = derivation.derive_trigger([_cand('volume_breakout', VOLUME_BREAKOUT, {})])
+    assert partial['clauses'][1]['operands']['thresholds.volume_multiple'] is None
+
+
+def test_trigger_unknown_rule_version_is_not_frozen():
+    [out] = derivation.derive_trigger([_cand('trend_reclaim', TREND_RECLAIM, {'days_below_ma20': 3}, version='2')])
+    assert out['rule_version'] == '2' and out['note'] == 'unknown_rule_version'
+    assert len(out['clauses']) == 3
+    assert all(c['result'] == N and c['note'] == 'unknown_rule_version' for c in out['clauses'])
+    [unknown_rule] = derivation.derive_trigger([_cand('mystery', {'x': 1})])
+    assert unknown_rule['clauses'] == [] and unknown_rule['note'] == 'unknown_rule_version'
+    [fine] = derivation.derive_trigger([_cand('trend_reclaim', TREND_RECLAIM, {'days_below_ma20': 3})])
+    assert 'note' not in fine and all('note' not in c for c in fine['clauses'])
+
+
+def test_trigger_malformed_values_are_not_frozen_not_a_crash():
+    assert _results('trend_reclaim', {'close': 'abc', 'ma20': 1, 'ma50': 1, 'ma200': 1}) == [N, N, N]
+    assert _results('plan_stop', {'low': None, 'stop': 95.0}) == [N]
+
+
+def test_trigger_candidates_without_inputs():
+    [out] = derivation.derive_trigger([{'id': 1, 'rule_id': 'plan_stop', 'rule_version': '1', 'action': 'sell',
+                                        'inputs': None}])
+    assert [c['result'] for c in out['clauses']] == [N]
+
+
+def _scenario_series(closes, *, opens=None, volumes=None, end=SIGNAL):
+    n = len(closes)
+    opens = opens or closes
+    volumes = volumes or [1000] * n
+    return [{'id': i + 1, 'price_date': add_trading_days(end, -(n - 1 - i)), 'open': float(o),
+             'high': float(max(o, c)), 'low': float(min(o, c)), 'close': float(c), 'adj_close': float(c),
+             'volume': int(v), 'split_factor': 1.0}
+            for i, (o, c, v) in enumerate(zip(opens, closes, volumes))]
+
+
+def _after_close_8k(day):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return {'id': 7, 'form': '8-K', 'items': ['2.02'], 'filing_date': day,
+            'accepted_at': datetime(day.year, day.month, day.day, 16, 20, tzinfo=ZoneInfo('America/New_York'))}
+
+
+def _held():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return {'quantity': Decimal('10'), 'avg_cost': Decimal('100'),
+            'opened_at': datetime(2026, 9, 1, 15, tzinfo=ZoneInfo('America/New_York'))}
+
+
+def _plan_state(**o):
+    return {'stop': Decimal('95'), 't1_reached': False, 't1_reached_on': None, 'mode': 'initial',
+            'target1': Decimal('112'), **o}
+
+
+def _real_scenarios():
+    """(bars, filings, position, plan_state) tuples that make every rule fire, built with rules.evaluate."""
+    def gap_bars(open_t, close_t):
+        return _scenario_series([100.0] * 249 + [close_t], opens=[100.0] * 249 + [open_t])
+
+    up = [50 + i * 0.25 for i in range(240)]
+    top = up[-1]
+    breakout = [100 + (i % 5) * 0.1 + i * 0.05 for i in range(249)] + [117.5]
+    prev_day = add_trading_days(SIGNAL, -1)
+    return [
+        (_scenario_series(up + [top - 6] * 3 + [top + 1]), [], None, None),
+        (_scenario_series(breakout, volumes=[1000] * 249 + [1500]), [], None, None),
+        (gap_bars(103, 104), [_after_close_8k(prev_day)], None, None),
+        (gap_bars(97, 96.5), [_after_close_8k(prev_day)], None, None),
+        (_scenario_series([100 + i * 0.1 for i in range(249)] + [100]), [], None, None),
+        (_scenario_series([100.0] * 249 + [91.0]), [], _held(), None),
+        (_scenario_series([100 + (1 if i % 2 else -1) for i in range(249)] + [115]), [], None, None),
+        (_scenario_series([100] * 249 + [92]), [], _held(), _plan_state()),
+        (_scenario_series([100] * 249 + [113]), [], _held(), _plan_state()),
+        (_scenario_series([100.0] * 10), [{'id': 3, 'form': '10-Q', 'items': [], 'filing_date': SIGNAL,
+                                           'accepted_at': None}], None, None),
+    ]
+
+
+def test_real_candidates_from_rules_are_never_violated():
+    """Every clause mirrors rules.py: a candidate rules.evaluate emitted holds (or is not frozen) on each clause."""
+    from investment_assistant.workbench import rules
+    seen: set[str] = set()
+    for bars, filings, position, state in _real_scenarios():
+        result = rules.evaluate('AAA', SIGNAL, bars, filings, position, plan_state=state)
+        rows = [{'id': uuid.uuid4(), 'rule_id': c.rule_id, 'rule_version': c.rule_version, 'action': c.action,
+                 'inputs': json.loads(json.dumps(c.inputs))} for c in result['candidates']]
+        for out in derivation.derive_trigger(rows):
+            seen.add(out['rule_id'])
+            results = [c['result'] for c in out['clauses']]
+            assert V not in results, (out['rule_id'], out['clauses'])
+            assert H in results, (out['rule_id'], out['clauses'])
+    assert seen == set(derivation.CONDITIONS)
+
+
+def test_derive_unit_trigger_only():
+    cands = [_cand('volume_breakout', VOLUME_BREAKOUT, {'volume_multiple': 1.5}),
+             _cand('trend_reclaim', TREND_RECLAIM, {'days_below_ma20': 3})]
+    unit = derivation.derive_unit(cands)
+    assert set(unit) == {'derivation_version', 'trigger', 'consistency', 'evidence', 'note'}
+    assert 'steps' not in unit
+    assert unit['derivation_version'] == 'derivation-1' and unit['note'] == derivation.TRIGGER_NOTE
+    assert unit['evidence'] == derivation.EVIDENCE_TEXT
+    assert [t['rule_id'] for t in unit['trigger']] == ['volume_breakout', 'trend_reclaim']
+    assert unit['consistency'] == {'status': 'consistent', 'mismatches': [], 'missing': []}
+    json.dumps(unit)
+    bad = derivation.derive_unit([_cand('volume_breakout', {**VOLUME_BREAKOUT, 'volume': 1400},
+                                        {'volume_multiple': 1.5})])
+    assert bad['consistency']['status'] == 'mismatch'
+    assert [m['key'] for m in bad['consistency']['mismatches']] == ['trigger:volume_breakout']
+    assert derivation.derive_unit([])['trigger'] == []
+
+
+# ---------------------------------------------------------------- consistency and the trigger shape
+
+def _trigger_item(rule_id, *results):
+    return {'candidate_id': 'c1', 'rule_id': rule_id, 'rule_version': '1', 'action': 'buy',
+            'clauses': [{'text': f'clause {i}', 'operands': {}, 'result': r} for i, r in enumerate(results)]}
+
+
+def test_consistency_reads_nested_trigger_clauses():
+    verdict = derivation.consistency([], [_trigger_item('trend_reclaim', H, V, N)], [])
+    assert verdict['status'] == 'mismatch'
+    assert [m['key'] for m in verdict['mismatches']] == ['trigger:trend_reclaim']
+    assert verdict['mismatches'][0]['result'] == 'violated' and 'clause 1' in verdict['mismatches'][0]['stored']
+    # the violated clause is not the first one, and a later candidate may be the offender
+    verdict = derivation.consistency([], [_trigger_item('a', H), _trigger_item('b', N, N, V)], [])
+    assert [m['key'] for m in verdict['mismatches']] == ['trigger:b']
+    # not_frozen and holds never count
+    assert derivation.consistency([], [_trigger_item('a', H, N, N)], [])['status'] == 'consistent'
+    # incomplete outranks the violated trigger, mismatches still listed
+    verdict = derivation.consistency([], [_trigger_item('a', V)], ['price_bars:1'])
+    assert verdict['status'] == 'incomplete' and len(verdict['mismatches']) == 1
+
+
+def test_consistency_rejects_flat_trigger_items():
+    """The old flat shape (result on the item) must fail loudly, never be read as 'no violation'."""
+    with pytest.raises(KeyError):
+        derivation.consistency([], [{'key': 'trigger:x', 'result': 'violated'}], [])
+
+
+def test_violated_clause_makes_mismatch():
+    plan, rows = _make()
+    rows.candidates = [_cand('volume_breakout', {**VOLUME_BREAKOUT, 'volume': 1400}, {'volume_multiple': 1.5})]
+    result = derivation.derive_plan(plan, rows)
+    assert [t['rule_id'] for t in result['trigger']] == ['volume_breakout']
+    assert result['consistency']['status'] == 'mismatch'
+    assert [m['key'] for m in result['consistency']['mismatches']] == ['trigger:volume_breakout']
+    assert all(s['consistent'] is not False for s in result['steps'])
+    # the same candidate with a satisfied threshold keeps the plan consistent
+    rows.candidates = [_cand('volume_breakout', VOLUME_BREAKOUT, {'volume_multiple': 1.5})]
+    result = derivation.derive_plan(plan, rows)
+    assert result['trigger'][0]['clauses'][1]['result'] == H
+    assert result['consistency'] == {'status': 'consistent', 'mismatches': [], 'missing': []}
+    # own and agent plans carry the trigger section too
+    own, own_rows = _make_own()
+    own_rows.candidates = [_cand('volume_breakout', {**VOLUME_BREAKOUT, 'volume': 1400}, {'volume_multiple': 1.5})]
+    assert derivation.derive_plan(own, own_rows)['consistency']['mismatches'][0]['key'] == 'trigger:volume_breakout'
