@@ -51,7 +51,7 @@ shasum -a 256 .local/us-workbench/backups/investment_assistant-before-<编号>-<
 psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=1 -f migrations/<编号>_<名称>.sql
 ```
 
-执行后统计受影响表的行数并记入 [roadmap 进度](../roadmap/v2-progress.md)，再重载服务（[本机服务](local-service.md)）。
+执行后统计受影响表的行数并记入 [roadmap](../roadmap/roadmap.md)，再重载服务（[本机服务](local-service.md)）。
 
 > 注意：真实库的 `schema_migrations` 只记录到 `017`，`018` 之后都是用 `psql` 手动执行的。不要对真实库运行 `migrate` 入口，否则它会把 `018` 之后的迁移重跑一遍。
 
@@ -112,7 +112,7 @@ psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=
 | 4. 验证 | `screen_runs`、`screen_results` 已建（各 0 行），索引 `idx_screen_runs_session`、`idx_screen_results_ticker` 在；`pool_tiers.source` 为 `text NOT NULL DEFAULT 'watchlist'`，CHECK `pool_tiers_source_check` 在，8 行旧数据全部为 `watchlist`；`filings` 为 `Asia/Shanghai 09:30`（周一至周五），`next_run_at` = 2026-10-27 09:30 +0800（周二，当天 09:30 已过）；`workbench`（06:30 周二至周六）与 `workbench_review`（08:00 每天）未变；`public` 表数 32 → 34 |
 | 5. 重启服务 | 重启前进程 pid 1196 启动于 2026-10-25 18:04（旧代码，`GET /api/workbench/screen` 为 404），无运行中任务；10:28:30 +0800 `launchctl kickstart -k`，新进程 pid 42156 启动于 10:29:00；`/api/health`：数据库、调度线程（轮询运行中）、SEC、Yahoo、Discord、FRED 均 up，3 项 `systemctl` 检查在 macOS 上为 down（重启前即如此，与本次无关）；`/api/workbench/screen`（`report: null`，尚无筛选记录）、`/api/workbench/today`、`/api/jobs/scheduled`、`/api/status` 均 200；`/api/jobs/scheduled` 三个任务都是 `Asia/Shanghai` 并带 `description` |
 
-服务重启与手动验收（spec §11.2）见 [roadmap](../roadmap/README.md) 的 v2.2 状态行。
+服务重启与手动验收（spec §11.2）见 [v2.2 验收记录](../roadmap/v2.2-acceptance.md)。
 
 ### 024 的真实库执行（逐步手动，每步先征得用户同意）
 

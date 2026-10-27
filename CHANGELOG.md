@@ -1,10 +1,10 @@
 # Changelog
 
-版本号与 roadmap 版本对应：`v2.x` 对应 [roadmap v2](docs/roadmap/v2-decision-loop.md)。
+版本号与 roadmap 版本对应，见 [roadmap](docs/roadmap/roadmap.md)。
 
 ## v2.4.0 — 2026-10-27
 
-计划推导链与批处理 workflow 底座（[spec](docs/specs/2026-10-27-v2.4-derivation-and-workflow-design.md)、[实施 plan](docs/plans/2026-10-27-v2.4-derivation-and-workflow.md)）。状态：`engineering_done`、`user_acceptance_pending`（迁移 025 已于 2026-10-27 在真实库执行、服务已重启跑 v2.4 代码；§12.2 手动验收已核对、用户已确认推导可读，§12.3 连续 5 个交易日定时验收待完成，见[验收记录](docs/roadmap/v2.4-acceptance.md)）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/README.md)。
+计划推导链与批处理 workflow 底座（[spec](docs/specs/2026-10-27-v2.4-derivation-and-workflow-design.md)、[实施 plan](docs/plans/2026-10-27-v2.4-derivation-and-workflow.md)）。状态：`engineering_done`、`user_acceptance_pending`（迁移 025 已于 2026-10-27 在真实库执行、服务已重启跑 v2.4 代码；§12.2 手动验收已核对、用户已确认推导可读，§12.3 连续 5 个交易日定时验收待完成，见[验收记录](docs/roadmap/v2.4-acceptance.md)）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。
 
 ### 新增
 
@@ -33,7 +33,7 @@
 
 ## v2.3.0 — 2026-10-26
 
-数据底座与「数据」菜单（[spec](docs/specs/2026-10-26-v2.3-data-foundation-design.md)、[实施 plan](docs/plans/2026-10-26-v2.3-data-foundation.md)）。状态：`engineering_done`、`user_acceptance_pending`（迁移 024 已于 2026-10-27 在真实库执行、服务已重启跑 v2.3 代码；§11.2 手动验收已核对、用户已确认浏览可用，§11.3 定时验收待完成，见[验收记录](docs/roadmap/v2.3-acceptance.md)）；全范围 final review 已完成并修复，保留偏差与后续验收条件见 [roadmap](docs/roadmap/README.md#v23-工程自查与验收边界)。
+数据底座与「数据」菜单（[spec](docs/specs/2026-10-26-v2.3-data-foundation-design.md)、[实施 plan](docs/plans/2026-10-26-v2.3-data-foundation.md)）。状态：`engineering_done`、`user_acceptance_pending`（迁移 024 已于 2026-10-27 在真实库执行、服务已重启跑 v2.3 代码；§11.2 手动验收已核对、用户已确认浏览可用，§11.3 定时验收待完成，见[验收记录](docs/roadmap/v2.3-acceptance.md)）；全范围 final review 已完成并修复，保留偏差与后续验收条件见 [v2.3 验收记录](docs/roadmap/v2.3-acceptance.md#工程自查与验收边界)。
 
 ### 新增
 
@@ -135,6 +135,6 @@ v2 路线的收尾版：收拢 v1 遗留功能（[spec](docs/specs/2026-10-25-v2
 ### 已知限制
 
 - 所有规则都未经验证（Phase 0 正式 Gate HOLD）；复盘只给描述性统计。
-- 已在真实库验收的部分有：迁移、服务重载、页面与接口检查、一次真实周度推送。尚未出现第一个无冲突的买入单元，所以真实数据上的计划价位、Agent 计划和三方对比还没有核对。待验收清单见 [backlog](docs/roadmap/backlog.md#3-未完成的使用验收)。
+- 已在真实库验收的部分有：迁移、服务重载、页面与接口检查、一次真实周度推送。尚未出现第一个无冲突的买入单元，所以真实数据上的计划价位、Agent 计划和三方对比还没有核对。待验收清单见 [roadmap §6.4](docs/roadmap/roadmap.md#64-未完成的使用验收)。
 - v1 遗留功能（Hermes、市场信号与策略评分、事件研究、美股财季数据与研究观察卡）原样保留，下一版决定合并还是删除。
 - yfinance 资讯源不稳定；Agent 额度错误码按文档初值实现，还需要用真实响应核对。

@@ -1,6 +1,6 @@
 # 02 — Phase 1：数据地基（精简版）
 
-> **已归档（2026-10-23）**：本文属于 roadmap v1，已被 [roadmap v2](../../roadmap/README.md) 取代，仅作历史参考，不再更新。
+> **已归档（2026-10-23）**：本文属于 roadmap v1，已被 [roadmap v2](../../roadmap/roadmap.md) 取代，仅作历史参考，不再更新。
 
 > 目标：只补**被 Phase 0 事件研究证明有用**的数据，不平铺采集。三件事：OHLCV 落库（回测/事件研究的可复现基底）、市场广度指标（替代大部分宏观）、EPS surprise 结构化（喂 PEAD 事件研究）。
 > 依赖：Phase 0 的决策门结论；现有 `data/price.py`、`filings/sec_downloader.py`、`config.py` 已预留的 `PriceConfig`/`MacroConfig`/`FundamentalsConfig`。

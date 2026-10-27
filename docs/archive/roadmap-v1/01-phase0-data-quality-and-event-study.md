@@ -1,6 +1,6 @@
 # 01 — Phase 0：数据质量地基 + 事件研究框架
 
-> **已归档（2026-10-23）**：本文属于 roadmap v1，已被 [roadmap v2](../../roadmap/README.md) 取代，仅作历史参考，不再更新。
+> **已归档（2026-10-23）**：本文属于 roadmap v1，已被 [roadmap v2](../../roadmap/roadmap.md) 取代，仅作历史参考，不再更新。
 
 > 目标：用**最小成本**拿到「我关注的信号到底有没有边际信息」的诚实答案。这是「先证伪、再投入」原则的落地——如果信号没用，后面的交易计划和复盘就只是把噪声包装成叙事。
 > 依赖：现有 `data/price.py`、`market/service.py`（已支持 as-of 日期）、`tickers/trend.py`、`strategies/trend_relative_strength.py`。

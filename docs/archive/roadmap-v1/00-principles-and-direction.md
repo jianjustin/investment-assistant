@@ -1,6 +1,6 @@
 # 00 — 方向判断与系统定位
 
-> **已归档（2026-10-23）**：本文属于 roadmap v1，已被 [roadmap v2](../../roadmap/README.md) 取代，仅作历史参考，不再更新。
+> **已归档（2026-10-23）**：本文属于 roadmap v1，已被 [roadmap v2](../../roadmap/roadmap.md) 取代，仅作历史参考，不再更新。
 
 > 本篇保留 2026-06 的方向论证；2026-10-17 状态见 [实施状态](implementation-status-2026-10-17.md)。FastAPI、事件研究前端与邮件已落地；Phase 0 正式 Gate 全部 HOLD，长期 Phase 1/2/3 不因研究支线完成而自动完成。
 

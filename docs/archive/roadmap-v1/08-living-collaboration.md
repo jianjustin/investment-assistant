@@ -1,6 +1,6 @@
 # 08 — 长期协作与当前切片
 
-> **已归档（2026-10-23）**：本文属于 roadmap v1，已被 [roadmap v2](../../roadmap/README.md) 取代，仅作历史参考，不再更新。
+> **已归档（2026-10-23）**：本文属于 roadmap v1，已被 [roadmap v2](../../roadmap/roadmap.md) 取代，仅作历史参考，不再更新。
 
 > 2026-10-17。本文是活路线，用来排近期待办。阶段设计仍以 [00](00-principles-and-direction.md) 到 [07](07-phase-r-fastapi-migration.md) 为准，验收数字以 [实施状态](implementation-status-2026-10-17.md) 为准。
 > 本文不授权补采、真实库迁移、通知、部署或交易。

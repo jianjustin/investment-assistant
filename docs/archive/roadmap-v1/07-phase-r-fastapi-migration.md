@@ -1,6 +1,6 @@
 # 07 — Phase R：API 层迁移 FastAPI（重构地基）
 
-> **已归档（2026-10-23）**：本文属于 roadmap v1，已被 [roadmap v2](../../roadmap/README.md) 取代，仅作历史参考，不再更新。
+> **已归档（2026-10-23）**：本文属于 roadmap v1，已被 [roadmap v2](../../roadmap/roadmap.md) 取代，仅作历史参考，不再更新。
 
 > 创建：2026-07-04 ｜ 状态校准：2026-10-17 ｜ `engineering_done`
 

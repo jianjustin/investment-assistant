@@ -36,7 +36,7 @@
 
 | 位置 | 内容 |
 | --- | --- |
-| [roadmap/](roadmap/README.md) | 版本表、沿用原则、交付标准（DoD）；v2 路线与进度（已完成）；[后续路线 v2-visibility](roadmap/v2-visibility.md)（当前）；[v2.6–v2.9 路线 v2-agent-collab](roadmap/v2-agent-collab.md)（已确认）；[backlog](roadmap/backlog.md) |
+| [roadmap/roadmap.md](roadmap/roadmap.md) | 唯一的路线文档：最终目标与成功标准、原则与边界、版本总览、当前路线 v2.5–v2.9（2026-10-27 重排待确认）、远期方向、backlog、DoD 与状态用语、决策记录；同目录 `v2.x-acceptance.md` 是各版验收证据 |
 | [specs/](specs/) | 各阶段的设计 spec |
 | [plans/](plans/) | 各阶段的实施 plan |
 | [archive/roadmap-v1/](archive/roadmap-v1/README.md) | roadmap v1 及其 spec、plan、评审 |
