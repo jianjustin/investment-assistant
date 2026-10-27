@@ -1,6 +1,6 @@
 # Roadmap v2 后续 — 知识与 Agent 协作
 
-> 状态：**草案（2026-10-27），待用户审阅，未开工**。接在 [v2-visibility.md](v2-visibility.md)（v2.3–v2.5）之后，覆盖 v2.6–v2.9。
+> 状态：**已确认（2026-10-27），未开工**。接在 [v2-visibility.md](v2-visibility.md)（v2.3–v2.5）之后，覆盖 v2.6–v2.9。
 > 这是方向和排序，不是实施授权。每版开工前另写 spec 和 plan，按 [交付标准（DoD）](README.md#交付标准dod) 交付。
 
 ---
