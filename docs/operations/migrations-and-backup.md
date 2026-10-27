@@ -28,7 +28,7 @@
 | 021 | 删除 A 股：`cn_*` 两张表、CN 观察名单行、`CN:` 研究卡、`ashares` 任务行；`job_reports` 历史保留 | 共享 |
 | 022 | 删除 v1 遗留：`strategy_scores`、`ticker_signal_snapshots`、`market_signals`、`event_studies`、`research_observation_card_versions`、`research_observation_cards` 六张表与 `metrics`、`scores`、`event_study` 调度行；`job_reports` 历史与已冻结的 `backcheck-1` 记录保留 | 共享 |
 | 023 | v2.2：`screen_runs`、`screen_results`、`pool_tiers.source`（默认 `watchlist`）；`filings` 任务改为北京 09:30（只改仍是纽约时区的行） | 主线 + 共享 |
-| 024 | v2.3：`data_fetch_runs`：每次某族被拉取一次追加一行记录成败与原因；只建表与索引，不动旧表（未在真实库执行，待授权） | 主线 |
+| 024 | v2.3：`data_fetch_runs`：每次某族被拉取一次追加一行记录成败与原因；只建表与索引，不动旧表（2026-10-27 已在真实库执行，见下文） | 主线 |
 
 另需一次：`python -m investment_assistant.workbench.agent setup` 由 LangGraph `PostgresSaver.setup()` 建检查点表，不进本项目迁移。
 
@@ -112,6 +112,22 @@ psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=
 | 5. 重启服务 | 重启前进程 pid 1196 启动于 2026-10-25 18:04（旧代码，`GET /api/workbench/screen` 为 404），无运行中任务；10:28:30 +0800 `launchctl kickstart -k`，新进程 pid 42156 启动于 10:29:00；`/api/health`：数据库、调度线程（轮询运行中）、SEC、Yahoo、Discord、FRED 均 up，3 项 `systemctl` 检查在 macOS 上为 down（重启前即如此，与本次无关）；`/api/workbench/screen`（`report: null`，尚无筛选记录）、`/api/workbench/today`、`/api/jobs/scheduled`、`/api/status` 均 200；`/api/jobs/scheduled` 三个任务都是 `Asia/Shanghai` 并带 `description` |
 
 服务重启与手动验收（spec §11.2）见 [roadmap](../roadmap/README.md) 的 v2.2 状态行。
+
+### 024 的真实库执行（逐步手动，每步先征得用户同意）
+
+024 只新增一张表，旧代码照常运行；新代码在没表时也只降级。先迁移、后重启。
+
+#### 执行记录（2026-10-27，手动 psql 执行）
+
+| 步骤 | 结果 |
+| --- | --- |
+| 1. 只读预检 | `data_fetch_runs` 不存在；`public` 表数 34；`schema_migrations` 最新仍为 `017_trade_plans.sql`；`job_reports` 无 `running` 行；服务进程 pid 83648 启动于 2026-10-26 15:36（v2.3 代码提交之前，`GET /api/data/families` 为 404） |
+| 2. 全库备份 | `.local/us-workbench/backups/investment_assistant-before-024-20261027-100426.dump`（5,367,773 字节，sha256 `8c8e09dec0d5139fbfd6fa24180952381a0933d66c53093a334a64dd7533c244`）；`pg_restore --list` 可读，34 张表与线上一致 |
+| 3. 执行 | 10:04:57 +0800，`psql --single-transaction -v ON_ERROR_STOP=1 -f migrations/024_data_fetch_runs.sql`（`CREATE TABLE`、`CREATE INDEX`）；`schema_migrations` 仍只到 `017` |
+| 4. 验证 | `data_fetch_runs` 0 行，索引 `data_fetch_runs_pkey`、`idx_data_fetch_runs_family` 在，CHECK 约束 7 条；`public` 表数 34 → 35；`trade_plans` 8、`signal_candidates` 12、`pool_tiers` 30、`job_reports` 65、`scheduled_jobs` 3，与预检相同 |
+| 5. 重启服务 | 10:05:19 +0800 `launchctl kickstart -k`，新进程 pid 96706 启动于 10:05:49；`/api/health`：数据库、调度线程（轮询运行中）、Yahoo、Discord、FRED up，SEC 首次探测为代理 SSL 中断、数秒后复查 up，3 项 `systemctl` 检查在 macOS 上为 down（与本次无关）；`/api/data/families`、`/api/data/families/bars`、`/api/data/browse/bars?ticker=MU`、`/api/workbench/today`、`/api/jobs/scheduled`、`/api/status` 均 200 |
+
+手动验收（spec §11.2）见 [v2.3 验收记录](../roadmap/v2.3-acceptance.md)。
 
 ## 一次性测试库
 

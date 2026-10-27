@@ -4,7 +4,7 @@
 
 ## v2.3.0 — 2026-10-26
 
-数据底座与「数据」菜单（[spec](docs/specs/2026-10-26-v2.3-data-foundation-design.md)、[实施 plan](docs/plans/2026-10-26-v2.3-data-foundation.md)）。状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`；工程落地不等于验收完成；全范围 final review 已完成并修复，保留偏差与后续验收条件见 [roadmap](docs/roadmap/README.md#v23-工程自查与验收边界)。
+数据底座与「数据」菜单（[spec](docs/specs/2026-10-26-v2.3-data-foundation-design.md)、[实施 plan](docs/plans/2026-10-26-v2.3-data-foundation.md)）。状态：`engineering_done`、`user_acceptance_pending`（迁移 024 已于 2026-10-27 在真实库执行、服务已重启跑 v2.3 代码；§11.2 手动验收已核对，用户确认浏览与 §11.3 定时验收待完成，见[验收记录](docs/roadmap/v2.3-acceptance.md)）；全范围 final review 已完成并修复，保留偏差与后续验收条件见 [roadmap](docs/roadmap/README.md#v23-工程自查与验收边界)。
 
 ### 新增
 
