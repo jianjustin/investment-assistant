@@ -216,6 +216,31 @@ def test_signals_and_plan_counts(db, monkeypatch):
     ids = db.execute("SELECT id FROM trade_plans WHERE kind = 'rule'").fetchall()
     assert plan['outputs'] == {'inserted': [str(r[0]) for r in ids], 'existing': []}
     assert plan['status'] == 'success'
+    assert plan['detail']['status'] == {'ok': 1, 'invalid': 0}
+
+
+def test_plan_detail_counts_ok_and_invalid(db):
+    """detail.status 与 trade_plans.status 对账：MU 的财报落在计划有效期内 → invalid。"""
+    sources = Sources()
+    sources_earnings = sources.earnings
+
+    def earnings(ticker, **kwargs):
+        if ticker == 'MU':
+            return {'Earnings Date': [date(2026, 10, 26)]}        # 信号日后的第一个交易日
+        return sources_earnings(ticker, **kwargs)
+
+    for run_id in ('run-invalid-1', 'run-invalid-2'):             # 第二次重跑：全部是 existing
+        service.run_batch(tickers=['MU', 'NVDA'], now=NOW, deps=deps(sources, earnings=earnings),
+                          stages=_recorder(run_id))
+    status = dict(db.execute('SELECT id::text, status FROM trade_plans').fetchall())
+    assert sorted(status.values()) == ['invalid', 'ok']           # 不是空断言：两种都有
+    for run_id in ('run-invalid-1', 'run-invalid-2'):
+        row = _rows(db, run_id)['plan']
+        ids = row['outputs']['inserted'] + row['outputs']['existing']
+        assert row['output_count'] == len(ids) == 2
+        assert row['detail']['status'] == {'ok': sum(status[i] == 'ok' for i in ids),
+                                           'invalid': sum(status[i] == 'invalid' for i in ids)} \
+            == {'ok': 1, 'invalid': 1}
 
 
 def test_rerun_marks_existing_plans(db):

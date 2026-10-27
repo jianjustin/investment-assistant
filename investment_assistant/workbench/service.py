@@ -176,8 +176,9 @@ def _generate_rule_plan(conn, ticker: str, session: date, ticker_bars: list[dict
                         *, now: datetime) -> dict[str, Any] | None:
     """Build and store the rule plan for a fresh buy unit; record skip/conflict in the summary.
 
-    Returns None when the plan was skipped, else ``{'status': inserted|existing|conflict, 'id': plan_id}``
-    for the stage accounting (v2.4 §4); the summary is written exactly as before."""
+    Returns None when the plan was skipped, else ``{'status': inserted|existing|conflict, 'id': plan_id,
+    'plan_status': ok|invalid}`` for the stage accounting (v2.4 §4); ``plan_status`` is the stored plan row's
+    own status. The summary is written exactly as before."""
     from investment_assistant.config import load_config
 
     entry = repository.pool_entry_at(conn, ticker, session, cutoff_at=now)
@@ -197,7 +198,7 @@ def _generate_rule_plan(conn, ticker: str, session: date, ticker_bars: list[dict
     summary['plans'][ticker] = out['status']
     if out['status'] == 'conflict':
         summary['conflicts'].append({'ticker': ticker, 'rule_id': 'rule_plan', 'id': str(out['record']['id'])})
-    return {'status': out['status'], 'id': out['record']['id']}
+    return {'status': out['status'], 'id': out['record']['id'], 'plan_status': out['record']['status']}
 
 
 def _note_signals(acc: stages_module.StageAcc, ticker: str, noted: dict[str, Any]) -> None:
@@ -223,6 +224,9 @@ def _note_plan(acc: stages_module.StageAcc, ticker: str, planned: dict[str, Any]
         return
     acc.output()
     acc.ref('inserted' if planned['status'] == 'inserted' else 'existing', planned['id'])
+    if planned.get('plan_status') in ('ok', 'invalid'):      # detail.status 与 outputs 里的计划一一对应
+        counts = acc.detail.setdefault('status', {'ok': 0, 'invalid': 0})
+        counts[planned['plan_status']] += 1
     if planned['status'] == 'conflict':
         acc.degrade('conflict', ticker)
 
