@@ -88,8 +88,9 @@ def test_scheduled_task_uses_db_pool(monkeypatch):
     from investment_assistant.tasks import workbench
     recorded = {}
 
-    def run_task(task, fn, *, config, trigger_source, notify):
-        recorded.update(task=task, notify=notify, trigger_source=trigger_source, summary=fn())
+    def run_task(task, fn, *, config, trigger_source, notify, pass_run_id=False):
+        summary = fn('workbench-fake-run') if pass_run_id else fn()
+        recorded.update(task=task, notify=notify, trigger_source=trigger_source, summary=summary)
         return {'status': 'ok'}
     monkeypatch.setattr(workbench, 'run_task', run_task)
 

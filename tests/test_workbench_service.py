@@ -408,6 +408,28 @@ def test_closed_day_pushes_closed_message(db, monkeypatch):
     assert result['summary']['push']['sent'] is True
 
 
+def test_task_run_ids_reach_four_tables(db, monkeypatch):
+    """v2.4 §6.1: 任务外壳的 run_id 传到批处理，四张表的新行同源（job_reports 为准）。"""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def wired(url):
+        yield db
+
+    monkeypatch.setattr('investment_assistant.db.connect', wired)
+    monkeypatch.setenv('INVESTMENT_ASSISTANT_DATABASE_URL', 'postgresql://wired-to-test-schema')
+    seed_watchlist(db, [('NVDA', ['core'])])
+
+    _task_run('manual')
+
+    run_id = db.execute("SELECT run_id FROM job_reports WHERE task = 'workbench' "
+                        'ORDER BY id DESC LIMIT 1').fetchone()[0]
+    assert db.execute('SELECT DISTINCT run_id FROM data_fetch_runs').fetchall() == [(run_id,)]
+    assert db.execute('SELECT DISTINCT run_id FROM screen_runs').fetchall() == [(run_id,)]
+    assert db.execute('SELECT DISTINCT run_id FROM signal_candidates '
+                      'WHERE signal_date = %s', [SESSION]).fetchall() == [(run_id,)]
+
+
 # --- P2: pool, ETF/FRED collection, regime snapshot, extended units ---
 
 def recording_deps(sources, monkeypatch):

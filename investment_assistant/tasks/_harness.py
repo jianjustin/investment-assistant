@@ -12,7 +12,7 @@ from investment_assistant.notify.notifier import dispatch
 
 def run_task(
     task: str,
-    fn: Callable[[], dict[str, Any]],
+    fn: Callable[..., dict[str, Any]],
     *,
     config: AssistantConfig,
     target_start_date: date | None = None,
@@ -20,11 +20,13 @@ def run_task(
     trigger_source: str = "scheduled",
     notify: bool = True,
     target_dates_from_summary: bool = False,
+    pass_run_id: bool = False,
 ) -> dict[str, Any]:
     run_id = f"{task}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
     started_at = datetime.now(UTC)
     try:
-        summary = fn() or {}
+        # pass_run_id=True 时把 run_id 交给任务（fn(run_id)），批处理的记录与运行报告同源（v2.4 §6.1）。
+        summary = (fn(run_id) if pass_run_id else fn()) or {}
         if target_dates_from_summary:
             actual_dates = sorted({date.fromisoformat(str(day)) for day in summary.get("actual_dates", [])})
             summary["actual_dates"] = [day.isoformat() for day in actual_dates]

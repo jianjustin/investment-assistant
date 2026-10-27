@@ -26,10 +26,11 @@
 - 「工具 → 任务中心」的「立即运行」与「按日期运行」（`{"date"}` 或 `{"from","to"}`，上限 92 天；未来日期、倒序或超限返回 400）。
 - API：`POST /api/jobs/{name}/run`，返回 `run_id`，用 `GET /api/runs/{run_id}` 轮询。
 - 工作台批处理手动运行**不推送**；手动运行总是针对最近一个已收盘的交易日（纽约 17:00 后算当天收盘）。
+- 手动批处理（`POST /api/workbench/run` 或任务中心的「立即运行」）有两个 run_id：API 返回、页面轮询用的 runner run_id，与任务外壳（harness）写 `job_reports` 的 run_id。数据库记录一律用 harness 的 run_id。
 
 ## 任务外壳与运行报告
 
-所有任务都经 `tasks/_harness.py` 的 `run_task` 运行：生成 `run_id`，捕获异常为结构化 `status="error"`，写 `job_reports`（`task`、`run_id`、`status`、起止时间、`trigger_source`、`summary`），再交给通知层。`job_reports` 写入时剪掉 30 天前的行。
+所有任务都经 `tasks/_harness.py` 的 `run_task` 运行：生成 `run_id`，捕获异常为结构化 `status="error"`，写 `job_reports`（`task`、`run_id`、`status`、起止时间、`trigger_source`、`summary`），再交给通知层。`job_reports` 写入时剪掉 30 天前的行。`workbench` 任务以 `pass_run_id=True` 让任务函数拿到这个 `run_id` 并传给 `run_batch`，批处理新写的 `data_fetch_runs`、`screen_runs`、`signal_candidates` 行都带同一个 `run_id`，与 `job_reports` 同源；其余任务仍是 `fn()` 无参调用。
 
 「工具 → 运行记录」按任务筛选、每 15 秒刷新；`GET /api/jobs/reports?task=&limit=`（limit 1–200）。页面通过 `GET /api/events`（SSE）免刷新更新。
 
@@ -37,7 +38,7 @@
 
 工作台批处理（定时与手动）在采集阶段按固定顺序（`bars`、`news`、`sec_filings`、`fred`）持有会话级 Postgres advisory lock（键 `hashtext('data_family:<id>')`，专用连接、用完即放），避免与数据菜单的手动拉取同时写同一张数据表；`universe` 只读范围文件，不加锁。锁跨进程有效，命令行运行的批处理同样遵守。
 
-采集阶段结束后（区制阶段之前），每个已记录的数据族向 `data_fetch_runs` 各追加一行（`job = workbench`，`trigger` 为 `scheduled` / `manual_batch`；显式 `tickers`/`pool` 的调用只写 `bars`、`news`、`sec_filings`、`fred` 四行，没有 `universe` 行）。写入在独立事务里，失败（包括迁移 024 未执行）只记在运行报告的 `summary.data_status`，不影响批处理结果。表结构与状态口径见[数据基础设计](../specs/2026-10-26-v2.3-data-foundation-design.md)。
+采集阶段结束后（区制阶段之前），每个已记录的数据族向 `data_fetch_runs` 各追加一行（`job = workbench`，`trigger` 为 `scheduled` / `manual_batch`，记录带该次运行的 `run_id`；显式 `tickers`/`pool` 的调用只写 `bars`、`news`、`sec_filings`、`fred` 四行，没有 `universe` 行）。写入在独立事务里，失败（包括迁移 024 未执行）只记在运行报告的 `summary.data_status`，不影响批处理结果。表结构与状态口径见[数据基础设计](../specs/2026-10-26-v2.3-data-foundation-design.md)。
 
 `filings` 任务（下载器与监控两种模式）结束后同样追加一行 `sec_filings`（`job = filings`，`trigger` 按 `trigger_source` 取 `scheduled` / `manual_batch`），记录带该次运行的 `run_id`。目标按模式取实际采集清单：监控模式是监控观察名单文件（`sec_monitor.watchlist_path` 中「采集=是」的成员；成功时即 `summary.tickers`），下载器模式是 `config.watchlist`，与批处理的「当前池 + 持仓」不同，`detail.targets_source` 如实注明。整次采集失败记一条 `{"target": "*"}` 哨兵（不进 `target_count`）；Discord 投递这类非标的错误记在 `detail.non_target_errors`，不伪造成采集目标。写入失败只记在任务返回值的 `data_status`，不影响任务结果与运行报告；定时路径的返回值字段会被调度器丢弃，因此同时向 stderr 打一行 `[data_fetch_runs] write failed family=sec_filings job=filings trigger=<trigger> error=<脱敏原因>` 作为可检索落点。
 

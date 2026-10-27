@@ -449,11 +449,9 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         summary['timings']['collect'] = round(clock() - t_collect, 1)
 
     if tallies is not None:
-        # Before the regime stage (§6.2). run_id stays NULL: the harness run id never
-        # reaches run_batch, so job + started_at locate the run report.
         collect_finished_at = wall()
         summary['data_status'] = collect.write_runs(
-            [tally.row(trigger=record_trigger, run_id=None, session=session,
+            [tally.row(trigger=record_trigger, run_id=run_id, session=session,
                        started_at=collect_started_at, finished_at=collect_finished_at)
              for tally in tallies.values()])
 

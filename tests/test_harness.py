@@ -60,6 +60,34 @@ def test_run_task_passes_dates_to_dispatch(monkeypatch):
     assert sent == {"target_start_date": date(2026, 7, 3), "target_end_date": date(2026, 7, 3)}
 
 
+def test_run_task_passes_run_id(monkeypatch):
+    received = []
+    recorded = []
+    monkeypatch.setattr(_harness, "_record", lambda **kw: recorded.append(kw))
+    monkeypatch.setattr(_harness, "dispatch", lambda *a, **k: None)
+
+    def fn(run_id):
+        received.append(run_id)
+        return {"n": 1}
+
+    out = _harness.run_task("workbench", fn, config=AssistantConfig(), pass_run_id=True)
+    assert received == [out["run_id"]]              # fn 拿到的与返回值同源
+    assert recorded[0]["run_id"] == out["run_id"]   # 也与写 job_reports 的一致
+
+
+def test_run_task_default_calls_without_args(monkeypatch):
+    received = []
+    monkeypatch.setattr(_harness, "_record", lambda **kw: None)
+    monkeypatch.setattr(_harness, "dispatch", lambda *a, **k: None)
+
+    def fn(*args):
+        received.append(args)
+        return {"n": 1}
+
+    out = _harness.run_task("metrics", fn, config=AssistantConfig())
+    assert received == [()] and out["status"] == "success"
+
+
 def test_record_keeps_db_row_when_run_log_is_not_writable(monkeypatch):
     from datetime import datetime, UTC
 

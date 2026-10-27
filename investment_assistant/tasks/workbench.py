@@ -13,9 +13,10 @@ def run(config: AssistantConfig | None = None, *, trigger_source: str = 'schedul
     effective = config if config is not None else load_config()
     moment = now or datetime.now(UTC)
     # Scheduled runs skip New York holidays; a manual run always targets the latest settled session.
-    def batch() -> dict:
+    def batch(run_id: str) -> dict:
         # The batch reads its tiered pool from the watchlist table; the config watchlist stays for other tasks.
-        summary = service.run_batch(now=moment, deps=deps,
+        # run_id 来自任务外壳，data_fetch_runs / screen_runs / signal_candidates 与 job_reports 同源（v2.4 §6.1）。
+        summary = service.run_batch(now=moment, deps=deps, run_id=run_id,
                                     skip_non_trading=trigger_source == 'scheduled',
                                     record_trigger='scheduled' if trigger_source == 'scheduled'
                                     else 'manual_batch')
@@ -29,4 +30,5 @@ def run(config: AssistantConfig | None = None, *, trigger_source: str = 'schedul
             summary['push'] = service.push(now=moment, force=False, summary=summary, notify_cfg=notify_cfg)
         return summary
 
-    return run_task('workbench', batch, config=effective, trigger_source=trigger_source, notify=False)
+    return run_task('workbench', batch, config=effective, trigger_source=trigger_source, notify=False,
+                    pass_run_id=True)
