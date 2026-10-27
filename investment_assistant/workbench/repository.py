@@ -822,11 +822,12 @@ def fetch_runs_ready(conn) -> bool:
     return conn.execute("SELECT to_regclass('data_fetch_runs')").fetchone()[0] is not None
 
 
-def latest_fetch_runs(conn) -> dict[str, dict[str, Any]]:
-    """The newest run per family: {family: row}."""
+def latest_fetch_runs(conn, *, scope: str | None = None) -> dict[str, dict[str, Any]]:
+    """The newest run per family: {family: row}; ``scope`` ('family' / 'ticker') narrows it."""
+    where, params = ('WHERE scope = %s ', [scope]) if scope is not None else ('', [])
     return {row['family']: row for row in _all(
-        conn, f'SELECT DISTINCT ON (family) {_FETCH_RUN_COLUMNS} FROM data_fetch_runs '
-              'ORDER BY family, created_at DESC, id DESC', [])}
+        conn, f'SELECT DISTINCT ON (family) {_FETCH_RUN_COLUMNS} FROM data_fetch_runs {where}'
+              'ORDER BY family, created_at DESC, id DESC', params)}
 
 
 def fetch_runs(conn, family: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -835,11 +836,13 @@ def fetch_runs(conn, family: str, limit: int = 20) -> list[dict[str, Any]]:
                       'ORDER BY created_at DESC, id DESC LIMIT %s', (family, limit))
 
 
-def last_success_at(conn) -> dict[str, datetime]:
-    """Per family, the finished_at of the newest run that succeeded (status success or partial)."""
+def last_success_at(conn, *, scope: str | None = None) -> dict[str, datetime]:
+    """Per family, the finished_at of the newest run that succeeded (status success or partial);
+    ``scope`` ('family' / 'ticker') narrows it."""
+    where, params = ('AND scope = %s ', [scope]) if scope is not None else ('', [])
     rows = conn.execute("SELECT DISTINCT ON (family) family, finished_at FROM data_fetch_runs "
-                        "WHERE status IN ('success', 'partial') "
-                        'ORDER BY family, finished_at DESC, id DESC').fetchall()
+                        f"WHERE status IN ('success', 'partial') {where}"
+                        'ORDER BY family, finished_at DESC, id DESC', params).fetchall()
     return {row[0]: row[1] for row in rows}
 
 

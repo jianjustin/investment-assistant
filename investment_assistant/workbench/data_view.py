@@ -277,9 +277,31 @@ def _last_run_view(row: dict[str, Any] | None) -> dict[str, Any] | None:
             'failures': (row['failures'] or [])[:5]}
 
 
-def _card(conn, family: families.Family, *, session: date, now: datetime, jobs, latest_runs,
-          success_at, ready: bool) -> dict[str, Any]:
-    """One family's overview card: coverage and freshness computed at read time."""
+def _newer(row: dict[str, Any] | None, than: dict[str, Any] | None) -> bool:
+    """Whether ``row`` was recorded after ``than`` (the table's own newest-first order)."""
+    if row is None:
+        return False
+    return than is None or (row['created_at'], row['id']) > (than['created_at'], than['id'])
+
+
+def _run_facts(conn, ready: bool) -> dict[str, dict[str, Any]]:
+    """The fetch-run facts every card reads: newest family-scope and ticker-scope rows
+    per family, and the newest family-scope success. Empty before migration 024."""
+    if not ready:
+        return {'family': {}, 'ticker': {}, 'success_at': {}}
+    return {'family': repository.latest_fetch_runs(conn, scope='family'),
+            'ticker': repository.latest_fetch_runs(conn, scope='ticker'),
+            'success_at': repository.last_success_at(conn, scope='family')}
+
+
+def _card(conn, family: families.Family, *, session: date, now: datetime, jobs, run_facts,
+          ready: bool) -> dict[str, Any]:
+    """One family's overview card: coverage and freshness computed at read time.
+
+    The fetch-run lines (2026-10-27, after acceptance): ``last_run`` is the newest
+    family-scope run, so a single-ticker probe never stands in for the family; a
+    single-ticker run newer than it shows apart as ``last_ticker_run`` and folds away
+    once a later family run lands; ``last_success_at`` counts family runs only."""
     notes: list[str] = []
     current_error: str | None = None
     if family.id == 'universe':
@@ -306,6 +328,8 @@ def _card(conn, family: families.Family, *, session: date, now: datetime, jobs, 
         if family.id == 'sec_filings':
             notes.append('no_filing_is_not_missing')   # 无申报 ≠ 缺数据
     recorded = 'bars' if family.id == 'atr' else family.id   # atr 从不单独拉取
+    family_run = run_facts['family'].get(recorded)
+    ticker_run = run_facts['ticker'].get(recorded)
     job_row = jobs.get(family.job)
     return {
         'id': family.id, 'title': family.title, 'purpose': family.purpose, 'kind': family.kind,
@@ -314,8 +338,9 @@ def _card(conn, family: families.Family, *, session: date, now: datetime, jobs, 
                  'next_run_at': job_row['next_run_at']} if job_row is not None else None),
         'coverage': coverage, 'latest_at': latest_at,
         'coverage_note': families.COVERAGE_NOTES[family.id],
-        'last_run': _last_run_view(latest_runs.get(recorded)),
-        'last_success_at': success_at.get(recorded),
+        'last_run': _last_run_view(family_run),
+        'last_ticker_run': _last_run_view(ticker_run) if _newer(ticker_run, family_run) else None,
+        'last_success_at': run_facts['success_at'].get(recorded),
         'evidence': (families.EVIDENCE + ' ' + families.ATR_EVIDENCE
                      if family.id == 'atr' else families.EVIDENCE),
         'notes': notes,
@@ -330,10 +355,9 @@ def overview(*, now: datetime) -> dict[str, Any]:
     with _read_tx() as conn:
         jobs = {job['name']: job for job in db.list_scheduled_jobs(conn)}
         ready = repository.fetch_runs_ready(conn)
-        latest_runs = repository.latest_fetch_runs(conn) if ready else {}
-        success_at = repository.last_success_at(conn) if ready else {}
+        run_facts = _run_facts(conn, ready)
         cards = [_card(conn, family, session=session, now=now, jobs=jobs,
-                       latest_runs=latest_runs, success_at=success_at, ready=ready)
+                       run_facts=run_facts, ready=ready)
                  for family in families.FAMILIES]
     return {'session': session, 'evidence': families.EVIDENCE, 'fetch_runs_ready': ready,
             'families': cards}
@@ -397,10 +421,9 @@ def family_detail(family_id: str, *, now: datetime) -> dict[str, Any]:
     with _read_tx() as conn:
         jobs = {job['name']: job for job in db.list_scheduled_jobs(conn)}
         ready = repository.fetch_runs_ready(conn)
-        latest_runs = repository.latest_fetch_runs(conn) if ready else {}
-        success_at = repository.last_success_at(conn) if ready else {}
+        run_facts = _run_facts(conn, ready)
         card = _card(conn, family, session=session, now=now, jobs=jobs,
-                     latest_runs=latest_runs, success_at=success_at, ready=ready)
+                     run_facts=run_facts, ready=ready)
         runs = repository.fetch_runs(conn, recorded, 20) if ready else []
         rows = _detail_rows(conn, family, runs=runs, session=session, now=now)
     return {'card': card, 'runs': runs, 'rows': rows}

@@ -10,7 +10,7 @@ const family = (id: FamilyId): FamilyCard => ({
   id, title: id, purpose: '用途', kind: id === 'atr' ? 'derived' : id === 'universe' ? 'manual' : 'fetched',
   fetch_via: id === 'atr' ? 'bars' : null, per_ticker: ['bars', 'news', 'sec_filings'].includes(id),
   job: null, coverage: { targets: 2, covered: 1, lagging: ['NVDA'] }, latest_at: '2026-10-22',
-  coverage_note: '覆盖说明', last_run: null, last_success_at: null,
+  coverage_note: '覆盖说明', last_run: null, last_ticker_run: null, last_success_at: null,
   evidence: id === 'atr' ? EVIDENCE + ' `plan-1` 的计算输入，规则 `gate_hold`' : EVIDENCE, notes: [],
   current_error: null, fetch_runs_ready: true,
 })

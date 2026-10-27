@@ -46,8 +46,9 @@ export interface FamilyCard {
   coverage: FamilyCoverage
   latest_at: string | null
   coverage_note: string      // one sentence on what this family's coverage counts
-  last_run: LastRun | null
-  last_success_at: string | null
+  last_run: LastRun | null          // the newest family-scope run
+  last_ticker_run: LastRun | null   // a single-ticker run, only when newer than last_run
+  last_success_at: string | null    // family-scope runs only
   evidence: string
   notes: string[]
   current_error: string | null   // e.g. the universe file's current load error

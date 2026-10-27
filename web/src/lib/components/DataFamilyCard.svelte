@@ -5,7 +5,7 @@
   import { fmtBeijing } from '../format'
   import {
     cardNotes, extraEvidence, fetchButtonLabel, fetchTarget, kindLabel, noteText, triggerLabel,
-    type FamilyCard,
+    type FamilyCard, type LastRun,
   } from '../data-families'
 
   // pageEvidence: the banner the page already shows; the card then adds only its own supplement.
@@ -69,26 +69,35 @@
   {#if card.current_error}
     <p class="text-xs text-warn">当前范围文件错误：{card.current_error}</p>
   {/if}
+  <!-- 主行只看全族记录；比它更新的单只拉取另起一行，下一次全族拉取后收起 -->
+  {#snippet runLine(label: string, run: LastRun, single: boolean)}
+    <div aria-label={label} class="space-y-1">
+      <p class="flex flex-wrap items-center gap-1.5 {single ? 'text-xs' : ''}">
+        {label} <StatusPill status={run.status} />
+        {#if single}· <span>{run.ticker}</span>{/if}
+        · <span>{triggerLabel(run.trigger)}</span>
+        · <span>{run.job}</span> · <span>{fmtBeijing(run.finished_at)}</span>
+        · <span>{run.ok_count}/{run.target_count}</span>
+      </p>
+      {#if run.status === 'skipped' && run.reason}
+        <p class="text-xs text-warn">跳过原因：{run.reason}</p>
+      {/if}
+      {#if run.failures.length}
+        <ul class="text-xs text-red-600 space-y-0.5">
+          {#each run.failures as f (f.target + f.reason)}
+            <li>{f.target}：{f.reason}</li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
+  {/snippet}
   {#if card.last_run}
-    {@const run = card.last_run}
-    <p class="flex flex-wrap items-center gap-1.5">
-      最近拉取 <StatusPill status={run.status} />
-      · <span>{triggerLabel(run.trigger)}</span> · <span>{run.scope === 'ticker' ? `单只 ${run.ticker}` : '全族'}</span>
-      · <span>{run.job}</span> · <span>{fmtBeijing(run.finished_at)}</span>
-      · <span>{run.ok_count}/{run.target_count}</span>
-    </p>
-    {#if run.status === 'skipped' && run.reason}
-      <p class="text-xs text-warn">跳过原因：{run.reason}</p>
-    {/if}
-    {#if run.failures.length}
-      <ul class="text-xs text-red-600 space-y-0.5">
-        {#each run.failures as f (f.target + f.reason)}
-          <li>{f.target}：{f.reason}</li>
-        {/each}
-      </ul>
-    {/if}
+    {@render runLine('最近全族拉取', card.last_run, false)}
   {:else}
-    <p class="text-xs text-muted">最近拉取 无记录</p>
+    <p class="text-xs text-muted">最近全族拉取 无记录</p>
+  {/if}
+  {#if card.last_ticker_run}
+    {@render runLine('最近单只拉取', card.last_ticker_run, true)}
   {/if}
   {#if card.last_success_at}
     <p class="text-xs text-muted">最近成功 {fmtBeijing(card.last_success_at)}</p>

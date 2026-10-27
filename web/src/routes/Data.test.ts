@@ -20,7 +20,7 @@ const card = (id: FamilyId, overrides: Partial<FamilyCard> = {}): FamilyCard => 
   fetch_via: id === 'atr' ? 'bars' : null,
   per_ticker: ['bars', 'sec_filings', 'news'].includes(id),
   job: job(), coverage: { targets: 10, covered: 10, lagging: [] },
-  latest_at: '2026-10-22', coverage_note: '覆盖说明', last_run: null, last_success_at: null,
+  latest_at: '2026-10-22', coverage_note: '覆盖说明', last_run: null, last_ticker_run: null, last_success_at: null,
   evidence: id === 'atr' ? EVIDENCE + ' `plan-1` 的计算输入，规则 `gate_hold`' : EVIDENCE, notes: [],
   current_error: null, fetch_runs_ready: true,
   ...overrides,
@@ -112,6 +112,50 @@ describe('Data 总览', () => {
     expect(screen.getByText(fmtBeijing('2026-10-22T08:00:00+00:00'))).toBeTruthy()
     expect(screen.getByText('手动批处理')).toBeTruthy()
     expect(screen.getByText('3/5')).toBeTruthy()
+  })
+
+  it('keeps the family run as the main line and a newer single-ticker run apart', async () => {
+    vi.mocked(api.getDataFamilies).mockResolvedValue(overview(six({
+      bars: {
+        last_run: {
+          status: 'success', trigger: 'scheduled', scope: 'family', ticker: null,
+          job: 'workbench', reason: null, finished_at: '2026-10-22T06:40:00+00:00',
+          ok_count: 106, target_count: 106, failures: [],
+        },
+        last_ticker_run: {
+          status: 'failed', trigger: 'manual_family', scope: 'ticker', ticker: 'ZZZZ',
+          job: 'workbench', reason: null, finished_at: '2026-10-22T08:00:00+00:00',
+          ok_count: 0, target_count: 1, failures: [{ target: 'ZZZZ', reason: '连接中断' }],
+        },
+      },
+    })))
+    render(Data)
+    const card = await screen.findByRole('article', { name: '日线' })
+    const main = within(card).getByLabelText('最近全族拉取')
+    expect(main).toHaveTextContent('success')
+    expect(main).toHaveTextContent('106/106')
+    expect(main).not.toHaveTextContent('ZZZZ')
+    const single = within(card).getByLabelText('最近单只拉取')
+    expect(single).toHaveTextContent('failed')
+    expect(single).toHaveTextContent('ZZZZ')
+    expect(single).toHaveTextContent(fmtBeijing('2026-10-22T08:00:00+00:00'))
+    expect(within(card).getByText(/ZZZZ：连接中断/)).toBeTruthy()
+  })
+
+  it('has no single-ticker line without a newer single-ticker run', async () => {
+    vi.mocked(api.getDataFamilies).mockResolvedValue(overview(six({
+      bars: {
+        last_run: {
+          status: 'success', trigger: 'scheduled', scope: 'family', ticker: null,
+          job: 'workbench', reason: null, finished_at: '2026-10-22T06:40:00+00:00',
+          ok_count: 106, target_count: 106, failures: [],
+        },
+      },
+    })))
+    render(Data)
+    const card = await screen.findByRole('article', { name: '日线' })
+    expect(within(card).getByLabelText('最近全族拉取')).toHaveTextContent('success')
+    expect(within(card).queryByLabelText('最近单只拉取')).toBeNull()
   })
 
   it('shows the skipped reason and the actual job path of the last run', async () => {

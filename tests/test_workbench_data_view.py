@@ -21,8 +21,8 @@ SESSION = date(2026, 10, 22)                         # Thursday
 NOW = datetime(2026, 10, 22, 22, 30, tzinfo=UTC)     # 18:30 New York
 
 CARD_KEYS = {'id', 'title', 'purpose', 'kind', 'fetch_via', 'per_ticker', 'job', 'coverage',
-             'latest_at', 'coverage_note', 'last_run', 'last_success_at', 'evidence', 'notes',
-             'current_error', 'fetch_runs_ready'}
+             'latest_at', 'coverage_note', 'last_run', 'last_ticker_run', 'last_success_at',
+             'evidence', 'notes', 'current_error', 'fetch_runs_ready'}
 BUSINESS_TABLES = repository.WORKBENCH_TABLES + ('data_fetch_runs',)
 
 
@@ -86,6 +86,7 @@ def test_overview_has_six_cards_and_evidence(db):
     assert cards['atr']['last_run'] == bars_card['last_run']      # ATR 取 bars 的拉取记录
     assert cards['atr']['last_success_at'] == bars_card['last_success_at']
     assert cards['news']['last_run'] is None
+    assert bars_card['last_ticker_run'] is None
 
     loaded = universe_module.load()
     assert cards['universe']['coverage'] == {'targets': len(loaded.tickers),
@@ -107,6 +108,54 @@ def test_card_uses_latest_run(db):
     assert card['last_success_at'] == success_at
 
 
+def test_card_keeps_family_run_and_shows_newer_ticker_run_apart(db):
+    """2026-10-27 (after acceptance): a single-ticker probe must not stand in for the
+    family. last_run is the newest family-scope row; a newer ticker row shows on its
+    own line; last_success_at counts family rows only."""
+    family_at, ok_ticker_at, bad_ticker_at = (NOW + timedelta(hours=h) for h in (1, 2, 3))
+    _run(db, run_id='fam', finished_at=family_at)
+    _run(db, run_id='mu', scope='ticker', ticker='MU', target_count=1, ok_count=1,
+         finished_at=ok_ticker_at)
+    _run(db, run_id='bad', scope='ticker', ticker='ZZZZ', status='failed', target_count=1,
+         ok_count=0, finished_at=bad_ticker_at,
+         failures=[{'target': 'ZZZZ', 'reason': f'boom {i}'} for i in range(7)])
+    db.commit()
+
+    cards = {card['id']: card for card in data_view.overview(now=NOW)['families']}
+    bars_card = cards['bars']
+    assert bars_card['last_run']['scope'] == 'family' and bars_card['last_run']['finished_at'] == family_at
+    ticker_run = bars_card['last_ticker_run']
+    assert ticker_run['ticker'] == 'ZZZZ' and ticker_run['status'] == 'failed'
+    assert ticker_run['finished_at'] == bad_ticker_at and len(ticker_run['failures']) == 5
+    assert bars_card['last_success_at'] == family_at          # MU 单只成功不算整族成功
+    assert cards['atr']['last_ticker_run'] == ticker_run      # ATR 跟随日线
+
+    detail = data_view.family_detail('bars', now=NOW)
+    assert detail['card']['last_ticker_run'] == ticker_run
+    assert [run['run_id'] for run in detail['runs']] == ['bad', 'mu', 'fam']   # 记录表不变
+
+
+def test_ticker_run_older_than_family_run_is_hidden(db):
+    _run(db, run_id='bad', scope='ticker', ticker='ZZZZ', status='failed', target_count=1,
+         ok_count=0, finished_at=NOW + timedelta(hours=1),
+         failures=[{'target': 'ZZZZ', 'reason': 'boom'}])
+    _run(db, run_id='fam', finished_at=NOW + timedelta(hours=2))   # 之后的批处理收起旧试探
+    db.commit()
+
+    bars_card = data_view.overview(now=NOW)['families'][0]
+    assert bars_card['last_run']['finished_at'] == NOW + timedelta(hours=2)
+    assert bars_card['last_ticker_run'] is None
+
+
+def test_only_ticker_runs_leave_family_run_empty(db):
+    _run(db, run_id='mu', scope='ticker', ticker='MU', target_count=1, ok_count=1)
+    db.commit()
+
+    bars_card = data_view.overview(now=NOW)['families'][0]
+    assert bars_card['last_run'] is None and bars_card['last_success_at'] is None
+    assert bars_card['last_ticker_run']['ticker'] == 'MU'
+
+
 def test_overview_without_fetch_runs_table(db):
     _bar(db)
     db.execute('DROP TABLE data_fetch_runs')
@@ -116,6 +165,7 @@ def test_overview_without_fetch_runs_table(db):
     assert out['fetch_runs_ready'] is False
     for card in out['families']:
         assert card['last_run'] is None and card['last_success_at'] is None
+        assert card['last_ticker_run'] is None
     bars_card = next(card for card in out['families'] if card['id'] == 'bars')
     assert bars_card['coverage']['targets'] == len(families.targets(db, 'bars')[0])
     assert bars_card['coverage']['covered'] == 1

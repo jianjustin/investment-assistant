@@ -40,6 +40,7 @@
 
 **保留的偏差与限制**（已在 [CHANGELOG](../../CHANGELOG.md) 与[功能文档](../features/data-menu.md#已知限制)披露，不阻断 `engineering_done`）：
 
+- 卡片「最近拉取」主行只取最新全族记录（spec §8 为最新一行），比它更新的单只拉取另列 `last_ticker_run`，`last_success_at` 只算全族记录（2026-10-27 用户决定）。
 - 批处理记录 `run_id` 为空；单族手动拉取带 runner `run_id`、不写 `job_reports`。
 - 范围加载失败记录的目标是 `nasdaq100`（照 plan Task 5），不是 spec §5.1 整族失败约定的 `*`；目标就是范围文件本身（分母 1），失败时状态同样是 `failed`。
 - `filings` 任务的目标按模式取实际采集清单：监控模式是 `sec_monitor.watchlist_path`，下载器模式是 `config.watchlist`，均与批处理的「当前池 + 持仓」不同。
