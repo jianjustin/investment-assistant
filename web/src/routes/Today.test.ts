@@ -41,7 +41,10 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => { calls.push({ url: String(url), init }); return respond(String(url), init) }))
   vi.stubGlobal('crypto', { randomUUID: vi.fn().mockReturnValueOnce('req-1').mockReturnValueOnce('req-2') })
 })
-afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+afterEach(() => {
+  vi.unstubAllGlobals(); vi.restoreAllMocks()
+  try { localStorage.removeItem('workbench.today.layout') } catch { /* storage unavailable */ }
+})
 
 it('shows candidates, cited brief and undated news without inventing times', async () => {
   render(Today)
@@ -356,8 +359,7 @@ describe('agent track', () => {
   it('rejected agent shows reason and rerun button', async () => {
     respond = todayWith([unit({ agent: agentRejected })])
     render(Today)
-    expect(await screen.findByText('Agent 未给出建议')).toBeInTheDocument()
-    expect(screen.getByText('引用无效已作废')).toBeInTheDocument()
+    expect(await screen.findByText('Agent 未给出计划：引用无效已作废')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '重新运行 Agent' })).toBeInTheDocument()
   })
 
@@ -381,19 +383,19 @@ describe('agent track', () => {
       output: { summary: '趋势不明' }, counter: null, plan: null, input_tokens: 5, output_tokens: 5,
       created_at: 'c' } })])
     const { unmount } = render(Today)
-    expect((await screen.findByLabelText(/Agent 建议/) as HTMLInputElement).disabled).toBe(true)
+    expect((await screen.findByRole('radio', { name: /Agent 计划/ }) as HTMLInputElement).disabled).toBe(true)
     unmount()
 
     respond = todayWith([unit({ plan: plan(), agent: agentOk() })])
     render(Today)
-    expect((await screen.findByLabelText(/Agent 建议/) as HTMLInputElement).disabled).toBe(false)
+    expect((await screen.findByRole('radio', { name: /Agent 计划/ }) as HTMLInputElement).disabled).toBe(false)
   })
 
   it('rule invalid and agent ok defaults basis to agent', async () => {
     respond = todayWith([unit({ plan: plan({ status: 'invalid', invalid_reasons: ['earnings_in_validity'] }),
                                agent: agentOk() })])
     render(Today)
-    expect((await screen.findByLabelText(/Agent 建议/) as HTMLInputElement).checked).toBe(true)
+    expect((await screen.findByRole('radio', { name: /Agent 计划/ }) as HTMLInputElement).checked).toBe(true)
     await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '按 Agent 建议执行' } })
     await fireEvent.click(screen.getByRole('button', { name: '提交决定' }))
     await waitFor(() => {
@@ -405,7 +407,7 @@ describe('agent track', () => {
   it('missing rule plan and agent ok defaults basis to agent and locks rule', async () => {
     respond = todayWith([unit({ plan: null, agent: agentOk() })])
     render(Today)
-    expect((await screen.findByLabelText(/Agent 建议/) as HTMLInputElement).checked).toBe(true)
+    expect((await screen.findByRole('radio', { name: /Agent 计划/ }) as HTMLInputElement).checked).toBe(true)
     expect((screen.getByLabelText(/规则计划/) as HTMLInputElement).disabled).toBe(true)
     await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '规则计划缺失，按 Agent 执行' } })
     await fireEvent.click(screen.getByRole('button', { name: '提交决定' }))
@@ -421,7 +423,7 @@ describe('agent track', () => {
     render(Today)
     expect((await screen.findByLabelText(/自定价位/) as HTMLInputElement).checked).toBe(true)
     expect((screen.getByLabelText(/规则计划/) as HTMLInputElement).disabled).toBe(true)
-    expect((screen.getByLabelText(/Agent 建议/) as HTMLInputElement).disabled).toBe(true)
+    expect((screen.getByRole('radio', { name: /Agent 计划/ }) as HTMLInputElement).disabled).toBe(true)
     expect(screen.getByLabelText('入场下限')).toBeInTheDocument()
   })
 
@@ -631,5 +633,257 @@ describe('今日 · 筛选卡片', () => {
     render(Today)
     expect(await screen.findByText('筛选未运行：benchmark_missing')).toBeInTheDocument()
     expect(screen.getByText(/沿用成员 20 只/)).toBeInTheDocument()
+  })
+})
+
+
+// --- v2.5 agent-first Today (spec §10.1, §10.2, §11, §13) ---
+
+it('collapses an agent-2 brief to a pointer line too', async () => {
+  respond = async () => json({ session: '2026-10-22', units: [unit({
+    brief: { id: 'b1', status: 'ok', prompt_version: 'agent-2', model: 'glm-5.3',
+             output: { summary: '回踩修复后放量上行', support: [], contra: [{ text: '量能来自指数调仓', refs: ['call:5'] }],
+                       conflicts: [] } } })], holdings: [] })
+  render(Today)
+  expect(await screen.findByText('解读见 Agent 建议')).toBeInTheDocument()
+  expect(screen.queryByText('回踩修复后放量上行')).not.toBeInTheDocument()
+  expect(screen.queryByText(/量能来自指数调仓/)).not.toBeInTheDocument()
+})
+
+describe('agent-first layout', () => {
+  const agentPlan2 = (overrides: Record<string, unknown> = {}) => ({
+    id: 'ap2', ticker: 'NVDA', signal_date: '2026-10-22', kind: 'agent', plan_version: 'agent-2', status: 'ok',
+    entry_low: '98.50', entry_high: '101.50', stop: '96.00', target1: '108.00', ref_price: '100.00', atr: '2.00',
+    valid_from: '2026-10-23', valid_until: '2026-10-27',
+    sizing: { status: 'sized', shares: 120, risk_amount: '1000.00', snapshot_as_of: '2026-10-20' },
+    invalid_reasons: [], warnings: [], ...overrides,
+  })
+  const chain = (overrides: Record<string, unknown> = {}) => ({
+    version_no: 1, head_plan_id: 'ap2', state: 'entry', mode: 'entry', basis: '尚未决定',
+    latest_review: null, ...overrides,
+  })
+  const agent2 = (overrides: Record<string, unknown> = {}) => ({
+    id: 'r2', status: 'ok', model: 'glm-5.3', agent_version: 'agent-2',
+    output: { action: 'buy', summary: '回踩修复放量',
+              levels: { entry_low: { value: '98.50', refs: ['call:1'] }, entry_high: { value: '101.50', refs: ['call:1'] },
+                        stop: { value: '96.00', refs: ['call:1'] }, target1: { value: '108.00', refs: ['call:1'] } },
+              thesis: [{ id: 'T1', text: '放量突破 20 日线', refs: ['call:1'] }],
+              invalidation: [{ kind: 'close_below', params: { price: '95.00' }, text: '收盘跌破 95.00', refs: ['call:1'] }],
+              review_when: [] },
+    counter: { status: 'ok', counter: [], risks: [], dropped: 0, uncountered: [1] },
+    plan: agentPlan2(), input_tokens: 40, output_tokens: 20, created_at: '2026-10-22T23:00:00Z',
+    chain: chain(), ...overrides,
+  })
+  const today = (units: any[], extra: Record<string, unknown> = {}) =>
+    async () => json({ session: '2026-10-22', units, extended_units: [], holdings: [], timeline_ready: true,
+                       chains: [], ...extra })
+  const agentBlock = () => screen.getByRole('region', { name: 'Agent 计划' })
+  const baseline = () => screen.getByTestId('rule-baseline')
+  const before = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+  const FULL_RULE = /入场区间 98\.5–101\.5 · 止损 94 · T1 112/
+
+  it('agent block renders before rule baseline', async () => {
+    respond = today([unit({ plan: plan(), agent: agent2() })])
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    expect(before(agentBlock(), baseline())).toBe(true)
+    expect(agentBlock()).toHaveTextContent('Agent 计划 · 第 1 版')
+  })
+
+  it('rule baseline folded to one line and expands', async () => {
+    respond = today([unit({ plan: plan(), agent: agent2() })])
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    expect(baseline()).toHaveTextContent('规则基线 plan-1：入场 98.5–101.5 · 止损 94 · T1 112 · 建议 166 股（有效）')
+    expect(screen.queryByText(FULL_RULE)).toBeNull()
+    await fireEvent.click(screen.getByRole('button', { name: '展开' }))
+    expect(screen.getByText(FULL_RULE)).toBeInTheDocument()
+    await fireEvent.click(screen.getByRole('button', { name: '收起' }))
+    expect(screen.queryByText(FULL_RULE)).toBeNull()
+  })
+
+  it('baseline auto-expands when agent failed, passed or invalidated', async () => {
+    const cases = [
+      { id: 'r3', status: 'error', reason: 'model_error', created_at: '2026-10-22T23:00:00Z' },
+      agent2({ status: 'pass', plan: null, output: { action: 'pass', summary: '趋势不明', levels: null, thesis: [] } }),
+      agent2({ chain: chain({ state: 'invalidated', latest_review: { outcome: 'invalidate', decided_by: 'host',
+        reason: '失效条件成立：收盘跌破 95.00', created_at: '2026-10-23T22:40:00Z', new_plan_id: null,
+        revision_status: null } }) }),
+    ]
+    const texts = ['Agent 未给出计划：模型调用失败', 'Agent 不建议买入：趋势不明',
+                   'Agent 已作废此计划（第 1 版）：失效条件成立：收盘跌破 95.00']
+    for (const [i, agent] of cases.entries()) {
+      respond = today([unit({ plan: plan(), agent })])
+      const { unmount } = render(Today)
+      expect(await screen.findByText(texts[i])).toBeInTheDocument()
+      expect(screen.getByText(FULL_RULE)).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: '展开' })).toBeNull()
+      expect(screen.queryByRole('button', { name: '收起' })).toBeNull()
+      unmount()
+    }
+  })
+
+  it('layout toggle switches to legacy order and persists', async () => {
+    respond = today([unit({ plan: plan(), agent: agent2() })])
+    const first = render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    expect(screen.getByRole('button', { name: 'Agent 优先' })).toHaveAttribute('aria-pressed', 'true')
+    await fireEvent.click(screen.getByRole('button', { name: '规则优先（旧）' }))
+    expect(before(baseline(), agentBlock())).toBe(true)
+    expect(screen.getByText(FULL_RULE)).toBeInTheDocument()            // 旧布局都不折叠
+    expect(screen.queryByRole('button', { name: '展开' })).toBeNull()
+    expect(localStorage.getItem('workbench.today.layout')).toBe('legacy')
+    first.unmount()
+
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    expect(screen.getByRole('button', { name: '规则优先（旧）' })).toHaveAttribute('aria-pressed', 'true')
+    expect(before(baseline(), agentBlock())).toBe(true)
+  })
+
+  it('layout falls back to agent_first when localStorage throws', async () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => { throw new Error('denied') }, setItem: () => { throw new Error('denied') },
+      removeItem: () => { throw new Error('denied') },
+    })
+    respond = today([unit({ plan: plan(), agent: agent2() })])
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    expect(before(agentBlock(), baseline())).toBe(true)
+    await fireEvent.click(screen.getByRole('button', { name: '规则优先（旧）' }))   // 写失败也照样切换
+    expect(before(baseline(), agentBlock())).toBe(true)
+  })
+
+  it('basis defaults to agent and lists Agent 计划（第 n 版） first', async () => {
+    respond = today([unit({ plan: plan(), agent: agent2() })])
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    const fieldset = screen.getByRole('group', { name: '执行依据' })
+    const labels = [...fieldset.querySelectorAll('label')].map(l => l.textContent?.trim())
+    expect(labels).toEqual(['Agent 计划（第 1 版）', '规则计划', '自定价位'])
+    expect((screen.getByLabelText('Agent 计划（第 1 版）') as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('decision payload carries agent_plan_id and review_view.baseline_expanded', async () => {
+    respond = today([unit({ plan: plan(), agent: agent2() })])
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    await fireEvent.click(screen.getByRole('button', { name: '展开' }))
+    await fireEvent.click(screen.getByRole('button', { name: '收起' }))     // 展开过即记 true
+    await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '按 Agent 计划' } })
+    respond = async (url) => url.includes('/decisions')
+      ? json({ status: 'created', record: { id: 'd1' } })
+      : json({ session: '2026-10-22', units: [], holdings: [] })
+    await fireEvent.click(screen.getByRole('button', { name: '提交决定' }))
+    await waitFor(() => expect(calls.some(c => c.url.includes('/decisions'))).toBe(true))
+    const body = JSON.parse(String(calls.find(c => c.url.includes('/decisions'))!.init!.body))
+    expect(body.plan_id).toBe('ap2')
+    expect(body.agent_plan_id).toBe('ap2')
+    expect(body.review_view).toEqual({ layout: 'agent_first', baseline_expanded: true, agent_version_no: 1 })
+  })
+
+  it('reports baseline_expanded false when the folded baseline was never opened', async () => {
+    respond = today([unit({ plan: plan(), agent: agent2() })])
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '按 Agent 计划' } })
+    respond = async (url) => url.includes('/decisions')
+      ? json({ status: 'created', record: { id: 'd1' } }) : json({ session: '2026-10-22', units: [], holdings: [] })
+    await fireEvent.click(screen.getByRole('button', { name: '提交决定' }))
+    await waitFor(() => expect(calls.some(c => c.url.includes('/decisions'))).toBe(true))
+    const body = JSON.parse(String(calls.find(c => c.url.includes('/decisions'))!.init!.body))
+    expect(body.review_view).toEqual({ layout: 'agent_first', baseline_expanded: false, agent_version_no: 1 })
+  })
+
+  it('omits agent_plan_id and review_view when migration 026 is missing', async () => {
+    respond = today([unit({ plan: plan(), agent: agent2() })], { timeline_ready: false })
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '按规则' } })
+    respond = async (url) => url.includes('/decisions')
+      ? json({ status: 'created', record: { id: 'd1' } }) : json({ session: '2026-10-22', units: [], holdings: [] })
+    await fireEvent.click(screen.getByRole('button', { name: '提交决定' }))
+    await waitFor(() => expect(calls.some(c => c.url.includes('/decisions'))).toBe(true))
+    const body = JSON.parse(String(calls.find(c => c.url.includes('/decisions'))!.init!.body))
+    expect('agent_plan_id' in body).toBe(false)
+    expect('review_view' in body).toBe(false)
+  })
+
+  it('409 agent_plan_stale shows message and refresh', async () => {
+    respond = today([unit({ plan: plan(), agent: agent2() })])
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '按 Agent 计划' } })
+    respond = async (url) => url.includes('/decisions')
+      ? json({ error: 'agent_plan_stale: Agent 计划已更新到第 2 版，请刷新后再决定' }, 409)
+      : await today([unit({ plan: plan(), agent: agent2({ chain: chain({ version_no: 2, head_plan_id: 'ap3' }),
+                                                          plan: agentPlan2({ id: 'ap3' }) }) })])()
+    await fireEvent.click(screen.getByRole('button', { name: '提交决定' }))
+    expect(await screen.findByText('Agent 计划已更新到第 2 版，请刷新后再决定')).toBeInTheDocument()
+    expect((screen.getByLabelText('理由') as HTMLTextAreaElement).value).toBe('按 Agent 计划')
+    const before = calls.filter(c => c.url === '/api/workbench/today').length
+    await fireEvent.click(screen.getByRole('button', { name: '刷新' }))
+    await waitFor(() => expect(calls.filter(c => c.url === '/api/workbench/today').length).toBe(before + 1))
+    expect(await screen.findByText(/Agent 计划 · 第 2 版/)).toBeInTheDocument()
+    expect((screen.getByLabelText('理由') as HTMLTextAreaElement).value).toBe('按 Agent 计划')
+  })
+
+  it('进行中的 Agent 计划 lists chains with recheck', async () => {
+    const chains = [
+      { ticker: 'AMD', signal_date: '2026-10-20', state: 'holding', mode: 'holding', basis: '持仓中', version_no: 2,
+        head_plan_id: 'hp-amd', valid_until: '2026-10-27', pool: 'core',
+        latest_review: { outcome: 'revise', decided_by: 'agent', created_at: '2026-10-21T22:40:00Z',
+                         reason: '财报提前，止损上移' },
+        signals_today: ['t1_touched', 'user_input'] },
+      { ticker: 'ARM', signal_date: '2026-10-21', state: 'entry', mode: 'entry', basis: '已决定买入', version_no: 0,
+        head_plan_id: 'hp-arm', valid_until: '2026-10-24', pool: 'core', latest_review: null, signals_today: [] },
+    ]
+    respond = async (url, init) => {
+      if (url.endsWith('/recheck') && init?.method === 'POST')
+        return url.includes('/ARM/') ? json({ error: 'review_in_progress' }, 409)
+          : json({ run_id: 'plan_recheck-1', status: 'pending' })
+      if (url.startsWith('/api/runs/')) return json({ run_id: 'plan_recheck-1', status: 'done',
+                                                      result: { outcome: 'maintain', decided_by: 'agent' } })
+      return await today([], { chains })()
+    }
+    render(Today)
+    const section = await screen.findByRole('region', { name: '进行中的 Agent 计划' })
+    const rows = section.querySelectorAll('li')
+    expect(rows[0]).toHaveTextContent('AMD · 持仓期 · 第 2 版')
+    expect(rows[0]).toHaveTextContent('修订 · Agent')
+    expect(rows[0]).toHaveTextContent('财报提前，止损上移')
+    expect(rows[0]).toHaveTextContent('触及 T1、新的用户输入')
+    expect(rows[1]).toHaveTextContent('ARM · 入场期 · 第 0 版')
+    expect(rows[1]).toHaveTextContent('尚未复查')
+    expect(rows[0].querySelector('a')!.getAttribute('href')).toBe('#plan/hp-amd')
+    const buttons = screen.getAllByRole('button', { name: '重新复查' })
+    await fireEvent.click(buttons[0])
+    expect(await screen.findByText('复查完成：维持')).toBeInTheDocument()
+    expect(calls.some(c => c.url === '/api/workbench/chains/AMD/2026-10-20/recheck' && c.init?.method === 'POST')).toBe(true)
+    await fireEvent.click(screen.getAllByRole('button', { name: '重新复查' })[1])
+    expect(await screen.findByText('不能重新复查：正在复查')).toBeInTheDocument()
+  })
+
+  it('holding without chain shows note', async () => {
+    respond = today([], { holdings: [holding({ has_chain: false }), holding({ ticker: 'AMD', has_chain: true })] })
+    render(Today)
+    await screen.findByText(/持仓止损/)
+    const items = [...document.querySelectorAll('li')].map(li => li.textContent ?? '')
+    expect(items.find(t => t.includes('NVDA'))).toContain('此持仓无 Agent 计划，不参与复查')
+    expect(items.find(t => t.includes('AMD'))).not.toContain('此持仓无 Agent 计划')
+  })
+
+  it('hides review controls when migration 026 is missing', async () => {
+    const chains = [{ ticker: 'AMD', signal_date: '2026-10-20', state: 'holding', mode: 'holding', basis: '持仓中',
+                      version_no: 0, head_plan_id: 'hp', valid_until: '2026-10-27', pool: 'core',
+                      latest_review: null, signals_today: [] }]
+    respond = today([unit({ plan: plan() })], { timeline_ready: false, chains,
+                                                holdings: [holding({ has_chain: false })] })
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    expect(screen.queryByRole('region', { name: '进行中的 Agent 计划' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '重新复查' })).toBeNull()
+    expect(screen.queryByText(/此持仓无 Agent 计划/)).toBeNull()
+    expect(screen.getByText(FULL_RULE)).toBeInTheDocument()
   })
 })

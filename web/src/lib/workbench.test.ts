@@ -126,7 +126,30 @@ describe('agent track', () => {
     const { AGENT_REASON_TEXT } = await import('./workbench')
     expect(Object.keys(AGENT_REASON_TEXT).sort()).toEqual(['checkpoint_unavailable', 'disabled',
       'invalid_citation', 'level_check', 'malformed', 'max_attempts', 'model_error', 'not_configured',
-      'quota_exhausted', 'stage_budget', 'token_budget', 'tool_rounds_exceeded'].sort())
+      'quota_exhausted', 'stage_budget', 'token_budget', 'tool_rounds_exceeded',
+      // v2.5 §4.4 + D23 (same as backend agent.REASON_TEXT)
+      'thesis_count', 'invalid_condition', 'changes_mismatch', 'no_change', 'review_malformed',
+      'migration_026_missing', 'review_in_progress', 'plan_invalid'].sort())
+  })
+
+  it('AGENT_REASON_TEXT carries the v2.5 reasons verbatim', async () => {
+    const { AGENT_REASON_TEXT } = await import('./workbench')
+    expect(AGENT_REASON_TEXT).toMatchObject({
+      thesis_count: '论点数量不符', invalid_condition: '失效或复查条件无效',
+      changes_mismatch: '变化说明与实际差异不符', no_change: '修订与上版没有差异',
+      review_malformed: '复查输出格式无效', migration_026_missing: '迁移 026 未执行',
+      review_in_progress: '正在复查', plan_invalid: '修订版按规则作废',
+    })
+  })
+
+  it('decision payload carries agent_plan_id and review_view when given', async () => {
+    const { decisionPayload } = await import('./workbench')
+    const view = { layout: 'agent_first' as const, baseline_expanded: true, agent_version_no: 2 }
+    expect(decisionPayload(unit as any, 'reject', 'r', 'req', null, 'rule', 'head-2', view)).toMatchObject({
+      agent_plan_id: 'head-2', review_view: view, plan_id: null })
+    const bare = decisionPayload(unit as any, 'reject', 'r', 'req')
+    expect('agent_plan_id' in bare).toBe(false)
+    expect('review_view' in bare).toBe(false)
   })
 
   it('agent basis submits agent plan id', async () => {

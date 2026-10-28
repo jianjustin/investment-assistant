@@ -1,4 +1,5 @@
 /** US workbench API client and pure helpers (design 2026-10-23). */
+import type { AgentView, ChainRow, Change, Condition } from './timeline'
 
 export type Action = 'buy' | 'sell' | 'watch'
 export type FinalAction = Action | 'ignore'
@@ -37,6 +38,7 @@ export interface Holding {
   stop: number | null; mode: string | null; t1_reached: boolean; target1: number | null
   last_close: number | null; to_stop_pct: number | null; to_target_pct: number | null
   next_earnings: string | null
+  has_chain?: boolean            // v2.5: the ticker has a holding agent-2 chain
 }
 export interface Snapshot {
   id: string; request_id: string; as_of: string; equity: number; note: string | null
@@ -60,16 +62,22 @@ export interface PlanShadow {
   status: string; outcome: PlanShadowOutcome
 }
 export interface PlanShadowView { session: string; since: string; calc_version: string; plans: PlanShadow[] }
-export interface AgentItem { text: string; refs: string[] }
+export interface AgentItem { text: string; refs: string[]; id?: string }
 export interface AgentOutput {
   action: 'buy' | 'pass'; summary: string
   levels: Record<'entry_low' | 'entry_high' | 'stop' | 'target1', { value: string; refs: string[] }> | null
   thesis: AgentItem[]
+  // agent-2 (v2.5 §4.1)
+  invalidation?: Condition[]; review_when?: Condition[]; changes?: Change[]
+}
+export interface AgentCounter {
+  status: string; risks: AgentItem[]; dropped: number
+  counter?: { thesis: number; text: string; refs: string[] }[]; uncountered?: number[]   // agent-2
 }
 export interface AgentRunOk {
   id: string; status: 'ok' | 'pass'; model: string; agent_version: string
   output: AgentOutput | null
-  counter: { status: string; risks: AgentItem[]; dropped: number } | null
+  counter: AgentCounter | null
   plan: Plan | null; input_tokens: number; output_tokens: number; created_at: string
 }
 export interface AgentRunFailed {
@@ -149,7 +157,7 @@ export interface Unit {
   rule_ids: string[]; entry_passed: boolean; holding: boolean; source?: 'watchlist' | 'screen' | null
   candidates: Candidate[]; brief: Brief | null; filings: Filing[]; news: NewsItem[]; position: Position | null
   plan: Plan | null
-  agent: AgentRun | null
+  agent: AgentView | null
 }
 export interface ScreenTrigger {
   ticker: string; rule_ids: string[]; rs: number | null
@@ -169,6 +177,7 @@ export interface ScreenReport {
 export interface TodayView {
   session: string; units: Unit[]; extended_units: ExtendedUnit[]; holdings: Holding[]
   market: MarketContext | null; screen: ScreenReport | null
+  chains?: ChainRow[]; timeline_ready?: boolean     // v2.5 §10.2; false = migration 026 missing
 }
 export interface Decision {
   id: string; ticker: string; signal_date: string; proposed_action: Action; final_action: FinalAction
@@ -201,7 +210,7 @@ export class WorkbenchError extends Error {
   constructor(message: string, public status: number) { super(message) }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, {
     cache: 'no-store', ...init,
     headers: { Accept: 'application/json', ...(init?.body ? { 'Content-Type': 'application/json' } : {}) },
@@ -258,6 +267,8 @@ export function finalAction(proposed: Action, choice: Choice): FinalAction {
 
 export interface OwnPlanInput { entry_low: string; entry_high: string; stop: string; target1: string }
 export type Basis = 'rule' | 'own' | 'agent'
+/** What the page showed when deciding (v2.5 §9.3); acceptance stats only. */
+export interface ReviewView { layout: 'agent_first' | 'legacy'; baseline_expanded: boolean; agent_version_no: number | null }
 
 export function levelsError(input: OwnPlanInput): string | null {
   const [low, high, stop, target1] = [input.entry_low, input.entry_high, input.stop, input.target1].map(Number)
@@ -268,7 +279,8 @@ export function levelsError(input: OwnPlanInput): string | null {
 
 export function decisionPayload(unit: Unit, choice: Choice, reason: string, requestId: string,
                                 ownPlan: ({ request_id: string } & OwnPlanInput) | null = null,
-                                basis: Basis = 'rule') {
+                                basis: Basis = 'rule', agentPlanId: string | null = null,
+                                reviewView: ReviewView | null = null) {
   const agent = unit.agent
   const agentPlan = agent && 'plan' in agent ? agent.plan : null
   const planId = choice === 'accept' && !ownPlan
@@ -283,6 +295,9 @@ export function decisionPayload(unit: Unit, choice: Choice, reason: string, requ
     decision: choice, reason: reason.trim(),
     plan_id: planId,
     own_plan: ownPlan,
+    // v2.5: the Agent version the page showed (409 agent_plan_stale when no longer the head); sent only when known.
+    ...(agentPlanId ? { agent_plan_id: agentPlanId } : {}),
+    ...(reviewView ? { review_view: reviewView } : {}),
   }
 }
 
@@ -304,6 +319,10 @@ export const AGENT_REASON_TEXT: Record<string, string> = {
   stage_budget: '超出时限', max_attempts: '已达重试上限', malformed: '输出格式无效',
   invalid_citation: '引用无效已作废', level_check: '价位校验未通过', tool_rounds_exceeded: '工具调用超限',
   model_error: '模型调用失败', checkpoint_unavailable: '状态库未就绪',
+  // agent-2 / daily review (v2.5 §4.4, D23): same as backend agent.REASON_TEXT
+  thesis_count: '论点数量不符', invalid_condition: '失效或复查条件无效', changes_mismatch: '变化说明与实际差异不符',
+  no_change: '修订与上版没有差异', review_malformed: '复查输出格式无效', migration_026_missing: '迁移 026 未执行',
+  review_in_progress: '正在复查', plan_invalid: '修订版按规则作废',
 }
 
 export const ruleLabel = (id: string) => RULE_LABELS[id] ?? id

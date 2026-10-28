@@ -1,5 +1,7 @@
 import type * as df from './data-families'
 import type { Derivation, UnitDerivation } from './derivation'
+import type { Chain, PlanReview, TickerChain, UserInput, UserInputBody } from './timeline'
+import { request as workbenchRequest } from './workbench'
 export async function get<T>(path: string, options: { errorDetails?: boolean } = {}): Promise<T> {
   const r = await fetch(path, { headers: { Accept: 'application/json' }, cache: 'no-store' })
   if (!r.ok) {
@@ -194,3 +196,21 @@ export const getUnitDerivation = (ticker: string, signalDate: string) =>
   get<UnitDerivation>(
     `/api/workbench/units/${encodeURIComponent(ticker)}/${encodeURIComponent(signalDate)}/derivation`,
     { errorDetails: true })
+
+// plan timeline (v2.5 §12): workbench errors keep the HTTP status (409 / 503 reasons surface verbatim)
+const seg = encodeURIComponent
+export const getChain = (ticker: string, signalDate: string) =>
+  workbenchRequest<Chain>(`/api/workbench/chains/${seg(ticker)}/${seg(signalDate)}`)
+export const getTickerChains = (ticker: string) =>
+  workbenchRequest<{ ticker: string; chains: TickerChain[] }>(`/api/workbench/chains?ticker=${seg(ticker)}`)
+export const getPlanReviews = (session: string) =>
+  workbenchRequest<{ session: string; reviews: PlanReview[] }>(`/api/workbench/plan-reviews?session=${seg(session)}`)
+export const recheckChain = (ticker: string, signalDate: string) =>
+  workbenchRequest<{ run_id: string; status: 'pending' }>(
+    `/api/workbench/chains/${seg(ticker)}/${seg(signalDate)}/recheck`, { method: 'POST' })
+export const getUserInputs = (ticker: string, signalDate?: string) =>
+  workbenchRequest<{ inputs: UserInput[] }>(
+    `/api/workbench/user-inputs?ticker=${seg(ticker)}${signalDate ? `&signal_date=${seg(signalDate)}` : ''}`)
+export const postUserInput = (body: UserInputBody) =>
+  workbenchRequest<{ status: 'created' | 'replayed'; record: UserInput }>(
+    '/api/workbench/user-inputs', { method: 'POST', body: JSON.stringify(body) })

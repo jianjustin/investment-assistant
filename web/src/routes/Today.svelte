@@ -3,12 +3,37 @@
   import { registerNavigationGuard } from '../lib/navigation-guard'
   import Drawer from '../lib/components/Drawer.svelte'
   import PlanDerivation from '../lib/components/PlanDerivation.svelte'
+  import AgentPlanCard from '../lib/components/AgentPlanCard.svelte'
+  import RuleBaseline from '../lib/components/RuleBaseline.svelte'
+  import * as api from '../lib/api'
+  import { fmtBeijing } from '../lib/format'
+  import * as tl from '../lib/timeline'
   import * as wb from '../lib/workbench'
 
   type Basis = wb.Basis
   type Draft = { choice: wb.Choice; reason: string; requestId: string; error: string; busy: boolean
                  basis: Basis; own: { entry_low: string; entry_high: string; stop: string; target1: string }
-                 ownRequestId: string }
+                 ownRequestId: string; stale: boolean }
+  type Layout = wb.ReviewView['layout']
+
+  // 布局开关存浏览器本地；读写失败（隐私模式、禁用存储）一律按默认「Agent 优先」（spec §10.1 第 5 条）。
+  const LAYOUT_KEY = 'workbench.today.layout'
+  function readLayout(): Layout {
+    try {
+      return globalThis.localStorage?.getItem(LAYOUT_KEY) === 'legacy' ? 'legacy' : 'agent_first'
+    } catch {
+      return 'agent_first'
+    }
+  }
+  let layout = $state<Layout>(readLayout())
+  function setLayout(next: Layout) {
+    layout = next
+    try { globalThis.localStorage?.setItem(LAYOUT_KEY, next) } catch { /* 存储不可用：只在本页生效 */ }
+  }
+  // 规则基线：本次会话里的展开状态，以及是否展开过（决定时上报 review_view.baseline_expanded）。
+  let baselineOpen = $state<Record<string, boolean>>({})
+  let baselineSeen = $state<Record<string, boolean>>({})
+  let rechecks = $state<Record<string, { busy: boolean; text: string }>>({})
 
   let view = $state<wb.TodayView | null>(null)
   let error = $state('')
@@ -23,9 +48,9 @@
   let screenError = $state('')
   // 展开状态只在内存里，不进地址（设计 §10）；三种入口按 kind 区分。
   let derivationOpen = $state<Record<string, boolean>>({})
-  const derivationShown = (kind: 'plan' | 'agent' | 'trigger', u: wb.Unit): boolean =>
+  const derivationShown = (kind: 'trigger', u: wb.Unit): boolean =>
     !!derivationOpen[`${kind}|${keyOf(u)}`]
-  const toggleDerivation = (kind: 'plan' | 'agent' | 'trigger', u: wb.Unit) => {
+  const toggleDerivation = (kind: 'trigger', u: wb.Unit) => {
     const key = `${kind}|${keyOf(u)}`
     derivationOpen[key] = !derivationOpen[key]
   }
@@ -67,7 +92,7 @@
         drafts[keyOf(u)] ??= { choice: 'accept', reason: '', requestId: wb.newRequestId(), error: '', busy: false,
                                 basis: defaultBasis(u),
                                 own: { entry_low: '', entry_high: '', stop: '', target1: '' },
-                                ownRequestId: wb.newRequestId() }
+                                ownRequestId: wb.newRequestId(), stale: false }
       }
       view = next
       error = ''
@@ -80,12 +105,31 @@
 
   const ruleUsable = (u: wb.Unit) => u.plan != null && u.plan.status === 'ok'
   const agentPlanOf = (u: wb.Unit) => (u.agent != null && 'plan' in u.agent ? u.agent.plan : null)
-  const agentUsable = (u: wb.Unit) => agentPlanOf(u)?.status === 'ok'
+  const chainOf = (u: wb.Unit) => (u.agent?.chain ?? null)
+  const agentUsable = (u: wb.Unit) => agentPlanOf(u)?.status === 'ok' && chainOf(u)?.state !== 'invalidated'
+  const timelineReady = () => view?.timeline_ready !== false
   // 任一计划存在时采纳买入必须带依据（后端同规则）；规则计划缺失或作废时只能 Agent 或自定。
   const needsBasis = (u: wb.Unit) => u.proposed_action === 'buy' && (u.plan != null || agentPlanOf(u) != null)
+  // Agent 可用时默认选 Agent（spec §10.1 第 4 条）。
   const defaultBasis = (u: wb.Unit): Basis =>
-    ruleUsable(u) ? 'rule' : agentUsable(u) ? 'agent' : needsBasis(u) ? 'own' : 'rule'
-  const LEVEL_TEXT = [['entry_low', '入场下限'], ['entry_high', '入场上限'], ['stop', '止损'], ['target1', 'T1']] as const
+    agentUsable(u) ? 'agent' : ruleUsable(u) ? 'rule' : needsBasis(u) ? 'own' : 'rule'
+  const agentBasisLabel = (u: wb.Unit) => {
+    const chain = chainOf(u)
+    return chain ? `Agent 计划（第 ${chain.version_no} 版）` : 'Agent 计划'
+  }
+  // Agent 有可用的 agent-2 计划时规则基线才折叠；失败、不建议、已作废、agent-1、无运行都自动展开。
+  const agentHasPlan = (u: wb.Unit) => {
+    const a = u.agent
+    const legacy = !!a?.legacy || (a != null && 'agent_version' in a && a.agent_version === 'agent-1')
+    return a != null && a.status === 'ok' && !legacy && agentUsable(u)
+  }
+  const baselineCollapsible = (u: wb.Unit) => layout === 'agent_first' && agentHasPlan(u)
+  const baselineExpanded = (u: wb.Unit) => !baselineCollapsible(u) || !!baselineOpen[keyOf(u)]
+  function toggleBaseline(u: wb.Unit) {
+    const key = keyOf(u)
+    baselineOpen[key] = !baselineOpen[key]
+    if (baselineOpen[key]) baselineSeen[key] = true
+  }
   const ownReady = (draft: Draft) => draft.own.entry_low.trim() !== '' && wb.levelsError(draft.own) === null
 
   async function submit(u: wb.Unit) {
@@ -98,15 +142,56 @@
     try {
       const own = draft.choice === 'accept' && draft.basis === 'own'
         ? { request_id: draft.ownRequestId, ...draft.own } : null
-      await wb.postDecision(wb.decisionPayload(u, draft.choice, draft.reason, draft.requestId, own, draft.basis))
+      // 迁移 026 未就绪时不带新字段（后端对带新字段的请求返回 503）。
+      const chain = timelineReady() ? chainOf(u) : null
+      const reviewView: wb.ReviewView | null = timelineReady()
+        ? { layout, baseline_expanded: !!baselineSeen[key] || baselineExpanded(u), agent_version_no: chain?.version_no ?? null }
+        : null
+      await wb.postDecision(wb.decisionPayload(u, draft.choice, draft.reason, draft.requestId, own, draft.basis,
+                                               chain?.head_plan_id ?? null, reviewView))
       delete drafts[key]
       await load()
     } catch (e) {
-      draft.error = wb.describeError(e)
+      const stale = tl.staleVersion(e)
+      draft.stale = stale != null
+      draft.error = stale != null ? tl.staleText(stale) : wb.describeError(e)
     } finally {
       if (drafts[key]) drafts[key].busy = false
     }
   }
+
+  // 409 agent_plan_stale 后刷新：保留草稿；页面已换成最新版，请求内容随之改变，所以换一个 request id。
+  async function refreshStale(u: wb.Unit) {
+    const draft = drafts[keyOf(u)]
+    if (draft) { draft.stale = false; draft.error = ''; draft.requestId = wb.newRequestId() }
+    await load()
+  }
+
+  async function recheck(c: tl.ChainRow) {
+    const key = `${c.ticker}|${c.signal_date}`
+    if (rechecks[key]?.busy) return
+    rechecks[key] = { busy: true, text: '复查中…' }
+    try {
+      const started = await api.recheckChain(c.ticker, c.signal_date)
+      const done = await api.pollRun(started.run_id)
+      if (done.status === 'done') {
+        const outcome = (done.result as { outcome?: tl.Outcome } | undefined)?.outcome
+        rechecks[key] = { busy: false, text: `复查完成：${outcome ? tl.OUTCOME_TEXT[outcome] ?? outcome : '已完成'}` }
+        await load()
+      } else {
+        rechecks[key] = { busy: false, text: `复查失败：${tl.recheckConflictText(done.error ?? '未知原因')}` }
+      }
+    } catch (e) {
+      rechecks[key] = { busy: false, text: e instanceof wb.WorkbenchError && e.status === 409
+        ? `不能重新复查：${tl.recheckConflictText(e.message)}` : wb.describeError(e) }
+    }
+  }
+
+  const chainReviewText = (c: tl.ChainRow) => c.latest_review
+    ? `${tl.OUTCOME_TEXT[c.latest_review.outcome] ?? c.latest_review.outcome}`
+      + `${c.latest_review.decided_by ? ` · ${tl.DECIDED_BY_TEXT[c.latest_review.decided_by]}` : ''}`
+      + ` · ${fmtBeijing(c.latest_review.created_at)}${c.latest_review.reason ? ` · ${c.latest_review.reason}` : ''}`
+    : '尚未复查'
 
   async function runNow() {
     try {
@@ -146,10 +231,6 @@
     }
   }
 
-  const regimeText = (label?: string | null) => label ? (wb.REGIME_LABELS[label] ?? label) : '未知'
-  const sectorText = (ctx: wb.PlanContext | undefined) => ctx?.sector
-    ? `${ctx.sector.etf} ${ctx.sector.state ? (wb.SECTOR_STATE_LABELS[ctx.sector.state] ?? '数据不足') : '数据不足'}`
-    : '未映射'
   const pctText = (value: number | null | undefined) =>
     value == null ? '—' : `${(value * 100).toFixed(1)}%`
   // No stored value: tell a missing key from a failed fetch (status recorded in the snapshot inputs).
@@ -183,7 +264,14 @@
       <h1 class="text-lg font-semibold">今日</h1>
       {#if view}<p class="text-xs text-muted">最近收盘交易日 {view.session} · 信号仅为研究候选，不会自动下单</p>{/if}
     </div>
-    <div class="flex gap-2">
+    <div class="flex flex-wrap items-center gap-2">
+      <div role="group" aria-label="布局" class="flex items-center gap-1 text-xs">
+        <span class="text-muted">布局：</span>
+        {#each [['agent_first', 'Agent 优先'], ['legacy', '规则优先（旧）']] as [value, label]}
+          <button class="px-2 py-1 border border-border rounded {layout === value ? 'bg-accent/10 text-accent' : 'hover:bg-surface-2'}"
+                  aria-pressed={layout === value} onclick={() => setLayout(value as Layout)}>{label}</button>
+        {/each}
+      </div>
       <button class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2" onclick={runNow}>立即运行批处理</button>
       <button class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2" onclick={repush}>重新推送今日计划</button>
     </div>
@@ -291,7 +379,7 @@
           <p class="text-muted">尚无解读</p>
         {:else if u.brief.status === 'error'}
           <p class="text-red-600">解读无效，已隐藏：{u.brief.error}</p>
-        {:else if u.brief.prompt_version === 'agent-1'}
+        {:else if u.brief.prompt_version === 'agent-1' || u.brief.prompt_version === 'agent-2'}
           <p class="text-xs text-muted">解读见 Agent 建议</p>
         {:else}
           {#if u.brief.status === 'fallback'}<p class="text-xs text-muted">规则版解读（LLM 未参与：{u.brief.error}）</p>{/if}
@@ -319,70 +407,22 @@
         </ul>
       {/if}
 
-      {#if u.plan}
-        {@const p = u.plan}
-        <div class="text-sm border-l-2 border-accent/40 pl-2 space-y-1">
-          <p class="font-medium">计划（{p.kind === 'rule' ? '规则' : '自定'} · {p.plan_version}{p.status === 'invalid' ? ' · 已作废' : ''}）</p>
-          <p>入场区间 {p.entry_low}–{p.entry_high} · 止损 {p.stop} · T1 {p.target1} · 有效期至 {p.valid_until}</p>
-          <p class="text-xs text-muted">区制 {regimeText(p.inputs?.context?.regime?.label)} · 下次财报 {p.inputs?.context?.next_earnings ?? '未知'} · 行业 {sectorText(p.inputs?.context)}</p>
-          {#if p.sizing?.status === 'no_equity'}
-            <p class="text-amber-700">缺资金快照，无法计算建议股数</p>
-          {:else if p.sizing?.shares != null}
-            <p>建议 {p.sizing.shares} 股 · 风险 {p.sizing.risk_amount}（资金日 {p.sizing.snapshot_as_of}）</p>
-          {/if}
-          {#each p.invalid_reasons as r}<p class="text-red-600">作废：{r}</p>{/each}
-          {#each p.warnings as w}<p class="text-xs text-muted">提示：{w}</p>{/each}
-          <p class="text-xs text-muted">证据：未验证</p>
-          <div class="space-y-1">
-            <button class="text-xs text-accent underline" aria-expanded={derivationShown('plan', u)}
-                    onclick={() => toggleDerivation('plan', u)}>展开推导</button>
-            {#if derivationShown('plan', u)}<PlanDerivation planId={p.id} />{/if}
-          </div>
-        </div>
-      {/if}
-
-      {#if u.agent}
-        {@const a = u.agent}
-        <div class="text-sm border-l-2 border-sky-400/50 pl-2 space-y-1">
-          {#if a.status === 'ok' || a.status === 'pass'}
-            <p class="font-medium">Agent 建议（{a.model} · {a.agent_version}）{a.status === 'ok' ? '买入' : '不建议买入'}</p>
-            {#if a.output?.levels}
-              <p>入场区间 {a.output.levels.entry_low.value}–{a.output.levels.entry_high.value} · 止损 {a.output.levels.stop.value} · T1 {a.output.levels.target1.value}</p>
-              {@const levels = a.output.levels}
-              <p class="text-xs text-muted">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}（{#each levels[key].refs as ref, i}{#if i}、{/if}<button class="underline" onclick={() => showCall(u, ref)}>{ref}</button>{/each}）{/each}</p>
-            {/if}
-            {#if a.plan?.sizing?.shares != null}
-              <p>建议 {a.plan.sizing.shares} 股</p>
-            {/if}
-            {#if a.output?.summary}<p>{a.output.summary}</p>{/if}
-            {#if a.output?.thesis?.length}
-              <ul class="list-disc ml-5 text-xs text-muted">
-                {#each a.output.thesis as t}
-                  <li>{t.text}（{#each t.refs as ref, i}{#if i}、{/if}<button class="underline" onclick={() => showCall(u, ref)}>{ref}</button>{/each}）</li>
-                {/each}
-              </ul>
-            {/if}
-            {#if a.counter?.risks?.length}
-              <p class="text-xs">反方：{#each a.counter.risks as risk, i}{#if i}；{/if}{risk.text}（{#each risk.refs as ref, j}{#if j}、{/if}<button class="underline" onclick={() => showCall(u, ref)}>{ref}</button>{/each}）{/each}</p>
-            {/if}
-            {#if a.plan?.status === 'invalid'}
-              <p class="text-red-600">Agent 计划已作废：{a.plan.invalid_reasons.join('、')}</p>
-            {/if}
-            {#if a.plan}
-              <div class="space-y-1">
-                <button class="text-xs text-accent underline" aria-expanded={derivationShown('agent', u)}
-                        onclick={() => toggleDerivation('agent', u)}>展开推导</button>
-                {#if derivationShown('agent', u)}<PlanDerivation planId={a.plan.id} />{/if}
-              </div>
-            {/if}
-          {:else if a.status === 'rejected' || a.status === 'error' || a.status === 'skipped'}
-            <p class="font-medium">Agent 未给出建议</p>
-            <p class="text-red-600">{wb.AGENT_REASON_TEXT[a.reason ?? ''] ?? a.reason}</p>
-            <button class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2"
-                    onclick={() => rerunAgentNow(u)}>重新运行 Agent</button>
-          {/if}
+      {#snippet agentBlock()}
+        {#if u.agent}
+          <AgentPlanCard agent={u.agent} onCall={ref => showCall(u, ref)} onRerun={() => rerunAgentNow(u)} />
           {#if callError}<p class="text-xs text-red-600">{callError}</p>{/if}
-        </div>
+        {/if}
+      {/snippet}
+      {#snippet baselineBlock()}
+        <RuleBaseline plan={u.plan} expanded={baselineExpanded(u)} collapsible={baselineCollapsible(u)}
+                      ontoggle={() => toggleBaseline(u)} />
+      {/snippet}
+      {#if layout === 'legacy'}
+        {@render baselineBlock()}
+        {@render agentBlock()}
+      {:else}
+        {@render agentBlock()}
+        {@render baselineBlock()}
       {/if}
 
       {#if draft}
@@ -391,14 +431,14 @@
             <fieldset class="flex gap-3 text-sm">
               <legend class="text-xs text-muted">执行依据</legend>
               <label class="flex items-center gap-1">
+                <input type="radio" name={`basis-${keyOf(u)}`} value="agent" bind:group={draft.basis}
+                       disabled={!agentUsable(u)} />
+                {agentBasisLabel(u)}
+              </label>
+              <label class="flex items-center gap-1">
                 <input type="radio" name={`basis-${keyOf(u)}`} value="rule" bind:group={draft.basis}
                        disabled={!ruleUsable(u)} />
                 规则计划
-              </label>
-              <label class="flex items-center gap-1">
-                <input type="radio" name={`basis-${keyOf(u)}`} value="agent" bind:group={draft.basis}
-                       disabled={!agentUsable(u)} />
-                Agent 建议
               </label>
               <label class="flex items-center gap-1">
                 <input type="radio" name={`basis-${keyOf(u)}`} value="own" bind:group={draft.basis} />
@@ -433,11 +473,35 @@
                               || (draft.choice === 'accept' && draft.basis === 'own'
                                   && draft.own.entry_low.trim() !== '' && !ownReady(draft))}>提交决定</button>
             {#if draft.error}<span class="text-xs text-red-600">{draft.error}</span>{/if}
+            {#if draft.stale}
+              <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2"
+                      onclick={() => refreshStale(u)}>刷新</button>
+            {/if}
           </div>
         </form>
       {/if}
     </article>
   {/each}
+
+  {#if view && timelineReady() && view.chains?.length}
+    <section class="border border-border rounded p-3 bg-surface text-sm space-y-1" aria-label="进行中的 Agent 计划">
+      <h2 class="font-semibold">进行中的 Agent 计划</h2>
+      <ul class="space-y-1">
+        {#each view.chains as c (`${c.ticker}|${c.signal_date}`)}
+          {@const rk = rechecks[`${c.ticker}|${c.signal_date}`]}
+          <li class="flex flex-wrap items-center gap-x-2">
+            <span>{c.ticker} · {c.mode ? tl.MODE_TEXT[c.mode] : tl.CHAIN_STATE_TEXT[c.state]} · 第 {c.version_no} 版</span>
+            <span class="text-xs text-muted">最近复查 {chainReviewText(c)}</span>
+            <span class="text-xs text-muted">今日信号 {c.signals_today.length ? c.signals_today.map(k => tl.SIGNAL_TEXT[k] ?? k).join('、') : '无'}</span>
+            <a class="text-xs text-accent underline" href={`#plan/${c.head_plan_id}`}>查看</a>
+            <button class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50"
+                    disabled={rk?.busy} onclick={() => recheck(c)}>重新复查</button>
+            {#if rk?.text}<span class="text-xs">{rk.text}</span>{/if}
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
 
   {#if view?.extended_units?.length}
     <details class="border border-border rounded p-3 bg-surface text-sm">
@@ -479,6 +543,7 @@
             · 无计划持仓（回撤规则看护）
           {/if}
           {#if h.next_earnings}<span class="text-amber-700"> · 下次财报 {h.next_earnings}</span>{/if}
+          {#if timelineReady() && h.has_chain === false}<span class="text-xs text-muted"> · 此持仓无 Agent 计划，不参与复查</span>{/if}
         </li>
       {/each}
     </ul>

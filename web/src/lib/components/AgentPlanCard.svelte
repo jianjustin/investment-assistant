@@ -1,0 +1,181 @@
+<script lang="ts">
+  import PlanDerivation from './PlanDerivation.svelte'
+  import { fmtBeijing } from '../format'
+  import * as tl from '../timeline'
+  import * as wb from '../workbench'
+
+  // §10.1 的 Agent 块，「今日」与计划页共用。数字照后端字符串原样显示；「证据：未验证」常驻。
+  let { agent, onCall, onRerun }: { agent: tl.AgentView; onCall: (ref: string) => void; onRerun?: () => void } = $props()
+
+  let derivationOpen = $state(false)
+
+  const LEVEL_TEXT = [['entry_low', '入场下限'], ['entry_high', '入场上限'], ['stop', '止损'], ['target1', 'T1']] as const
+
+  const run = $derived(agent.status === 'ok' || agent.status === 'pass' ? (agent as wb.AgentRunOk) : null)
+  const failed = $derived(run ? null : (agent as wb.AgentRunFailed))
+  const legacy = $derived(!!agent.legacy || ('agent_version' in agent && agent.agent_version === 'agent-1'))
+  const chain = $derived(agent.chain ?? null)
+  const versionNo = $derived(chain?.version_no ?? null)
+  const review = $derived(chain?.latest_review ?? null)
+  const output = $derived(run?.output ?? null)
+  const plan = $derived(run?.plan ?? null)
+  const invalidated = $derived(chain?.state === 'invalidated')
+
+  const title = $derived.by(() => {
+    const parts = ['Agent 计划']
+    if (versionNo != null) parts.push(`第 ${versionNo} 版`)
+    if (run) parts.push(`生成于 ${fmtBeijing(run.created_at)}`)
+    if (chain?.cutoff_at) parts.push(`截止 ${fmtBeijing(chain.cutoff_at)}`)
+    return parts.join(' · ')
+  })
+  const levelsLine = $derived(output?.levels
+    ? `${output.action === 'buy' ? '买入' : '不建议买入'} · 入场区间 ${output.levels.entry_low.value}–${output.levels.entry_high.value}`
+      + ` · 止损 ${output.levels.stop.value} · T1 ${output.levels.target1.value}`
+    : '')
+  // 产生本版的那条复查判定的是上一版的条件，不拿来标本版。
+  const judged = $derived(review && !(review.new_plan_id && plan && review.new_plan_id === plan.id)
+    ? (review.conditions ?? []) : [])
+  const resultOf = (list: 'invalidation' | 'review_when', index: number): string => {
+    const hit = judged.find(c => c.list === list && c.index === index)
+    return hit ? tl.CONDITION_RESULT_TEXT[hit.result] ?? hit.result : '尚未复查'
+  }
+  const countersOf = (n: number) => (run?.counter?.counter ?? []).filter(c => c.thesis === n)
+  const reviewLine = $derived(review
+    ? `最近复查：${tl.OUTCOME_TEXT[review.outcome] ?? review.outcome}`
+      + `${review.decided_by ? ` · ${tl.DECIDED_BY_TEXT[review.decided_by] ?? review.decided_by}` : ''}`
+      + `${review.reason ? ` · ${review.reason}` : ''} · ${fmtBeijing(review.created_at)}`
+    : '')
+  const revisionFailure = $derived(versionNo != null ? tl.revisionFailureText(review, versionNo) : null)
+  const reasonText = (reason: string | null | undefined) => wb.AGENT_REASON_TEXT[reason ?? ''] ?? reason ?? '未知原因'
+  const changeField = (field: string) => tl.CHANGE_FIELD_TEXT[field] ?? field
+</script>
+
+{#snippet refList(list: string[] | undefined)}{#if list?.length}（{#each list as ref, i}{#if i}、{/if}{#if tl.isCallRef(ref)}<button class="underline" onclick={() => onCall(ref)}>{ref}</button>{:else}<span>{ref}</span>{/if}{/each}）{/if}{/snippet}
+
+{#snippet derivation()}
+  {#if plan}
+    <div class="space-y-1">
+      <button class="text-xs text-accent underline" aria-expanded={derivationOpen}
+              onclick={() => derivationOpen = !derivationOpen}>展开推导</button>
+      {#if derivationOpen}<PlanDerivation planId={plan.id} />{/if}
+    </div>
+  {/if}
+{/snippet}
+
+<div role="region" aria-label="Agent 计划" class="text-sm border-l-2 border-sky-400/50 pl-2 space-y-1">
+  {#if failed}
+    <p class="font-medium">Agent 未给出计划：{reasonText(failed.reason)}</p>
+    {#if legacy}<p class="text-xs text-amber-700">agent-1（旧版，不参与复查）</p>{/if}
+    {#if onRerun}
+      <button class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2" onclick={onRerun}>重新运行 Agent</button>
+    {/if}
+  {:else if run && legacy}
+    <!-- agent-1：原样展示（v2.4 的块），只加旧版标注。 -->
+    <p class="font-medium">Agent 建议（{run.model} · {run.agent_version}）{run.status === 'ok' ? '买入' : '不建议买入'}</p>
+    <p class="text-xs text-amber-700">agent-1（旧版，不参与复查）</p>
+    {#if output?.levels}
+      {@const levels = output.levels}
+      <p>入场区间 {levels.entry_low.value}–{levels.entry_high.value} · 止损 {levels.stop.value} · T1 {levels.target1.value}</p>
+      <p class="text-xs text-muted">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}（{#each levels[key].refs as ref, i}{#if i}、{/if}<button class="underline" onclick={() => onCall(ref)}>{ref}</button>{/each}）{/each}</p>
+    {/if}
+    {#if plan?.sizing?.shares != null}<p>建议 {plan.sizing.shares} 股</p>{/if}
+    {#if output?.summary}<p>{output.summary}</p>{/if}
+    {#if output?.thesis?.length}
+      <ul class="list-disc ml-5 text-xs text-muted">
+        {#each output.thesis as t}<li>{t.text}{@render refList(t.refs)}</li>{/each}
+      </ul>
+    {/if}
+    {#if run.counter?.risks?.length}
+      <p class="text-xs">反方：{#each run.counter.risks as risk, i}{#if i}；{/if}{risk.text}{@render refList(risk.refs)}{/each}</p>
+    {/if}
+    {#if plan?.status === 'invalid'}<p class="text-red-600">Agent 计划已作废：{plan.invalid_reasons.join('、')}</p>{/if}
+    {@render derivation()}
+  {:else if run && invalidated}
+    <p class="font-medium">Agent 已作废此计划（第 {versionNo} 版）：{review?.reason ?? ''}</p>
+  {:else if run && run.status === 'pass'}
+    <p class="font-medium">Agent 不建议买入：{output?.summary ?? ''}</p>
+  {:else if run}
+    <p class="font-medium">{title}</p>
+    <p class="text-xs text-muted">模型 {run.model} · {run.agent_version}{chain?.mode ? ` · ${tl.MODE_TEXT[chain.mode]}` : ''}</p>
+    {#if output?.levels}
+      {@const levels = output.levels}
+      <p>{levelsLine}</p>
+      <p class="text-xs text-muted">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}{@render refList(levels[key].refs)}{/each}</p>
+    {/if}
+    {#if plan?.sizing?.shares != null}<p>建议 {plan.sizing.shares} 股</p>{/if}
+    {#if output?.summary}<p>{output.summary}</p>{/if}
+
+    {#if output?.thesis?.length}
+      <p class="text-xs text-muted">论点</p>
+      <ol aria-label="论点" class="ml-1 space-y-1">
+        {#each output.thesis as t, i}
+          <li>
+            <span class="text-xs px-1 rounded bg-surface-2">{t.id ?? `T${i + 1}`}</span> {t.text}{@render refList(t.refs)}
+            <ul class="ml-5 text-xs">
+              {#each countersOf(i + 1) as c}
+                <li>反证：{c.text}{@render refList(c.refs)}</li>
+              {:else}
+                <li class="text-muted">反方未对此论点给出反证</li>
+              {/each}
+            </ul>
+          </li>
+        {/each}
+      </ol>
+    {/if}
+    {#if run.counter?.risks?.length}
+      <p class="text-xs">其他风险：{#each run.counter.risks as risk, i}{#if i}；{/if}{risk.text}{@render refList(risk.refs)}{/each}</p>
+    {/if}
+
+    {#if output?.invalidation?.length}
+      <p class="text-xs text-muted">失效条件</p>
+      <ul aria-label="失效条件" class="list-disc ml-5 text-xs">
+        {#each output.invalidation as cond, i}
+          <li>{tl.conditionText(cond.kind, cond.params)} · 最近判定：{resultOf('invalidation', i)}{@render refList(cond.refs)}</li>
+        {/each}
+      </ul>
+    {/if}
+    <p class="text-xs text-muted">下次复查条件</p>
+    <ul aria-label="下次复查条件" class="list-disc ml-5 text-xs">
+      {#each output?.review_when ?? [] as cond}
+        <li>{tl.conditionText(cond.kind, cond.params)}</li>
+      {:else}
+        <li>{tl.conditionText('next_session', {})}</li>
+      {/each}
+    </ul>
+
+    {#if versionNo != null && versionNo >= 1}
+      <div role="region" aria-label={`相对第 ${versionNo - 1} 版`} class="text-xs grid md:grid-cols-2 gap-2">
+        <div>
+          <p class="text-muted">相对第 {versionNo - 1} 版 · 宿主差异</p>
+          {#if chain?.diff}
+            <ul class="list-disc ml-5">
+              {#each chain.diff as d}
+                <li>{changeField(d.field)} {tl.diffValueText(d.field, d.before)} → {tl.diffValueText(d.field, d.after)}</li>
+              {:else}
+                <li class="text-muted">无</li>
+              {/each}
+            </ul>
+          {:else if plan}
+            <p><a class="text-accent underline" href={`#plan/${plan.id}`}>见计划页版本链</a></p>
+          {/if}
+        </div>
+        <div>
+          <p class="text-muted">模型说明</p>
+          <ul class="list-disc ml-5">
+            {#each output?.changes ?? [] as c}
+              <li>{changeField(c.field)}：{c.text}{@render refList(c.refs)}</li>
+            {:else}
+              <li class="text-muted">无</li>
+            {/each}
+          </ul>
+        </div>
+      </div>
+    {/if}
+
+    {#if reviewLine}<p class="text-xs">{reviewLine}</p>{/if}
+    {#if revisionFailure}<p class="text-xs text-amber-700">{revisionFailure}</p>{/if}
+    {#if plan?.status === 'invalid'}<p class="text-red-600">Agent 计划已作废：{plan.invalid_reasons.join('、')}</p>{/if}
+    {@render derivation()}
+  {/if}
+  <p class="text-xs text-muted">证据：未验证</p>
+</div>
