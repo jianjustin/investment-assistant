@@ -34,7 +34,7 @@ PostgreSQL：唯一的状态存储（调度、运行报告、行情、计划、�
 ```
 api/routes/*      HTTP 薄封装：解析参数、映射错误码，不写业务逻辑
    ↓
-services/*、workbench/service.py      事务与用例
+services/*、workbench/service.py、workbench/plan_review.py      事务与用例
    ↓
 workbench/repository.py、us_research/repository.py、db.py      SQL（调用方管理事务）
 tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、运行报告、通知）
@@ -46,13 +46,13 @@ tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、�
 
 | 模块 | 做什么 | 依赖 |
 | --- | --- | --- |
-| `workbench/service.py` | 批处理编排（采集 → 筛选 → 环境 → 规则 → 计划 → Agent → 推送）与全部用例 | 下列模块、`repository` |
+| `workbench/service.py` | 批处理编排（采集 → 筛选 → 环境 → 规则 → 计划 → Agent → 每日复查 → 推送）与全部用例 | 下列模块、`repository` |
 | `workbench/repository.py` | 工作台全部 SQL，只追加 | `db.py` |
 | `workbench/bars.py`、`news.py`、`earnings.py`、`macro.py` | 采集：日线、资讯标题、财报日、FRED | yfinance、SEC、FRED |
 | `workbench/universe.py`、`screen.py` | 纳指 100 范围文件；`screen-1` 过滤、排序、成员轮换（纯函数） | 纯函数 |
 | `workbench/screening.py` | 筛选阶段编排：采集范围日线、写 `screen_runs` / `screen_results`、成员并池 | `service`、`repository` |
 | `workbench/collect.py` | 共用逐只采集函数（批处理、筛选与「数据」菜单手动拉取共用）、`Tally` 记账与每族 advisory lock | `service`、采集模块 |
-| `workbench/stages.py` | 七个阶段注册表（`stages-1`）与 `StageRecorder`：批处理每阶段一行 `stage_runs` 证据（计数、原因、产出引用、耗时） | `families`、`collect`、`repository` |
+| `workbench/stages.py` | 八个阶段注册表（`stages-2`；迁移 026 未执行时按 `stages-1` 的七个阶段记账）与 `StageRecorder`：批处理每阶段一行 `stage_runs` 证据（计数、原因、产出引用、耗时） | `families`、`collect`、`repository` |
 | `workbench/families.py` | 六个数据族注册表：用途、状态判定、原因脱敏、覆盖口径、目标清单（目标清单读数据库与范围文件，其余为纯函数） | `repository`、`pool`、`universe` |
 | `workbench/pool.py`、`regime.py` | 观察池分层与来源；范围 ∪ 手动池的广度、区制、行业强弱 | 纯函数 |
 | `workbench/rules.py`、`synthesis.py` | 规则 v1 候选；合成每股每日一个决策单元 | 纯函数 |
@@ -60,6 +60,10 @@ tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、�
 | `workbench/derivation.py` | 计划推导链（`derivation-1`）：按代入值独立重算 `plan-1` 规则计划的每一步（TR、ATR、价位、有效期、财报与环境提示、定仓、状态），与已存值逐项比对，给出 `consistent` / `mismatch` / `incomplete`；自定计划（价位为用户输入）与 Agent 计划（价位核对 `agent_runs.output.levels`）按入场区间中点定仓；触发段 `derive_trigger` / `derive_unit` 按 `CONDITIONS` 逐句复核候选冻结的取值（`holds` / `violated` / `not_frozen`，`violated` 计入不一致）；常量与 `plans.py` 分开声明、由测试对齐；不调用 `plans.py` 的计算函数 | 纯函数（只依赖交易日历） |
 | `workbench/derivation_view.py` | 推导与阶段证据的只读用例：`load_rows` 只按计划 `inputs` 里的 id 回读日线、财报日、快照、区制、Agent 运行与规则计划（都是只追加的表，读到的就是生成时那一行）；`plan_derivation`（推导 + `trigger_note` + 运行证据 `run`，运行证据取插入该计划的 `plan` / `agent` 阶段行）、`unit_derivation`（只有触发段 + 该单元计划 id）、`stage_runs_view`（按 `run_id` 分组、按注册表排序）、`check_plans`（批处理用，同一只读事务里批量推导）；全部在 `service.read_only_tx()` 里执行，不调用外部数据源，缺行如实标 `incomplete` | `derivation`、`stages`、`repository`、`service` |
 | `workbench/agent/` | Agent 轨道：工具层、LangGraph 图（提议 + 反方 / 解读）、引用校验、模型接入 | LangGraph、智谱、PostgresSaver |
+| `workbench/agent/conditions.py` | 失效条件与下次复查条件的注册表 `condition-1`：参数校验、按事实判定 `met` / `not_met` / `unknown`（数据缺失不当作成立）、条件文案 | 纯函数（只依赖交易日历） |
+| `workbench/agent/plan_check.py` | `agent-2` 计划、反证与复查结论的校验（论点条数、条件、修订 `changes` 与宿主差异、`user:<id>` 引用），宿主差异 `diff` | `citations`、`conditions` |
+| `workbench/timeline.py` | 计划时间线 `timeline-1`：链状态、版本有效期与版本计划行、「上次复查之后」窗口、七项系统信号、条件判定结果、宿主结论（失效作废 / 无事维持）、截止时间之前的有效用户输入、复查与修订提示词的证据块 | 纯函数（复用 `plans` 的计算函数） |
+| `workbench/plan_review.py` | 每日复查阶段 `review`：复查对象与排序、链标的（只采集不跑规则）、逐链复查 `review_chain`（短事务持锁读取 → 无事务调模型 → 一个写事务写入复查运行、修订运行、新版计划与版本、复查记录）、阶段记账与新版推导核对 | `service`、`timeline`、`agent/`、`repository` |
 | `workbench/briefs.py` | 由 Agent 运行构造决策单元的解读 | 纯函数 |
 | `workbench/ledger.py`、`positions.py`、`exits.py`、`account.py` | 决定与成交（只追加）、FIFO 持仓、持仓止损、资金快照与出入金 | 纯函数 + SQL |
 | `workbench/plan_shadow.py`、`review.py`、`discipline.py`、`tracks.py`、`monthly.py`、`backcheck.py` | 影子跟踪、周度复盘、纪律、三方对比、月度收益与敏感性、上线前检查 | 纯函数 |
@@ -98,7 +102,8 @@ flowchart TD
         B2 --> C["④ 信号 signals<br/>规则 v1：信号候选 → 决策单元"]
         C --> D["⑤ 计划 plan<br/>plan-1：ATR 止损 · 2R 目标 · 按风险定仓 · 超限作废"]
         D --> E["⑥ Agent 轨道 agent<br/>提议 + 反方 · 引用校验 · token 预算；解读"]
-        E --> F["⑦ 复核与推送 push<br/>今日视图 + 推送 Discord（核心池 + 持仓）"]
+        E --> R["⑦ 每日复查 review<br/>每条有效 Agent 计划链：失效作废 / 无事维持（宿主）· 复查调用 · 修订出新版"]
+        R --> F["⑧ 复核与推送 push<br/>今日视图 + 推送 Discord（核心池 + 持仓）"]
     end
     F --> G["你：「今日」采纳 / 否决 / 降级<br/>选执行依据：规则 / Agent / 自定"]
     G --> H["你：录入成交 → 持仓与止损"]
@@ -110,11 +115,12 @@ flowchart TD
     H --> I
     D --> I
     E --> I
+    R --> I
 ```
 
 时点纪律：规则、计划和 Agent 工具只读运行截止时间之前已入库的数据；所有业务记录只追加，更正用新记录指向旧记录。手动运行批处理不推送。
 
-七个阶段（`collect`、`screen`、`regime`、`signals`、`plan`、`agent`、`push`）按 `workbench/stages.py` 注册表（`stages-1`）的定义展示，每次运行每阶段向 `stage_runs` 追加一行证据（计数、原因、产出引用、耗时）。`collect` 的时间窗口包住 `screen`（筛选自己采集范围日线，这部分记在 `collect` 的 `bars` 计数里），信号与计划在同一个逐只循环里交替执行；展示顺序以注册表为准，不以时间戳为准。
+八个阶段（`collect`、`screen`、`regime`、`signals`、`plan`、`agent`、`review`、`push`）按 `workbench/stages.py` 注册表（`stages-2`）的定义展示，每次运行每阶段向 `stage_runs` 追加一行证据（计数、原因、产出引用、耗时）；迁移 026 未执行时本次按 `stages-1` 记七个阶段（没有 `review`）。`review` 只复查已有的 `agent-2` 链；链的标的若已离开观察池与持仓，只在采集阶段补采数据，不进规则循环。`collect` 的时间窗口包住 `screen`（筛选自己采集范围日线，这部分记在 `collect` 的 `bars` 计数里），信号与计划在同一个逐只循环里交替执行；展示顺序以注册表为准，不以时间戳为准。
 
 ---
 
@@ -128,6 +134,7 @@ flowchart TD
 | 工作台 · 信号与筛选 | `signal_candidates`、`signal_briefs`、`pool_tiers`（含 `source`）、`market_regimes`、`screen_runs`、`screen_results` |
 | 工作台 · 计划与执行 | `trade_plans`、`signal_decisions`、`trades`、`account_snapshots`、`cash_flows` |
 | 工作台 · Agent | `agent_runs`、`agent_tool_calls`；LangGraph 检查点表由 `python -m investment_assistant.workbench.agent setup` 创建，不在迁移里 |
+| 工作台 · 计划时间线 | `agent_plan_versions`（每版 Agent 计划一行，链关系与截止时间）、`plan_reviews`（每次复查一行：信号、条件判定、结论、新版）、`user_inputs`（你贴入的材料，更正与撤回指向旧行）；迁移 026，只追加，不在 `WORKBENCH_TABLES` 里，缺表时按 `timeline_ready` 降级 |
 | 工作台 · 复盘 | `weekly_reviews`、`monthly_reviews`、`rule_backchecks`、`review_pushes` |
 | 主线 · 基本面 | `us_research_observations`、`us_research_collection_state`（`us_research/`；迁移 022 删除 v1 遗留的 6 张表，见 operations） |
 

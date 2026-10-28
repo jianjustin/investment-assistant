@@ -1,5 +1,5 @@
-"""run_batch 的七个阶段记账（v2.4 §4）：计数与四族 fetch 行、筛选与区制的产出引用对得上；
-非交易日六个阶段整段跳过；信号、计划、Agent、推送的计数与产出引用；每次运行恰好 7 行。
+"""run_batch 的阶段记账（v2.4 §4；v2.5 §7.1 起 stages-2 八个阶段）：计数与四族 fetch 行、筛选与区制的产出引用对得上；
+非交易日推送之外的阶段整段跳过；信号、计划、Agent、推送的计数与产出引用；每次运行恰好 8 行（未执行 026 时 7 行）。
 复用 characterization 的假 fetcher，recorder 用默认写入，行落在一次性库的 stage_runs 里再读回。"""
 from datetime import UTC, date, datetime, timedelta
 
@@ -92,7 +92,7 @@ def test_regime_stage(db):
 
 
 def test_non_trading_day_skips_six():
-    """周六早退：前 6 个阶段整段 skipped，push 留给任务层，不写行。"""
+    """周六早退：push 之前的阶段（含 review）整段 skipped，push 留给任务层，不写行。"""
     rows = []
     recorder = stages_module.StageRecorder('run-closed', 'scheduled', date(2026, 10, 24),
                                             writer=rows.append, wall_now=lambda: SATURDAY)
@@ -153,7 +153,8 @@ def _job_run_id(db) -> str:
                       'ORDER BY id DESC LIMIT 1').fetchone()[0]
 
 
-def test_every_run_writes_exactly_seven(wired, monkeypatch):
+def test_every_run_writes_exactly_eight(wired, monkeypatch):
+    """定时、手动、非交易日、显式池、中途异常：每个 run_id 恰好 8 行（stages-2）。"""
     seed_watchlist(wired, [('NVDA', ['core'])])
     _sent(monkeypatch)
     saturday = datetime(2026, 10, 24, 22, 30, tzinfo=UTC)
@@ -165,22 +166,55 @@ def test_every_run_writes_exactly_seven(wired, monkeypatch):
         assert run_id == result['run_id']
         rows = repository.stage_runs_for_run(wired, run_id)
         assert [r['stage'] for r in rows].count('push') == 1
-        assert {r['stage'] for r in rows} == set(stages_module.STAGE_IDS) and len(rows) == 7
+        assert {r['stage'] for r in rows} == set(stages_module.STAGE_IDS) and len(rows) == 8
         assert {r['run_id'] for r in rows} == {run_id}
-        assert result['summary']['stage_status'] == {'written': 7, 'error': None}
+        assert {r['stages_version'] for r in rows} == {'stages-2'}
+        assert result['summary']['stage_status'] == {'written': 8, 'error': None}
         seen.append(rows)
     assert {r['trigger'] for r in seen[0]} == {'scheduled'}
     assert {r['trigger'] for r in seen[1]} == {'manual_batch'}
     assert {r['status'] for r in seen[2] if r['stage'] != 'push'} == {'skipped'}
+    assert [r['status'] for r in seen[2] if r['stage'] == 'review'] == ['skipped']
 
     # 显式池：直接调 run_batch，再 close
     recorder = _recorder('run-explicit-pool')
     service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()), stages=recorder)
-    assert recorder.close() == {'written': 7, 'error': None}
+    assert recorder.close() == {'written': 8, 'error': None}
     rows = _rows(wired, 'run-explicit-pool')
     assert set(rows) == set(stages_module.STAGE_IDS)
     assert rows['screen']['reason'] == 'explicit_pool'
     assert (rows['push']['status'], rows['push']['reason']) == ('skipped', 'not_reached')
+
+    # 中途异常：已写的阶段保留，其余（含 review）记 failed / aborted，仍是 8 行
+    def boom(**_):
+        raise service.Unavailable('boom')
+
+    monkeypatch.setattr(regime_module, 'snapshot', boom)
+    result = _task_run('scheduled', moment=NOW + timedelta(minutes=10))
+    rows = repository.stage_runs_for_run(wired, result['run_id'])
+    assert len(rows) == 8 and {r['stage'] for r in rows} == set(stages_module.STAGE_IDS)
+    assert {r['status'] for r in rows if r['stage'] in ('review', 'push')} == {'failed'}
+
+
+def test_without_migration_026_runs_record_stages_1(wired, monkeypatch):
+    """D22: 删掉 026 的三张表 → 任务层按 stages-1 记账，每个 run_id 7 行，没有 review 行。"""
+    seed_watchlist(wired, [('NVDA', ['core'])])
+    _sent(monkeypatch)
+    wired.execute('DROP TABLE plan_reviews, user_inputs, agent_plan_versions CASCADE')
+    wired.commit()
+    for trigger, moment in (('scheduled', NOW), ('manual', NOW + timedelta(minutes=5)),
+                            ('scheduled', datetime(2026, 10, 24, 22, 30, tzinfo=UTC))):
+        result = _task_run(trigger, moment=moment)
+        rows = repository.stage_runs_for_run(wired, result['run_id'])
+        assert len(rows) == 7 and [r['stage'] for r in rows].count('review') == 0
+        assert {r['stage'] for r in rows} == set(stages_module.STAGE_IDS_V1)
+        assert {r['stages_version'] for r in rows} == {'stages-1'}
+        assert result['summary']['stage_status'] == {'written': 7, 'error': None}
+        if trigger == 'scheduled' and moment == NOW:
+            assert result['summary']['errors'].count('timeline: migration_026_missing') == 1
+            assert result['summary']['review'] == {'objects': 0, 'tokens': {'input': 0, 'output': 0},
+                                                   'outcomes': {'maintain': 0, 'revise': 0, 'invalidate': 0,
+                                                                'skipped': 0, 'error': 0}}
 
 
 def test_signals_and_plan_counts(db, monkeypatch):
@@ -337,14 +371,14 @@ def test_abort_marks_remaining_failed(wired, monkeypatch):
     assert rows['collect']['status'] in ('success', 'partial')
     assert rows['screen']['status'] == 'success'
     assert (rows['regime']['status'], rows['regime']['reason']) == ('failed', 'aborted: boom')
-    for stage in ('signals', 'plan', 'agent', 'push'):
+    for stage in ('signals', 'plan', 'agent', 'review', 'push'):
         assert (rows[stage]['status'], rows[stage]['reason']) == ('failed', 'aborted: boom')
 
 
 def test_missing_stage_runs_table_does_not_fail_batch(wired):
     seed_watchlist(wired, [('NVDA', ['core'])])
     with_table = _task_run('manual')
-    assert with_table['summary']['stage_status'] == {'written': 7, 'error': None}
+    assert with_table['summary']['stage_status'] == {'written': 8, 'error': None}
 
     wired.execute('DROP TABLE stage_runs')
     wired.commit()

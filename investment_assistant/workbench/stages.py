@@ -1,10 +1,14 @@
-"""Seven-stage registry and the stage recorder for workbench runs (v2.4 §4, §5, §6.2).
+"""Stage registry and the stage recorder for workbench runs (v2.4 §4, §5, §6.2; v2.5 §7.1).
 
 ``STAGES`` is the static registry (its order is the display order, same shape as
 ``families.FAMILIES``); ``StageRecorder`` appends one ``stage_runs`` row per
 stage, each in its own transaction, so a later stage's failure cannot lose an
 earlier stage's evidence. Write failures are swallowed into ``close``'s report —
 bookkeeping must never fail the batch.
+
+``stages-2`` (v2.5) has eight stages, ``review`` between ``agent`` and ``push``.
+A run against a database without migration 026 is booked as ``stages-1`` (D22):
+the recorder then knows only the seven v2.4 stages and ignores ``review``.
 """
 from __future__ import annotations
 
@@ -17,7 +21,8 @@ from typing import Any
 
 from investment_assistant.workbench import collect, families, repository
 
-STAGES_VERSION = 'stages-1'
+STAGES_VERSION = 'stages-2'
+STAGES_VERSION_V1 = 'stages-1'
 SAMPLES_MAX = 10                      # per skip-reason sample cap (spec §5.1)
 
 
@@ -32,7 +37,7 @@ STAGES: tuple[StageDef, ...] = (
     StageDef(
         id='collect',
         title='数据采集',
-        purpose='逐只采集日线、资讯标题、财报日、SEC 列表与 FRED 宏观，是后面六个阶段的数据底座。',
+        purpose='逐只采集日线、资讯标题、财报日、SEC 列表与 FRED 宏观，是后面各阶段的数据底座。',
     ),
     StageDef(
         id='screen',
@@ -60,6 +65,11 @@ STAGES: tuple[StageDef, ...] = (
         purpose='Agent 轨道对候选做提议与反方论证并给出解读；缺 key 等不可用情况整阶段跳过。',
     ),
     StageDef(
+        id='review',
+        title='每日复查',
+        purpose='对每份有效 Agent 计划做一次复查：维持、修订或作废；系统信号与你的输入触发认真复查。',
+    ),
+    StageDef(
         id='push',
         title='复核与推送',
         purpose='组装今日视图并把摘要推送 Discord；手动运行不推送。',
@@ -67,6 +77,8 @@ STAGES: tuple[StageDef, ...] = (
 )
 
 STAGE_IDS: tuple[str, ...] = tuple(stage.id for stage in STAGES)
+STAGE_IDS_V1: tuple[str, ...] = tuple(stage_id for stage_id in STAGE_IDS if stage_id != 'review')
+STAGE_IDS_BY_VERSION: dict[str, tuple[str, ...]] = {STAGES_VERSION_V1: STAGE_IDS_V1, STAGES_VERSION: STAGE_IDS}
 
 
 def classify(*, executed: bool, failed_reason: str | None, failures: list,
@@ -153,12 +165,20 @@ class StageRecorder:
 
     Every write goes through the injected ``writer`` (default: its own
     transaction via ``write_stage_row``); any write error is swallowed into the
-    first ``error`` and never raised, so accounting cannot fail the batch."""
+    first ``error`` and never raised, so accounting cannot fail the batch.
+
+    ``version`` picks the stage set: ``stages-2`` (default, eight rows) or ``stages-1`` (seven rows,
+    migration 026 missing): a stage outside the set is ignored by ``open`` / ``finish`` / ``skip``."""
 
     def __init__(self, run_id: str, trigger: str, session: date | None, *,
                  writer: Callable[[dict], None] | None = None,
                  wall_now: Callable[[], datetime] | None = None,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 version: str = STAGES_VERSION):
+        if version not in STAGE_IDS_BY_VERSION:
+            raise ValueError(f'unknown stages version: {version!r}')
+        self.version = version
+        self.stage_ids = STAGE_IDS_BY_VERSION[version]
         self.run_id = run_id
         self.trigger = trigger
         self.session = session
@@ -173,7 +193,10 @@ class StageRecorder:
         self._error: str | None = None
 
     def open(self, stage_id: str) -> StageAcc:
-        """Start a stage: keep its accumulator and its first started_at."""
+        """Start a stage: keep its accumulator and its first started_at. A stage outside this version
+        gets a throwaway accumulator, so callers account as usual and nothing is written."""
+        if stage_id not in self.stage_ids:
+            return StageAcc(self._clock)
         acc = self._accs.get(stage_id)
         if acc is None:
             acc = StageAcc(self._clock)
@@ -183,7 +206,7 @@ class StageRecorder:
 
     def finish(self, stage_id: str, *, failed: str | None = None) -> None:
         """Freeze the accumulator into one row and write it; a second call is ignored."""
-        if stage_id in self._written:
+        if stage_id in self._written or stage_id not in self.stage_ids:
             return
         self._written.add(stage_id)
         acc = self._accs.get(stage_id)
@@ -209,7 +232,7 @@ class StageRecorder:
 
     def skip(self, stage_id: str, reason: str) -> None:
         """Record a whole-stage skip (explicit_pool、not_trading_day…) as a zero row."""
-        if stage_id in self._written:
+        if stage_id in self._written or stage_id not in self.stage_ids:
             return
         self._written.add(stage_id)
         now = self._wall_now()
@@ -224,8 +247,9 @@ class StageRecorder:
         """Fill every unwritten stage, then report ``{'written', 'error'}`` (spec §6.2).
 
         With ``exc`` the leftovers are failed/``aborted: …``, without it
-        skipped/``not_reached`` — each run_id ends up with exactly seven rows."""
-        for stage_id in STAGE_IDS:
+        skipped/``not_reached`` — each run_id ends up with exactly one row per stage of its version
+        (eight for stages-2, seven for stages-1)."""
+        for stage_id in self.stage_ids:
             if stage_id in self._written:
                 continue
             if exc is None:
@@ -243,7 +267,7 @@ class StageRecorder:
         """One stage_runs row: exactly the §5.1 columns, without id / created_at."""
         return {
             'run_id': self.run_id, 'job': 'workbench', 'trigger': self.trigger,
-            'session': self.session, 'stage': stage_id, 'stages_version': STAGES_VERSION,
+            'session': self.session, 'stage': stage_id, 'stages_version': self.version,
             'status': status, 'reason': reason,
             'input_count': acc.input_count if acc else 0,
             'output_count': acc.output_count if acc else 0,

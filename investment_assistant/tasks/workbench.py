@@ -6,8 +6,17 @@ from typing import Any
 
 from investment_assistant.config import AssistantConfig, load_config
 from investment_assistant.tasks._harness import run_task
-from investment_assistant.workbench import bars, families, service
+from investment_assistant.workbench import bars, families, repository, service
 from investment_assistant.workbench import stages as stages_module
+
+
+def _timeline_ready() -> bool:
+    """Migration 026 present (v2.5 D22), read on a read-only transaction; any failure counts as not ready."""
+    try:
+        with service.read_only_tx() as conn:
+            return repository.timeline_ready(conn)
+    except Exception:  # noqa: BLE001 - an unreadable database is booked as stages-1; the batch reports it
+        return False
 
 
 def _account_push(recorder: stages_module.StageRecorder, acc: stages_module.StageAcc,
@@ -38,9 +47,13 @@ def run(config: AssistantConfig | None = None, *, trigger_source: str = 'schedul
     scheduled = trigger_source == 'scheduled'
     # Scheduled runs skip New York holidays; a manual run always targets the latest settled session.
     def batch(run_id: str) -> dict:
-        # 七阶段证据（v2.4 §4）：任务层建记录器，批处理记前六个阶段，推送阶段在这里记。
+        # 阶段证据（v2.4 §4，v2.5 §7.1）：任务层建记录器，批处理记推送之前的阶段，推送阶段在这里记。
+        # 迁移 026 未执行（D22）→ 本次按 stages-1 记 7 行；就绪 → stages-2 记 8 行。
+        ready = _timeline_ready()
         recorder = stages_module.StageRecorder(run_id, 'scheduled' if scheduled else 'manual_batch',
-                                               bars.latest_closed_session(moment))
+                                               bars.latest_closed_session(moment),
+                                               version=stages_module.STAGES_VERSION if ready
+                                               else stages_module.STAGES_VERSION_V1)
         failure: BaseException | None = None
         summary: dict | None = None
         try:
@@ -49,7 +62,7 @@ def run(config: AssistantConfig | None = None, *, trigger_source: str = 'schedul
             summary = service.run_batch(now=moment, deps=deps, run_id=run_id,
                                         skip_non_trading=scheduled,
                                         record_trigger='scheduled' if scheduled else 'manual_batch',
-                                        stages=recorder)
+                                        stages=recorder, timeline_ready=ready)
             if not scheduled:
                 recorder.skip('push', 'manual_run')
                 return summary  # 手动运行不推送

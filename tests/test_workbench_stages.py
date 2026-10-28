@@ -16,19 +16,55 @@ def _recorder(rows, *, run_id='run-1', clock=None):
                                 wall_now=lambda: WALL, clock=clock or (lambda: 0.0))
 
 
-def test_stage_ids_match_migration_check():
-    sql = Path('migrations/025_stage_runs.sql').read_text(encoding='utf-8')
+def _check_ids(migration: str) -> tuple[str, ...]:
+    sql = Path('migrations', migration).read_text(encoding='utf-8')
     match = re.search(r"CHECK \(stage IN \(([^)]+)\)\)", sql)
-    assert stages.STAGE_IDS == tuple(re.findall(r"'([^']+)'", match.group(1)))
+    return tuple(re.findall(r"'([^']+)'", match.group(1)))
 
 
-def test_registry_seven_stages_in_order_and_described():
-    assert stages.STAGES_VERSION == 'stages-1'
-    assert stages.STAGE_IDS == ('collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'push')
+def test_stage_ids_match_migration_check():
+    assert stages.STAGE_IDS_V1 == _check_ids('025_stage_runs.sql')       # stages-1：025 的七个阶段
+    assert stages.STAGE_IDS_BY_VERSION == {'stages-1': stages.STAGE_IDS_V1, 'stages-2': stages.STAGE_IDS}
+
+
+def test_stages_registry_eight():
+    """v2.5 §7.1: stages-2 inserts review between agent and push; ids equal 026's stage_runs CHECK."""
+    assert stages.STAGES_VERSION == 'stages-2'
+    assert stages.STAGE_IDS == _check_ids('026_plan_timeline.sql')
+    assert stages.STAGE_IDS == ('collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'review', 'push')
+    assert stages.STAGE_IDS_V1 == ('collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'push')
     assert [s.title for s in stages.STAGES] == [
         '数据采集', '筛选 `screen-1`', '市场环境 `regime-2`', '信号与候选', '规则计划 `plan-1`',
-        'Agent 建议', '复核与推送']
+        'Agent 建议', '每日复查', '复核与推送']
+    review = stages.STAGES[6]
+    assert review.purpose == '对每份有效 Agent 计划做一次复查：维持、修订或作废；系统信号与你的输入触发认真复查。'
     assert all(s.purpose for s in stages.STAGES)
+    rows = []
+    rec = _recorder(rows)
+    with rec.stage('collect'):
+        pass
+    assert rec.close(None) == {'written': 8, 'error': None}
+    assert [row['stage'] for row in rows] == list(stages.STAGE_IDS)
+    assert {row['stages_version'] for row in rows} == {'stages-2'}
+
+
+def test_stages_1_recorder_writes_seven_and_ignores_review():
+    """D22: without migration 026 the run is booked as stages-1 — seven rows, review never written."""
+    rows = []
+    rec = stages.StageRecorder('run-v1', 'scheduled', SESSION, writer=rows.append, wall_now=lambda: WALL,
+                               clock=lambda: 0.0, version='stages-1')
+    acc = rec.open('review')                 # 照常返回累加器，但不登记
+    acc.input(3)
+    rec.finish('review')
+    rec.skip('review', 'migration_026_missing')
+    with rec.stage('review'):
+        pass
+    assert rows == []
+    assert rec.close(None) == {'written': 7, 'error': None}
+    assert [row['stage'] for row in rows] == list(stages.STAGE_IDS_V1)
+    assert {row['stages_version'] for row in rows} == {'stages-1'}
+    with pytest.raises(ValueError):
+        stages.StageRecorder('run-x', 'scheduled', SESSION, writer=rows.append, version='stages-9')
 
 
 def test_classify_precedence():
@@ -74,7 +110,7 @@ def test_row_shape():
                         'outputs', 'detail', 'started_at', 'finished_at', 'duration_ms'}
     assert row['run_id'] == 'run-1' and row['job'] == 'workbench'
     assert row['trigger'] == 'manual_batch' and row['session'] == SESSION
-    assert row['stage'] == 'collect' and row['stages_version'] == 'stages-1'
+    assert row['stage'] == 'collect' and row['stages_version'] == 'stages-2'
     assert row['status'] == 'partial' and row['reason'] is None
     assert row['input_count'] == 20 and row['output_count'] == 18
     assert row['skips'] == [{'reason': 'trend_reclaim:insufficient_history', 'count': 1, 'samples': ['MU']}]
@@ -103,8 +139,8 @@ def test_close_fills_remaining_stages():
     rec = _recorder(rows, run_id='r-skip')
     with rec.stage('collect') as acc:
         acc.input(3)
-    assert rec.close(None) == {'written': 7, 'error': None}
-    assert len(rows) == 7
+    assert rec.close(None) == {'written': 8, 'error': None}
+    assert len(rows) == 8
     assert rows[0]['stage'] == 'collect' and rows[0]['status'] == 'success'
     rest = [row for row in rows if row['stage'] != 'collect']
     assert {row['stage'] for row in rest} == set(stages.STAGE_IDS) - {'collect'}

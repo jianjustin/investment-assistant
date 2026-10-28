@@ -121,9 +121,11 @@ def _midnight(day: date) -> datetime:
     return datetime.combine(day, time(0), tzinfo=NY)
 
 
-def _filing_events(conn, ticker: str, session: date, cutoff_at: datetime) -> tuple[list, list]:
-    """(rule inputs, filings rows). SEC 8-K listings not in the filings table still count as new filings."""
-    since = session - timedelta(days=FILING_LOOKBACK_DAYS)
+def _filing_events(conn, ticker: str, session: date, cutoff_at: datetime,
+                   since: date | None = None) -> tuple[list, list]:
+    """(rule inputs, filings rows). SEC 8-K listings not in the filings table still count as new filings.
+    ``since`` (default: FILING_LOOKBACK_DAYS before the session) is the first filing date read."""
+    since = session - timedelta(days=FILING_LOOKBACK_DAYS) if since is None else since
     rows = repository.read_filings(conn, ticker, since=since, cutoff_at=cutoff_at)
     events = [{**r, 'id': f"filing:{r['id']}"} for r in rows]
     known = {r['accession_number'].replace('-', '') for r in rows}
@@ -317,7 +319,8 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
               breadth_tickers: list[str] | None = None,
               record_trigger: str | None = None,
               wall_now: Callable[[], datetime] | None = None,
-              stages: stages_module.StageRecorder | None = None) -> dict[str, Any]:
+              stages: stages_module.StageRecorder | None = None,
+              timeline_ready: bool | None = None) -> dict[str, Any]:
     """Collect -> market context -> rules -> units -> briefs for the latest settled session. Idempotent per session.
 
     The batch runs over the tiered watch pool read from the watchlist (holdings
@@ -333,12 +336,17 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
     ``stages`` (v2.4 §6.2) is the task layer's stage recorder: accounting next to
     the existing code for collect / screen / regime, never changing the control
     flow; None keeps the batch exactly as before.
+    ``timeline_ready`` (v2.5 D22, migration 026; read in the first transaction when None) is handed to the
+    agent and review stages. The review stage (v2.5 §7) runs after the agent stage; tickers of active
+    agent-2 chains that left the pool and holdings are collected but never run through the rules (D21).
     """
+    from investment_assistant.workbench import plan_review     # plan_review imports this module
+
     deps = deps or Deps()
     clock = deps.clock or _time_module.monotonic
     ny_date = now.astimezone(NY).date()
     if skip_non_trading and not is_trading_day(ny_date):
-        if stages is not None:   # 非交易日：前 6 个阶段整段跳过，push 留给任务层（v2.4 §4）
+        if stages is not None:   # 非交易日：push 之前的阶段整段跳过，push 留给任务层（v2.4 §4）
             stages.skip_many(stages_module.STAGE_IDS[:-1], 'not_trading_day')
         return {'status': 'skipped', 'reason': 'not a trading day in New York', 'ny_date': ny_date.isoformat()}
     session = bars.latest_closed_session(now)
@@ -354,6 +362,7 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         # Holdings join the batch even off the pool: plan stops and earnings reminders need their data.
         held = [t for t in sorted({r['ticker'] for r in repository.list_trades(conn) if r['voided_at'] is None})
                 if t not in watchlist]
+        ready = repository.timeline_ready(conn) if timeline_ready is None else timeline_ready
     summary: dict[str, Any] = {
         'session': session.isoformat(), 'cutoff_at': now.isoformat(), 'tickers': {}, 'benchmark': {},
         'filings': {}, 'earnings': {}, 'plans': {}, 'conflicts': [], 'errors': [], 'briefs': {},
@@ -480,7 +489,10 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
             summary['errors'].append('core_empty')
 
         e_ok = e_failed = 0                 # 财报日成败（collect 阶段 detail.earnings，v2.4 §4）
-        for ticker in all_tickers:
+
+        def collect_ticker(ticker: str) -> None:
+            """Bars, news and the earnings date of one ticker; failures land in the summary."""
+            nonlocal e_ok, e_failed
             entry: dict[str, Any] = {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [], 'skips': [],
                                      'error': None}
             problems = []
@@ -532,14 +544,32 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
                 summary['errors'].extend(f'{ticker} {p}' for p in problems)
             summary['tickers'][ticker] = entry
 
+        for ticker in all_tickers:
+            collect_ticker(ticker)
+        # D21: tickers of active agent-2 chains outside the pool and holdings are collected only — bars,
+        # news, earnings and the SEC listing below — and never reach the rule loop.
+        chain_tickers: list[str] = []
+        if ready:
+            try:
+                with _tx() as conn:
+                    chain_tickers = plan_review.chain_tickers(conn, session, now=now, exclude=all_tickers)
+            except Unavailable:
+                raise
+            except Exception as exc:
+                summary['errors'].append(f'review chains: {exc}')
+        summary['pool']['chains'] = len(chain_tickers)
+        for ticker in chain_tickers:
+            collect_ticker(ticker)
+        collected = [*all_tickers, *chain_tickers]
+
         # Freeze the denominator before the call: one SEC listing covers every
         # ticker (I04); a whole-call failure is the '*' sentinel, not an N+1th target.
         if tallies is not None:
-            tallies['sec_filings'].set_targets(all_tickers)
+            tallies['sec_filings'].set_targets(collected)
         try:
-            summary['filings'] = collect.sec_listing(all_tickers, session=session, now=now, deps=deps)
+            summary['filings'] = collect.sec_listing(collected, session=session, now=now, deps=deps)
             if tallies is not None:
-                for ticker in all_tickers:
+                for ticker in collected:
                     tallies['sec_filings'].ok(ticker)
         except Unavailable:
             raise
@@ -590,7 +620,7 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
                     c_acc.fail(f"{row['family']}:{failure['target']}", failure['reason'])
             if fetch_ids:
                 c_acc.set_ref('data_fetch_runs', fetch_ids[:4])
-            c_acc.detail['earnings'] = {'targets': len(all_tickers), 'ok': e_ok, 'failed': e_failed}
+            c_acc.detail['earnings'] = {'targets': len(collected), 'ok': e_ok, 'failed': e_failed}
             c_acc.duration_ms += (clock() - c_started) * 1000
             stages.finish('collect')
 
@@ -711,13 +741,31 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
     summary['timings']['rules'] = round(clock() - t_rules, 1)
     a_acc = stages.open('agent') if stages is not None else None
     unavailable = _agent_stage(session, now=now, deps=deps, summary=summary, started=started, clock=clock,
-                               acc=a_acc)
+                               acc=a_acc, timeline_ready=ready)
     if stages is not None:
         if unavailable is not None:    # 不可用压过「空跑成功」：整阶段 skipped（v2.4 §4）
             stages.skip('agent', f'agent_unavailable: {unavailable}')
         else:
             _check_derivations(a_acc, a_acc.outputs.get('plan_ids', []), summary)
             stages.finish('agent')
+    # v2.5 §7: the daily review after the agent stage; a failure of the whole stage never fails the batch.
+    rv_acc = stages.open('review') if stages is not None else None
+    try:
+        skipped = plan_review.run_stage(session, now=now, deps=deps, summary=summary, started=started,
+                                        clock=clock, run_id=run_id, acc=rv_acc, timeline_ready=ready)
+    except Unavailable:
+        raise
+    except Exception as exc:
+        reason = families.sanitize_reason(exc)
+        summary['errors'].append(f'review: {reason}')
+        if stages is not None:
+            stages.finish('review', failed=reason or type(exc).__name__)
+    else:
+        if stages is not None:
+            if skipped is not None:
+                stages.skip('review', skipped)
+            else:
+                stages.finish('review')
     summary['timings']['total'] = round(clock() - started, 1)
     if summary['timings']['total'] > BATCH_BUDGET_S:
         summary['errors'].append(f"batch_over_budget: {summary['timings']['total']}")

@@ -128,7 +128,7 @@ WATCHLIST_EXPECTED = {
                 'etf_bars': ['SMH'], 'fred': [], 'regime': [], 'agent': []},
     'errors': ['SMH etf_bars: provider down', 'AAA news: news down', 'BBB bars: provider down',
                'SEC listings: edgar down'],
-    'pool': {'core': 1, 'extended': 22, 'holdings': 0, 'screen': 20,
+    'pool': {'core': 1, 'extended': 22, 'holdings': 0, 'screen': 20, 'chains': 0,
              'changes': [{'ticker': 'AAA', 'tier': 'core', 'sector_etf': None,
                           'source': 'watchlist'},
                          {'ticker': 'BBB', 'tier': 'extended', 'sector_etf': None,
@@ -161,7 +161,7 @@ EXPLICIT_EXPECTED = {
     'sources': {'bars': [], 'news': [], 'earnings': [], 'sec': ['all'], 'etf_bars': ['SMH'],
                 'fred': [], 'regime': [], 'agent': []},
     'errors': ['SMH etf_bars: provider down', 'SEC listings: edgar down'],
-    'pool': {'core': 1, 'extended': 0, 'holdings': 0, 'screen': None, 'changes': []},
+    'pool': {'core': 1, 'extended': 0, 'holdings': 0, 'screen': None, 'changes': [], 'chains': 0},
     'screen': {'status': 'skipped'},
 }
 
@@ -255,3 +255,26 @@ def test_characterization_spy_failure_with_stages(db):
     sec = db.execute("SELECT status, target_count, failures FROM data_fetch_runs "
                      "WHERE family = 'sec_filings' ORDER BY id DESC LIMIT 1").fetchone()
     assert sec == ('failed', 23, [{'target': '*', 'reason': 'edgar down'}])
+
+
+# ------------------------------------------------------- v2.5 §7.1 summary 护栏
+# stages-2 只在 summary 里新增 review 键与 pool.chains 计数；其余键与改动前逐字段相同。
+
+SUMMARY_KEYS_V24 = {'session', 'cutoff_at', 'tickers', 'benchmark', 'filings', 'earnings', 'plans', 'conflicts',
+                    'errors', 'briefs', 'screen', 'pool', 'etfs', 'macro', 'regime', 'sources', 'timings', 'agent'}
+EMPTY_REVIEW = {'objects': 0, 'outcomes': {'maintain': 0, 'revise': 0, 'invalidate': 0, 'skipped': 0, 'error': 0},
+                'tokens': {'input': 0, 'output': 0}}
+
+
+def test_batch_characterization(db):
+    seed_watchlist(db, [('AAA', ['core']), ('BBB', []), ('CCC', [])])
+    rows = []
+    summary = service.run_batch(now=NOW, deps=batch_deps(), stages=_stage_recorder(rows, 'run-ch-review'))
+    assert set(summary) == SUMMARY_KEYS_V24 | {'review'}
+    assert set(summary['pool']) == {'core', 'extended', 'holdings', 'screen', 'changes', 'chains'}
+    assert _reduced(summary) == WATCHLIST_EXPECTED
+    assert summary['review'] == EMPTY_REVIEW
+    assert set(summary['timings']) == {'collect', 'regime', 'rules', 'agent', 'total'}
+    plain = service.run_batch(tickers=['NVDA'], now=NOW, deps=batch_deps())     # 不记阶段：键集合相同
+    assert set(plain) == SUMMARY_KEYS_V24 | {'review'} and plain['review'] == EMPTY_REVIEW
+    assert plain['pool'] == EXPLICIT_EXPECTED['pool']

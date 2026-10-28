@@ -44,10 +44,10 @@
 
 ## 批处理阶段证据
 
-每次 `workbench` 任务（定时、手动、非交易日）向 `stage_runs` 追加恰好 7 行，阶段顺序固定为 `collect`、`screen`、`regime`、`signals`、`plan`、`agent`、`push`，`run_id` 与 `job_reports` 的 `run_id` 相同，`trigger` 为 `scheduled` / `manual_batch`。每行记状态（`success` / `partial` / `degraded` / `failed` / `skipped`）、输入与产出计数、按原因分组的跳过、逐目标失败、降级、产出引用（数据拉取行、筛选、区制、候选、计划、Agent 运行的 id）与耗时。前六个阶段由批处理在各自的位置记，`push` 由任务层记；表只追加，不在 `WORKBENCH_TABLES` 里，缺表不影响批处理。
+每次 `workbench` 任务（定时、手动、非交易日）向 `stage_runs` 追加恰好 8 行（`stages_version = stages-2`），阶段顺序固定为 `collect`、`screen`、`regime`、`signals`、`plan`、`agent`、`review`、`push`；任务开始时若迁移 026 未执行（查询失败也按未执行处理），本次按 `stages-1` 记 7 行，没有 `review` 行（025 的约束本来也不允许），运行报告 `errors` 有一条 `timeline: migration_026_missing`。`run_id` 与 `job_reports` 的 `run_id` 相同，`trigger` 为 `scheduled` / `manual_batch`。每行记状态（`success` / `partial` / `degraded` / `failed` / `skipped`）、输入与产出计数、按原因分组的跳过、逐目标失败、降级、产出引用（数据拉取行、筛选、区制、候选、计划、Agent 运行、复查记录与新版计划的 id）与耗时。`push` 之前的阶段由批处理在各自的位置记，`push` 由任务层记；表只追加，不在 `WORKBENCH_TABLES` 里，缺表不影响批处理。
 
-- 整阶段跳过的原因：`not_trading_day`（纽约休市，前六个阶段）、`explicit_pool`（`screen`）、`manual_run`（手动运行不推送）、`already_pushed`、`task_disabled`、`agent_unavailable: <原因>`（缺 key 或关闭，压过「当天没有单元」的空跑成功）、`not_reached`（运行正常结束但该阶段没有执行）。
-- 中途抛异常：已写的阶段保留，出错的阶段与其后未写的阶段记 `failed`，原因 `aborted: <异常摘要>`，仍是 7 行。
+- 整阶段跳过的原因：`not_trading_day`（纽约休市，`push` 之前的全部阶段）、`migration_026_missing`（`review`，只在直接以 `stages-2` 记账而库缺 026 时出现）、`explicit_pool`（`screen`）、`manual_run`（手动运行不推送）、`already_pushed`、`task_disabled`、`agent_unavailable: <原因>`（缺 key 或关闭，压过「当天没有单元」的空跑成功；`review` 阶段在没有复查对象时同样如此，有对象时照常记账并标 `degraded`）、`not_reached`（运行正常结束但该阶段没有执行）。
+- 中途抛异常：已写的阶段保留，出错的阶段与其后未写的阶段记 `failed`，原因 `aborted: <异常摘要>`，仍是 8 行（`stages-1` 为 7 行）。`review` 阶段整体出错只记该阶段 `failed` 与 `errors` 一条 `review: <原因>`，不中断推送。
 - 休市日的 `push` 发的是休市一行，记 `detail.closed = true`。
 - 写入失败（含迁移 025 未执行）只记在运行报告 `summary.stage_status = {"written": n, "error": …}`，不进 `summary.errors`，不改变任务状态。任务因异常失败时运行报告只有 `error`，没有 `stage_status`。
 

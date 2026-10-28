@@ -158,7 +158,37 @@ def test_stages_missing_row_fails(wired, monkeypatch, capsys):
     wired.commit()
     code, out = _run(capsys, 'stages', '--session', SESSION.isoformat())
     assert code == 1
-    assert '6 行' in out and 'agent' in _line(out, '缺少阶段')
+    assert '7 行' in out and 'agent' in _line(out, '缺少阶段')
+
+
+def test_run_stage_count_by_version():
+    assert derivation.RUN_STAGE_COUNT == {'stages-1': 7, 'stages-2': 8}
+    assert {v: len(ids) for v, ids in stages_module.STAGE_IDS_BY_VERSION.items()} == derivation.RUN_STAGE_COUNT
+
+
+def test_stages_cli_counts_by_version(wired, monkeypatch, capsys):
+    """v2.5 §7.1: stages-1 runs pass with 7 rows, stages-2 runs with 8; a stages-2 run short of a row fails."""
+    eight = _scheduled(wired, monkeypatch)
+    wired.execute('DROP TABLE plan_reviews, user_inputs, agent_plan_versions CASCADE')   # 026 未执行 → stages-1
+    wired.commit()
+    seven = _task_run('manual')
+    wired.commit()
+    def rows(run_id):
+        return wired.execute('SELECT stages_version, count(*) FROM stage_runs WHERE run_id = %s '
+                             'GROUP BY stages_version', [run_id]).fetchall()
+
+    assert rows(eight['run_id']) == [('stages-2', 8)] and rows(seven['run_id']) == [('stages-1', 7)]
+    code, out = _run(capsys, 'stages', '--session', SESSION.isoformat())
+    assert code == 0, out
+    assert 'stages-2' in _line(out, eight['run_id']) and '8 行' in _line(out, eight['run_id'])
+    assert 'stages-1' in _line(out, seven['run_id']) and '7 行' in _line(out, seven['run_id'])
+    assert '2 个齐全' in out.splitlines()[-1]
+
+    wired.execute("DELETE FROM stage_runs WHERE run_id = %s AND stage = 'review'", [eight['run_id']])
+    wired.commit()
+    code, out = _run(capsys, 'stages', '--session', SESSION.isoformat())
+    assert code == 1
+    assert 'review' in _line(out, '缺少阶段') and '1 个齐全' in out.splitlines()[-1]
 
 
 def test_stages_run_missing_from_job_reports_fails(wired, monkeypatch, capsys):

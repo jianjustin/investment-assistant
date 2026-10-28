@@ -8,7 +8,7 @@
 
 | 时间（北京） | 发生什么 | 你要做的 |
 |---|---|---|
-| 周二至周六 06:30 | 任务 `workbench`：采集日线、资讯、财报日、SEC 列表、行业 ETF、FRED；跑纳指 100 筛选（成员自动进扩展池，见[观察池](pool-and-context.md)）；记录各数据族拉取结果；生成市场环境；对最近收盘交易日跑规则；生成规则计划；跑 Agent 轨道；推送；记录 7 个阶段的证据（`stage_runs`，每次运行恰好 7 行，见[调度与通知](../operations/scheduling-and-notifications.md)）。纽约休市日跳过，推一行「纽约休市，未运行」 | 无 |
+| 周二至周六 06:30 | 任务 `workbench`：采集日线、资讯、财报日、SEC 列表、行业 ETF、FRED；跑纳指 100 筛选（成员自动进扩展池，见[观察池](pool-and-context.md)）；记录各数据族拉取结果；生成市场环境；对最近收盘交易日跑规则；生成规则计划；跑 Agent 轨道；对每份有效 Agent 计划做每日复查（见下文[每日复查](#每日复查)）；推送；记录 8 个阶段的证据（`stage_runs`，每次运行恰好 8 行；迁移 026 未执行时按 `stages-1` 记 7 行，见[调度与通知](../operations/scheduling-and-notifications.md)）。纽约休市日跳过，推一行「纽约休市，未运行」 | 无 |
 | 早上 | 打开「今日」：每只股票每天一个决策单元，显示候选规则、输入值、计划价位、Agent 建议、解读（支持 / 反证 / 冲突，带引用）、近期财报与资讯；筛选来源的单元带「筛选」标记 | 采纳 / 否决 / 降级为观察，写一句理由；采纳时选执行依据：规则计划、Agent 建议或自定价位 |
 | 成交后 | 「复盘 → 交易与持仓」录入成交（本机时区），关联当时的决定 | 录错就「作废」并写理由，再重新录入 |
 
@@ -53,7 +53,7 @@
 
 ## 计划推导
 
-每份计划的价位都能只用它 `inputs` 指向的已存行重算出来（只读回读，按 id 取行，修订过的新行不会被误取）。批处理在 `plan` 与 `agent` 阶段结束前对本阶段产出的计划做一次核对，计数写进阶段行的 `detail.derivation`；有计划判为 `mismatch` / `incomplete` 时该阶段记 `degraded`，运行报告的 `errors` 多一条 `derivation_mismatch: <标的> <计划id>`——已存计划、推送内容与其他阶段不受影响。
+每份计划的价位都能只用它 `inputs` 指向的已存行重算出来（只读回读，按 id 取行，修订过的新行不会被误取）。批处理在 `plan`、`agent` 与 `review` 阶段结束前对本阶段产出的计划（`review` 为本次修订出的新版）做一次核对，计数写进阶段行的 `detail.derivation`；有计划判为 `mismatch` / `incomplete` 时该阶段记 `degraded`，运行报告的 `errors` 多一条 `derivation_mismatch: <标的> <计划id>`——已存计划、推送内容与其他阶段不受影响。
 
 页面入口在「今日」：规则计划块与 Agent 计划块各有「展开推导」，没有计划的单元显示「触发依据」（只渲染触发段），都是点开后才请求，展开状态不进地址。展开后顶部是一致性结论（一致 / 不一致 / 不完整，后两者列出差异与缺失项）与常驻的证据状态说明，下面四段——①触发（每条候选一张条件表：条件句 · 冻结取值 · 结果）、②输入快照（参考价、财报、资金快照、敞口、仓位参数、区制与行业，15 根日线表默认折叠）、③逐项计算（项目 · 来源 · 公式 · 代入 · 结果 · 已存 · 一致，TR 明细默认折叠）、④校验——底部是生成这份计划的运行证据（`run_id`、阶段状态、推导核对计数；迁移 025 未执行或 v2.4 之前生成的计划会如实说明）。数字按后端字符串原样显示，前端不重算、不再取整。
 
@@ -67,10 +67,22 @@
 ```
 
 - `check`：逐份列出 `plan_id`、标的、信号日、种类、`status`、一致性结论（`consistent` / `mismatch` / `incomplete`）与差异明细，末行汇总；`--until` 按信号日截止（含当日），`--kind` 只看一种计划。任何 `status = ok` 的计划不是 `consistent` 时退出码 1（作废计划照常列出，不影响退出码）。
-- `stages`：按 `run_id` 分组列出该 session 的阶段行（阶段、状态、计数、推导计数、原因）。核对三件事：每个运行恰好 7 行、每个运行都在 `job_reports` 里、时间窗（当日纽约 16:00 到下一交易日纽约 16:00 之间开始）内的 `workbench` 运行报告都有阶段行——没有的列为「缺证据」。任一项不满足，或 `stage_runs` 表还没建（迁移 025 未执行），退出码 1。
+- `stages`：按 `run_id` 分组列出该 session 的阶段行（阶段、状态、计数、推导计数、原因）。核对三件事：每个运行按自己的阶段版本行数齐全（`stages-1` 7 行、`stages-2` 8 行，阶段集合也按版本核对）、每个运行都在 `job_reports` 里、时间窗（当日纽约 16:00 到下一交易日纽约 16:00 之间开始）内的 `workbench` 运行报告都有阶段行——没有的列为「缺证据」。任一项不满足，或 `stage_runs` 表还没建（迁移 025 未执行），退出码 1。
 - 两个子命令参数错误或数据库不可用时退出码 2。
 - 验证一次推导：手动运行批处理后，在「今日」任选一份计划点「展开推导」，顶部显示「推导与重算一致」，触发段每条条件标「成立」或「未冻结，无法复核」，底部运行证据的 `run_id` 与该次运行报告一致；CLI `check --since <当日>` 对同一计划的结论相同。
 - 已知限制：触发段只复核冻结取值——候选没有冻结的取值如实标「未冻结，无法复核」，不从原始日线重算均线；「推导一致」只说明算术正确，不说明规则有效（证据状态说明常驻每份推导）。
+
+## 每日复查
+
+批处理的第 7 个阶段 `review`（「每日复查」，在 `agent` 之后、`push` 之前，设计见 [v2.5 计划时间线 §7](../specs/2026-10-28-v2.5-plan-timeline-design.md#7-每日复查阶段-review)）对每条有效的 `agent-2` 计划链做一次复查，每条链每个交易日至多一条有效批处理复查记录（`plan_reviews`）。
+
+- **对象**：链状态为入场期（`entry`）或持仓期（`holding`）的链；当天刚生成的版本不复查（`fresh_version`，生成本身就是当天的记录），当天已有有效批处理复查的不再复查（`already_reviewed`）。顺序：持仓期在前，然后主列表入场期，扩展池入场期最后，各自按最新版截止日、再按标的；超过 20 条的记 `object_cap`。已作废、已否决、已平仓、已过期的链不复查，计入阶段 `detail.ended`；没有 `agent-2` 链的持仓列在 `detail.holdings_without_chain`。
+- **链标的只采集**：有效链的标的若已不在观察池与持仓里，批处理在逐只采集之后单独采集它的日线、资讯、财报日，并计入 SEC 列表，**不跑规则**（不产生候选、单元、计划或推送）；运行报告 `pool.chains` 记这类标的数，`collect` 阶段计数照常包含它们。
+- **信号与条件**：宿主只读取截止时间之前的数据，判定七项系统信号（`new_8k`、`abnormal_move`、`stop_touched`、`t1_touched`、`expiry_near`、`regime_change`、`user_input`，窗口是「上次有效复查之后」）以及最新版的失效条件与下次复查条件（`met` / `not_met` / `unknown`，数据缺失不当作成立；当天日线缺失时 `detail.bars_missing`），全部写进复查记录。
+- **结论顺序**：① 任一失效条件成立 → 系统规则作废（「失效条件成立：<条件文案>」），不调用模型；② 没有信号、没有新的用户输入、复查条件都未满足 → 系统规则维持（「无新信号，复查条件未满足（<条件文案>）」），不调用模型；③ 预算闸门（批处理开始 1500 秒后 `stage_budget`、Agent 不可用、本次已遇额度用尽 `quota_exhausted`、当日 token 上限 `token_budget`）→ 写 `skipped` 记录；同链同日已有 3 条 `skipped` / `error` 记录后不再写行，只在阶段 `skips` 记 `max_attempts`；④ 一次 `agent-review-1` 单阶段复查（`agent_runs.mode = review`，工具按复查交易日取数，信号日的原始触发由宿主写进证据块），输出无效或模型出错 → `error` 记录；⑤ 维持 / 作废照写；⑥ 修订 → 完整的提议 + 反方 + 校验（`mode = revise`）：通过则新计划行、新版本行（`origin = review`，有效期复查日 S+1 至 S+3，入场期不晚于信号日后第 10 个交易日）、修订运行、复查运行与复查记录同一事务写入；校验不过、入场期新版按规则作废（如有效期内有财报，`plan_invalid: earnings_in_validity`）或出错 → 记录为 `revise`、没有新版、`detail.revision_status` 写原因，最新版不变，阶段 `degraded`（`revision_failed`）；修订时改口不买（`pass`）→ 作废（`detail.via = revision_pass`）。持仓期的新版即使按仓位规则作废（`no_room`）也成为最新版，链照常复查。
+- **互斥**：每条链在 advisory lock `review:<标的>:<信号日>` 下读取与写入；锁被占（正在重新复查）时本次跳过（`review_in_progress`），不写行；写入前核对最新版没变。模型调用期间不占用数据库事务。
+- **阶段证据**：`review` 行的输入 = 复查对象数，产出 = 有效复查记录数，`outputs` 列出复查记录、新版计划与复查 / 修订运行的 id，`detail` 有各结论与 `decided_by` 计数、信号触发次数、入场 / 持仓对象数、`ended`、`holdings_without_chain`、token 与新版推导核对；Agent 不可用但有对象时宿主可判定的照写、其余写 `skipped`、阶段 `degraded`（`agent_unavailable`），没有对象时整阶段 `skipped`（`agent_unavailable: <原因>`）。迁移 026 未执行时本阶段不运行，本次按 `stages-1` 记账。
+- **验证一次**：手动运行批处理后，`stage_runs` 该 `run_id` 有 8 行，`review` 行的输出计数等于 `plan_reviews` 里该交易日 `trigger = batch` 的有效记录数；信号日当天的新链只出现在 `review` 行的 `skips`（`fresh_version`）里，次一交易日才有复查记录。
 
 ## 持仓止损
 
@@ -84,7 +96,7 @@
 
 - 页面：「今日」（决策单元、计划卡片、Agent 建议、持仓止损、市场环境、「重新推送今日计划」）；「标的」（单只股票的 K 线图（MA20/50/200 与成交量，最多 250 根日线）、日线、候选、计划与决定历史）。
 - API：`GET /api/workbench/today`、`POST /api/workbench/decisions`（`plan_id` 与 `own_plan` 二选一）、`GET /api/workbench/instruments/{ticker}`、`GET/POST /api/workbench/trades`、`POST /api/workbench/trades/{id}/void`、`POST /api/workbench/push`。
-- 运行报告：`job_reports` 中 `workbench` 的 `summary`，包括 `tickers.<T>`（日线、资讯、候选、跳过原因）、`plans`（`inserted` / `existing` / `conflict` / `skip: 原因`）、`earnings`、`push`、`sources`（按数据源列出失败）、`timings`。
+- 运行报告：`job_reports` 中 `workbench` 的 `summary`，包括 `tickers.<T>`（日线、资讯、候选、跳过原因）、`plans`（`inserted` / `existing` / `conflict` / `skip: 原因`）、`earnings`、`push`、`sources`（按数据源列出失败）、`timings`、`pool.chains`（只采集不跑规则的链标的数）、`review`（复查对象数、各结论条数、token）。
 - 验证一次：手动运行批处理后，运行报告里 `plans.<T> == "inserted"`；「今日」显示「入场区间 x–y · 止损 z · T1 w · 建议 N 股」和「证据：未验证」；点「重新推送今日计划」，页面提示「已推送 N 条」，`push.sent == true`。
 
 ## 数据与时点

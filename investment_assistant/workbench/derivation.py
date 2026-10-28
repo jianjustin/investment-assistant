@@ -936,7 +936,7 @@ def derive_unit(candidates: list[dict[str, Any]]) -> dict[str, Any]:
 
 NY = ZoneInfo('America/New_York')
 PLAN_KINDS = ('rule', 'own', 'agent')
-RUN_STAGE_COUNT = 7
+RUN_STAGE_COUNT = {'stages-1': 7, 'stages-2': 8}     # stage rows per run, by stages_version (v2.5 §7.1)
 
 
 def session_window(session: date) -> tuple[datetime, datetime]:
@@ -1031,19 +1031,24 @@ def _stages(args: argparse.Namespace, out: Callable[[str], None]) -> int:
     complete = incomplete = unreported = 0
     for run_id, rows in runs.items():
         have = {row['stage'] for row in rows}
-        missing = [stage for stage in stages_module.STAGE_IDS if stage not in have]
-        ok = not missing and len(rows) == RUN_STAGE_COUNT
+        versions = sorted({row['stages_version'] for row in rows})
+        version = versions[0] if len(versions) == 1 else None
+        expected = stages_module.STAGE_IDS_BY_VERSION.get(version) if version is not None else None
+        missing = [stage for stage in expected if stage not in have] if expected is not None else []
+        ok = expected is not None and not missing and len(rows) == RUN_STAGE_COUNT[version]
         complete += ok
         incomplete += not ok
         unreported += run_id not in reported
         first = rows[0]
-        out(f"运行 {run_id}  {first['trigger']}  session {first['session']}  "
+        out(f"运行 {run_id}  {first['trigger']}  session {first['session']}  {'/'.join(versions)}  "
             f"开始 {_beijing(min(row['started_at'] for row in rows))}（北京）  {len(rows)} 行")
         order = {stage: i for i, stage in enumerate(stages_module.STAGE_IDS)}
         table = [[row['stage'], row['status'], str(row['input_count']), str(row['output_count']),
                   _stage_derivation(row), row['reason'] or ''] for row in sorted(rows, key=lambda r: order.get(r['stage'], 99))]
         for line in _table(['阶段', '状态', '输入', '输出', '推导', '原因'], table, indent='  '):
             out(line)
+        if expected is None:
+            out(f"  阶段版本无法核对：{', '.join(versions)}")
         if missing:
             out(f"  缺少阶段：{', '.join(missing)}")
         if run_id not in reported:
@@ -1051,15 +1056,17 @@ def _stages(args: argparse.Namespace, out: Callable[[str], None]) -> int:
     for report in no_evidence:
         out(f"缺证据  {report['run_id']}  {report['trigger_source']}  {_beijing(report['started_at'])}（北京）")
     passed = ready and not incomplete and not unreported and not no_evidence
-    out(f"汇总：{len(runs)} 个运行，{complete} 个齐全（{RUN_STAGE_COUNT} 行），缺阶段行 {incomplete} 个，"
+    counts = '，'.join(f'{version} {count} 行' for version, count in RUN_STAGE_COUNT.items())
+    out(f"汇总：{len(runs)} 个运行，{complete} 个齐全（{counts}），缺阶段行 {incomplete} 个，"
         f"缺证据 {len(no_evidence)} 个，不在 job_reports {unreported} 个 → {'通过' if passed else '不通过'}")
     return 0 if passed else 1
 
 
 def main(argv: list[str] | None = None) -> int:
     """``check`` lists plan consistency (exit 1 when a status=ok plan is not consistent); ``stages`` verifies
-    the stage evidence of one session (exit 1 on a run without 7 rows, a run missing from job_reports or a
-    report without stage rows). Exit 2 for bad arguments or an unavailable database."""
+    the stage evidence of one session (exit 1 on a run without its version's rows — 7 for stages-1,
+    8 for stages-2 — a run missing from job_reports or a report without stage rows). Exit 2 for bad
+    arguments or an unavailable database."""
     parser = argparse.ArgumentParser(prog='python -m investment_assistant.workbench.derivation',
                                      description='计划推导与阶段证据的只读校验。')
     commands = parser.add_subparsers(dest='command', required=True)

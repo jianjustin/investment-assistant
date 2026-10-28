@@ -325,8 +325,8 @@ def test_pool_and_context_end_to_end(offline, monkeypatch):
     # 批处理：分层同步、ETF 日线、FRED、区制快照、核心与扩展各有带 context 的买入计划
     batch = service.run_batch(now=evening(S1), deps=p2_deps)
     assert batch['errors'] == []
-    assert batch['pool'] == {'core': 2, 'extended': 25, 'holdings': 0, 'screen': 0,
-                             'changes': batch['pool']['changes']}
+    assert batch['pool'] == {'core': 2, 'extended': 25, 'holdings': 0, 'screen': 0, 'chains': 0,
+                             'changes': batch['pool']['changes']}           # chains：v2.5 §7.2 链标的计数
     assert len(batch['pool']['changes']) == 27 and len(batch['etfs']) == 3
     assert all(v.startswith('inserted ') for v in batch['etfs'].values())
     assert batch['macro']['BAMLH0A0HYM2'] == {'inserted': 61, 'unchanged': 0}
