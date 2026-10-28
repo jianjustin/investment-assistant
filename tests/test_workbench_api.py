@@ -640,7 +640,7 @@ from investment_assistant.api.routes import workbench as workbench_routes  # noq
 
 OLD_KEYS = {'ticker', 'session', 'bars', 'chart', 'filings', 'news', 'candidates', 'decisions', 'trades',
             'position', 'closed'}
-NEW_KEYS = {'focus', 'key_data', 'context', 'plans', 'errors'}
+NEW_KEYS = {'focus', 'key_data', 'context', 'plans', 'holding', 'errors'}
 
 
 @pytest.fixture
@@ -723,3 +723,62 @@ def test_instrument_unknown_ticker_still_returns_empty_view(seeded, client):
     assert body['chart']['annotations'] == {'markers': [], 'segments': [], 'omitted': 0}
     assert body['key_data']['values']['last_close'] is None and body['plans'] == []
     assert [item['kind'] for item in body['focus']] == ['none']
+
+
+def test_instrument_holding_key(seeded, client):
+    from test_workbench_service import _decide
+    from investment_assistant.workbench import service as service_module
+    from investment_assistant.workbench import repository as repo
+
+    # not held -> null; the existing `position` key is unchanged (also null)
+    body = client.get('/api/workbench/instruments/AAA').json()
+    assert body['holding'] is None and body['position'] is None
+
+    unit = next(u for u in service_module.today(now=BATCH_NOW)['units'] if u['ticker'] == 'AAA')
+    head = repo.chain_head(seeded, 'AAA', BATCH_SESSION)
+    decision = _decide(unit, 'buy', plan_id=head['plan']['id'], now=BATCH_NOW)
+    service_module.add_trade({'request_id': '6f1d1c1e-9999-4444-8888-000000000001', 'ticker': 'AAA', 'side': 'buy',
+                              'quantity': '10', 'price': '100.00', 'executed_at': '2026-10-22T15:00:00+00:00',
+                              'decision_id': str(decision['id'])}, now=BATCH_NOW)
+    seeded.commit()
+
+    body = client.get('/api/workbench/instruments/AAA').json()
+    holding = body['holding']
+    today_row = next(h for h in client_json(service_module.today(now=BATCH_NOW))['holdings'] if h['ticker'] == 'AAA')
+    assert set(holding) == {'quantity', 'avg_cost', 'plan_id', 'stop', 'mode', 't1_reached', 'target1', 'last_close',
+                            'to_stop_pct', 'to_target_pct'}
+    assert holding == {k: today_row[k] for k in holding}            # same row as 「今日」, field by field
+    assert holding['plan_id'] == str(head['plan']['id']) and holding['stop'] is not None
+    assert holding['target1'] is not None and holding['to_stop_pct'] is not None
+    assert body['position']['quantity'] is not None and body['errors'] == {}
+    focus = {item['kind']: item['text'] for item in body['focus']}
+    assert f"当前止损 {float(holding['stop']):.2f}（按你决定的计划）" in focus['position']
+
+
+def client_json(value):
+    """The JSON a route would send for `value` (FastAPI's encoder), so service rows compare with HTTP bodies."""
+    import json
+
+    from fastapi.encoders import jsonable_encoder
+    return json.loads(json.dumps(jsonable_encoder(value)))
+
+
+def test_instrument_holding_failure_is_isolated(seeded, client, monkeypatch):
+    from test_workbench_service import _decide
+    from investment_assistant.workbench import service as service_module
+    from investment_assistant.workbench import repository as repo
+
+    unit = next(u for u in service_module.today(now=BATCH_NOW)['units'] if u['ticker'] == 'AAA')
+    decision = _decide(unit, 'buy', plan_id=repo.chain_head(seeded, 'AAA', BATCH_SESSION)['plan']['id'], now=BATCH_NOW)
+    service_module.add_trade({'request_id': '6f1d1c1e-9999-4444-8888-000000000002', 'ticker': 'AAA', 'side': 'buy',
+                              'quantity': '10', 'price': '100.00', 'executed_at': '2026-10-22T15:00:00+00:00',
+                              'decision_id': str(decision['id'])}, now=BATCH_NOW)
+    seeded.commit()
+
+    def broken(*args, **kwargs):
+        raise RuntimeError('止损算坏了')
+    monkeypatch.setattr(service_module, '_position_plan_state', broken)
+    body = client.get('/api/workbench/instruments/AAA').json()
+    assert body['holding'] is None and body['errors']['holding'] == '止损算坏了'
+    assert body['focus'] is None and 'holding' in body['errors']['focus']       # no silent "无计划" line
+    assert body['plans'] and body['key_data'] and body['position']['quantity'] is not None

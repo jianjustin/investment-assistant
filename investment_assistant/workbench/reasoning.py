@@ -265,7 +265,8 @@ def _outcome(plan_state: dict) -> dict:
     return {'kind': 'outcome', 'title': '生成的计划', 'concept': 'plan.status', 'plan_id': plan['id'],
             'status': plan.get('status'), 'invalid_reasons': list(plan.get('invalid_reasons') or []),
             'warnings': list(plan.get('warnings') or []), 'valid_from': plan.get('valid_from'),
-            'valid_until': plan.get('valid_until'), 'consistency': plan_state.get('consistency')}
+            'valid_until': plan.get('valid_until'), 'consistency': plan_state.get('consistency'),
+            'consistency_error': plan_state.get('consistency_error')}
 
 
 def _verdict(run: dict) -> dict:
@@ -343,6 +344,8 @@ def build(*, run: dict, calls: list[dict], version: dict | None, trigger_review:
         notes.append(LEGACY_NOTE)
     if not timeline_ready:
         notes.append(NO_TIMELINE_NOTE)
+    if plan_state is not None and plan_state.get('consistency_error'):
+        notes.append(f"推导一致性没能读出（consistency_error）：{plan_state['consistency_error']}")
     review = None
     if trigger_review is not None and timeline_ready:
         review = {key: trigger_review.get(key) for key in ('id', 'session', 'trigger', 'outcome', 'decided_by', 'reason')}
@@ -389,10 +392,12 @@ def reasoning(run_id: str) -> dict:
         plan_state = None
         plan = repository.plan_by_id(conn, run['plan_id']) if run.get('plan_id') else None
         if plan is not None:
+            plan_state = {'plan': plan, 'consistency': None, 'consistency_error': None}
             try:
-                consistency = derivation.derive_plan(plan, derivation_view.load_rows(conn, plan))['consistency']
-            except Exception:    # noqa: BLE001 - the derivation is a side panel: the reading view must still load
-                consistency = None
-            plan_state = {'plan': plan, 'consistency': consistency}
+                with conn.transaction():      # a savepoint: a failed read must not poison the rest of the view
+                    plan_state['consistency'] = derivation.derive_plan(
+                        plan, derivation_view.load_rows(conn, plan))['consistency']
+            except Exception as exc:    # noqa: BLE001 - side panel: the reading view must still load, with the reason
+                plan_state['consistency_error'] = (str(exc).splitlines() or [''])[0][:200] or type(exc).__name__
     return build(run=run, calls=calls, version=version, trigger_review=trigger_review, later_reviews=later,
                  plan_state=plan_state, timeline_ready=ready)

@@ -227,10 +227,12 @@ def _suffixes(skips: list[dict], failures: list[dict], degradations: list[dict])
     if failures:
         text += f'；{len(failures)} 处失败'
     if degradations:
-        text += '；降级：' + '、'.join(str(reason_text(d.get('kind'))) for d in degradations)
+        text += '；降级：' + '、'.join(str(reason_text(d.get('kind')) or d.get('kind') or '未知')
+                                      for d in degradations)
     if skips:
         total = sum(int(s.get('count') or 0) for s in skips)
-        named = '、'.join(f"{reason_text(s.get('reason'))} × {s.get('count')}" for s in skips[:SKIP_SAMPLE_REASONS])
+        named = '、'.join(f"{reason_text(s.get('reason')) or s.get('reason') or '未知'} × {s.get('count')}"
+                         for s in skips[:SKIP_SAMPLE_REASONS])
         text += f'；跳过 {total}（{named}）'
     return text
 

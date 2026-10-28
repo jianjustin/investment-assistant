@@ -88,6 +88,8 @@ def test_focus_earnings_window():
         return items[0]['text'] if items[0]['kind'] == 'earnings' else None
 
     assert text({'earnings_date': date(2026, 11, 5), 'status': 'known'}) == '10 个交易日后发布财报（2026-11-05）'
+    assert text({'earnings_date': SESSION, 'status': 'known'}) == '今天发布财报（2026-10-22）'
+    assert text({'earnings_date': date(2026, 10, 23), 'status': 'known'}) == '1 个交易日后发布财报（2026-10-23）'
     assert text({'earnings_date': date(2026, 11, 6), 'status': 'known'}) is None          # 11 sessions away
     assert text({'earnings_date': date(2026, 10, 21), 'status': 'known'}) is None         # already past
     assert text({'earnings_date': None, 'status': 'unknown'}) is None

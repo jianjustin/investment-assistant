@@ -777,6 +777,23 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
     return summary
 
 
+def _holding_fields(book: dict[str, Any], bars_: list[dict[str, Any]], plan: dict[str, Any] | None,
+                    state: dict[str, Any] | None) -> dict[str, Any]:
+    """The holding row shared by 「今日」 and the instrument page: position, current stop and T1 from the
+    plan the user decided on (``_position_plan_state``), distance of the last close to both."""
+    position = book['position']
+    last_close = bars_[-1]['close'] if bars_ else None
+    return {
+        'quantity': position['quantity'], 'avg_cost': position['avg_cost'],
+        'plan_id': plan['id'] if plan else None,
+        'stop': state['stop'] if state else None, 'mode': state['mode'] if state else None,
+        't1_reached': state['t1_reached'] if state else False, 'target1': state['target1'] if state else None,
+        'last_close': last_close,
+        'to_stop_pct': float(last_close / float(state['stop']) - 1) if state and last_close else None,
+        'to_target_pct': float(float(state['target1']) / last_close - 1) if state and last_close else None,
+    }
+
+
 def _holdings(conn, session: date, *, now: datetime) -> list[dict[str, Any]]:
     out = []
     for ticker in sorted({t['ticker'] for t in repository.list_trades(conn) if t['voided_at'] is None}):
@@ -786,20 +803,11 @@ def _holdings(conn, session: date, *, now: datetime) -> list[dict[str, Any]]:
             continue
         bars_ = repository.read_bars(conn, ticker, session, cutoff_at=now)
         plan, state = _position_plan_state(conn, ticker, book, bars_, session, now=now)
-        last_close = bars_[-1]['close'] if bars_ else None
         earnings = repository.latest_earnings(conn, ticker, cutoff_at=now)
         next_earnings = (earnings['earnings_date'] if earnings and earnings['status'] == 'known'
                          and earnings['earnings_date'] and earnings['earnings_date'] >= session else None)
-        out.append({
-            'ticker': ticker, 'quantity': position['quantity'], 'avg_cost': position['avg_cost'],
-            'plan_id': plan['id'] if plan else None,
-            'stop': state['stop'] if state else None, 'mode': state['mode'] if state else None,
-            't1_reached': state['t1_reached'] if state else False, 'target1': state['target1'] if state else None,
-            'last_close': last_close,
-            'to_stop_pct': float(last_close / float(state['stop']) - 1) if state and last_close else None,
-            'to_target_pct': float(float(state['target1']) / last_close - 1) if state and last_close else None,
-            'next_earnings': next_earnings.isoformat() if next_earnings else None,
-        })
+        out.append({'ticker': ticker, **_holding_fields(book, bars_, plan, state),
+                    'next_earnings': next_earnings.isoformat() if next_earnings else None})
     return out
 
 
@@ -1034,17 +1042,13 @@ def replay_screen(*, now: datetime, sessions: int) -> dict[str, Any]:
     return {'reports': screening.replay(sessions=sessions, now=now)}
 
 
-def _instrument_position(conn, ticker: str, book: dict[str, Any], ticker_bars: list[dict[str, Any]], session: date,
-                         *, now: datetime) -> dict[str, Any] | None:
-    """The held position with its current stop, the same function and reading as the 「今日」 holdings."""
-    position = book['position']
-    if position is None:
+def _instrument_holding(conn, ticker: str, book: dict[str, Any], ticker_bars: list[dict[str, Any]], session: date,
+                        *, now: datetime) -> dict[str, Any] | None:
+    """The 「今日」 holdings row of this ticker (same bars, same ``_position_plan_state``); None when not held."""
+    if book['position'] is None:
         return None
     plan, state = _position_plan_state(conn, ticker, book, ticker_bars, session, now=now)
-    last_close = ticker_bars[-1]['close'] if ticker_bars else None
-    return {'quantity': position['quantity'], 'avg_cost': position['avg_cost'],
-            'plan_id': str(plan['id']) if plan else None, 'stop': state['stop'] if state else None,
-            'to_stop_pct': float(last_close / float(state['stop']) - 1) if state and last_close else None}
+    return _holding_fields(book, ticker_bars, plan, state)
 
 
 def _instrument_chains(conn, ticker: str, book: dict[str, Any], session: date) -> list[dict[str, Any]]:
@@ -1084,7 +1088,8 @@ def _instrument_plans(conn, ticker: str, since: date) -> tuple[list[dict[str, An
 
 def instrument(ticker: str, *, now: datetime) -> dict[str, Any]:
     """The instrument page payload. The original keys are read as before; v2.6 adds ``focus``, ``key_data``,
-    ``context``, ``plans`` and ``chart.annotations`` (spec §9.4), each in its own savepoint: a failing block is
+    ``context``, ``plans``, ``holding`` and ``chart.annotations`` (spec §9.4; ``holding`` is the 「今日」 holdings row
+    of this ticker or None), each in its own savepoint: a failing block is
     ``None`` and its reason lands in ``errors`` (keyed by block), the rest of the page is unaffected."""
     from investment_assistant.workbench import instrument_view
 
@@ -1120,14 +1125,21 @@ def instrument(ticker: str, *, now: datetime) -> dict[str, Any]:
             for p in plan_rows]
         annotations = guarded('chart.annotations', lambda: chart.annotate(
             bars=shown, candidates=candidates, plans=plan_rows, versions=versions, trades=trades))
-        focus = guarded('focus', lambda: instrument_view.focus(
-            position=_instrument_position(conn, ticker, book, chart_bars, session, now=now),
-            chains=_instrument_chains(conn, ticker, book, session),
-            candidates_today=[c for c in candidates if c['signal_date'] == session],
-            earnings=earnings, session=session))
+        # the bars 「今日」 holdings and get_indicators read (default window), shared by holding and key_data
+        ticker_bars = repository.read_bars(conn, ticker, session, cutoff_at=now)
+        holding = guarded('holding', lambda: _instrument_holding(conn, ticker, book, ticker_bars, session, now=now))
+
+        def focus_view():
+            if book['position'] is not None and holding is None:
+                raise RuntimeError('持仓止损读取失败，见 errors.holding')
+            return instrument_view.focus(
+                position=holding, chains=_instrument_chains(conn, ticker, book, session),
+                candidates_today=[c for c in candidates if c['signal_date'] == session],
+                earnings=earnings, session=session)
+
+        focus = guarded('focus', focus_view)
 
         def key_data():
-            ticker_bars = repository.read_bars(conn, ticker, session, cutoff_at=now)     # what get_indicators reads
             spy = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now)
             as_of = ticker_bars[-1]['price_date'] if ticker_bars else session
             return instrument_view.key_data(ticker_bars, spy, as_of=as_of)
@@ -1151,7 +1163,7 @@ def instrument(ticker: str, *, now: datetime) -> dict[str, Any]:
             'trades': trades,
             'position': book['position'], 'closed': book['closed'],
             'focus': focus, 'key_data': key_data_view, 'context': context_view, 'plans': plans_view,
-            'errors': errors,
+            'holding': holding, 'errors': errors,
         }
 
 

@@ -57,7 +57,7 @@
 
 - **同一天多次运行**：默认显示该交易日最后开始的、**不是休市空跑**的那次（休市空跑 = `push` 之前的阶段全部 `skipped` 且原因为 `not_trading_day`）；只有休市空跑时才显示它，`headline` 写「纽约休市，未运行（只推送一行休市说明）」。`runs` 列出同日全部运行（`run_id`、`trigger`、`trigger_text`：定时 / 手动 / 休市、`stages_version`、开始与结束时间、行数、`closed`），`run_id` 指定其中一次；不属于该日 → 404，日期非法 → 400，数据库不可用 → 503。
 - **边界**：`stage_runs` 表不存在 → `ready: false`、`note`「迁移 025 未执行，暂无阶段证据」；这一天没有任何行 → `note`「这一天没有阶段证据：当天没有运行，或运行早于 v2.4（2026-10-27 起才记录）」；`stages-1` 运行在 `push` 前补一行 `not_recorded` 占位（计数为 `null`）；缺某个阶段行 → `missing`「这一阶段没有证据行（记账失败，见运行报告）」；注册表之外的阶段排在最后，句子「未知阶段」。
-- **原因文案**：先查 `run_overview.REASON_TEXT`（只放 `agent.REASON_TEXT` 没有的代码，含降级 kind 与规则跳过原因），再查 `agent.REASON_TEXT`，不认识的代码原样显示；带参数的 `agent_unavailable: <x>`、`aborted: <x>`、`<规则 id>:<原因>` 按规则拼。
+- **原因文案**：先查 `run_overview.REASON_TEXT`（只放 `agent.REASON_TEXT` 没有的代码，含降级 kind 与规则跳过原因），再查 `agent.REASON_TEXT`，不认识的代码原样显示；带参数的 `agent_unavailable: <x>`、`aborted: <x>`、`<规则 id>:<原因>` 按规则拼，其中的参数 `<x>` / `<原因>` 是已知代码时也翻译（如 `agent_unavailable: not_configured` →「Agent 不可用：未配置」，`trend_reclaim:insufficient_history` →「趋势回踩修复：日线不足 200 根」），`aborted:` 后的异常摘要原样显示。
 - **命令行（只读）**：`python -m investment_assistant.workbench.run_overview --session YYYY-MM-DD [--run-id ID]`，先打印 `headline`，再逐行打印 `阶段 · 状态 · 句子 · 输入/产出`；没有阶段证据（打印说明）退出码 1，参数错误、`--run-id` 不属于该日或数据库不可用退出码 2。
 
 ## 通知

@@ -48,6 +48,8 @@
 - **`read`**：每个调用 `{seq, ref: 'call:N', tool, tool_text, args, result, error, result_sha256_8, called_at, concept, fields, cutoff_exempt, cutoff_note}`。`fields` 把结果里的名字对应到概念卡：顶层键（`atr14`）、宏观序列（`macro.BAMLH0A0HYM2`）、`get_trigger` 返回的规则 id 取值（`trend_reclaim` → `rule.trend_reclaim`）、`get_concept` 返回的 `id`。`get_concept` 调用 `cutoff_exempt: true`。
 - **`check`**：列出这类运行适用的检查项，结果 `pass` / `implicated` / `not_recorded` / `not_run`。`ok` / `pass` → 全部通过；`rejected` → 作废原因出现在该项原因集合里的**全部**项标 `implicated`（校验器遇到第一处失败就停，只记原因，不推断哪些项通过了，`note` 写明这一点），其余 `not_recorded`；`error` / `skipped` → 全部 `not_run`，附原因文案。
 - **`response`（回应）**：`agent-2` 流程没有单独的「回应」步骤，也不新增；这里的「回应」= 本版之后以本版为被复查对象的复查记录（结论、判定方、理由、触发的信号，修订时附新版的版本号与「相对上版变化」）。没有复查就写「回应：本版之后还没有复查」。`agent-1` 运行与没有生成计划的运行没有这一步。
+- **反方读了什么**：第二个 `read` 步骤固定出现；反方跑了但没调工具写「反方没有调用工具」，反方没有运行（提议已作废或运行出错 / 跳过）写「反方没有运行」；提议者那一步没有记录到调用写「没有记录到工具调用」。
+- **推导一致性读不出**：`outcome` 步骤的 `consistency` 为 `null`，`consistency_error` 给一行原因，`notes` 同时加一条「推导一致性没能读出（consistency_error）：…」，其余步骤不受影响。
 - **作废的运行**（`rejected` / `error` / `skipped`）：已记录的工具调用照样给出；输出或反方存了就照常显示（例如入场期修订版因计划行作废而 `rejected / plan_invalid`，提议和反方都在），没存的那一步写「这次运行作废：<原因文案>，只保留工具调用」，`check` 照给。
 - **`agent-1` 旧运行**：`legacy: true`，`notes` 写「agent-1（旧版）：没有失效条件、下次复查条件与逐条对应的反证，也不参与复查；以下按原样显示」；步骤是 `read → proposal`（论点作为「理由」）`→ check → read → counter`（只有 `risks`）`→ outcome`，没有 `response`。
 - **迁移 026 未执行**：没有 `version`、`evidence`、`response`，`notes` 写「迁移 026 未执行，没有版本与复查记录」。

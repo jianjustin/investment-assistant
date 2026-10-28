@@ -354,6 +354,15 @@ def test_notes_when_timeline_missing():
     assert NO_TIMELINE not in build()['notes']
 
 
+def test_consistency_error_is_shown_not_swallowed():
+    state = {**PLAN_STATE, 'consistency': None, 'consistency_error': 'boom: no row'}
+    view = build(plan_state=state)
+    outcome = step(view, 'outcome')
+    assert outcome['consistency'] is None and outcome['consistency_error'] == 'boom: no row'
+    assert '推导一致性没能读出（consistency_error）：boom: no row' in view['notes']
+    assert step(build(), 'outcome')['consistency_error'] is None and build()['notes'] == []
+
+
 def test_unknown_run_reason_falls_back_to_code():
     view = build(run=run_row(status='rejected', reason='some_new_reason', output=None, counter=None, plan_id=None),
                  plan_state=None, version=None)
@@ -453,3 +462,19 @@ def test_reasoning_400_404(db):
         reasoning.reasoning('not-a-uuid')
     with pytest.raises(LookupError):
         reasoning.reasoning(str(uuid.uuid4()))
+
+
+def test_reasoning_derivation_failure_reports_reason(db, scripted_model, monkeypatch):
+    from investment_assistant.workbench import derivation
+    service.run_batch(tickers=['AAA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses('AAA')))
+    db.commit()
+    run = repository.latest_agent_run(db, 'AAA', SESSION)
+
+    def broken(plan, rows):
+        raise RuntimeError('derive exploded\nsecond line')
+    monkeypatch.setattr(derivation, 'derive_plan', broken)
+    view = reasoning.reasoning(str(run['id']))
+    outcome = step(view, 'outcome')
+    assert outcome['consistency'] is None and outcome['consistency_error'] == 'derive exploded'
+    assert any('derive exploded' in n for n in view['notes'])
+    assert 'proposal' in kinds(view)

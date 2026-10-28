@@ -96,7 +96,8 @@ def _earnings_item(earnings: dict | None, session: date) -> dict | None:
     count = sessions_until(day, session)
     if count > EARNINGS_WITHIN_SESSIONS:
         return None
-    return {'kind': 'earnings', 'text': f'{count} 个交易日后发布财报（{day.isoformat()}）', 'link': None,
+    text = f'今天发布财报（{day.isoformat()}）' if count == 0 else f'{count} 个交易日后发布财报（{day.isoformat()}）'
+    return {'kind': 'earnings', 'text': text, 'link': None,
             'concepts': ['plan.earnings']}
 
 

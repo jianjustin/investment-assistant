@@ -108,6 +108,14 @@ def test_suffix_order():
     assert out['failures'] == [{'target': 'AAA', 'reason': 'x'}]
 
 
+def test_suffix_tolerates_empty_kind_and_reason():
+    out = describe(row('signals', i=1, o=1, degradations=[{'kind': None, 'detail': ''}, {'kind': '', 'detail': ''}],
+                       skips=[{'reason': None, 'count': 1, 'samples': []}]))
+    assert 'None' not in out['sentence']
+    assert out['sentence'].endswith('；降级：未知、未知；跳过 1（未知 × 1）')
+    assert out['degradations'][0]['text'] is None
+
+
 def test_suffix_only_first_three_skip_reasons():
     skips = [{'reason': f'r{n}', 'count': n, 'samples': []} for n in range(1, 6)]
     out = describe(row('signals', skips=skips, i=1, o=1))
