@@ -271,13 +271,14 @@ PREVIOUS = {'action': 'buy', 'summary': '回踩修复放量',
 EVIDENCE = '## 上一版\n第 0 版\n## 用户输入\n[user:7] note · 2026-10-21T20:00:00+00:00\n    财报电话会提到产能受限\n'
 
 
-def run_v2(monkeypatch, make, responses, *, previous=None, evidence='', user_refs=frozenset(), run_id='run-v2'):
+def run_v2(monkeypatch, make, responses, *, previous=None, evidence='', user_refs=frozenset(), run_id='run-v2',
+           review_reason=None):
     from langgraph.checkpoint.memory import InMemorySaver
     saver = InMemorySaver()
     model = make(responses)
     result = graph.run_unit_v2(unit=UNIT, ctx=_ctx(monkeypatch), model=model, checkpointer=saver, run_id=run_id,
                                last_close=LAST_CLOSE, as_of_session=S, now=lambda: NOW, previous=previous,
-                               evidence=evidence, user_refs=user_refs)
+                               evidence=evidence, user_refs=user_refs, review_reason=review_reason)
     return result, saver, model
 
 
@@ -413,11 +414,11 @@ def test_v2_revision_changes_mismatch_rejected(monkeypatch, scripted_model):
     assert result['status'] == 'rejected' and result['reason'] == 'no_change'
 
 
-def run_rev(monkeypatch, make, responses, *, user_refs=frozenset({'user:7'}), run_id='review-1'):
+def run_rev(monkeypatch, make, responses, *, user_refs=frozenset({'user:7'}), run_id='review-1', unit=UNIT):
     from langgraph.checkpoint.memory import InMemorySaver
     saver = InMemorySaver()
     model = make(responses)
-    result = graph.run_review(unit=UNIT, ctx=_ctx(monkeypatch), model=model, checkpointer=saver, run_id=run_id,
+    result = graph.run_review(unit=unit, ctx=_ctx(monkeypatch), model=model, checkpointer=saver, run_id=run_id,
                               now=lambda: NOW, evidence=EVIDENCE, user_refs=user_refs)
     return result, saver, model
 
@@ -477,3 +478,44 @@ def test_prompts_mark_user_input_as_evidence():
         assert f'| {kind} |' in graph.PROPOSE_PROMPT_V2
     assert 'changes' in graph.PROPOSE_PROMPT_V2 and '"thesis"' in graph.COUNTER_PROMPT_V2
     assert '"outcome"' in graph.REVIEW_PROMPT
+
+
+def test_v2_revision_prompt_carries_review_reason(monkeypatch, scripted_model):
+    revised = dict(stop=95.0, changes=[{'field': 'stop', 'text': '止损下移', 'refs': ['call:1']}])
+    result, _, model = run_v2(monkeypatch, scripted_model, [
+        _tool_call('get_price_bars', {'ticker': 'AMD', 'lookback': 30}, 't1'),
+        AIMessage(content=_plan2_json(**revised)),
+        AIMessage(content=json.dumps({'counter': []})),
+    ], previous=PREVIOUS, evidence=EVIDENCE, review_reason='8-K 显示产能受限，止损需下移')
+    assert result['status'] == 'ok', result['reason']
+    human = next(m for m in model.seen[0] if m.type == 'human').content
+    assert '## 本次复查结论' in human and '8-K 显示产能受限，止损需下移' in human
+    assert human.index('## 本次复查结论') < human.index(EVIDENCE)
+    assert '数据截至截止时间' in human                                       # 修订按截止时间取数
+
+
+def test_v2_revision_stale_call_refs_rejected(monkeypatch, scripted_model):
+    old = 'call:5'
+    previous = json.loads(json.dumps(PREVIOUS).replace('call:1', old))   # 上一版来自另一次运行
+    result, _, model = run_v2(monkeypatch, scripted_model, [
+        _tool_call('get_price_bars', {'ticker': 'AMD', 'lookback': 30}, 't1'),   # 本次只有 call:1
+        AIMessage(content=_plan2_json(ref=old, stop=95.0,
+                                      changes=[{'field': 'stop', 'text': '止损下移', 'refs': [old]}])),
+    ], previous=previous, evidence=EVIDENCE, review_reason='止损需下移')
+    assert result['status'] == 'rejected' and result['reason'] == 'invalid_citation'
+    human = next(m for m in model.seen[0] if m.type == 'human').content
+    block = human.split('## 上一版结构化内容', 1)[1].split('\n\n', 1)[0]
+    assert '96.00' in block and 'refs' not in block and old not in human   # 旧引用不再给模型
+
+
+def test_prompts_forbid_citing_old_runs():
+    for prompt in (graph.PROPOSE_PROMPT_V2, graph.REVIEW_PROMPT):
+        assert '属于以前的运行，不能引用' in prompt
+    assert '原样保留' in graph.PROPOSE_PROMPT_V2 and '本次工具调用' in graph.PROPOSE_PROMPT_V2
+
+
+def test_review_header_without_pool_tier(monkeypatch, scripted_model):
+    _, _, model = run_rev(monkeypatch, scripted_model, [_verdict('maintain', [])],
+                          unit={'ticker': 'AMD', 'signal_date': S})
+    human = next(m for m in model.seen[0] if m.type == 'human').content
+    assert '分层' not in human.split('\n', 1)[0]
