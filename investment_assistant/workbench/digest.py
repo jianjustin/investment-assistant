@@ -124,6 +124,9 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
         errors_by_source['budget'] = budget
 
     updates = select_plan_updates(plan_updates or [])
+    # Migration 026 not run (plan_updates None): no plan-updates count in the overview at all.
+    update_counts = (None if plan_updates is None else
+                     {kind: sum(1 for u in updates if u['kind'] == kind) for kind in ('revise', 'invalidate')})
 
     return {
         'session': session.isoformat(),
@@ -134,8 +137,7 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
                      'market': market,
                      'agent': _agent_counts(units, session),
                      'agent_quota_exhausted': bool((agent_summary or {}).get('quota_exhausted')),
-                     'plan_updates': {kind: sum(1 for u in updates if u['kind'] == kind)
-                                      for kind in ('revise', 'invalidate')}},
+                     **({'plan_updates': update_counts} if update_counts is not None else {})},
         'plans': plans,
         'plan_updates': updates,
         'holdings': holdings_out,

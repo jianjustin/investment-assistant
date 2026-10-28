@@ -949,11 +949,16 @@ def push(*, now: datetime, force: bool, summary: dict[str, Any] | None = None, n
                 return {'session': session.isoformat(), 'sent': False, 'reason': 'already_pushed', 'messages': 0}
         view = today(now=now)
         plan_updates = None
+        reviews_until = None
         if repository.timeline_ready(conn):
             # D25: reviews written since the last successful daily push of an earlier session
-            # (batch and recheck alike); never pushed before → this session's reviews only.
+            # (batch and recheck alike); never pushed before → this session's reviews only. The window
+            # ends at this read (clock_timestamp, not the transaction start); it goes into the push result
+            # (summary.push.reviews_until) so the next push starts exactly here, not at the report time.
+            reviews_until = conn.execute('SELECT clock_timestamp()').fetchone()[0]
             since = repository.last_successful_push_at(conn, before_session=session)
-            plan_updates = _plan_update_rows(conn, repository.reviews_since(conn, since, session))
+            plan_updates = _plan_update_rows(conn, repository.reviews_since(conn, since, session,
+                                                                             until=reviews_until))
         payload = digest_module.build(
             session=session, units=view['units'], holdings=view.get('holdings', []), summary=summary or {},
             last_push_failed=_last_push_failed(conn, session),
@@ -962,21 +967,23 @@ def push(*, now: datetime, force: bool, summary: dict[str, Any] | None = None, n
             market=view.get('market'), agent_summary=(summary or {}).get('agent'),
             screen=view.get('screen'), plan_updates=plan_updates)
     out = notifier.send_notifications('workbench', templates.workbench_digest(payload), notify_cfg, client=client)
-    return {'session': session.isoformat(), **out}
+    result = {'session': session.isoformat(), **out}
+    if reviews_until is not None:
+        result['reviews_until'] = reviews_until.isoformat()
+    return result
 
 
 def _plan_update_rows(conn, reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The window's review rows as digest.build reads them: invalidations and revisions carry their
-    chain's pool (version 0's run), the version numbers, the revision's `changes` texts and the new
-    version's levels; other outcomes pass through bare (the digest drops them)."""
+    """The window's invalidations and revisions with a new version, as digest.build reads them: each carries
+    its chain's pool (version 0's run) and version numbers, a revision also its `changes` texts and the new
+    version's levels. Other rows (maintain, failed revisions, skips, errors) are dropped before any lookup."""
     pools: dict[tuple, str | None] = {}
     out = []
     for row in reviews:
+        if not (row['outcome'] == 'invalidate' or row['new_plan_id'] is not None):
+            continue
         item = {k: row[k] for k in ('ticker', 'signal_date', 'session', 'trigger', 'mode', 'outcome',
                                     'decided_by', 'reason', 'new_plan_id', 'created_at')}
-        if row['outcome'] not in ('revise', 'invalidate'):
-            out.append(item)
-            continue
         key = (row['ticker'], row['signal_date'])
         if key not in pools:
             first = next(iter(repository.chain_versions(conn, *key)), None)

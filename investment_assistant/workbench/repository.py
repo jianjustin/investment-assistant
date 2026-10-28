@@ -982,13 +982,15 @@ def last_push(conn, *, session: date | None = None) -> dict[str, Any] | None:
 
 
 def last_successful_push_at(conn, *, before_session: date) -> datetime | None:
-    """When the newest successful daily push of a session earlier than `before_session` was recorded
-    (job_reports.created_at; v2.5 D25). A New York holiday's one-line message (summary.status = skipped)
-    is not a daily push and does not move the window."""
+    """Where the newest successful daily push of a session earlier than `before_session` stopped reading
+    reviews (v2.5 D25): its `summary.push.reviews_until`, or the report's created_at for pushes recorded
+    before that key existed. A New York holiday's one-line message (summary.status = skipped) is not a
+    daily push and does not move the window."""
     if conn.execute("SELECT to_regclass('job_reports')").fetchone()[0] is None:
         return None
     row = conn.execute(
-        "SELECT max(created_at) FROM job_reports WHERE task = 'workbench' "
+        "SELECT max(COALESCE((summary->'push'->>'reviews_until')::timestamptz, created_at)) "
+        "FROM job_reports WHERE task = 'workbench' "
         "AND summary->'push'->'sent' = 'true'::jsonb AND (summary->'push'->>'session') < %s "
         "AND (summary->>'status') IS DISTINCT FROM 'skipped'", (before_session.isoformat(),)).fetchone()
     return row[0] if row else None
@@ -1231,14 +1233,21 @@ def reviews_on(conn, session: date) -> list[dict[str, Any]]:
                 (session,))
 
 
-def reviews_since(conn, since: datetime | None, session: date) -> list[dict[str, Any]]:
+def reviews_since(conn, since: datetime | None, session: date,
+                  until: datetime | None = None) -> list[dict[str, Any]]:
     """The review rows the daily push of `session` reports (v2.5 D25): every row written after `since`
-    (the last successful push of an earlier session) whose session is not later than `session`, batch and
-    recheck alike; with no earlier push, only the rows of `session` itself. Oldest first."""
+    (the read time of the last successful push of an earlier session) whose session is not later than
+    `session`, batch and recheck alike; with no earlier push, only the rows of `session` itself. `until`
+    (the push's own read time) bounds both cases, so a row written while the push is being sent falls in
+    the next window. Oldest first."""
     if since is None:
-        return reviews_on(conn, session)
-    return _all(conn, f'SELECT {_REVIEW_COLUMNS} FROM plan_reviews WHERE created_at > %s AND session <= %s '
-                      'ORDER BY created_at, id', (since, session))
+        sql, params = 'session = %s', [session]
+    else:
+        sql, params = 'created_at > %s AND session <= %s', [since, session]
+    if until is not None:
+        sql += ' AND created_at <= %s'
+        params.append(until)
+    return _all(conn, f'SELECT {_REVIEW_COLUMNS} FROM plan_reviews WHERE {sql} ORDER BY created_at, id', params)
 
 
 def batch_attempts(conn, ticker: str, signal_date: date, session: date) -> list[dict[str, Any]]:

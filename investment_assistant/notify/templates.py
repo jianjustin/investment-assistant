@@ -159,7 +159,10 @@ def workbench_digest(digest: dict) -> list[Notification]:
         agent = p.get('agent')
         if agent:
             # v2.5 §10.3: the agent line first, the rule plan after it as the baseline.
-            baseline = ' · '.join(filter(None, [band, sizing if p.get('sizing_status') is not None else None]))
+            # 「规则基线：区间 · 止损 · T1 · 股数」 (§10.3, verbatim): shares only, no risk amount.
+            shares = None if p.get('sizing_status') is None else (
+                '缺资金快照，无法计算' if p['sizing_status'] == 'no_equity' else f"{p.get('shares')} 股")
+            baseline = ' · '.join(filter(None, [band, shares]))
             lead = [_agent_line(agent), f"规则基线：{baseline}" if band else None]
             position = None
         else:

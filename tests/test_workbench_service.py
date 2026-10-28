@@ -1736,3 +1736,37 @@ def test_last_successful_push_at_skips_failed_closed_and_later(db):
     assert repository.last_successful_push_at(db, before_session=date(2026, 10, 26)) == \
         datetime(2026, 10, 23, 23, 0, tzinfo=UTC)
     assert repository.last_successful_push_at(db, before_session=date(2026, 10, 21)) is None
+    _report_push(db, {'session': '2026-10-26', 'sent': True, 'messages': 5,
+                      'reviews_until': '2026-10-26T22:59:00+00:00'},
+                 created_at="'2026-10-26T23:05:00Z'::timestamptz")
+    assert repository.last_successful_push_at(db, before_session=date(2026, 10, 27)) == \
+        datetime(2026, 10, 26, 22, 59, tzinfo=UTC)                       # 读取时刻优先于报告时间
+
+
+def test_push_window_catches_review_written_while_sending(db, scripted_model, monkeypatch):
+    """A recheck written after the push read its reviews but before the run report landed is not lost:
+    the window is anchored at the push's read time (summary.push.reviews_until), not job_reports.created_at."""
+    from investment_assistant.config import NotifyConfig
+    from investment_assistant.notify import notifier
+
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    v0 = repository.chain_head(db, 'NVDA', SESSION)['plan']
+    real_send = notifier.send_notifications
+
+    def send_then_recheck(*args, **kwargs):
+        out = real_send(*args, **kwargs)
+        _revision(db, v0, 1, stop='95.5', session=SESSION, text='发送期间的重新复查')
+        return out
+
+    monkeypatch.setattr(notifier, 'send_notifications', send_then_recheck)
+    client = PushClient()
+    first = service.push(now=NOW, force=False, notify_cfg=NotifyConfig(), client=client)
+    assert first['sent'] is True and first['messages'] == 5 and first['reviews_until']
+    assert '发送期间的重新复查' not in json.dumps(client.sent, ensure_ascii=False)
+    _report_push(db, first)                                                 # 报告晚于这次重新复查落库
+
+    monkeypatch.setattr(notifier, 'send_notifications', real_send)
+    client = PushClient()
+    second = service.push(now=NOW + timedelta(days=1), force=False, notify_cfg=NotifyConfig(), client=client)
+    text = json.dumps(client.sent, ensure_ascii=False)
+    assert second['messages'] == 6 and 'NVDA 第 0 → 1 版：发送期间的重新复查' in text

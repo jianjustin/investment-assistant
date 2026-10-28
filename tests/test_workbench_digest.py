@@ -474,7 +474,7 @@ def test_numeric_padding_is_trimmed_in_every_message():
     msgs = templates.workbench_digest(build(units=[unit(plan=plan, agent=agent)], market=market, screen=report))
     text = all_text(msgs)
     assert '区间 250.77–264.37 · 止损 230.38 · T1 311.94' in text                  # rule plan line
-    assert '10 股 · 风险 1000' in text
+    assert '规则基线：区间 250.77–264.37 · 止损 230.38 · T1 311.94 · 10 股；' in text   # §10.3: no risk amount
     assert 'Agent（glm-5.3）买入 · 区间 250.77–264.37 · 止损 230.38 · T1 311.94' in text
     assert '入场 250.77–264.37 · 止损 230.38 · T1 311.94 · 建议 166 股' in text      # screen trigger
     assert 'U00 · trend_reclaim · RS 0.217 ·' in text
@@ -509,8 +509,9 @@ def test_agent_line_before_rule_baseline():
     assert (agent['version_no'], agent['first_counter'], agent['legacy']) == (0, '量能未放大', False)
     value = plan_field(dg)
     agent_line = 'Agent 第 0 版：区间 99–102 · 止损 95 · T1 115 · 166 股 · 回踩修复放量 · 反证：量能未放大'
-    baseline = '规则基线：区间 98.5–101.5 · 止损 94 · T1 112 · 166 股 · 风险 1000'
+    baseline = '规则基线：区间 98.5–101.5 · 止损 94 · T1 112 · 166 股'
     assert agent_line in value and baseline in value
+    assert '风险' not in value                                     # 规则基线只到股数
     assert value.index('Agent 第 0 版') < value.index('规则基线')
     assert value.startswith('Agent 第 0 版')
     assert '证据：未验证' in value
@@ -588,7 +589,14 @@ def test_overview_counts_plan_updates():
     dg = build(plan_updates=update_rows())
     assert dg['overview']['plan_updates'] == {'revise': 1, 'invalidate': 2}
     assert '计划更新 修订 1 · 作废 2' in all_text(templates.workbench_digest(dg))
-    assert build()['overview']['plan_updates'] == {'revise': 0, 'invalidate': 0}
+    assert build(plan_updates=[])['overview']['plan_updates'] == {'revise': 0, 'invalidate': 0}
+    assert '计划更新 修订 0 · 作废 0' in all_text(templates.workbench_digest(build(plan_updates=[])))
+
+
+def test_overview_omits_plan_updates_without_timeline():
+    dg = build()                                                   # 迁移 026 未执行：plan_updates=None
+    assert 'plan_updates' not in dg['overview'] and dg['plan_updates'] == []
+    assert '计划更新' not in all_text(templates.workbench_digest(dg))
 
 
 def test_plan_update_field_texts():
