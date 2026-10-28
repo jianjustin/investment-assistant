@@ -18,4 +18,12 @@ REASON_TEXT = {
     'tool_rounds_exceeded': '工具调用超限',
     'model_error': '模型调用失败',
     'checkpoint_unavailable': '状态库未就绪',
+    # agent-2 / daily review (v2.5 spec §4.4)
+    'thesis_count': '论点数量不符',
+    'invalid_condition': '失效或复查条件无效',
+    'changes_mismatch': '变化说明与实际差异不符',
+    'no_change': '修订与上版没有差异',
+    'review_malformed': '复查输出格式无效',
+    'migration_026_missing': '迁移 026 未执行',
+    'review_in_progress': '正在复查',
 }

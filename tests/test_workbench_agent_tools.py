@@ -20,7 +20,8 @@ def ctx(ticker='AMD', read=lambda fn: None):
 def test_reason_text_covers_every_status_reason():
     reasons = {'disabled', 'not_configured', 'quota_exhausted', 'token_budget', 'stage_budget', 'max_attempts',
                'malformed', 'invalid_citation', 'level_check', 'tool_rounds_exceeded', 'model_error',
-               'checkpoint_unavailable'}
+               'checkpoint_unavailable', 'thesis_count', 'invalid_condition', 'changes_mismatch', 'no_change',
+               'review_malformed', 'migration_026_missing', 'review_in_progress'}
     assert set(REASON_TEXT) == reasons
     assert STATUSES == ('ok', 'pass', 'rejected', 'error', 'skipped')
 
