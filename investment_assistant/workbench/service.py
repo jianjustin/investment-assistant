@@ -551,8 +551,13 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         chain_tickers: list[str] = []
         if ready:
             try:
+                chain_failures: list[tuple[str, str]] = []
                 with _tx() as conn:
-                    chain_tickers = plan_review.chain_tickers(conn, session, now=now, exclude=all_tickers)
+                    chain_tickers = plan_review.chain_tickers(conn, session, now=now, exclude=all_tickers,
+                                                              failures=chain_failures)
+                if c_acc is not None:     # the review stage reports the same chain in summary['errors']
+                    for ticker, reason in chain_failures:
+                        c_acc.fail(f'chains:{ticker}', reason)
             except Unavailable:
                 raise
             except Exception as exc:

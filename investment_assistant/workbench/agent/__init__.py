@@ -26,4 +26,5 @@ REASON_TEXT = {
     'review_malformed': '复查输出格式无效',
     'migration_026_missing': '迁移 026 未执行',
     'review_in_progress': '正在复查',
+    'plan_invalid': '修订版按规则作废',      # v2.5 D23: an entry-phase revision whose plan row is invalid
 }

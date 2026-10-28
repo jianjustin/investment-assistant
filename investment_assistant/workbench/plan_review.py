@@ -75,14 +75,28 @@ def review_objects(conn, session: date, *, now: datetime) -> tuple[list[dict], d
     chain already holding an effective batch review for S (``already_reviewed``), capped at
     REVIEW_MAX_OBJECTS (``object_cap``, the tail of the order: extended entry chains go first). Exclusions:
     ``{'skips': [(reason, ticker)], 'ended': {expired, closed_by_decision, position_closed},
-    'holdings_without_chain': [ticker]}`` (held tickers without a chain in the holding state, D7).
+    'failures': [(ticker, reason)], 'holdings_without_chain': [ticker]}`` (held tickers without a chain in
+    the holding state, D7). A chain whose reading raises is read under a savepoint and only listed in
+    ``failures``; the other chains go on.
     Records are read as stored; ``now`` is the batch cutoff, kept for symmetry with the other readers."""
     objects: list[dict] = []
     skips: list[tuple[str, str]] = []
+    failures: list[tuple[str, str]] = []
     ended = {state: 0 for state in ENDED_STATES}
     holding: set[str] = set()
     for chain in repository.all_chains(conn):
-        obj = review_object(conn, chain['ticker'], chain['signal_date'], session=session, pool=chain['pool'])
+        try:
+            with conn.transaction():        # savepoint: a broken chain must not abort the others' reads
+                obj = review_object(conn, chain['ticker'], chain['signal_date'], session=session,
+                                    pool=chain['pool'])
+                reviewed = obj is not None and any(
+                    r['outcome'] in repository.EFFECTIVE_REVIEW_OUTCOMES
+                    for r in repository.batch_attempts(conn, obj['ticker'], obj['signal_date'], session))
+        except service.Unavailable:
+            raise
+        except Exception as exc:            # §7.4 / §13: one chain's surprise only affects that chain
+            failures.append((chain['ticker'], families.sanitize_reason(exc)))
+            continue
         if obj is None:
             continue
         if obj['state'] in ended:
@@ -95,27 +109,36 @@ def review_objects(conn, session: date, *, now: datetime) -> tuple[list[dict], d
         if obj['as_of_session'] == session:
             skips.append(('fresh_version', obj['ticker']))
             continue
-        if any(r['outcome'] in repository.EFFECTIVE_REVIEW_OUTCOMES
-               for r in repository.batch_attempts(conn, obj['ticker'], obj['signal_date'], session)):
+        if reviewed:
             skips.append(('already_reviewed', obj['ticker']))
             continue
         objects.append(obj)
     objects.sort(key=_order)
     skips += [('object_cap', obj['ticker']) for obj in objects[REVIEW_MAX_OBJECTS:]]
     held = repository.open_position_tickers(conn)
-    return objects[:REVIEW_MAX_OBJECTS], {'skips': skips, 'ended': ended,
+    return objects[:REVIEW_MAX_OBJECTS], {'skips': skips, 'ended': ended, 'failures': failures,
                                           'holdings_without_chain': sorted(held - holding)}
 
 
-def chain_tickers(conn, session: date, *, now: datetime, exclude: Iterable[str] = ()) -> list[str]:
+def chain_tickers(conn, session: date, *, now: datetime, exclude: Iterable[str],
+                  failures: list[tuple[str, str]] | None = None) -> list[str]:
     """Tickers of chains in state entry / holding at S that are not in ``exclude`` (the batch passes its
-    pool and holdings): collected only, never run through the rules (D21)."""
+    pool and holdings): collected only, never run through the rules (D21). A chain whose state cannot be
+    read (under a savepoint) is appended to ``failures`` as (ticker, reason) and skipped."""
     skip = {t.upper() for t in exclude}
     out: set[str] = set()
     for chain in repository.all_chains(conn):
         if chain['ticker'].upper() in skip or chain['ticker'] in out:
             continue
-        status = service.chain_status(conn, chain['ticker'], chain['signal_date'], session=session)
+        try:
+            with conn.transaction():
+                status = service.chain_status(conn, chain['ticker'], chain['signal_date'], session=session)
+        except service.Unavailable:
+            raise
+        except Exception as exc:
+            if failures is not None:
+                failures.append((chain['ticker'], families.sanitize_reason(exc)))
+            continue
         if status is not None and status['state']['state'] in ACTIVE_STATES:
             out.add(chain['ticker'])
     return sorted(out)
@@ -258,7 +281,10 @@ def review_chain(obj: dict, *, session: date, now: datetime, trigger: str, run_i
     failed → filings unknown). ``trigger`` is 'batch' or 'recheck' (a recheck skips the quiet-day maintain,
     is not limited by REVIEW_MAX_ATTEMPTS and writes origin 'recheck' versions). ``quota`` is the run's
     shared ``{'exhausted': bool}``, set here when a call hits the quota. Model and checkpoint failures
-    become an ``error`` row; database failures propagate (the stage isolates them per chain)."""
+    become an ``error`` row; so does a failure inside the write transaction (it is rolled back, then an
+    ``error`` row with ``detail.write_error`` and the model runs as ``error`` rows, tokens kept, is written in
+    a new one, so attempts and the token cap still count). Failures before any write propagate (the stage
+    isolates them per chain)."""
     ticker, signal_date = obj['ticker'], obj['signal_date']
     recheck = trigger == 'recheck'
     with service._tx() as conn:
@@ -281,10 +307,23 @@ def review_chain(obj: dict, *, session: date, now: datetime, trigger: str, run_i
             'signals': signals, 'conditions': conditions, 'user_input_ids': [r['id'] for r in included],
             'cutoff_at': now, 'detail': detail}
     unit = {'ticker': ticker, 'signal_date': signal_date, 'pool': pool}
+    spent: dict[str, tuple[str, int, int]] = {}      # model runs made so far: run id -> (mode, in, out)
+
+    def run_row(run_id_: str, mode: str, status: str, attempt: int, **kwargs) -> dict:
+        return service._agent_run_row(unit, settings=settings, attempt=attempt, now=now, status=status,
+                                      run_id=run_id_, mode=mode, **kwargs)
 
     def commit(build: Callable[[Any, int], dict]) -> dict:
-        return _commit(seen, ticker=ticker, signal_date=signal_date, session=session, trigger=trigger,
-                       build=build)
+        try:
+            return _commit(seen, ticker=ticker, signal_date=signal_date, session=session, trigger=trigger,
+                           build=build)
+        except service.Unavailable:
+            raise
+        except Exception as exc:      # the write failed and rolled back: record it, so attempts and tokens count
+            return _commit(seen, ticker=ticker, signal_date=signal_date, session=session, trigger=trigger,
+                           build=lambda conn, attempt: _write_failed(conn, attempt, exc=exc, base=base,
+                                                                     spent=spent, run_row=run_row,
+                                                                     settings=settings))
 
     verdict = timeline.host_verdict(signals=signals, conditions=conditions, recheck=recheck)
     if verdict is not None:                           # §7.4 steps 1–2: the host decides, no model call
@@ -309,15 +348,13 @@ def review_chain(obj: dict, *, session: date, now: datetime, trigger: str, run_i
     graph_unit = {'ticker': ticker, 'signal_date': signal_date, 'pool_tier': context.get('pool_tier')}
     ctx = agent_tools.ToolContext(ticker=ticker, session=session, cutoff_at=now, read=service._read_only)
 
-    def run_row(run_id_: str, mode: str, status: str, attempt: int, **kwargs) -> dict:
-        return service._agent_run_row(unit, settings=settings, attempt=attempt, now=now, status=status,
-                                      run_id=run_id_, mode=mode, **kwargs)
-
     review_id = str(uuid.uuid4())                     # §7.4 step 4: agent-review-1, single phase
     reviewed, failure = _invoke(
         lambda model, checkpointer: agent_graph.run_review(
             unit=graph_unit, ctx=ctx, model=model, checkpointer=checkpointer, run_id=review_id,
             now=lambda: now, evidence=evidence, user_refs=user_refs), deps=deps, settings=settings)
+    spent[review_id] = ('review', 0, 0) if failure is not None else (
+        'review', reviewed['input_tokens'] or 0, reviewed['output_tokens'] or 0)
     if failure is not None:
         reason, error_detail = failure
         if reason == 'quota_exhausted':
@@ -370,6 +407,8 @@ def review_chain(obj: dict, *, session: date, now: datetime, trigger: str, run_i
         revised, failure = None, ('bars_missing', 'no bars through the review session')
     if failure is not None and failure[0] == 'quota_exhausted':
         quota['exhausted'] = True
+    spent[revise_id] = ('revise', 0, 0) if revised is None else (
+        'revise', revised['input_tokens'] or 0, revised['output_tokens'] or 0)
     return commit(lambda conn, attempt: _revision(
         conn, attempt, seen=seen, said_base=said_base, review_run=review_run, run_row=run_row,
         revise_id=revise_id, revised=revised, failure=failure, session=session, now=now, trigger=trigger,
@@ -451,23 +490,46 @@ def _revision(conn, attempt: int, *, seen: dict, said_base: dict, review_run: Ca
     return {**row, 'new_plan_id': plan_id}
 
 
+def _write_failed(conn, attempt: int, *, exc: BaseException, base: dict, spent: dict, run_row: Callable,
+                  settings) -> dict:
+    """The review row after a failed write: every model run made so far as an ``error`` run with its
+    tokens, outcome ``error`` with the classified reason and ``detail.write_error``."""
+    reason, error_detail = agent_model.classify_error(exc, settings.api_key)
+    ids = {'review': None, 'revise': None}
+    for run_id, (mode, tokens_in, tokens_out) in spent.items():
+        repository.insert_agent_run(conn, run_row(run_id, mode, 'error', attempt, reason=reason, detail=error_detail,
+                                                  input_tokens=tokens_in, output_tokens=tokens_out), [])
+        ids[mode] = run_id
+    return {**base, 'outcome': 'error', 'decided_by': 'agent' if ids['review'] else 'host', 'reason': reason,
+            'review_agent_run_id': ids['review'], 'revision_agent_run_id': ids['revise'],
+            'input_tokens': sum(v[1] for v in spent.values()), 'output_tokens': sum(v[2] for v in spent.values()),
+            'attempt': attempt, 'detail': {**base['detail'], 'write_error': error_detail}}
+
+
 def _commit(seen: dict, *, ticker: str, signal_date: date, session: date, trigger: str,
             build: Callable[[Any, int], dict]) -> dict:
-    """The one write transaction of a review: lock, head unchanged, (batch) not yet reviewed on S, then
-    ``build(conn, attempt)`` inserts its runs / plan / version and returns the review row, inserted last."""
+    """The one write transaction of a review: lock, then re-check what the read saw — the chain is still
+    active in the same mode, the head is the same version and no effective review of it was written since
+    (a recheck or a decision may have landed while the model ran; otherwise ``review_in_progress``, no row) —
+    and (batch) not yet reviewed on S; then ``build(conn, attempt)`` inserts its runs / plan / version and
+    returns the review row, inserted last."""
     with service._tx() as conn:
         if not repository.try_review_lock(conn, ticker, signal_date):
             return {'skipped_without_row': 'review_in_progress'}
-        current = repository.chain_head(conn, ticker, signal_date)
-        if current is None or str(current['plan']['id']) != str(seen['plan']['id']):
-            return {'skipped_without_row': 'review_in_progress'}       # a recheck moved the head meanwhile
+        status = service.chain_status(conn, ticker, signal_date, session=session)
+        if (status is None or status['state']['state'] not in ACTIVE_STATES
+                or status['state']['mode'] != seen['mode']
+                or str(status['head']['plan']['id']) != str(seen['plan']['id'])):
+            return {'skipped_without_row': 'review_in_progress'}       # someone else moved the chain meanwhile
         if trigger == 'batch':
             attempts = repository.batch_attempts(conn, ticker, signal_date, session)
             if any(r['outcome'] in repository.EFFECTIVE_REVIEW_OUTCOMES for r in attempts):
                 return {'skipped_without_row': 'already_reviewed'}
         else:
-            attempts = [r for r in repository.chain_reviews(conn, ticker, signal_date)
-                        if r['session'] == session and r['trigger'] == trigger]
+            attempts = [r for r in status['reviews'] if r['session'] == session and r['trigger'] == trigger]
+        last = repository.last_effective_review(conn, seen['plan']['id'])
+        if (last or {}).get('id') != (seen['last_review'] or {}).get('id'):
+            return {'skipped_without_row': 'review_in_progress'}       # the head was reviewed meanwhile
         return repository.insert_plan_review(conn, build(conn, len(attempts) + 1))
 
 
@@ -494,6 +556,7 @@ def run_stage(session: date, *, now: datetime, deps, summary: dict[str, Any], st
         objects, excluded = review_objects(conn, session, now=now) if ready else ([], None)
     if not ready:
         return 'migration_026_missing'
+    summary['errors'].extend(f'{ticker} review: {reason}' for ticker, reason in excluded['failures'])
     unavailable = agent_model.unavailable_reason(settings)
     review['objects'] = len(objects)
     detail = {'outcomes': dict(review['outcomes']), 'decided_by': {'agent': 0, 'host': 0},
@@ -504,6 +567,8 @@ def run_stage(session: date, *, now: datetime, deps, summary: dict[str, Any], st
         acc.input(len(objects))
         for reason, ticker in excluded['skips']:
             acc.skip(reason, ticker)
+        for ticker, reason in excluded['failures']:
+            acc.fail(ticker, reason)
         acc.outputs.update({'review_ids': [], 'plan_ids': [], 'agent_run_ids': []})
         acc.detail.update(detail)
         if unavailable is not None and objects:
@@ -530,6 +595,8 @@ def run_stage(session: date, *, now: datetime, deps, summary: dict[str, Any], st
                 acc.fail(obj['ticker'], exc)
             continue
         _record(obj, out, review=review, detail=detail, acc=acc)
+        if (out.get('detail') or {}).get('write_error'):
+            summary['errors'].append(f"{obj['ticker']} review: {out['detail']['write_error']}")
 
     detail['outcomes'] = dict(review['outcomes'])
     if acc is not None:

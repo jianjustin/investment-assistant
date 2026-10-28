@@ -99,7 +99,8 @@ class Market:
 
 class RoutedModel(BaseChatModel):
     """Replies come from one queue per prompt: propose (first version), revise, counter, review, other
-    (interpretations). An exception in a queue is raised; an empty queue raises AssertionError."""
+    (interpretations). An exception in a queue is raised; a plain callable is a hook run while the model
+    "thinks" (another transaction landing mid-call); an empty queue raises AssertionError."""
     queues: dict = {}
     calls: dict = {}
     seen: list = []
@@ -127,6 +128,9 @@ class RoutedModel(BaseChatModel):
         if not queue:
             raise AssertionError(f'no scripted reply for {route}')
         item = queue.pop(0)
+        while callable(item) and not isinstance(item, BaseException):    # a hook runs mid-call, then the reply
+            item()
+            item = queue.pop(0)
         if isinstance(item, BaseException):
             raise item
         if not item.usage_metadata:
@@ -660,3 +664,97 @@ def test_chain_ticker_collected_without_rules(db):
     assert rows['signals']['input_count'] == 1                      # 规则循环只跑 SYNF
     [row] = reviews(db)
     assert row['session'] == day(1) and signal(row, 'abnormal_move')['fired'] is False
+
+
+# ---------------------------------------------------------------- fix round 1: races, isolation, failed writes
+
+@pytest.mark.parametrize('winner', ['invalidate', 'decision'])
+def test_chain_ended_while_model_runs_writes_nothing(db, winner):
+    """Review Focus 5: while the batch's model call runs (no lock held), a recheck invalidates the head or
+    a non-buy decision lands; the batch's write transaction sees the chain no longer active and writes no
+    version and no review row (review_in_progress)."""
+    market = Market()
+    v0 = signal_day(db, market, ['SYNTH'])[0]['SYNTH']
+
+    def other_side():
+        if winner == 'invalidate':
+            repository.insert_plan_review(db, {
+                'ticker': 'SYNTH', 'signal_date': S1, 'head_plan_id': v0['plan']['id'], 'session': day(1),
+                'trigger': 'recheck', 'run_id': 'recheck-1', 'mode': 'entry',
+                'timeline_version': 'timeline-1', 'outcome': 'invalidate', 'decided_by': 'host',
+                'reason': '失效条件成立：重新复查', 'attempt': 1, 'cutoff_at': evening(day(1)) - timedelta(minutes=5)})
+            db.commit()
+        else:
+            _decide(db, 'SYNTH', 'ignore', now=evening(day(1)) - timedelta(minutes=5))
+
+    model = make_model(review=[other_side, *verdict('SYNTH', 'revise', '止损应上移')], revise=revision('SYNTH'),
+                       counter=counter())
+    summary, rows, model = run(db, market, 1, tickers=['SYNTH'], model=model)
+    assert model.calls['revise'] == 2                     # the losing side did run its revision
+    assert [v['version_no'] for v in repository.chain_versions(db, 'SYNTH', S1)] == [0]
+    batch_rows = [r for r in reviews(db) if r['trigger'] == 'batch']
+    assert batch_rows == []
+    assert db.execute("SELECT count(*) FROM agent_runs WHERE mode IN ('review', 'revise')").fetchone()[0] == 0
+    assert skips(rows['review']) == {'review_in_progress': ['SYNTH']}
+    assert summary['review']['outcomes'] == {'maintain': 0, 'revise': 0, 'invalidate': 0, 'skipped': 0, 'error': 0}
+
+
+def test_broken_chain_does_not_stop_the_others(db, monkeypatch):
+    """§7.4 / §13: one chain whose state read fails (a database error here, so the read needs a savepoint)
+    is reported; the other chain is still collected and reviewed."""
+    market = Market()
+    signal_day(db, market, ['SYNB', 'SYNF', 'SYNTH'], chains=['SYNB', 'SYNTH'])
+    real = service.chain_status
+
+    def chain_status(conn, ticker, signal_date, **kwargs):
+        if ticker == 'SYNB':
+            conn.execute('SELECT * FROM no_such_table_for_synb')        # aborts the transaction without a savepoint
+        return real(conn, ticker, signal_date, **kwargs)
+
+    monkeypatch.setattr(service, 'chain_status', chain_status)
+    model = make_model(review=verdict('SYNTH', 'maintain', '照旧', cite=False))
+    summary, rows, _ = run(db, market, 1, tickers=['SYNF'], model=model)     # both chain tickers left the pool
+    assert summary['pool']['chains'] == 1
+    assert ('bars', 'SYNTH', day(1)) in market.calls and ('bars', 'SYNB', day(1)) not in market.calls
+    assert [f['target'] for f in rows['collect']['failures']] == ['chains:SYNB']
+    [row] = reviews(db, 'SYNTH')
+    assert row['outcome'] == 'maintain' and reviews(db, 'SYNB') == []
+    stage = rows['review']
+    assert stage['status'] == 'partial' and [f['target'] for f in stage['failures']] == ['SYNB']
+    assert stage['output_count'] == 1 and stage['input_count'] == 1
+    assert [e for e in summary['errors'] if e.startswith('SYNB review: ')]
+
+
+def test_failed_write_still_counts_attempt_and_tokens(db, monkeypatch):
+    """A failure inside the write transaction rolls back the version, then an error row is written with the
+    model runs as error runs (tokens kept), so a rerun on the same S is attempt 2 and the cap sees the tokens."""
+    market = Market()
+    signal_day(db, market, ['SYNTH'])
+
+    def boom(**kwargs):
+        raise RuntimeError('plan build exploded')
+
+    monkeypatch.setattr(plan_review.timeline, 'build_version_plan', boom)
+    for attempt in (1, 2):
+        model = make_model(review=verdict('SYNTH', 'revise', '止损应上移'), revise=revision('SYNTH'),
+                           counter=counter())
+        summary, rows, _ = run(db, market, 1, tickers=['SYNTH'], model=model)
+        row = reviews(db)[-1]
+        assert (row['outcome'], row['decided_by'], row['attempt']) == ('error', 'agent', attempt)
+        assert 'plan build exploded' in row['detail']['write_error'] and row['new_plan_id'] is None
+        assert (row['input_tokens'], row['output_tokens']) == (60, 30)
+        runs = [repository.agent_run_by_id(db, row['review_agent_run_id']),
+                repository.agent_run_by_id(db, row['revision_agent_run_id'])]
+        assert [(r['mode'], r['status'], r['input_tokens']) for r in runs] == [('review', 'error', 20),
+                                                                              ('revise', 'error', 40)]
+        assert [f['target'] for f in rows['review']['failures']] == ['SYNTH']
+        assert [e for e in summary['errors'] if e.startswith('SYNTH review: ')]
+    assert [v['version_no'] for v in repository.chain_versions(db, 'SYNTH', S1)] == [0]
+    assert repository.agent_tokens_on(db, day(1)) >= 120
+
+
+def test_chain_tickers_requires_exclude():
+    import inspect
+
+    param = inspect.signature(plan_review.chain_tickers).parameters['exclude']
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY and param.default is inspect.Parameter.empty
