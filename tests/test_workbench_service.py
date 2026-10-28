@@ -690,13 +690,17 @@ def _agent_buy(ref='call:1'):
                                   'entry_high': {'value': 101.5, 'refs': [ref]},
                                   'stop': {'value': 96.0, 'refs': [ref]},
                                   'target1': {'value': 108.0, 'refs': [ref]}},
-                       'thesis': [{'text': '突破 20 日线', 'refs': [ref]}]}, ensure_ascii=False)
+                       'thesis': [{'text': '突破 20 日线', 'refs': [ref]}],
+                       'invalidation': [{'kind': 'close_below', 'params': {'price': 94}, 'text': '收盘跌破 94',
+                                         'refs': [ref]}]}, ensure_ascii=False)
 
 
 def _ok_responses(ticker='NVDA', ref='call:1'):
+    """An agent-2 first version (v2.5 §4.1): tool, plan, counter tool, per-thesis counter."""
     return [_tool_msg('get_indicators', {'ticker': ticker}), AIMessage(content=_agent_buy(ref)),
             _tool_msg('get_news', {'days': 7}), AIMessage(content=json.dumps(
-                {'risks': [{'text': '财报临近', 'refs': [ref]}]}))]
+                {'counter': [{'thesis': 1, 'text': '财报临近', 'refs': [ref]}], 'risks': []},
+                ensure_ascii=False))]
 
 
 def test_agent_stage_after_rule_plans(db, scripted_model):
@@ -727,9 +731,12 @@ def test_agent_order_main_before_extended(db, scripted_model):
 def test_agent_ok_writes_plan_run_calls(db, scripted_model):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
     plan = repository.agent_plan(db, 'NVDA', SESSION)
-    assert plan['kind'] == 'agent' and plan['plan_version'] == 'agent-1'
+    assert plan['kind'] == 'agent' and plan['plan_version'] == 'agent-2'
     run = repository.latest_agent_run(db, 'NVDA', SESSION)
     assert run['status'] == 'ok' and str(run['plan_id']) == str(plan['id'])
+    assert run['agent_version'] == 'agent-2'
+    [version] = repository.chain_versions(db, 'NVDA', SESSION)
+    assert version['version_no'] == 0 and str(version['agent_run_id']) == str(run['id'])
     calls = repository.agent_tool_calls(db, run['id'])
     assert [(c['seq'], c['phase'], c['tool']) for c in calls] == \
         [(1, 'propose', 'get_indicators'), (2, 'counter', 'get_news')]
@@ -954,8 +961,13 @@ def test_manual_run_conflict_and_not_buy(db, scripted_model):
         service.run_agent('MU', SESSION, now=NOW)               # 不存在
     run = service.run_agent('NVDA', SESSION, now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
     assert run['status'] == 'ok' and run['plan_id'] is not None
-    with pytest.raises(service.AgentConflict):
+    assert run['agent_version'] == 'agent-2'
+    [version] = repository.chain_versions(db, 'NVDA', SESSION)       # 手动重跑也只生成首版
+    assert (version['version_no'], version['origin']) == (0, 'signal')
+    assert str(version['plan_id']) == str(run['plan_id'])
+    with pytest.raises(service.AgentConflict):                         # 已有首版：不再生成
         service.run_agent('NVDA', SESSION, now=NOW, deps=agent_deps(scripted_model, []))
+    assert len(repository.chain_versions(db, 'NVDA', SESSION)) == 1
 
 
 # ---------------------------------------------------------------- agent views (P3 §10.1/10.3)
@@ -964,10 +976,14 @@ def test_today_unit_has_agent_ok_view(db, scripted_model):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
     unit = service.today(now=NOW)['units'][0]
     assert set(unit['agent']) == {'id', 'status', 'model', 'agent_version', 'output', 'counter', 'plan',
-                                  'input_tokens', 'output_tokens', 'created_at'}
+                                  'input_tokens', 'output_tokens', 'created_at', 'chain'}
     assert unit['agent']['status'] == 'ok' and unit['agent']['model'] == 'glm-5.3'
-    assert unit['agent']['plan']['kind'] == 'agent'
+    assert unit['agent']['plan']['kind'] == 'agent' and unit['agent']['agent_version'] == 'agent-2'
     assert unit['agent']['output']['levels']['entry_low']['value'] == '98.50'
+    chain = unit['agent']['chain']
+    assert set(chain) == {'version_no', 'head_plan_id', 'state', 'mode', 'basis', 'latest_review'}
+    assert (chain['version_no'], chain['state'], chain['mode'], chain['latest_review']) == (0, 'entry', 'entry', None)
+    assert chain['head_plan_id'] == str(unit['agent']['plan']['id'])
 
 
 def test_today_hides_rejected_output(db, scripted_model):
@@ -1088,10 +1104,11 @@ def test_buy_unit_brief_derived_from_proposal(db, scripted_model):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
     run = repository.latest_agent_run(db, 'NVDA', SESSION)
     brief = repository.latest_brief(db, 'NVDA', SESSION)
-    assert brief['prompt_version'] == 'agent-1' and brief['status'] == 'ok'
+    assert brief['prompt_version'] == 'agent-2' and brief['status'] == 'ok'
     assert brief['agent_run_id'] == run['id']
     assert brief['output']['summary'] == '回踩修复放量'
-    assert brief['output']['contra'] == [{'text': '财报临近', 'refs': ['call:1']}]
+    # agent-2 (v2.5 Task 6): the brief carries the summary and the first per-thesis counter
+    assert brief['output']['contra'] == [{'thesis': 1, 'text': '财报临近', 'refs': ['call:1']}]
     assert [r['mode'] for r in repository.agent_runs_for(db, 'NVDA', SESSION)] == ['propose']
 
 
@@ -1141,7 +1158,7 @@ def test_stage_order_main_propose_interpret_extended(db, scripted_model):
                "VALUES ('CCC', 'extended', %s, %s)", [SESSION - timedelta(days=1), NOW])
     def unit_replies(ticker):
         return [_tool_msg('get_indicators', {'ticker': ticker}), AIMessage(content=_agent_buy()),
-                AIMessage(content=json.dumps({'risks': []}))]
+                AIMessage(content=json.dumps({'counter': [], 'risks': []}))]
     d = _mixed_deps(scripted_model, unit_replies('AAA') + _interpret_reply() + unit_replies('CCC'),
                     flat=('WTCH',))
     model = d.agent_model
@@ -1483,3 +1500,142 @@ def test_manual_targets_exclude_closed_positions_but_batch_keeps_them(db):
     target_count = db.execute("SELECT target_count FROM data_fetch_runs "
                               "WHERE family = 'news' ORDER BY id DESC LIMIT 1").fetchone()[0]
     assert target_count == 2                                   # 批处理仍采集 AMD + FLAT（旧行为）
+
+
+# ---------------------------------------------------------------- v2.5 Task 6: agent-2 first versions and chain views
+
+def _drop_timeline_tables(db):
+    """Simulate a database where migration 026 never ran (its three tables are missing)."""
+    db.execute('DROP TABLE plan_reviews, user_inputs, agent_plan_versions CASCADE')
+    db.commit()
+
+
+def test_agent_stage_without_migration_026(db, scripted_model):
+    from investment_assistant.workbench import pool as pool_module
+    from investment_assistant.workbench import stages as stages_module
+    _drop_timeline_tables(db)
+    assert repository.timeline_ready(db) is False
+    _watch_candidate(db)
+    db.execute('INSERT INTO pool_tiers (ticker, tier, effective_session, recorded_at) '
+               "VALUES ('CCC', 'extended', %s, %s)", [SESSION - timedelta(days=1), NOW])
+    d = _mixed_deps(scripted_model, _interpret_reply(), flat=('WTCH',))     # 只有解读会调用模型
+    recorder = stages_module.StageRecorder('run-no026', 'scheduled', SESSION, wall_now=lambda: NOW)
+    summary = service.run_batch(pool=pool_module.Pool(core=('AAA', 'WTCH'), extended=('CCC',)), now=NOW,
+                                deps=d, stages=recorder)
+    rows = db.execute('SELECT ticker, mode, status, reason FROM agent_runs ORDER BY created_at, id').fetchall()
+    assert rows == [('AAA', 'propose', 'skipped', 'migration_026_missing'),
+                    ('WTCH', 'interpret', 'ok', None),
+                    ('CCC', 'propose', 'skipped', 'migration_026_missing')]
+    aaa_brief = repository.latest_brief(db, 'AAA', SESSION)                   # 主列表照旧得到规则版简报
+    assert (aaa_brief['status'], aaa_brief['error']) == ('fallback', '迁移 026 未执行')
+    assert repository.latest_brief(db, 'CCC', SESSION) is None                # 扩展池不写简报
+    assert summary['plans']['AAA'] == 'inserted' and summary['plans']['CCC'] == 'inserted'   # 规则计划照常
+    assert db.execute("SELECT count(*) FROM trade_plans WHERE kind = 'agent'").fetchone()[0] == 0
+    assert summary['errors'].count('timeline: migration_026_missing') == 1
+    [agent_row] = [r for r in repository.stage_runs_for_run(db, 'run-no026') if r['stage'] == 'agent']
+    assert agent_row['status'] == 'degraded'
+    assert [g['kind'] for g in agent_row['degradations']] == ['migration_026_missing']
+    assert [(g['reason'], g['samples']) for g in agent_row['skips']] == \
+        [('migration_026_missing', ['AAA', 'CCC'])]
+
+    # 「今日」不崩：按 agent-1 的方式读，没有链
+    view = service.today(now=NOW)
+    assert view['timeline_ready'] is False and view['chains'] == []
+    aaa = next(u for u in view['units'] if u['ticker'] == 'AAA')
+    assert aaa['agent']['status'] == 'skipped' and aaa['agent']['reason'] == 'migration_026_missing'
+    assert 'chain' not in aaa['agent'] and 'legacy' not in aaa['agent']
+
+
+def _insert_run(db, *, ticker='NVDA', mode, status, at, agent_version='agent-2', plan_id=None, reason=None,
+                output=None, counter=None):
+    return repository.insert_agent_run(db, {
+        'id': str(uuid.uuid4()), 'ticker': ticker, 'signal_date': SESSION, 'pool': 'main', 'attempt': 1,
+        'mode': mode, 'agent_version': agent_version, 'provider': 'zhipu', 'model': 'glm-5.3', 'cutoff_at': at,
+        'status': status, 'reason': reason, 'detail': None, 'output': output, 'counter': counter,
+        'plan_id': plan_id, 'input_tokens': 1, 'output_tokens': 1, 'started_at': at, 'finished_at': at}, [])
+
+
+def test_today_agent_view_uses_head_not_latest_run(db, scripted_model):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    v0 = repository.latest_agent_run(db, 'NVDA', SESSION)
+    head = repository.chain_head(db, 'NVDA', SESSION)
+    later = NOW + timedelta(minutes=30)
+    _insert_run(db, mode='revise', status='rejected', reason='changes_mismatch', at=later)
+    _insert_run(db, mode='propose', status='error', reason='model_error', at=later)   # 比首版更晚的运行
+    db.commit()
+    unit = service.today(now=later)['units'][0]
+    agent = unit['agent']
+    assert agent['id'] == str(v0['id']) and agent['status'] == 'ok'            # 内容取最新版的运行
+    assert agent['output'] == v0['output'] and agent['counter'] == v0['counter']
+    assert str(agent['plan']['id']) == str(head['plan']['id'])
+    assert agent['chain']['version_no'] == 0 and agent['chain']['head_plan_id'] == str(head['plan']['id'])
+    assert 'legacy' not in agent
+
+
+def test_today_marks_agent1_legacy(db, scripted_model):
+    from investment_assistant.config import WorkbenchConfig
+    off = agent_deps(scripted_model, [], settings=_agent_settings(provider='off'))
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=off)
+    later = NOW + timedelta(minutes=10)
+    run_id = str(uuid.uuid4())
+    levels = {'entry_low': Decimal('98.50'), 'entry_high': Decimal('101.50'), 'stop': Decimal('96.00'),
+              'target1': Decimal('108.00')}
+    old = plans.build_agent_plan(levels=levels, agent_run_id=run_id, model='glm-5.3', ticker='NVDA',
+                                 signal_date=SESSION, bars=repository.read_bars(db, 'NVDA', SESSION, cutoff_at=NOW),
+                                 earnings_row=None, snapshot=None,
+                                 exposure={'ticker_value': Decimal(0), 'total_value': Decimal(0)},
+                                 params=WorkbenchConfig())
+    plan = repository.insert_plan(db, old)
+    output = {'action': 'buy', 'summary': '旧版建议',
+              'levels': {k: {'value': str(v), 'refs': ['call:1']} for k, v in levels.items()},
+              'thesis': [{'text': '旧论点', 'refs': ['call:1']}]}
+    repository.insert_agent_run(db, {
+        'id': run_id, 'ticker': 'NVDA', 'signal_date': SESSION, 'pool': 'main', 'attempt': 2, 'mode': 'propose',
+        'agent_version': 'agent-1', 'provider': 'zhipu', 'model': 'glm-5.3', 'cutoff_at': later, 'status': 'ok',
+        'reason': None, 'detail': None, 'output': output, 'counter': {'status': 'ok', 'risks': [], 'dropped': 0},
+        'plan_id': plan['id'], 'input_tokens': 1, 'output_tokens': 1, 'started_at': later, 'finished_at': later}, [])
+    db.commit()
+    view = service.today(now=later)
+    agent = view['units'][0]['agent']
+    assert agent['legacy'] is True and agent['chain'] is None
+    assert agent['agent_version'] == 'agent-1' and agent['plan']['id'] == plan['id']
+    assert view['timeline_ready'] is True and view['chains'] == []
+
+
+def test_today_chains_and_has_chain(db, scripted_model):
+    service.run_batch(tickers=['MU', 'NVDA'], now=NOW,
+                      deps=agent_deps(scripted_model, _ok_responses('MU') + _ok_responses('NVDA')))
+    units = {u['ticker']: u for u in service.today(now=NOW)['units']}
+    heads = {t: repository.chain_head(db, t, SESSION) for t in ('MU', 'NVDA')}
+    _decide(units['MU'], 'buy', plan_id=heads['MU']['plan']['id'])            # 决定买入、未成交 → 入场期
+    nvda_decision = _decide(units['NVDA'], 'buy', plan_id=heads['NVDA']['plan']['id'])
+    service.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'NVDA', 'side': 'buy', 'quantity': '10',
+                       'price': '100.00', 'executed_at': '2026-10-22T15:00:00+00:00',
+                       'decision_id': str(nvda_decision['id'])}, now=NOW)       # 成交 → 持仓期
+    service.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'AMD', 'side': 'buy', 'quantity': '5',
+                       'price': '90.00', 'executed_at': '2026-10-20T15:00:00+00:00'}, now=NOW)   # 无链的持仓
+    reason = '无新信号，复查条件未满足（下一交易日）；' + '补充说明' * 10
+    repository.insert_plan_review(db, {
+        'ticker': 'MU', 'signal_date': SESSION, 'head_plan_id': heads['MU']['plan']['id'], 'session': SESSION,
+        'trigger': 'batch', 'mode': 'entry', 'timeline_version': 'timeline-1',
+        'signals': [{'kind': 't1_touched', 'fired': True, 'detail': 'x', 'evidence': []},
+                    {'kind': 'new_8k', 'fired': False, 'detail': 'y', 'evidence': []}],
+        'outcome': 'maintain', 'decided_by': 'host', 'reason': reason, 'attempt': 1, 'cutoff_at': NOW})
+    db.commit()
+
+    view = service.today(now=NOW)
+    assert view['units'] == []                                     # 两个单元都已决定
+    chains = {c['ticker']: c for c in view['chains']}
+    assert set(chains) == {'MU', 'NVDA'}
+    mu, nvda = chains['MU'], chains['NVDA']
+    assert set(mu) == {'ticker', 'signal_date', 'state', 'mode', 'basis', 'version_no', 'head_plan_id',
+                       'valid_until', 'pool', 'latest_review', 'signals_today'}
+    assert (mu['state'], mu['mode'], mu['version_no']) == ('entry', 'entry', 0)
+    assert mu['head_plan_id'] == str(heads['MU']['plan']['id']) and mu['pool'] == 'main'
+    assert mu['latest_review']['outcome'] == 'maintain' and mu['latest_review']['decided_by'] == 'host'
+    assert mu['latest_review']['reason'] == reason[:40]
+    assert mu['signals_today'] == ['t1_touched']
+    assert (nvda['state'], nvda['mode'], nvda['latest_review'], nvda['signals_today']) == \
+        ('holding', 'holding', None, [])
+    holdings = {h['ticker']: h for h in view['holdings']}
+    assert holdings['NVDA']['has_chain'] is True and holdings['AMD']['has_chain'] is False

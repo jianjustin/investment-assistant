@@ -69,6 +69,9 @@ def test_constants_match_plans():
     assert derivation.DERIVATION_VERSION == 'derivation-1'
     assert plans.PLAN_VERSION in derivation.REGISTERED_VERSIONS
     assert plans.AGENT_VERSION in derivation.REGISTERED_VERSIONS
+    from investment_assistant.workbench import timeline
+    assert timeline.AGENT_V2 in derivation.REGISTERED_VERSIONS
+    assert derivation.CHAIN_ENTRY_SESSIONS == timeline.CHAIN_ENTRY_SESSIONS
 
 
 def test_fixed_texts_verbatim():
@@ -628,6 +631,107 @@ def test_variant_plan_json_roundtrip_and_purity(maker, monkeypatch):
     result = derivation.derive_plan(stored, rows)
     assert result['consistency']['status'] == 'consistent', result['consistency']
     assert rows == before
+    json.dumps(result)
+
+
+# ---------------------------------------------------------------- agent-2 version plans (v2.5 §5.2)
+
+def _make_agent2(*, as_of=SIGNAL, version_no=0, mode='entry', earnings=None, snapshot='default', exposure=None,
+                 bars=None, run_id='run-2'):
+    from investment_assistant.workbench import timeline
+    bars = bars or _bars()
+    snapshot = _snapshot() if snapshot == 'default' else snapshot
+    output = {'action': 'buy', 'summary': 's',
+              'levels': {key: {'value': str(value), 'refs': ['call:1']} for key, value in OWN_LEVELS.items()}}
+    plan = timeline.build_version_plan(
+        output=output, agent_run_id=run_id, model='m', ticker='AAA', signal_date=SIGNAL, as_of_session=as_of,
+        version_no=version_no, supersedes_plan_id=None if version_no == 0 else uuid.uuid4(), mode=mode,
+        bars=bars, earnings_row=earnings, snapshot=snapshot, exposure=exposure or _exposure(),
+        params=WorkbenchConfig(), context=None)
+    plan['id'] = uuid.uuid4()
+    rows = _rows(bars, earnings, snapshot)
+    rows.agent_run = {'id': run_id, 'status': 'ok', 'output': output}
+    rows.version = {'plan_id': plan['id'], 'version_no': version_no, 'as_of_session': as_of}
+    return plan, rows
+
+
+AGENT2_CASES = {
+    'first_version': dict(),
+    'entry_revision_capped': dict(as_of=add_trading_days(SIGNAL, 8), version_no=1),
+    'entry_revision': dict(as_of=add_trading_days(SIGNAL, 2), version_no=2),
+    'holding_revision': dict(as_of=add_trading_days(SIGNAL, 15), version_no=3, mode='holding'),
+    'holding_revision_no_room': dict(as_of=add_trading_days(SIGNAL, 15), version_no=1, mode='holding',
+                                     exposure=_exposure('30000', '30000')),
+    'earnings_in_revision': dict(as_of=add_trading_days(SIGNAL, 2), version_no=1,
+                                 earnings=_earnings(add_trading_days(SIGNAL, 4))),
+}
+
+
+@pytest.mark.parametrize('name', sorted(AGENT2_CASES))
+def test_agent2_versions_consistent(name):
+    plan, rows = _make_agent2(**AGENT2_CASES[name])
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency'] == {'status': 'consistent', 'mismatches': [], 'missing': []}, result['consistency']
+    assert result['plan']['plan_version'] == 'agent-2'
+    assert _step(result, 'version_no')['consistent'] is True
+    assert _step(result, 'as_of_session')['consistent'] is True
+    assert _step(result, 'valid_until')['result'] == plan['valid_until'].isoformat()
+
+
+def test_agent2_validity_steps_follow_as_of_and_cap():
+    cap = add_trading_days(SIGNAL, 10)
+    plan, rows = _make_agent2(as_of=add_trading_days(SIGNAL, 8), version_no=1)
+    result = derivation.derive_plan(plan, rows)
+    assert _step(result, 'valid_from')['result'] == add_trading_days(SIGNAL, 9).isoformat()
+    assert _step(result, 'chain_entry_cap')['result'] == cap.isoformat()
+    assert _step(result, 'valid_until')['result'] == cap.isoformat()             # min(S+3, 信号日+10)
+    plan, rows = _make_agent2(as_of=add_trading_days(SIGNAL, 15), version_no=1, mode='holding')
+    result = derivation.derive_plan(plan, rows)
+    assert 'chain_entry_cap' not in _keys(result)                                  # 持仓期没有上限
+    assert _step(result, 'valid_until')['result'] == add_trading_days(SIGNAL, 18).isoformat()
+    plan, rows = _make_agent2()
+    result = derivation.derive_plan(plan, rows)                                    # 首版：信号日 T+1…T+3
+    assert _step(result, 'valid_from')['result'] == add_trading_days(SIGNAL, 1).isoformat()
+    assert _step(result, 'valid_until')['result'] == add_trading_days(SIGNAL, 3).isoformat()
+    assert _step(result, 'chain_entry_cap')['result'] == cap.isoformat()
+
+
+def test_agent2_missing_version_row_incomplete():
+    plan, rows = _make_agent2()
+    rows.version = None
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency']['status'] == 'incomplete'
+    assert result['consistency']['missing'] == [f"agent_plan_versions:{plan['id']}"]
+    assert _step(result, 'atr')['consistent'] is True                              # 其余照常展示
+
+    plan, rows = _make_agent2(as_of=add_trading_days(SIGNAL, 2), version_no=1)
+    rows.version = {**rows.version, 'version_no': 2}                               # 版本号不一致 → mismatch
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency']['status'] == 'mismatch'
+    assert [m['key'] for m in result['consistency']['mismatches']] == ['version_no']
+
+    plan, rows = _make_agent2(as_of=add_trading_days(SIGNAL, 2), version_no=1)
+    plan['valid_until'] = add_trading_days(SIGNAL, 3)                               # 按首版口径存的有效期
+    assert derivation.derive_plan(plan, rows)['consistency']['status'] == 'mismatch'
+
+
+def test_agent2_json_roundtrip_and_purity(monkeypatch):
+    from investment_assistant.workbench import timeline
+    plan, rows = _make_agent2(as_of=add_trading_days(SIGNAL, 8), version_no=1,
+                              earnings=_earnings(add_trading_days(SIGNAL, 20)))
+    stored = copy.deepcopy(plan)
+    stored['sizing'] = json.loads(repository._plan_json(plan['sizing']))
+    stored['inputs'] = json.loads(repository._plan_json(plan['inputs']))
+
+    def boom(*a, **k):
+        raise AssertionError('derivation must not call plans / timeline math')
+
+    for name in ('size', 'atr14', 'earnings_flags', 'validity', 'context_flags', '_freeze'):
+        monkeypatch.setattr(plans, name, boom)
+    for name in ('version_validity', 'build_version_plan'):
+        monkeypatch.setattr(timeline, name, boom)
+    result = derivation.derive_plan(stored, rows)
+    assert result['consistency']['status'] == 'consistent', result['consistency']
     json.dumps(result)
 
 

@@ -400,7 +400,9 @@ def test_agent_track_end_to_end(offline, scripted_model):
                            'levels': {k: {'value': v, 'refs': [ref]} for k, v in
                                       (('entry_low', 120.0), ('entry_high', 128.0), ('stop', 115.0),
                                        ('target1', 140.0))},
-                           'thesis': [{'text': '放量突破 20 日线', 'refs': [ref]}]}, ensure_ascii=False)
+                           'thesis': [{'text': '放量突破 20 日线', 'refs': [ref]}],
+                           'invalidation': [{'kind': 'close_below', 'params': {'price': 112},
+                                             'text': '收盘跌破 112', 'refs': [ref]}]}, ensure_ascii=False)
 
     settings = agent_model_module.AgentSettings(provider='zhipu', model='glm-5.3', base_url='https://x/v4',
                                                 api_key='sk-test', daily_tokens=None, config_error=None)
@@ -420,19 +422,20 @@ def test_agent_track_end_to_end(offline, scripted_model):
         tool_reply('get_indicators', {'ticker': 'SYNTH'}, 't2'),
         AIMessage(content=buy_json('call:1')),
         tool_reply('get_news', {'days': 7}, 't3'),
-        AIMessage(content=json.dumps({'risks': [{'text': '财报临近', 'refs': ['call:1']}]})),
+        AIMessage(content=json.dumps({'counter': [{'thesis': 1, 'text': '财报临近', 'refs': ['call:1']}],
+                                      'risks': []})),
         # SYNE（扩展，最后跑）：pass
         tool_reply('get_indicators', {'ticker': 'SYNE'}, 't4'),
         AIMessage(content=json.dumps({'action': 'pass', 'summary': '趋势不明',
                                       'thesis': [{'text': '量能不足', 'refs': ['call:1']}]})),
-        AIMessage(content=json.dumps({'risks': []})),
+        AIMessage(content=json.dumps({'counter': [], 'risks': []})),
     ]))
     assert batch['errors'] == []
     assert batch['agent']['runs'] == {'SYNTH': 'ok', 'SYNC': 'rejected: invalid_citation', 'SYNE': 'pass'}
     runs = {t: repository.agent_runs_for(offline, t, S1) for t in ('SYNTH', 'SYNC', 'SYNE')}
     assert all(len(v) == 1 for v in runs.values())                       # agent_runs 三行
     agent_plan = repository.agent_plan(offline, 'SYNTH', S1)
-    assert agent_plan['kind'] == 'agent' and agent_plan['plan_version'] == 'agent-1'
+    assert agent_plan['kind'] == 'agent' and agent_plan['plan_version'] == 'agent-2'
     assert str(runs['SYNTH'][0]['plan_id']) == str(agent_plan['id'])
 
     # 推送（替身客户端）：只有主列表单元；作废建议只写原因，不写内容
@@ -479,6 +482,84 @@ def test_agent_track_end_to_end(offline, scripted_model):
     assert again['agent']['runs'] == {'SYNC': 'rejected: invalid_citation'}
     assert len(repository.agent_runs_for(offline, 'SYNTH', S1)) == 1
     assert len(repository.agent_runs_for(offline, 'SYNE', S1)) == 1
+    assert offline.execute("SELECT count(*) FROM trade_plans WHERE kind = 'agent'").fetchone()[0] == 1
+
+
+def test_signal_day_creates_agent2_version_zero(offline, scripted_model, monkeypatch):
+    """v2.5 §5.1: the signal-day batch writes version 0 of an agent-2 chain — plan, run (agent-2) and
+    tool calls, agent_plan_versions (origin signal, cutoff_at = the run's) and the brief in ONE
+    transaction; a failure writing the version row leaves no plan row behind either."""
+    from contextlib import nullcontext
+
+    from langchain_core.messages import AIMessage
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from investment_assistant.workbench import repository
+    from investment_assistant.workbench.agent import model as agent_model_module
+
+    for ticker in ('SYNC', 'SYNTH'):
+        offline.execute("INSERT INTO watchlist_items (ticker, status, tags) VALUES (%s, 'active', %s)",
+                        [ticker, ['core']])
+
+    def tool_reply(name, args, call_id):
+        return AIMessage(content='', tool_calls=[{'name': name, 'args': args, 'id': call_id}])
+
+    plan_json = json.dumps({
+        'action': 'buy', 'summary': '回踩修复放量',
+        'levels': {k: {'value': v, 'refs': ['call:1']} for k, v in
+                   (('entry_low', 120.0), ('entry_high', 128.0), ('stop', 115.0), ('target1', 140.0))},
+        'thesis': [{'text': '放量突破 20 日线', 'refs': ['call:1']}, {'text': '回踩不破前低', 'refs': ['call:1']}],
+        'invalidation': [{'kind': 'close_below', 'params': {'price': 112}, 'refs': ['call:1']}]},
+        ensure_ascii=False)
+    counter_json = json.dumps({'counter': [{'thesis': 1, 'text': '突破量能不足', 'refs': ['call:2']}],
+                               'risks': [{'text': '财报临近', 'refs': ['call:1']}]}, ensure_ascii=False)
+    def unit_replies(ticker):
+        return [tool_reply('get_indicators', {'ticker': ticker}, 't1'), AIMessage(content=plan_json),
+                tool_reply('get_news', {'days': 7}, 't2'), AIMessage(content=counter_json)]
+
+    real_insert = repository.insert_plan_version
+
+    def failing_insert(conn, row):          # SYNC's version row fails; SYNTH's goes through
+        if row['ticker'] == 'SYNC':
+            raise RuntimeError('version row write failed')
+        return real_insert(conn, row)
+    monkeypatch.setattr(repository, 'insert_plan_version', failing_insert)
+
+    d = p1_deps()
+    d.agent_model = scripted_model(unit_replies('SYNC') + unit_replies('SYNTH'))
+    d.agent_checkpointer = lambda: nullcontext(InMemorySaver())
+    d.agent_settings = agent_model_module.AgentSettings(provider='zhipu', model='glm-5.3', base_url='https://x/v4',
+                                                        api_key='sk-test', daily_tokens=None, config_error=None)
+    batch = service.run_batch(now=evening(S1), deps=d)
+    assert batch['agent']['runs'] == {'SYNC': 'error: model_error', 'SYNTH': 'ok'}
+
+    # SYNTH: plan → run → version 0 → brief
+    [plan] = [p for p in repository.plans_for_unit(offline, 'SYNTH', S1) if p['kind'] == 'agent']
+    assert plan['plan_version'] == 'agent-2'
+    assert plan['inputs']['version_no'] == 0 and plan['inputs']['as_of_session'] == S1.isoformat()
+    [run] = repository.agent_runs_for(offline, 'SYNTH', S1)
+    assert run['agent_version'] == 'agent-2' and run['mode'] == 'propose' and run['status'] == 'ok'
+    assert str(run['plan_id']) == str(plan['id'])
+    assert [c['phase'] for c in repository.agent_tool_calls(offline, run['id'])] == ['propose', 'counter']
+    [version] = repository.chain_versions(offline, 'SYNTH', S1)
+    assert (version['version_no'], version['origin'], version['supersedes_plan_id'], version['diff']) == \
+        (0, 'signal', None, None)
+    assert str(version['plan_id']) == str(plan['id']) and str(version['agent_run_id']) == str(run['id'])
+    assert version['cutoff_at'] == run['cutoff_at'] == evening(S1)
+    assert version['as_of_session'] == S1 and version['schema_version'] == 'agent-2'
+    brief = repository.latest_brief(offline, 'SYNTH', S1)
+    assert brief['agent_run_id'] == run['id'] and brief['prompt_version'] == 'agent-2'
+    assert brief['output']['summary'] == '回踩修复放量'
+    assert brief['output']['contra'] == [{'thesis': 1, 'text': '突破量能不足', 'refs': ['call:2']}]
+    head = repository.chain_head(offline, 'SYNTH', S1)
+    assert str(head['plan']['id']) == str(plan['id'])
+
+    # SYNC: the version row failed, so neither the plan nor the ok run exists; the run is an error row
+    assert [p for p in repository.plans_for_unit(offline, 'SYNC', S1) if p['kind'] == 'agent'] == []
+    assert repository.chain_versions(offline, 'SYNC', S1) == []
+    [failed] = repository.agent_runs_for(offline, 'SYNC', S1)
+    assert failed['status'] == 'error' and failed['plan_id'] is None
+    assert repository.latest_brief(offline, 'SYNC', S1)['status'] == 'fallback'
     assert offline.execute("SELECT count(*) FROM trade_plans WHERE kind = 'agent'").fetchone()[0] == 1
 
 
@@ -553,16 +634,18 @@ def test_review_expansion_end_to_end(offline, scripted_model):
                                          'entry_high': {'value': 125.5, 'refs': ['call:1']},
                                          'stop': {'value': 120, 'refs': ['call:1']},
                                          'target1': {'value': 131, 'refs': ['call:1']}},
-                              'thesis': [{'text': '放量突破 20 日线', 'refs': ['call:1']}]}, ensure_ascii=False)
+                              'thesis': [{'text': '放量突破 20 日线', 'refs': ['call:1']}],
+                              'invalidation': [{'kind': 'close_below', 'params': {'price': 118},
+                                                'refs': ['call:1']}]}, ensure_ascii=False)
     beta_json = _json.dumps({'action': 'pass', 'summary': '趋势不明',
                              'thesis': [{'text': '量能不足', 'refs': ['call:1']}]}, ensure_ascii=False)
     posn_json = _json.dumps({'summary': '持仓跌破均线，趋势走坏',
                              'support': [{'text': '收盘价跌破 MA50', 'refs': ['call:1']}],
                              'contra': [], 'conflicts': []}, ensure_ascii=False)
     replies = [tool_msg('get_indicators', {'ticker': 'ALPHA'}), AIMessage(content=alpha_json),
-               tool_msg('get_news', {'days': 7}), AIMessage(content=_json.dumps({'risks': []})),
+               tool_msg('get_news', {'days': 7}), AIMessage(content=_json.dumps({'counter': [], 'risks': []})),
                tool_msg('get_indicators', {'ticker': 'BETA'}), AIMessage(content=beta_json),
-               AIMessage(content=_json.dumps({'risks': []})),
+               AIMessage(content=_json.dumps({'counter': [], 'risks': []})),
                tool_msg('get_trigger', {}), AIMessage(content=posn_json)]
     sources = Sources()
     settings = agent_model.AgentSettings(provider='zhipu', model='glm-5.3', base_url='https://agent.test/v4',
@@ -580,7 +663,7 @@ def test_review_expansion_end_to_end(offline, scripted_model):
     assert batch['agent']['runs'] == {'ALPHA': 'ok', 'BETA': 'pass'}
     assert repository.latest_brief(offline, 'POSN', S1)['prompt_version'] == 'agent-brief-1'   # 持仓解读由 Agent 产出
     prompt_versions = [r[0] for r in offline.execute('SELECT prompt_version FROM signal_briefs').fetchall()]
-    assert set(prompt_versions) <= {'agent-1', 'agent-brief-1'}                               # 不再有 Codex
+    assert set(prompt_versions) <= {'agent-2', 'agent-brief-1'}                               # 不再有 Codex
 
     view = service.today(now=evening(S1))
     alpha_unit = next(u for u in view['units'] if u['ticker'] == 'ALPHA')

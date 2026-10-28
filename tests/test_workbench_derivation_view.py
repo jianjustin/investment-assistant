@@ -73,6 +73,8 @@ def test_agent_and_own_plans_derive_consistently(db, scripted_model):
     [agent_id] = _plan_ids(db, 'agent')
     out = view.plan_derivation(agent_id)
     assert out['consistency']['status'] == 'consistent', out['consistency']
+    assert out['plan']['plan_version'] == 'agent-2'                       # v2.5：首版是 agent-2
+    assert view.load_rows(db, repository.plan_by_id(db, agent_id)).version['version_no'] == 0
     assert out['inputs']['agent_run']['id'] is not None
     assert out['run']['stage'] == 'agent' and out['run']['run_id'] == 'run-agent'
 
@@ -89,6 +91,27 @@ def test_agent_and_own_plans_derive_consistently(db, scripted_model):
     out = view.plan_derivation(str(stored['id']))
     assert out['consistency']['status'] == 'consistent', out['consistency']
     assert out['run'] == {'ready': True, 'run_id': None, 'note': PRE_V24}   # 自定计划不是批处理产出
+
+
+def test_agent2_plan_without_version_row_is_incomplete(db, scripted_model):
+    """agent-2 计划回读版本行；读不到（没有这一版、或迁移 026 未执行）→ incomplete，不抛异常。"""
+    service.run_batch(tickers=['AAA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses('AAA')))
+    db.commit()
+    [agent_id] = _plan_ids(db, 'agent')
+    plan = repository.plan_by_id(db, agent_id)
+    rows = view.load_rows(db, plan)
+    assert rows.missing == [] and str(rows.version['plan_id']) == agent_id
+
+    orphan = repository.insert_plan(db, {k: v for k, v in plan.items() if k not in ('id', 'created_at')})
+    db.commit()                                                               # 同样的计划行，但没有版本行
+    out = view.plan_derivation(str(orphan['id']))
+    assert out['consistency']['status'] == 'incomplete'
+    assert out['consistency']['missing'] == [f"agent_plan_versions:{orphan['id']}"]
+
+    db.execute('DROP TABLE plan_reviews, user_inputs, agent_plan_versions CASCADE')
+    db.commit()
+    out = view.plan_derivation(agent_id)
+    assert out['consistency']['missing'] == [f'agent_plan_versions:{agent_id}']
 
 
 def test_load_rows_shapes_match_what_derivation_needs(db):

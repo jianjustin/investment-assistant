@@ -28,6 +28,7 @@ from investment_assistant.workbench import universe as universe_module
 from investment_assistant.workbench import discipline as _discipline_module
 from investment_assistant.workbench import plan_shadow as _plan_shadow_module
 from investment_assistant.workbench import review_digest
+from investment_assistant.workbench import timeline
 from investment_assistant.workbench import tracks as _tracks_module
 
 NY = ZoneInfo('America/New_York')
@@ -759,6 +760,7 @@ def _brief_view(brief: dict[str, Any] | None) -> dict[str, Any] | None:
 def today(*, now: datetime) -> dict[str, Any]:
     session = bars.latest_closed_session(now)
     with _tx() as conn:
+        ready = repository.timeline_ready(conn)      # once per request (v2.5 §6.5)
         units = []
         extended_units = []
         for group in repository.open_candidate_groups(conn, since=session - timedelta(days=OPEN_UNIT_DAYS)):
@@ -776,8 +778,7 @@ def today(*, now: datetime) -> dict[str, Any]:
                 plan=repository.rule_plan(conn, ticker, signal_date),
                 filings=repository.read_filings(conn, ticker, since=since, cutoff_at=now),
                 news=repository.read_news(conn, ticker, cutoff_at=now, since=_midnight(since), limit=20),
-                agent=_agent_view(repository.latest_agent_run(conn, ticker, signal_date),
-                                  repository.agent_plan(conn, ticker, signal_date)))
+                agent=_unit_agent(conn, ticker, signal_date, session=session, ready=ready, book=book))
             # The tier as of the signal date decides the list, not today's tier.
             if _unit_is_extended(conn, ticker, signal_date, held=held, now=now):
                 agent_run = repository.latest_agent_run(conn, ticker, signal_date)
@@ -788,10 +789,15 @@ def today(*, now: datetime) -> dict[str, Any]:
             else:
                 units.append(unit)
         holdings = _holdings(conn, session, now=now)
+        chains = _active_chains(conn, session) if ready else []
+        held = {c['ticker'] for c in chains if c['state'] == 'holding'}
+        for holding in holdings:      # D7: a holding without an agent-2 chain is not reviewed
+            holding['has_chain'] = holding['ticker'] in held
         market = repository.latest_regime(conn, on_or_before=session, cutoff_at=now)
         screen_report = screening.report(conn, session, now=now)
     return {'session': session, 'units': units, 'extended_units': extended_units,
-            'holdings': holdings, 'market': market, 'screen': screen_report}
+            'holdings': holdings, 'market': market, 'screen': screen_report,
+            'chains': chains, 'timeline_ready': ready}
 
 
 def run_backcheck(*, now: datetime, tickers: list[str] | None = None) -> dict[str, Any]:
@@ -1390,13 +1396,24 @@ def _agent_run_row(unit: dict, *, settings, attempt: int, now: datetime, status:
     return {'id': run_id or str(uuid.uuid4()), 'ticker': unit['ticker'],
             'signal_date': unit['signal_date'], 'pool': unit['pool'], 'attempt': attempt,
             'mode': mode,
-            'agent_version': (agent_graph.INTERPRET_VERSION if mode == 'interpret'
-                              else agent_graph.AGENT_VERSION),
+            # v2.5 §5.1: first versions (and the skips standing in for them) are agent-2 runs
+            'agent_version': {'interpret': agent_graph.INTERPRET_VERSION,
+                              'review': agent_graph.REVIEW_VERSION}.get(mode, agent_graph.AGENT_V2),
             'provider': settings.provider,
             'model': settings.model, 'cutoff_at': now, 'status': status, 'reason': reason, 'detail': detail,
             'output': output, 'counter': counter, 'plan_id': plan_id,
             'input_tokens': input_tokens, 'output_tokens': output_tokens,
             'started_at': now, 'finished_at': now}
+
+
+def _brief_run(run: dict) -> dict:
+    """The run as briefs.for_run should see it. briefs.for_run takes contra from ``counter.risks`` (the
+    agent-1 shape); an agent-2 brief's contra is the first per-thesis counter instead (v2.5 Task 6), so the
+    agent-2 counter is presented with ``counter.counter[:1]`` in that slot. Other runs pass through."""
+    counter = run.get('counter')
+    if run.get('agent_version') != agent_graph.AGENT_V2 or not isinstance(counter, dict):
+        return run
+    return {**run, 'counter': {'status': counter.get('status'), 'risks': list(counter.get('counter') or [])[:1]}}
 
 
 def _skip(unit: dict, reason: str, *, now: datetime, settings, attempt: int, mode: str = 'propose') -> dict:
@@ -1430,8 +1447,9 @@ def _checkpoint_missing(exc: BaseException) -> bool:
 
 
 def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt: int) -> dict:
-    """One unit through the graph. Plan, run and calls share one transaction; a model
-    or checkpoint failure lands as this unit's error row and never propagates."""
+    """One unit through the agent-2 graph: the chain's first version (v2.5 §5.1). Plan, run, calls,
+    version 0 and the brief share one transaction; a model or checkpoint failure, or any failure
+    while writing, lands as this unit's error row and never propagates. Needs migration 026."""
     from investment_assistant.config import load_config
 
     run_id = str(uuid.uuid4())
@@ -1445,7 +1463,7 @@ def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt:
         with _tx() as conn:
             record = repository.insert_agent_run(conn, run_row, calls or [])
             if unit['pool'] == 'main':   # §7.1: main-list brief in the run's transaction
-                repository.store_brief(conn, briefs.for_run(run_row, calls or [], unit=unit,
+                repository.store_brief(conn, briefs.for_run(_brief_run(run_row), calls or [], unit=unit,
                                                             candidates=unit['candidates']))
             return record
 
@@ -1464,9 +1482,10 @@ def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt:
                 return write(row('error', reason='checkpoint_unavailable', detail=detail))
             model_obj = deps.agent_model if deps.agent_model is not None else agent_model.chat_model(settings)
             try:
-                result = agent_graph.run_unit(unit=unit, ctx=ctx, model=model_obj,
-                                              checkpointer=checkpointer, run_id=run_id,
-                                              last_close=last_close, now=lambda: now)
+                result = agent_graph.run_unit_v2(unit=unit, ctx=ctx, model=model_obj,
+                                                 checkpointer=checkpointer, run_id=run_id,
+                                                 last_close=last_close, as_of_session=signal_date,
+                                                 now=lambda: now)
             except Unavailable:
                 raise
             except Exception as exc:
@@ -1475,23 +1494,28 @@ def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt:
                     reason = 'checkpoint_unavailable'
                 return write(row('error', reason=reason, detail=detail))
         if result['status'] == 'ok':
-            with _tx() as conn:   # §3.3: plan, run, calls in one transaction
-                levels = {key: Decimal(item['value']) for key, item in result['output']['levels'].items()}
-                plan = plans.build_agent_plan(
-                    levels=levels, agent_run_id=run_id, model=settings.model, ticker=ticker,
-                    signal_date=signal_date, bars=bars,
+            with _tx() as conn:   # v2.5 §5.1: plan → run → calls → version 0 → brief, one transaction
+                plan = timeline.build_version_plan(
+                    output=result['output'], agent_run_id=run_id, model=settings.model, ticker=ticker,
+                    signal_date=signal_date, as_of_session=signal_date, version_no=0, supersedes_plan_id=None,
+                    mode='entry', bars=bars,
                     earnings_row=repository.latest_earnings(conn, ticker, cutoff_at=now),
                     snapshot=repository.snapshot_at(conn, signal_date, cutoff_at=now),
                     exposure=exposure(conn, signal_date, cutoff_at=now, ticker=ticker),
                     params=load_config().workbench,
                     context=plan_context(conn, ticker, signal_date, now=now))
-                stored = repository.store_plan(conn, plan)
-                run_row = row('ok', plan_id=stored['record']['id'], output=result['output'],
+                plan_id = repository.store_plan(conn, plan)['record']['id']
+                run_row = row('ok', plan_id=plan_id, output=result['output'],
                               counter=result['counter'], input_tokens=result['input_tokens'],
                               output_tokens=result['output_tokens'])
-                record = repository.insert_agent_run(conn, run_row, result['calls'])   # plan → run → calls
-                if unit['pool'] == 'main':                                             # → brief, one transaction
-                    repository.store_brief(conn, briefs.for_run(run_row, result['calls'], unit=unit,
+                record = repository.insert_agent_run(conn, run_row, result['calls'])
+                repository.insert_plan_version(conn, {
+                    'plan_id': plan_id, 'ticker': ticker, 'signal_date': signal_date, 'version_no': 0,
+                    'supersedes_plan_id': None, 'origin': 'signal', 'agent_run_id': run_id,
+                    'cutoff_at': run_row['cutoff_at'], 'as_of_session': signal_date, 'diff': None,
+                    'schema_version': timeline.AGENT_V2})
+                if unit['pool'] == 'main':
+                    repository.store_brief(conn, briefs.for_run(_brief_run(run_row), result['calls'], unit=unit,
                                                                 candidates=unit['candidates']))
                 return record
         return write(row(result['status'], reason=result['reason'], output=result['output'],
@@ -1556,12 +1580,17 @@ def _run_interpret_unit(unit: dict, *, now: datetime, deps: Deps, settings, atte
 
 def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str, Any],
                  started: float, clock: Callable[[], float],
-                 acc: stages_module.StageAcc | None = None) -> str | None:
+                 acc: stages_module.StageAcc | None = None, timeline_ready: bool | None = None) -> str | None:
     """The agent track after all rule plans (§8.1): skip rules, then one unit at a time.
 
     ``acc`` (v2.4 §4) collects the stage accounting next to ``record`` and the skip branches. Returns the
     unavailable reason (disabled / not_configured) or None, so the caller can close an unavailable stage
-    as skipped rather than as an empty success."""
+    as skipped rather than as an empty success.
+
+    ``timeline_ready`` (migration 026; read here when None): without it no first version can be written,
+    so every propose unit gets a ``skipped / migration_026_missing`` run (main-list units still get their
+    rule-only brief), interpretations run as usual, the stage is degraded and ``summary['errors']`` gets
+    ``timeline: migration_026_missing`` once (v2.5 §6.5)."""
     t_agent = clock()
     settings = deps.agent_settings if deps.agent_settings is not None else agent_model.settings_from_env()
     if settings.config_error:
@@ -1653,10 +1682,17 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
 
     with _tx() as conn:
         groups = _session_units(conn, session, now=now)
+        ready = repository.timeline_ready(conn) if timeline_ready is None else timeline_ready
     if acc is not None:
         acc.input(sum(len(units) for units in groups.values()))
+    if not ready:
+        summary['errors'].append('timeline: migration_026_missing')
+        if acc is not None:
+            acc.degrade('migration_026_missing')
 
     def propose(unit: dict, attempt: int) -> dict:
+        if not ready:       # the shared gates above still come first (deadline, provider, quota, attempts)
+            return _skip(unit, 'migration_026_missing', now=now, settings=settings, attempt=attempt)
         return _run_agent_unit(unit, now=now, deps=deps, settings=settings, attempt=attempt)
 
     def interpret(unit: dict, attempt: int) -> dict:
@@ -1684,7 +1720,11 @@ class AgentConflict(RuntimeError):
 
 def run_agent(ticker: str, signal_date: date, *, now: datetime, deps: Deps | None = None) -> dict[str, Any]:
     """Manual single-unit run (§10.3): not a conflict-free buy unit -> ValueError,
-    already ok/pass -> AgentConflict; otherwise one run at the given cutoff."""
+    already ok/pass -> AgentConflict; otherwise one run at the given cutoff.
+
+    v2.5 §5.1: like the batch it only ever produces version 0. An ok run is exactly what writes
+    version 0, so the existing ok/pass guard is also the "chain already exists" guard; revisions only
+    come from reviews. Without migration 026 the run is recorded as ``skipped / migration_026_missing``."""
     deps = deps or Deps()
     settings = deps.agent_settings if deps.agent_settings is not None else agent_model.settings_from_env()
     with _tx() as conn:
@@ -1706,23 +1746,130 @@ def run_agent(ticker: str, signal_date: date, *, now: datetime, deps: Deps | Non
                       'pool_tier': entry['tier'] if entry else 'core',
                       'proposed_action': unit['proposed_action'], 'labels': unit['labels'],
                       'candidates': group}
+        ready = repository.timeline_ready(conn)
     unavailable = agent_model.unavailable_reason(settings)
     if unavailable is not None:
         return _skip(agent_unit, unavailable, now=now, settings=settings, attempt=len(prior) + 1)
+    if not ready:
+        return _skip(agent_unit, 'migration_026_missing', now=now, settings=settings, attempt=len(prior) + 1)
     return _run_agent_unit(agent_unit, now=now, deps=deps, settings=settings, attempt=len(prior) + 1)
 
 
-def _agent_view(run: dict[str, Any] | None, plan: dict[str, Any] | None) -> dict[str, Any] | None:
-    """The unit's latest agent run (§10.1): full suggestion on ok/pass, status and reason only otherwise."""
+def _agent_view(run: dict[str, Any] | None, plan: dict[str, Any] | None,
+                chain: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """One unit's agent block (§10.1; v2.5 §10.1): full suggestion on ok/pass, status and reason otherwise.
+
+    For an agent-2 chain ``run`` / ``plan`` are the head version's run and plan (not the latest run) and
+    ``chain`` is ``_chain_view``'s dict; an ok/pass view always carries ``chain`` (None without a chain).
+    An agent-1 run is marked ``legacy: True`` (D2: read-only, never reviewed)."""
     if run is None:
         return None
     if run['status'] in ('ok', 'pass'):
-        return {'id': str(run['id']), 'status': run['status'], 'model': run['model'],
+        view = {'id': str(run['id']), 'status': run['status'], 'model': run['model'],
                 'agent_version': run['agent_version'], 'output': run['output'], 'counter': run['counter'],
                 'plan': plan, 'input_tokens': run['input_tokens'], 'output_tokens': run['output_tokens'],
+                'created_at': run['created_at'], 'chain': chain}
+    else:
+        view = {'id': str(run['id']), 'status': run['status'], 'reason': run['reason'],
                 'created_at': run['created_at']}
-    return {'id': str(run['id']), 'status': run['status'], 'reason': run['reason'],
-            'created_at': run['created_at']}
+    if run.get('agent_version') == agent_graph.AGENT_VERSION:
+        view['legacy'] = True
+    return view
+
+
+# --- agent-2 chains for the read views (v2.5 §5.3, §10) ---
+
+CHAIN_REVIEW_PREVIEW = 40      # 「今日」进行中的 Agent 计划：最近复查的理由只显示前 40 字（§10.2）
+
+
+def unit_buys(conn, ticker: str, signal_date: date) -> list[dict[str, Any]]:
+    """Buys linked to any decision in the unit's decision chain (§5.3: the three-way comparison's reading,
+    ``unit_decision_ids`` + ``trades.decision_id``). Voided rows are left in; ``chain_state`` drops them."""
+    ids = repository.unit_decision_ids(conn, ticker, signal_date)
+    if not ids:
+        return []
+    return [t for t in repository.list_trades(conn, ticker) if t['side'] == 'buy' and t.get('decision_id') in ids]
+
+
+def chain_status(conn, ticker: str, signal_date: date, *, session: date,
+                 book: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """An agent-2 chain read at session S: ``{'head', 'versions', 'reviews', 'state', 'latest_review'}``,
+    or None when the unit has no agent-2 chain. ``state`` is ``timeline.chain_state``'s ``{state, mode,
+    basis}``; ``latest_review`` is the chain's newest effective review row (maintain / revise / invalidate)
+    or None. The caller has checked ``repository.timeline_ready``; ``book`` (``_book``) may be passed in
+    to save the trade read."""
+    head = repository.chain_head(conn, ticker, signal_date)
+    if head is None:
+        return None
+    versions = repository.chain_versions(conn, ticker, signal_date)
+    reviews = repository.chain_reviews(conn, ticker, signal_date)
+    book = book if book is not None else _book(conn, ticker)
+    state = timeline.chain_state(versions=versions, head_plan=head['plan'], reviews=reviews,
+                                 decision=repository.decision_head(conn, ticker, signal_date),
+                                 unit_buys=unit_buys(conn, ticker, signal_date), open_lots=book['open'],
+                                 session=session, legacy=False)
+    effective = [r for r in reviews if r['outcome'] in repository.EFFECTIVE_REVIEW_OUTCOMES]
+    return {'head': head, 'versions': versions, 'reviews': reviews, 'state': state,
+            'latest_review': effective[-1] if effective else None}
+
+
+def _review_view(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {'id': row['id'], 'session': row['session'], 'trigger': row['trigger'], 'outcome': row['outcome'],
+            'decided_by': row['decided_by'], 'reason': row['reason'],
+            'new_plan_id': str(row['new_plan_id']) if row['new_plan_id'] else None,
+            'revision_status': (row.get('detail') or {}).get('revision_status'), 'created_at': row['created_at']}
+
+
+def _chain_view(status: dict[str, Any]) -> dict[str, Any]:
+    """The ``chain`` dict of a unit's agent block (§12 GET today)."""
+    return {'version_no': status['head']['version']['version_no'],
+            'head_plan_id': str(status['head']['plan']['id']),
+            'state': status['state']['state'], 'mode': status['state']['mode'], 'basis': status['state']['basis'],
+            'latest_review': _review_view(status['latest_review'])}
+
+
+def _unit_agent(conn, ticker: str, signal_date: date, *, session: date, ready: bool,
+                book: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """The unit's agent block: the chain head's run and plan when there is an agent-2 chain, else the latest
+    propose run and the unit's agent plan as before (agent-1 units, units without an ok run, migration 026
+    missing)."""
+    status = chain_status(conn, ticker, signal_date, session=session, book=book) if ready else None
+    if status is None:
+        return _agent_view(repository.latest_agent_run(conn, ticker, signal_date),
+                           repository.agent_plan(conn, ticker, signal_date))
+    run = repository.agent_run_by_id(conn, status['head']['version']['agent_run_id'])
+    return _agent_view(run, status['head']['plan'], _chain_view(status))
+
+
+def _active_chains(conn, session: date) -> list[dict[str, Any]]:
+    """§10.2 进行中的 Agent 计划: chains decided as buy and waiting for a fill (entry) or holding."""
+    rows: list[dict[str, Any]] = []
+    for chain in repository.all_chains(conn):
+        ticker, signal_date = chain['ticker'], chain['signal_date']
+        status = chain_status(conn, ticker, signal_date, session=session)
+        if status is None:
+            continue
+        state = status['state']['state']
+        decision = repository.decision_head(conn, ticker, signal_date)
+        if not (state == 'holding' or (state == 'entry' and decision is not None)):
+            continue
+        latest = status['latest_review']
+        today_rows = [r for r in status['reviews'] if r['session'] == session]
+        fired = [s['kind'] for s in (today_rows[-1]['signals'] or []) if s.get('fired')] if today_rows else []
+        head = status['head']
+        rows.append({
+            'ticker': ticker, 'signal_date': signal_date, 'state': state, 'mode': status['state']['mode'],
+            'basis': status['state']['basis'], 'version_no': head['version']['version_no'],
+            'head_plan_id': str(head['plan']['id']), 'valid_until': head['plan']['valid_until'],
+            'pool': chain['pool'],
+            'latest_review': ({'outcome': latest['outcome'], 'decided_by': latest['decided_by'],
+                               'created_at': latest['created_at'],
+                               'reason': latest['reason'][:CHAIN_REVIEW_PREVIEW]} if latest else None),
+            'signals_today': fired,
+        })
+    return rows
 
 
 def _agent_status_line(run: dict[str, Any] | None) -> str | None:

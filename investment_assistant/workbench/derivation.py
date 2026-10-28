@@ -7,8 +7,11 @@ value. This module is a second, independent implementation of the ``plan-1`` mat
 ones in ``plans.py``, so changing a formula without a new ``PLAN_VERSION`` fails the suite).
 
 Own plans keep the user's four levels as inputs and agent plans check them against the agent run's output;
-both size from the entry band midpoint. The trigger section (``derive_trigger``) reviews each candidate's frozen
-values against its rule's condition clauses; a violated clause is a mismatch.
+both size from the entry band midpoint. ``agent-2`` version plans (v2.5 §5.2) derive like ``agent-1`` except the
+validity window, which follows ``inputs.as_of_session`` and the entry-phase cap ``inputs.chain_entry_cap``, and
+they check the plan's ``agent_plan_versions`` row (missing → ``incomplete``). The trigger section
+(``derive_trigger``) reviews each candidate's frozen values against its rule's condition clauses; a violated
+clause is a mismatch.
 
 Rounding: ``atr`` and ``ref_price`` to 6 places, the four price levels to cents (both half-up), the three
 share caps floored. Comparison is exact ``Decimal`` equality. Numbers leave this module as strings,
@@ -30,7 +33,7 @@ from zoneinfo import ZoneInfo
 from investment_assistant.data.calendar import add_trading_days
 
 DERIVATION_VERSION = 'derivation-1'
-REGISTERED_VERSIONS = ('plan-1', 'agent-1')
+REGISTERED_VERSIONS = ('plan-1', 'agent-1', 'agent-2')
 
 ENTRY_ATR = Decimal('0.5')
 STOP_ATR = Decimal('2')
@@ -40,6 +43,7 @@ VALID_SESSIONS = 3
 EARNINGS_WARN_SESSIONS = 10
 ATR_PERIOD = 14
 MIN_BARS = ATR_PERIOD + 1
+CHAIN_ENTRY_SESSIONS = 10      # agent-2 entry-phase chain cap; a test keeps it equal to timeline's
 
 EVIDENCE_TEXT = '规则 v1 与 `plan-1` 都未经验证（Phase 0 Gate HOLD）。推导一致只说明算术正确，不说明规则有效。'
 TRIGGER_NOTE = '触发段只复核候选冻结的取值是否满足阈值，不从原始日线重算均线。'
@@ -60,6 +64,7 @@ class Rows:
     regime: dict | None = None
     agent_run: dict | None = None
     rule_plan: dict | None = None
+    version: dict | None = None             # agent-2: the plan's agent_plan_versions row
     candidates: list[dict] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)   # e.g. ``price_bars:<id>``
 
@@ -291,9 +296,13 @@ def _validity_steps(plan: dict[str, Any], signal: date) -> tuple[Steps, date, da
                    _date(plan['valid_until']))], valid_from, valid_until)
 
 
-def _earnings_steps(rows: Rows, signal: date, valid_from: date, valid_until: date
+def _earnings_steps(rows: Rows, signal: date, valid_from: date, valid_until: date, *,
+                    ref_name: str = 'signal_date', ref_text: str = '信号日'
                     ) -> tuple[Steps, list[str], list[str]]:
-    """(steps, invalid, warnings) from the earnings row; only called when that row is available or not needed."""
+    """(steps, invalid, warnings) from the earnings row; only called when that row is available or not needed.
+
+    ``signal`` is the reference session the 10-session warning and "already past" count from: the signal date,
+    or an agent-2 version's ``as_of_session`` (named by ``ref_name`` / ``ref_text`` in the step)."""
     warn_until = add_trading_days(signal, EARNINGS_WARN_SESSIONS)
     row = rows.earnings
     flag = _earnings_flag(row, signal, valid_from, valid_until, warn_until)
@@ -301,12 +310,12 @@ def _earnings_steps(rows: Rows, signal: date, valid_from: date, valid_until: dat
     warn = [flag] if flag not in ('earnings_in_validity', 'none') else []
     step = _step(
         'earnings_flag', '财报标记',
-        '有效期内有已知财报 → earnings_in_validity（作废）；信号日起 10 个交易日内 → earnings_within_10d；'
+        f'有效期内有已知财报 → earnings_in_validity（作废）；{ref_text}起 10 个交易日内 → earnings_within_10d；'
         '未知或已过 → earnings_unknown',
         {'earnings_status': (row or {}).get('status'),
          'earnings_date': _date(row['earnings_date']) if row and row.get('earnings_date') else None,
-         'valid_from': valid_from, 'valid_until': valid_until, 'signal_date': signal,
-         'signal_date+10': warn_until}, flag)
+         'valid_from': valid_from, 'valid_until': valid_until, ref_name: signal,
+         f'{ref_name}+10': warn_until}, flag)
     return [step], invalid, warn
 
 
@@ -510,11 +519,14 @@ def _fallback_atr_step(plan: dict[str, Any], atr: Decimal, source: str, formula:
 
 
 def _derive_from_levels(plan: dict[str, Any], rows: Rows, missing: list[str], *, level_steps: Steps,
-                        levels: dict[str, Decimal], fallback_atr: tuple[Decimal, str, str], agent: bool
+                        levels: dict[str, Decimal], fallback_atr: tuple[Decimal, str, str], agent: bool,
+                        validity: tuple[Steps, date, date] | None = None,
+                        earnings_ref: tuple[date, str, str] | None = None
                         ) -> tuple[Steps, list[dict], list[str]]:
     """Steps shared by own and agent plans: the four levels are inputs, everything else follows from them.
 
-    Risk per share is measured from the entry band midpoint, not from the signal close.
+    Risk per share is measured from the entry band midpoint, not from the signal close. ``validity`` and
+    ``earnings_ref`` (reference session, its key and its wording) replace the signal-date window for agent-2.
     """
     inp = plan.get('inputs') or {}
     bars = rows.bars or []
@@ -532,13 +544,15 @@ def _derive_from_levels(plan: dict[str, Any], rows: Rows, missing: list[str], *,
     steps.append(ref_step)
     steps += level_steps
     steps.append(_trail_step(plan))
-    validity, valid_from, valid_until = _validity_steps(plan, signal)
-    steps += validity
+    validity_steps, valid_from, valid_until = validity if validity is not None else _validity_steps(plan, signal)
+    steps += validity_steps
 
     earn_invalid: list[str] = []
     earn_warn: list[str] = []
     if earnings_ok:
-        earn_steps, earn_invalid, earn_warn = _earnings_steps(rows, signal, valid_from, valid_until)
+        ref, ref_name, ref_text = earnings_ref if earnings_ref is not None else (signal, 'signal_date', '信号日')
+        earn_steps, earn_invalid, earn_warn = _earnings_steps(rows, ref, valid_from, valid_until,
+                                                              ref_name=ref_name, ref_text=ref_text)
         steps += earn_steps
     context_step, context_flags = _context_step(inp)
     steps.append(context_step)
@@ -583,6 +597,13 @@ def _derive_agent(plan: dict[str, Any], rows: Rows) -> tuple[list[dict], list[di
     missing = _variant_missing(plan, rows)
     if 'bar_ids' in missing:
         return [], [], missing
+    levels, level_steps = _agent_levels(plan, rows, missing)
+    return _derive_from_levels(plan, rows, missing, level_steps=level_steps, levels=levels,
+                               fallback_atr=(Decimal(0), '无 ATR', '日线不足 15 根，ATR 取 0'), agent=True)
+
+
+def _agent_levels(plan: dict[str, Any], rows: Rows, missing: list[str]) -> tuple[dict[str, Decimal], Steps]:
+    """(stored levels, level steps): each stored level checked against the agent run's cited value."""
     run_id = (plan.get('inputs') or {}).get('agent_run_id')
     cited: dict[str, Any] = {}
     if rows.agent_run is None:
@@ -608,8 +629,78 @@ def _derive_agent(plan: dict[str, Any], rows: Rows) -> tuple[list[dict], list[di
             key, LEVEL_LABELS[key], f'已存价位须等于 agent_runs.output.levels.{key}.value',
             {f'output.levels.{key}.value': _dec(item['value'])}, _dec(item['value']), levels[key],
             source='agent_output', refs=[str(r) for r in item.get('refs') or []]))
-    return _derive_from_levels(plan, rows, missing, level_steps=level_steps, levels=levels,
-                               fallback_atr=(Decimal(0), '无 ATR', '日线不足 15 根，ATR 取 0'), agent=True)
+    return levels, level_steps
+
+
+def _version_steps(plan: dict[str, Any], rows: Rows, missing: list[str]) -> tuple[Steps, int, date]:
+    """agent-2: the version number and generation session the plan froze, checked against its
+    ``agent_plan_versions`` row; (steps, version_no, as_of_session). A missing row or input is listed."""
+    inp = plan.get('inputs') or {}
+    signal = _date(plan['signal_date'])
+    version_no = _opt_int(inp.get('version_no'))
+    as_of = _date(inp['as_of_session']) if inp.get('as_of_session') else None
+    if version_no is None:
+        missing.append('inputs.version_no')
+    if as_of is None:
+        missing.append('inputs.as_of_session')
+    version = rows.version
+    if version is None:
+        missing.append(f"agent_plan_versions:{plan.get('id')}")
+    stored_no = _opt_int(version.get('version_no')) if version is not None else _NO_STORED
+    stored_as_of = _date(version['as_of_session']) if version is not None else _NO_STORED
+    version_no = 0 if version_no is None else version_no
+    as_of = signal if as_of is None else as_of
+    return ([_step('version_no', '版本号', 'inputs.version_no，须等于 agent_plan_versions.version_no',
+                   {'inputs.version_no': version_no}, version_no, stored_no),
+             _step('as_of_session', '本版生成交易日', 'inputs.as_of_session，须等于 agent_plan_versions.as_of_session',
+                   {'inputs.as_of_session': as_of}, as_of, stored_as_of)],
+            version_no, as_of)
+
+
+def _chain_validity_steps(plan: dict[str, Any], version_no: int, as_of: date) -> tuple[Steps, date, date]:
+    """agent-2 validity (D4): version 0 from the signal date, a revision from its generation session;
+    an entry-phase chain (``inputs.chain_entry_cap`` set) caps ``valid_until`` at the signal date + 10."""
+    signal = _date(plan['signal_date'])
+    inp = plan.get('inputs') or {}
+    if version_no == 0:
+        start, start_name, start_text = signal, 'signal_date', '信号日'
+    else:
+        start, start_name, start_text = as_of, 'as_of_session', '本版生成交易日'
+    valid_from = add_trading_days(start, 1)
+    base_until = add_trading_days(start, VALID_SESSIONS)
+    steps = [_step('valid_from', '有效期起', f'{start_text}后第 1 个交易日', {start_name: start}, valid_from,
+                   _date(plan['valid_from']))]
+    stored_cap = inp.get('chain_entry_cap')
+    if stored_cap is None:      # holding phase: no cap
+        steps.append(_step('valid_until', '有效期止', f'{start_text}后第 3 个交易日（持仓期不设上限）',
+                           {start_name: start, 'VALID_SESSIONS': VALID_SESSIONS}, base_until,
+                           _date(plan['valid_until'])))
+        return steps, valid_from, base_until
+    cap = add_trading_days(signal, CHAIN_ENTRY_SESSIONS)
+    valid_until = min(base_until, cap)
+    steps.append(_step('chain_entry_cap', '入场期链上限', '信号日后第 10 个交易日',
+                       {'signal_date': signal, 'CHAIN_ENTRY_SESSIONS': CHAIN_ENTRY_SESSIONS}, cap,
+                       _date(stored_cap)))
+    steps.append(_step('valid_until', '有效期止', f'min({start_text}后第 3 个交易日, chain_entry_cap)',
+                       {f'{start_name}+3': base_until, 'chain_entry_cap': cap}, valid_until,
+                       _date(plan['valid_until'])))
+    return steps, valid_from, valid_until
+
+
+def _derive_agent2(plan: dict[str, Any], rows: Rows) -> tuple[list[dict], list[dict], list[str]]:
+    """agent-2 version plan: levels as agent-1, the version row checked, validity from as_of_session and the
+    chain cap, earnings flagged relative to as_of_session (the session the version was generated on)."""
+    missing = _variant_missing(plan, rows)
+    version_steps, version_no, as_of = _version_steps(plan, rows, missing)
+    if 'bar_ids' in missing:
+        return [], [], missing
+    levels, level_steps = _agent_levels(plan, rows, missing)
+    steps, checks, missing = _derive_from_levels(
+        plan, rows, missing, level_steps=level_steps, levels=levels,
+        fallback_atr=(Decimal(0), '无 ATR', '日线不足 15 根，ATR 取 0'), agent=True,
+        validity=_chain_validity_steps(plan, version_no, as_of),
+        earnings_ref=(as_of, 'as_of_session', '本版生成交易日'))
+    return version_steps + steps, checks, missing
 
 
 # ---------------------------------------------------------------- trigger section
@@ -780,6 +871,7 @@ _DERIVERS: dict[tuple[str, str], Callable[[dict[str, Any], Rows], tuple[list[dic
     ('plan-1', 'rule'): _derive_rule,
     ('plan-1', 'own'): _derive_own,
     ('agent-1', 'agent'): _derive_agent,
+    ('agent-2', 'agent'): _derive_agent2,
 }
 
 
