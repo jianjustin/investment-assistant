@@ -1988,13 +1988,17 @@ def _review_view(row: dict[str, Any] | None) -> dict[str, Any] | None:
     return {'id': row['id'], 'session': row['session'], 'trigger': row['trigger'], 'outcome': row['outcome'],
             'decided_by': row['decided_by'], 'reason': row['reason'],
             'new_plan_id': str(row['new_plan_id']) if row['new_plan_id'] else None,
-            'revision_status': (row.get('detail') or {}).get('revision_status'), 'created_at': row['created_at']}
+            'revision_status': (row.get('detail') or {}).get('revision_status'), 'created_at': row['created_at'],
+            'conditions': row['conditions']}
 
 
 def _chain_view(status: dict[str, Any]) -> dict[str, Any]:
-    """The ``chain`` dict of a unit's agent block (§12 GET today)."""
-    return {'version_no': status['head']['version']['version_no'],
+    """The ``chain`` dict of a unit's agent block (§12 GET today); §10.1 also shows the head's generation
+    time (``cutoff_at``) and its host diff against the previous version (``diff``, None for version 0)."""
+    version = status['head']['version']
+    return {'version_no': version['version_no'],
             'head_plan_id': str(status['head']['plan']['id']),
+            'cutoff_at': version['cutoff_at'], 'diff': version['diff'],
             'state': status['state']['state'], 'mode': status['state']['mode'], 'basis': status['state']['basis'],
             'latest_review': _review_view(status['latest_review'])}
 

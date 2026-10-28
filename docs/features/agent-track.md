@@ -54,7 +54,7 @@
 ## 入口与验证
 
 - 页面：「今日」的 Agent 建议卡片（引用编号可以展开，看到工具调用的参数、返回值和哈希前 8 位；失败时有「重新运行 Agent」）；「复盘 → 轨道对比」里点 Agent 运行 id。
-- 「今日」接口（`GET /api/workbench/today`）：`agent-2` 单元的 `agent` 取**链的最新版**的运行与计划（不是最新一次运行），并带 `chain`（`version_no`、`head_plan_id`、`state`、`mode`、`basis`、`latest_review`）；`agent-1` 单元带 `legacy: true`。另有 `chains`（已决定买入、等待成交的入场期链与持仓期链：第几版、最近复查的结论 / 判定方 / 时间 / 理由前 40 字、当日触发的信号）、持仓行的 `has_chain`，以及 `timeline_ready`（迁移 026 是否就绪）。
+- 「今日」接口（`GET /api/workbench/today`）：`agent-2` 单元的 `agent` 取**链的最新版**的运行与计划（不是最新一次运行），并带 `chain`（`version_no`、`head_plan_id`、最新版的生成时间 `cutoff_at` 与相对上一版的宿主差异 `diff`（第 0 版为 `null`）、`state`、`mode`、`basis`、`latest_review`（最近一次有效复查，含各条件的判定 `conditions`））；`agent-1` 单元带 `legacy: true`。另有 `chains`（已决定买入、等待成交的入场期链与持仓期链：第几版、最近复查的结论 / 判定方 / 时间 / 理由前 40 字、当日触发的信号）、持仓行的 `has_chain`，以及 `timeline_ready`（迁移 026 是否就绪）。
 - API：`GET /api/workbench/agent-runs?since=`（运行列表与覆盖率 `coverage`）、`GET /api/workbench/agent-runs/{id}`（详情和全部工具调用）、`POST /api/workbench/agent-runs`（body `{ticker, signal_date}`；已有 `ok`/`pass` 返回 409，不是买入单元返回 400）。
 - 命令行：`python -m investment_assistant.workbench.agent run --ticker X --date YYYY-MM-DD`。
 - 运行报告：`summary.agent`（`{runs, tokens, quota_exhausted}`）、`summary.sources.agent`、`summary.timings.agent`；`error` 状态的运行带脱敏后的 `detail`。

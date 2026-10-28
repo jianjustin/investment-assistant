@@ -981,8 +981,10 @@ def test_today_unit_has_agent_ok_view(db, scripted_model):
     assert unit['agent']['plan']['kind'] == 'agent' and unit['agent']['agent_version'] == 'agent-2'
     assert unit['agent']['output']['levels']['entry_low']['value'] == '98.50'
     chain = unit['agent']['chain']
-    assert set(chain) == {'version_no', 'head_plan_id', 'state', 'mode', 'basis', 'latest_review'}
+    assert set(chain) == {'version_no', 'head_plan_id', 'cutoff_at', 'diff', 'state', 'mode', 'basis',
+                          'latest_review'}
     assert (chain['version_no'], chain['state'], chain['mode'], chain['latest_review']) == (0, 'entry', 'entry', None)
+    assert chain['diff'] is None and chain['cutoff_at'] == repository.chain_head(db, 'NVDA', SESSION)['version']['cutoff_at']
     assert chain['head_plan_id'] == str(unit['agent']['plan']['id'])
 
 
@@ -1770,3 +1772,28 @@ def test_push_window_catches_review_written_while_sending(db, scripted_model, mo
     second = service.push(now=NOW + timedelta(days=1), force=False, notify_cfg=NotifyConfig(), client=client)
     text = json.dumps(client.sent, ensure_ascii=False)
     assert second['messages'] == 6 and 'NVDA 第 0 → 1 版：发送期间的重新复查' in text
+
+
+def test_today_chain_carries_head_cutoff_diff_and_review_conditions(db, scripted_model):
+    """§10.1 on Today: the head's generation time and diff, and the latest review's condition verdicts."""
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    v0 = repository.chain_head(db, 'NVDA', SESSION)['plan']
+    v1 = _revision(db, v0, 1, stop='95.5', session=SESSION, text='止损上移到 95.5')
+    conditions = [{'list': 'invalidation', 'index': 0, 'kind': 'close_below', 'params': {'price': 90},
+                   'result': 'not_met', 'detail': '收盘 101 > 90'},
+                  {'list': 'review_when', 'index': 0, 'kind': 'next_session', 'params': {},
+                   'result': 'met', 'detail': '下一交易日'}]
+    review_run = _insert_run(db, mode='review', status='ok', at=datetime.now(UTC), agent_version='agent-review-1')
+    repository.insert_plan_review(db, {
+        'ticker': 'NVDA', 'signal_date': SESSION, 'head_plan_id': v1['id'], 'session': SESSION,
+        'trigger': 'recheck', 'mode': 'entry', 'timeline_version': 'timeline-1', 'conditions': conditions,
+        'outcome': 'maintain', 'decided_by': 'agent', 'reason': '论点仍成立', 'review_agent_run_id': review_run['id'],
+        'attempt': 1, 'cutoff_at': datetime.now(UTC)})
+    db.commit()
+    head = repository.chain_head(db, 'NVDA', SESSION)['version']
+    chain = service.today(now=NOW)['units'][0]['agent']['chain']
+    assert chain['version_no'] == 1 and chain['head_plan_id'] == str(v1['id'])
+    assert chain['cutoff_at'] == head['cutoff_at']
+    assert chain['diff'] == [{'field': 'stop', 'before': str(v0['stop']), 'after': '95.5'}]
+    assert chain['latest_review']['outcome'] == 'maintain'
+    assert chain['latest_review']['conditions'] == conditions
