@@ -277,6 +277,21 @@ def brief_in_unit(conn, brief_id, ticker: str, signal_date: date) -> bool:
 
 
 def insert_decision(conn, rec: dict[str, Any], digest: str, *, decided_at: datetime) -> dict[str, Any]:
+    """`agent_plan_id` / `review_view` (migration 026) are written, and returned, only when one is
+    set; without them the statement is the pre-026 one, so old callers and an unmigrated database
+    behave as before."""
+    if rec.get('agent_plan_id') is not None or rec.get('review_view') is not None:
+        view = rec.get('review_view')
+        return _one(conn,
+                    'INSERT INTO signal_decisions (request_id, request_hash, ticker, signal_date, candidate_ids, '
+                    'brief_id, proposed_action, final_action, decision, reason, decided_at, supersedes_id, plan_id, '
+                    'agent_plan_id, review_view) '
+                    'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) '
+                    f'RETURNING {_DECISION_COLUMNS}, agent_plan_id, review_view',
+                    (rec['request_id'], digest, rec['ticker'], rec['signal_date'], rec['candidate_ids'],
+                     rec['brief_id'], rec['proposed_action'], rec['final_action'], rec['decision'], rec['reason'],
+                     decided_at, rec['supersedes_id'], rec.get('plan_id'), rec.get('agent_plan_id'),
+                     _plan_json(view) if view is not None else None))
     return _one(conn,
                 'INSERT INTO signal_decisions (request_id, request_hash, ticker, signal_date, candidate_ids, brief_id, '
                 'proposed_action, final_action, decision, reason, decided_at, supersedes_id, plan_id) '
@@ -1082,6 +1097,158 @@ def candidate_groups_since(conn, since: date) -> list[dict[str, Any]]:
         key = (row['ticker'], row['signal_date'])
         groups.setdefault(key, {'ticker': key[0], 'signal_date': key[1], 'candidates': []})['candidates'].append(row)
     return list(groups.values())
+
+
+# --- plan timeline (v2.5 §6): agent_plan_versions, plan_reviews, user_inputs ---
+# Append-only tables from migration 026; deliberately not in WORKBENCH_TABLES (§6.5): an
+# unmigrated database degrades through timeline_ready() instead of failing the workbench.
+
+EFFECTIVE_REVIEW_OUTCOMES = ('maintain', 'revise', 'invalidate')
+
+_VERSION_COLUMNS = ('plan_id, ticker, signal_date, version_no, supersedes_plan_id, origin, agent_run_id, '
+                    'cutoff_at, as_of_session, diff, schema_version, created_at')
+_REVIEW_COLUMNS = ('id, ticker, signal_date, head_plan_id, session, trigger, run_id, mode, timeline_version, '
+                   'signals, conditions, user_input_ids, outcome, decided_by, reason, refs, review_agent_run_id, '
+                   'revision_agent_run_id, new_plan_id, detail, attempt, cutoff_at, input_tokens, output_tokens, '
+                   'created_at')
+_USER_INPUT_COLUMNS = ('id, request_id, request_hash, ticker, signal_date, kind, body, source_url, supersedes_id, '
+                       'created_at')
+
+
+def timeline_ready(conn) -> bool:
+    """True when migration 026 has run: the three tables and signal_decisions.agent_plan_id exist.
+
+    Resolved through the search_path like every other query here, and never raises on a missing
+    table, so the caller's transaction stays usable."""
+    row = conn.execute(
+        "SELECT to_regclass('agent_plan_versions') IS NOT NULL AND to_regclass('plan_reviews') IS NOT NULL "
+        "AND to_regclass('user_inputs') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_attribute "
+        "WHERE attrelid = to_regclass('signal_decisions') AND attname = 'agent_plan_id' AND NOT attisdropped)"
+    ).fetchone()
+    return bool(row[0])
+
+
+def try_review_lock(conn, ticker: str, signal_date: date) -> bool:
+    """Transaction-scoped, non-blocking lock on one chain shared by the batch review and a recheck."""
+    key = f'review:{ticker.upper()}:{signal_date.isoformat()}'
+    return bool(conn.execute('SELECT pg_try_advisory_xact_lock(hashtext(%s))', (key,)).fetchone()[0])
+
+
+def insert_plan_version(conn, row: dict[str, Any]) -> dict[str, Any]:
+    """`row` keys are the §6.1 columns except `created_at`; `diff` arrives as a Python list or None."""
+    diff = row.get('diff')
+    return _one(conn,
+                'INSERT INTO agent_plan_versions (plan_id, ticker, signal_date, version_no, supersedes_plan_id, '
+                'origin, agent_run_id, cutoff_at, as_of_session, diff, schema_version) '
+                f'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s) RETURNING {_VERSION_COLUMNS}',
+                (row['plan_id'], row['ticker'], row['signal_date'], row['version_no'], row.get('supersedes_plan_id'),
+                 row['origin'], row['agent_run_id'], row['cutoff_at'], row['as_of_session'],
+                 _plan_json(diff) if diff is not None else None, row['schema_version']))
+
+
+def chain_versions(conn, ticker: str, signal_date: date) -> list[dict[str, Any]]:
+    """One chain's version rows, version 0 first."""
+    return _all(conn, f'SELECT {_VERSION_COLUMNS} FROM agent_plan_versions WHERE ticker = %s AND signal_date = %s '
+                      'ORDER BY version_no', (ticker.upper(), signal_date))
+
+
+def version_by_plan(conn, plan_id) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_VERSION_COLUMNS} FROM agent_plan_versions WHERE plan_id = %s', (plan_id,))
+
+
+def chain_head(conn, ticker: str, signal_date: date) -> dict[str, Any] | None:
+    """The chain's head — its highest-numbered agent-2 version — as {'plan': trade_plans row,
+    'version': agent_plan_versions row}; None when the unit has no agent-2 chain."""
+    version = _one(conn, f"SELECT {', '.join('v.' + c.strip() for c in _VERSION_COLUMNS.split(','))} "
+                         'FROM agent_plan_versions v JOIN trade_plans p ON p.id = v.plan_id '
+                         "WHERE v.ticker = %s AND v.signal_date = %s AND p.plan_version = 'agent-2' "
+                         'ORDER BY v.version_no DESC LIMIT 1', (ticker.upper(), signal_date))
+    if version is None:
+        return None
+    return {'plan': plan_by_id(conn, version['plan_id']), 'version': version}
+
+
+def all_chains(conn) -> list[dict[str, Any]]:
+    """Every chain: ticker, signal_date, the head's plan_id and version_no, and `pool` of the run
+    that produced version 0 (agent_runs.pool); ordered by (signal_date, ticker)."""
+    return _all(conn,
+                'SELECT h.ticker, h.signal_date, h.plan_id, h.version_no, r.pool FROM ('
+                'SELECT DISTINCT ON (ticker, signal_date) ticker, signal_date, plan_id, version_no '
+                'FROM agent_plan_versions ORDER BY ticker, signal_date, version_no DESC) h '
+                'LEFT JOIN agent_plan_versions v0 ON v0.ticker = h.ticker AND v0.signal_date = h.signal_date '
+                'AND v0.version_no = 0 '
+                'LEFT JOIN agent_runs r ON r.id = v0.agent_run_id '
+                'ORDER BY h.signal_date, h.ticker', ())
+
+
+def insert_plan_review(conn, row: dict[str, Any]) -> dict[str, Any]:
+    """`row` keys are the §6.2 columns except `id`/`created_at`; JSONB columns arrive as Python
+    objects and, like the token counts and user_input_ids, fall back to the table defaults."""
+    return _one(conn,
+                'INSERT INTO plan_reviews (ticker, signal_date, head_plan_id, session, trigger, run_id, mode, '
+                'timeline_version, signals, conditions, user_input_ids, outcome, decided_by, reason, refs, '
+                'review_agent_run_id, revision_agent_run_id, new_plan_id, detail, attempt, cutoff_at, '
+                'input_tokens, output_tokens) '
+                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s::jsonb, '
+                f'%s, %s, %s, %s::jsonb, %s, %s, %s, %s) RETURNING {_REVIEW_COLUMNS}',
+                (row['ticker'], row['signal_date'], row['head_plan_id'], row['session'], row['trigger'],
+                 row.get('run_id'), row['mode'], row['timeline_version'], _plan_json(row.get('signals') or []),
+                 _plan_json(row.get('conditions') or []), list(row.get('user_input_ids') or []), row['outcome'],
+                 row['decided_by'], row['reason'], _plan_json(row.get('refs') or []),
+                 row.get('review_agent_run_id'), row.get('revision_agent_run_id'), row.get('new_plan_id'),
+                 _plan_json(row.get('detail') or {}), row['attempt'], row['cutoff_at'],
+                 row.get('input_tokens') or 0, row.get('output_tokens') or 0))
+
+
+def chain_reviews(conn, ticker: str, signal_date: date) -> list[dict[str, Any]]:
+    """One chain's review rows (every outcome and trigger), oldest first."""
+    return _all(conn, f'SELECT {_REVIEW_COLUMNS} FROM plan_reviews WHERE ticker = %s AND signal_date = %s '
+                      'ORDER BY created_at, id', (ticker.upper(), signal_date))
+
+
+def reviews_on(conn, session: date) -> list[dict[str, Any]]:
+    """Every review row of one review session S, across chains, oldest first."""
+    return _all(conn, f'SELECT {_REVIEW_COLUMNS} FROM plan_reviews WHERE session = %s ORDER BY created_at, id',
+                (session,))
+
+
+def batch_attempts(conn, ticker: str, signal_date: date, session: date) -> list[dict[str, Any]]:
+    """The batch review rows of one chain on one session (any outcome), in attempt order."""
+    return _all(conn, f'SELECT {_REVIEW_COLUMNS} FROM plan_reviews WHERE ticker = %s AND signal_date = %s '
+                      "AND session = %s AND trigger = 'batch' ORDER BY attempt, created_at, id",
+                (ticker.upper(), signal_date, session))
+
+
+def last_effective_review(conn, head_plan_id) -> dict[str, Any] | None:
+    """The newest maintain / revise / invalidate row that reviewed this version, batch or recheck."""
+    return _one(conn, f'SELECT {_REVIEW_COLUMNS} FROM plan_reviews WHERE head_plan_id = %s '
+                      'AND outcome = ANY(%s) ORDER BY created_at DESC, id DESC LIMIT 1',
+                (head_plan_id, list(EFFECTIVE_REVIEW_OUTCOMES)))
+
+
+def insert_user_input(conn, row: dict[str, Any]) -> dict[str, Any]:
+    """`row` keys are the §6.3 columns except `id`/`created_at`."""
+    return _one(conn,
+                'INSERT INTO user_inputs (request_id, request_hash, ticker, signal_date, kind, body, source_url, '
+                f'supersedes_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING {_USER_INPUT_COLUMNS}',
+                (row['request_id'], row['request_hash'], row['ticker'], row.get('signal_date'), row['kind'],
+                 row['body'], row.get('source_url'), row.get('supersedes_id')))
+
+
+def user_input_by_request(conn, request_id) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_USER_INPUT_COLUMNS} FROM user_inputs WHERE request_id = %s', (request_id,))
+
+
+def user_inputs_for(conn, ticker: str, signal_date: date | None) -> list[dict[str, Any]]:
+    """The ticker-level inputs (signal_date NULL) plus, when given, the inputs of that chain, oldest
+    first. Each row carries `superseded_by`: the earliest row whose supersedes_id points at it
+    (correction or retract, wherever it was filed), or None. Callers apply their own cutoff."""
+    columns = ', '.join('u.' + c.strip() for c in _USER_INPUT_COLUMNS.split(','))
+    return _all(conn,
+                f'SELECT {columns}, (SELECT min(s.id) FROM user_inputs s WHERE s.supersedes_id = u.id) '
+                'AS superseded_by FROM user_inputs u WHERE u.ticker = %s '
+                'AND (u.signal_date IS NULL OR u.signal_date = %s) ORDER BY u.created_at, u.id',
+                (ticker.upper(), signal_date))
 
 
 # --- review pushes (P4 §3.3) ---

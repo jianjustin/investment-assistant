@@ -1145,3 +1145,147 @@ def test_coverage_queries_take_latest_revision_and_cutoff(workbench_db):
     repository.store_macro(conn, 'T10Y2Y', [{'obs_date': date(2026, 10, 21), 'value': Decimal('0.1')}], now=NOW)
     assert repository.latest_macro_dates(conn, ['BAMLH0A0HYM2', 'T10Y2Y'], cutoff_at=cutoff) == {
         'BAMLH0A0HYM2': date(2026, 10, 20), 'T10Y2Y': date(2026, 10, 21)}
+
+
+# --- plan timeline: versions, reviews, user inputs (v2.5 §6) ---
+
+def _tl_version(conn, version_no=0, supersedes=None, *, ticker='NVDA', day=date(2026, 10, 21), pool='main'):
+    """One agent-2 version written the way the service will: plan row, run row, version row."""
+    from investment_assistant.workbench import repository
+    plan = repository.insert_plan(conn, _plan_row(ticker=ticker, signal_date=day, kind='agent',
+                                                  plan_version='agent-2'))
+    run_id = uuid.uuid4()
+    cutoff = NOW + timedelta(days=version_no)
+    repository.insert_agent_run(conn, {
+        'id': run_id, 'ticker': ticker, 'signal_date': day, 'pool': pool, 'attempt': 1,
+        'mode': 'propose' if version_no == 0 else 'revise', 'agent_version': 'agent-2', 'provider': 'zhipu',
+        'model': 'glm-5.3', 'cutoff_at': cutoff, 'status': 'ok', 'reason': None, 'output': {'action': 'buy'},
+        'counter': None, 'plan_id': plan['id'], 'input_tokens': 0, 'output_tokens': 0,
+        'started_at': cutoff, 'finished_at': cutoff}, [])
+    return repository.insert_plan_version(conn, {
+        'plan_id': plan['id'], 'ticker': ticker, 'signal_date': day, 'version_no': version_no,
+        'supersedes_plan_id': supersedes, 'origin': 'signal' if version_no == 0 else 'review',
+        'agent_run_id': run_id, 'cutoff_at': cutoff, 'as_of_session': day + timedelta(days=version_no),
+        'diff': None if version_no == 0 else [{'field': 'stop', 'before': '96', 'after': '97'}],
+        'schema_version': 'agent-2'})
+
+
+def test_chain_head_is_highest_version(workbench_db):
+    from investment_assistant.workbench import repository
+    conn = workbench_db
+    day = date(2026, 10, 21)
+    assert repository.timeline_ready(conn) is True
+    assert repository.chain_head(conn, 'NVDA', day) is None
+    v0 = _tl_version(conn)
+    assert v0['version_no'] == 0 and v0['diff'] is None and v0['created_at'] is not None
+    v1 = _tl_version(conn, 1, v0['plan_id'])
+    v2 = _tl_version(conn, 2, v1['plan_id'])
+    assert v2['diff'] == [{'field': 'stop', 'before': '96', 'after': '97'}]
+    _tl_version(conn, ticker='AMD', pool='extended')                       # another chain
+
+    head = repository.chain_head(conn, 'nvda', day)
+    assert head['plan']['id'] == v2['plan_id'] and head['plan']['plan_version'] == 'agent-2'
+    assert head['version']['version_no'] == 2 and head['version']['supersedes_plan_id'] == v1['plan_id']
+    assert [v['version_no'] for v in repository.chain_versions(conn, 'NVDA', day)] == [0, 1, 2]
+    assert repository.version_by_plan(conn, v1['plan_id'])['version_no'] == 1
+    assert repository.version_by_plan(conn, uuid.uuid4()) is None
+    chains = repository.all_chains(conn)
+    assert [(c['ticker'], c['signal_date'], c['plan_id'], c['version_no'], c['pool']) for c in chains] == [
+        ('AMD', day, repository.chain_head(conn, 'AMD', day)['plan']['id'], 0, 'extended'),
+        ('NVDA', day, v2['plan_id'], 2, 'main')]
+
+
+def test_plan_review_queries(workbench_db):
+    from investment_assistant.workbench import repository
+    conn = workbench_db
+    day, s1, s2 = date(2026, 10, 21), date(2026, 10, 23), date(2026, 10, 26)
+    v0 = _tl_version(conn)
+
+    def review(**overrides):
+        row = {'ticker': 'NVDA', 'signal_date': day, 'head_plan_id': v0['plan_id'], 'session': s1,
+               'trigger': 'batch', 'run_id': 'workbench-1', 'mode': 'entry', 'timeline_version': 'timeline-1',
+               'outcome': 'maintain', 'decided_by': 'host', 'reason': 'no signal', 'attempt': 1,
+               'cutoff_at': NOW}
+        row.update(overrides)
+        return repository.insert_plan_review(conn, row)
+
+    skipped = review(outcome='skipped', reason='review_in_progress')
+    assert skipped['signals'] == [] and skipped['user_input_ids'] == [] and skipped['detail'] == {}
+    kept = review(attempt=2, signals=[{'kind': 'new_8k', 'fired': False}], user_input_ids=[3],
+                  detail={'via': 'host'}, input_tokens=5, output_tokens=7)
+    assert kept['signals'] == [{'kind': 'new_8k', 'fired': False}] and kept['user_input_ids'] == [3]
+    recheck = review(trigger='recheck', run_id='recheck-1', outcome='skipped', reason='agent_unavailable')
+    later = review(session=s2, outcome='error', reason='timeout')
+
+    assert [r['id'] for r in repository.chain_reviews(conn, 'NVDA', day)] == [
+        skipped['id'], kept['id'], recheck['id'], later['id']]
+    assert [r['id'] for r in repository.reviews_on(conn, s1)] == [skipped['id'], kept['id'], recheck['id']]
+    assert [r['id'] for r in repository.batch_attempts(conn, 'NVDA', day, s1)] == [skipped['id'], kept['id']]
+    assert repository.batch_attempts(conn, 'NVDA', day, date(2026, 10, 27)) == []
+    # skipped / error rows are not effective reviews
+    assert repository.last_effective_review(conn, v0['plan_id'])['id'] == kept['id']
+    assert repository.last_effective_review(conn, uuid.uuid4()) is None
+
+
+def test_user_inputs_superseded_by(workbench_db):
+    from investment_assistant.workbench import repository
+    conn = workbench_db
+    day = date(2026, 10, 21)
+
+    def add(**overrides):
+        row = {'request_id': uuid.uuid4(), 'request_hash': 'h', 'ticker': 'NVDA', 'signal_date': None,
+               'kind': 'research', 'body': 'margin outlook', 'source_url': None, 'supersedes_id': None}
+        row.update(overrides)
+        return repository.insert_user_input(conn, row)
+
+    ticker_level = add(source_url='https://example.com/a')
+    chain = add(signal_date=day, kind='judgment', body='wait for the pullback')
+    add(signal_date=date(2026, 10, 14), body='older chain')                    # another chain: excluded
+    add(ticker='AMD', body='other ticker')                                      # another ticker: excluded
+    correction = add(signal_date=day, kind='judgment', body='pullback done', supersedes_id=chain['id'])
+    retract = add(kind='retract', body='withdrawn', supersedes_id=ticker_level['id'])
+    assert repository.user_input_by_request(conn, chain['request_id'])['id'] == chain['id']
+    assert repository.user_input_by_request(conn, uuid.uuid4()) is None
+
+    rows = repository.user_inputs_for(conn, 'nvda', day)
+    assert [(r['id'], r['superseded_by']) for r in rows] == [
+        (ticker_level['id'], retract['id']), (chain['id'], correction['id']),
+        (correction['id'], None), (retract['id'], None)]
+    assert rows[0]['source_url'] == 'https://example.com/a' and rows[0]['created_at'] is not None
+    assert [(r['id'], r['superseded_by']) for r in repository.user_inputs_for(conn, 'NVDA', None)] == [
+        (ticker_level['id'], retract['id']), (retract['id'], None)]
+
+
+def test_insert_decision_writes_agent_plan_columns(workbench_db):
+    from investment_assistant.workbench import repository
+    conn = workbench_db
+    head = _tl_version(conn)
+    rec = {'request_id': uuid.uuid4(), 'ticker': 'NVDA', 'signal_date': date(2026, 10, 21), 'candidate_ids': [],
+           'brief_id': None, 'proposed_action': 'buy', 'final_action': 'buy', 'decision': 'accept',
+           'reason': 'trend intact', 'supersedes_id': None, 'plan_id': head['plan_id']}
+    plain = repository.insert_decision(conn, rec, 'h1', decided_at=NOW)        # old callers: no new keys
+    assert 'agent_plan_id' not in plain
+    stored = conn.execute('SELECT agent_plan_id, review_view FROM signal_decisions WHERE id = %s',
+                          [plain['id']]).fetchone()
+    assert stored == (None, None)
+    view = {'layout': 'agent_first', 'baseline_expanded': False, 'agent_version_no': 0}
+    record = repository.insert_decision(conn, {**rec, 'request_id': uuid.uuid4(), 'supersedes_id': plain['id'],
+                                               'agent_plan_id': head['plan_id'], 'review_view': view},
+                                        'h2', decided_at=NOW + timedelta(minutes=1))
+    assert record['agent_plan_id'] == head['plan_id'] and record['review_view'] == view
+
+
+def test_try_review_lock_is_exclusive(workbench_db):
+    import os
+    import psycopg
+    from investment_assistant.workbench import repository
+    day = date(2026, 10, 21)
+    assert repository.try_review_lock(workbench_db, 'NVDA', day) is True
+    assert repository.try_review_lock(workbench_db, 'NVDA', day) is True      # re-entrant in one session
+    with psycopg.connect(os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']) as other:
+        assert repository.try_review_lock(other, 'NVDA', day) is False
+        assert repository.try_review_lock(other, 'NVDA', date(2026, 10, 22)) is True   # another chain
+        other.rollback()
+        workbench_db.rollback()                                                # transaction end releases it
+        assert repository.try_review_lock(other, 'NVDA', day) is True
+        other.rollback()
