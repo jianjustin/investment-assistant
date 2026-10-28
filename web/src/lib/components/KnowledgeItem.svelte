@@ -22,6 +22,8 @@
   let notFound = $state(false)
   let mode = $state<'view' | 'edit' | 'status'>('view')
   let stale = $state(false)
+  let formGen = $state(0)                 // bumped to rebuild the edit form from the latest version
+  let reloadNote = $state('')
   let reason = $state('')
   let statusBusy = $state(false)
   let statusError = $state('')
@@ -68,6 +70,15 @@
     mode = 'view'
     stale = false
     await load()
+  }
+
+  /** After a stale 409: reload, then refill the form from the new latest version. The old input is dropped, not resubmitted. */
+  async function refreshStale() {
+    await load()
+    if (!latest) return
+    formGen++
+    stale = false
+    reloadNote = `已有第 ${latest.version} 版，已载入最新内容，请对照后再提交`
   }
 
   function startStatus() { mode = 'status'; reason = ''; statusError = '' }
@@ -140,7 +151,7 @@
           <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2" onclick={startStatus}>恢复</button>
         {:else}
           <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2"
-                  onclick={() => { mode = 'edit'; stale = false }}>改</button>
+                  onclick={() => { mode = 'edit'; stale = false; reloadNote = '' }}>改</button>
           <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2" onclick={startStatus}>归档</button>
         {/if}
       </div>
@@ -162,11 +173,14 @@
       {#if mode === 'edit' && latest}
         <div class="border border-border rounded p-3 space-y-2">
           <p class="text-xs text-muted">改动会作为第 {latest.version + 1} 版写入，原来的版本都保留。</p>
-          <KnowledgeForm initial={latest} onSubmit={reviseSubmit} requestKey={`base:${latest.version}`} />
+          {#if reloadNote}<p class="text-xs text-amber-700">{reloadNote}</p>{/if}
+          {#key formGen}
+            <KnowledgeForm initial={latest} onSubmit={reviseSubmit} requestKey={`base:${latest.version}`} />
+          {/key}
           <div class="flex gap-2">
             {#if stale}
               <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2"
-                      onclick={() => load()}>刷新</button>
+                      onclick={refreshStale}>刷新</button>
             {/if}
             <button type="button" class="text-xs px-2 py-1 border border-border rounded" onclick={() => mode = 'view'}>取消</button>
           </div>

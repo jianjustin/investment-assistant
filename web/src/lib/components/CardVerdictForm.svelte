@@ -112,7 +112,7 @@
     {#each extras as extra, i (extra.key)}
       <fieldset aria-label={`另写的教训 ${i + 1}`} class="border border-border rounded p-3 space-y-2 min-w-0">
         <legend class="px-1 text-xs text-muted">另写的教训 {i + 1}</legend>
-        <KnowledgeForm requireCounter hideSubmit onChange={(values, problem) => extra.edit = { values, problem }} />
+        <KnowledgeForm hideSubmit onChange={(values, problem) => extra.edit = { values, problem }} />
         <button type="button" class="text-xs px-2 py-1 border border-border rounded"
                 onclick={() => extras = extras.filter(x => x.key !== extra.key)}>移除这一条</button>
       </fieldset>

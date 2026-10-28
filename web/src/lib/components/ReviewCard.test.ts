@@ -110,6 +110,8 @@ describe('ReviewCard', () => {
     expect(lines[0]).toHaveTextContent('-1.00R')
     expect(lines[1]).toHaveTextContent('Agent 第 2 版')
     expect(lines[1]).toHaveTextContent('未平仓')
+    expect(lines[1]).toHaveTextContent('（决定时看到的版本）')     // backend code 'decision' read as text, not shown raw
+    expect(lines[1]).not.toHaveTextContent('（decision）')
     expect(lines[1]).toHaveTextContent('—')
     expect(lines[2]).toHaveTextContent('实际')
     expect(lines[2]).toHaveTextContent('-0.80R')

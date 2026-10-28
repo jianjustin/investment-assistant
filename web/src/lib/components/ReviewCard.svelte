@@ -9,7 +9,7 @@
   import { ATTACH } from '../knowledge'
   import {
     CARD_STATUS_TEXT, DISCIPLINE_FLAGS, DISCIPLINE_TEXT, endText, growthError, knowHref, PENDING_TEXT, REDRAFT_PENDING_TEXT,
-    REDRAFT_POLL_MS, ROLE_TEXT, truncate,
+    REDRAFT_POLL_MS, ROLE_TEXT, truncate, VERSION_BASIS_TEXT,
   } from '../growth'
   import type { CardDraftRow, FactDiscipline, FactTrack, ReviewCardView } from '../growth'
   import { AGENT_REASON_TEXT, KIND_TEXT, rText } from '../workbench'
@@ -183,7 +183,7 @@
           <li>{trackLine('规则', facts.tracks.rule)}{#if facts.tracks.rule.plan_id} · <a class="text-accent underline" href={`#plan/${facts.tracks.rule.plan_id}`}>看计划</a>{/if}</li>
         {/if}
         {#if facts.tracks.agent}
-          <li>{trackLine(`Agent${facts.tracks.agent.version_no != null ? ` 第 ${facts.tracks.agent.version_no} 版` : ''}`, facts.tracks.agent)}{#if facts.tracks.agent.version_basis}（{facts.tracks.agent.version_basis}）{/if}{#if facts.tracks.agent.plan_id} · <a class="text-accent underline" href={`#plan/${facts.tracks.agent.plan_id}`}>看计划</a>{/if}</li>
+          <li>{trackLine(`Agent${facts.tracks.agent.version_no != null ? ` 第 ${facts.tracks.agent.version_no} 版` : ''}`, facts.tracks.agent)}{#if facts.tracks.agent.version_basis}（{VERSION_BASIS_TEXT[facts.tracks.agent.version_basis] ?? facts.tracks.agent.version_basis}）{/if}{#if facts.tracks.agent.plan_id} · <a class="text-accent underline" href={`#plan/${facts.tracks.agent.plan_id}`}>看计划</a>{/if}</li>
         {/if}
         <li>{trackLine('实际', facts.tracks.actual)}{#if facts.tracks.actual.plan_kind} · 照{KIND_TEXT[facts.tracks.actual.plan_kind] ?? facts.tracks.actual.plan_kind}计划{/if}</li>
       </ul>

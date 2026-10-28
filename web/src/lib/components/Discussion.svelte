@@ -40,6 +40,8 @@
   // ---- loading and polling ----
   let timer: ReturnType<typeof setTimeout> | null = null
   let pollStart = 0
+  /** Set on unmount: a read still in flight must not arm a new timer (app.svelte swaps discussions with {#key}). */
+  let destroyed = false
 
   /** The last turn is the user's with no answer after it. */
   const waitingTurn = (d: Discussion | null): DiscussionTurn | null => {
@@ -47,7 +49,7 @@
     return last && last.role === 'user' ? last : null
   }
   function stop() { if (timer) clearTimeout(timer); timer = null }
-  function schedule() { stop(); timer = setTimeout(tick, DISCUSS_POLL_INTERVAL_MS) }
+  function schedule() { stop(); if (destroyed) return; timer = setTimeout(tick, DISCUSS_POLL_INTERVAL_MS) }
 
   /** After every read: answered → done; interrupted → done; past the limit → timed out; otherwise read again. */
   function evaluate() {
@@ -57,21 +59,28 @@
     schedule()
   }
   async function tick() {
-    try { disc = await api.getDiscussion(id) } catch { /* a missed read is retried on the next tick */ }
+    try {
+      const next = await api.getDiscussion(id)
+      if (destroyed) return
+      disc = next
+    } catch { /* a missed read is retried on the next tick */ }
+    if (destroyed) return
     evaluate()
   }
-  function startPolling() { timedOut = false; pollStart = Date.now(); evaluate() }
+  function startPolling() { if (destroyed) return; timedOut = false; pollStart = Date.now(); evaluate() }
 
   onMount(async () => {
     try {
-      disc = await api.getDiscussion(id)
+      const first = await api.getDiscussion(id)
+      if (destroyed) return
+      disc = first
       loadError = ''
       startPolling()
     } catch (e) {
-      loadError = growthError(e)
+      if (!destroyed) loadError = growthError(e)
     }
   })
-  onDestroy(stop)
+  onDestroy(() => { destroyed = true; stop() })
 
   // ---- asking ----
   async function ask() {
@@ -89,7 +98,10 @@
       requests.done()
       question = ''
       attachment = null
-      try { disc = await api.getDiscussion(id) } catch (e) { askError = growthError(e) }
+      try {
+        const next = await api.getDiscussion(id)
+        if (!destroyed) disc = next
+      } catch (e) { if (!destroyed) askError = growthError(e) }
       startPolling()
     } catch (e) {
       askError = growthError(e)

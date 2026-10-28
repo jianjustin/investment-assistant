@@ -11,5 +11,7 @@ export function parseHash(hash: string): { zone: Zone; sub: string | undefined }
   const rawSub = nestedZones.includes(rawZone as Zone) ? rest.join('/') : rest[0]
   // Legacy zones (technicals/strategy/trade) land on today with no sub; so do #plan and #discuss without an id.
   if (!known || ((rawZone === 'plan' || rawZone === 'discuss') && !rawSub)) return { zone: 'today', sub: undefined }
+  // #discuss/<id> takes a number only: #discuss/abc would ask for /discussions/NaN.
+  if (rawZone === 'discuss' && !/^\d+$/.test(rawSub!)) return { zone: 'today', sub: undefined }
   return { zone: rawZone as Zone, sub: rawSub || undefined }
 }

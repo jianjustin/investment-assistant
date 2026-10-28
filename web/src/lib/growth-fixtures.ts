@@ -44,7 +44,7 @@ export const facts = (over: Partial<Facts> = {}): Facts => ({
   },
   tracks: {
     rule: { status: 'closed', status_text: '已平仓', r: -1, plan_id: 'p-rule' },
-    agent: { status: 'open', status_text: '未平仓', r: null, plan_id: 'p-agent', version_no: 2, version_basis: '决定时的最新版' },
+    agent: { status: 'open', status_text: '未平仓', r: null, plan_id: 'p-agent', version_no: 2, version_basis: 'decision' },
     actual: { status: 'closed', status_text: '已平仓', r: -0.8, plan_id: 'p-rule', plan_kind: 'rule' },
   },
   decision: { decision: 'accept', final_action: 'buy', plan_kind: 'rule', plan_id: 'p-rule', agent_plan_id: null,

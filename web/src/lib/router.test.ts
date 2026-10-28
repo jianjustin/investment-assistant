@@ -58,6 +58,10 @@ describe('parseHash', () => {
     expect(workbenchZones).not.toContain('discuss')
     expect(parseHash('#discuss/5')).toEqual({ zone: 'discuss', sub: '5' })
     expect(parseHash('#discuss')).toEqual({ zone: 'today', sub: undefined })
+    // a non-numeric id would become /discussions/NaN: treated like no id at all
+    expect(parseHash('#discuss/abc')).toEqual({ zone: 'today', sub: undefined })
+    expect(parseHash('#discuss/5x')).toEqual({ zone: 'today', sub: undefined })
+    expect(parseHash('#discuss/-1')).toEqual({ zone: 'today', sub: undefined })
     render(SideNav, { current: 'discuss', sub: '5' })
     const hrefs = screen.getAllByRole('link').map(a => a.getAttribute('href'))
     expect(hrefs.every(href => !href!.startsWith('#discuss'))).toBe(true)

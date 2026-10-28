@@ -124,6 +124,54 @@ describe('Discussion · page', () => {
   })
 })
 
+describe('Discussion · unmounted while a read is in flight', () => {
+  it('a read that resolves after unmount arms no timer', async () => {
+    vi.useFakeTimers()
+    let resolve!: (d: ReturnType<typeof pending>) => void
+    vi.mocked(api.getDiscussion).mockReturnValueOnce(new Promise(r => { resolve = r }))
+    const view = render(Discussion, { id: 5 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls()).toBe(1)
+    view.unmount()
+    resolve(pending())
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(calls()).toBe(1)
+  })
+
+  it('a poll tick that resolves after unmount does not schedule the next one', async () => {
+    vi.useFakeTimers()
+    let resolve!: (d: ReturnType<typeof pending>) => void
+    vi.mocked(api.getDiscussion).mockResolvedValueOnce(pending())
+      .mockReturnValueOnce(new Promise(r => { resolve = r })).mockResolvedValue(pending())
+    const view = render(Discussion, { id: 5 })
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(calls()).toBe(2)                         // the tick's read is in flight
+    view.unmount()
+    resolve(pending())
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(calls()).toBe(2)
+  })
+
+  it('the read after asking, resolving after unmount, arms no timer', async () => {
+    vi.useFakeTimers()
+    let resolve!: (d: ReturnType<typeof pending>) => void
+    vi.spyOn(api, 'postDiscussionTurn').mockResolvedValue({ status: 'created' } as any)
+    vi.mocked(api.getDiscussion).mockResolvedValueOnce(discussion())
+      .mockReturnValueOnce(new Promise(r => { resolve = r })).mockResolvedValue(pending())
+    const view = render(Discussion, { id: 5 })
+    await vi.advanceTimersByTimeAsync(0)
+    await ask('再问一个')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls()).toBe(2)
+    view.unmount()
+    resolve(pending())
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(calls()).toBe(2)
+  })
+})
+
 describe('Discussion · asking and polling', () => {
   it('polls every 2s until reply', async () => {
     vi.useFakeTimers()

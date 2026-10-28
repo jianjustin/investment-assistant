@@ -72,14 +72,36 @@ describe('KnowledgeItem', () => {
       base_version: 2, title: '回踩别追（再改）', scope: '趋势回踩触发后的第一天', concepts: ['review.discipline_chase'], tickers: ['NVDA'] })
     expect(vi.mocked(api.postKnowledgeVersion).mock.calls[0][1].request_id).toMatch(/^[0-9a-f-]{36}$/)
     expect((screen.getByLabelText('标题') as HTMLInputElement).value).toBe('回踩别追（再改）')   // form kept
-    // refreshing reloads the item; the form stays open with what the user typed
-    vi.mocked(api.getKnowledgeItem).mockClear()
-    await fireEvent.click(screen.getByRole('button', { name: '刷新' }))
-    await waitFor(() => expect(api.getKnowledgeItem).toHaveBeenCalledTimes(1))
-    // a retry on the same content succeeds
+    // a retry on the same content (no refresh) is allowed and reuses the request id
     await fireEvent.click(screen.getByRole('button', { name: '提交' }))
     await waitFor(() => expect(api.postKnowledgeVersion).toHaveBeenCalledTimes(2))
+    const [first, second] = vi.mocked(api.postKnowledgeVersion).mock.calls.map(c => c[1].request_id)
+    expect(second).toBe(first)
     await waitFor(() => expect(screen.queryByLabelText('标题')).toBeNull())      // form closed after success
+  })
+
+  it('after a stale 409, 刷新 reloads the latest version into the form instead of keeping the old input', async () => {
+    const v3 = version(3, { title: '别人改的标题', body: '第 3 版正文', scope: '第 3 版范围', counter_examples: '' })
+    const base = itemView()
+    vi.spyOn(api, 'postKnowledgeVersion')
+      .mockRejectedValueOnce(new WorkbenchError('knowledge_stale: 这条知识已更新到第 3 版，请刷新后再改', 409))
+      .mockResolvedValueOnce({ status: 'created' } as any)
+    render(KnowledgeItem, { id: 3 })
+    await fireEvent.click(await screen.findByRole('button', { name: '改' }))
+    await fireEvent.input(screen.getByLabelText('标题'), { target: { value: '我的旧输入' } })
+    await fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    await screen.findByText('这条知识已更新到第 3 版，请刷新后再改')
+    vi.mocked(api.getKnowledgeItem).mockResolvedValue({ ...base, versions: [...base.versions, v3], current: v3 })
+    await fireEvent.click(screen.getByRole('button', { name: '刷新' }))
+    expect(await screen.findByText('已有第 3 版，已载入最新内容，请对照后再提交')).toBeInTheDocument()
+    expect((screen.getByLabelText('标题') as HTMLInputElement).value).toBe('别人改的标题')
+    expect((screen.getByLabelText('正文') as HTMLTextAreaElement).value).toBe('第 3 版正文')
+    expect(api.postKnowledgeVersion).toHaveBeenCalledTimes(1)                    // nothing was resubmitted
+    await fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    await waitFor(() => expect(api.postKnowledgeVersion).toHaveBeenCalledTimes(2))
+    const second = vi.mocked(api.postKnowledgeVersion).mock.calls[1][1]
+    expect(second).toMatchObject({ base_version: 3, title: '别人改的标题', body: '第 3 版正文' })
+    expect(second.request_id).not.toBe(vi.mocked(api.postKnowledgeVersion).mock.calls[0][1].request_id)
   })
 
   it('archive and restore with reason', async () => {

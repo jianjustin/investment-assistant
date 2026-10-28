@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup } from '@testing-library/svelte'
 import App from './app.svelte'
+import * as api from './lib/api'
 
 // Mock all API calls
 vi.mock('./lib/api', () => ({
@@ -106,6 +107,15 @@ describe('app routing', () => {
     location.hash = '#discuss/5'
     const { findByText } = render(App)
     expect(await findByText(/讨论加载失败/)).toBeInTheDocument()
+  })
+
+  it('#discuss/abc never asks for /discussions/NaN: it falls back to today', async () => {
+    location.hash = '#discuss/abc'
+    vi.mocked(api.getDiscussion).mockClear()
+    const { queryByText } = render(App)
+    await Promise.resolve()
+    expect(api.getDiscussion).not.toHaveBeenCalled()
+    expect(queryByText(/讨论加载失败/)).toBeNull()
   })
 
   it('side nav shows 知识 with 概念 and 原理', async () => {

@@ -87,6 +87,32 @@ describe('CardVerdictForm', () => {
     expect('draft_id' in body.lessons[0]).toBe(false)
   })
 
+  it('a hand-written lesson may leave the counter example empty (spec 5.1), an adopted draft may not', async () => {
+    render(CardVerdictForm, { cardId: 12, drafts: lessonRows().slice(0, 1), verdict: null })
+    await fireEvent.click(screen.getByRole('button', { name: '另写一条' }))
+    const extra = screen.getByRole('group', { name: /另写的教训 1/ })
+    await fireEvent.input(within(extra).getByLabelText('标题'), { target: { value: '财报前不加仓' } })
+    await fireEvent.input(within(extra).getByLabelText('正文'), { target: { value: '财报前三天不再加仓。' } })
+    await fireEvent.input(within(extra).getByLabelText('适用范围'), { target: { value: '持仓、财报前' } })
+    await fireEvent.input(within(extra).getByLabelText('概念'), { target: { value: 'plan.earnings' } })
+    await fireEvent.click(within(extra).getByRole('button', { name: '添加概念' }))
+    await within(extra).findByRole('button', { name: '移除概念 plan.earnings' })
+    await fireEvent.click(within(group('回踩不追高')).getByRole('button', { name: '不采纳' }))
+    await fireEvent.click(submit())
+    await waitFor(() => expect(api.postCardVerdict).toHaveBeenCalledTimes(1))
+    const lessons = vi.mocked(api.postCardVerdict).mock.calls[0][1].lessons
+    expect(lessons[lessons.length - 1]).toMatchObject({ action: 'approve', title: '财报前不加仓', counter_examples: '' })
+  })
+
+  it('an adopted Agent draft still needs its counter example', async () => {
+    render(CardVerdictForm, { cardId: 12, drafts: lessonRows().slice(0, 1), verdict: null })
+    await fireEvent.click(within(group('回踩不追高')).getByRole('button', { name: '采纳' }))
+    await fireEvent.input(within(group('回踩不追高')).getByLabelText('反例'), { target: { value: '   ' } })
+    await fireEvent.click(submit())
+    expect(await screen.findByText(/反例必填/)).toBeInTheDocument()
+    expect(api.postCardVerdict).not.toHaveBeenCalled()
+  })
+
   it('failure keeps input and request_id', async () => {
     vi.mocked(api.postCardVerdict).mockRejectedValueOnce(new WorkbenchError('boom', 500))
     render(CardVerdictForm, { cardId: 12, drafts: lessonRows(), verdict: null })

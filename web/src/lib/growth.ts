@@ -213,9 +213,12 @@ export const CARD_STATUS_TEXT: Record<string, string> = {
 /** retro.DECISION_TEXT (spec §4.3); `{n}` is the Agent version number. The backend sends the finished sentence
  *  (`decision_text`, `facts.decision.text`); this table is what Task 5 compares against retro.DECISION_TEXT. */
 export const DECISION_TEXT = {
-  accept_rule: '采纳（照规则计划）', accept_agent: '采纳（照 Agent 第 {n} 版）', accept_agent1: '采纳（照 Agent agent-1）',
+  accept_rule: '采纳（照规则计划）', accept_agent: '采纳（照 Agent 第 {n} 版）', accept_agent_legacy: '采纳（照 Agent agent-1）',
   accept_own: '自改价位', reject: '否决', downgrade: '降为观察', none: '未决定（计划外成交）',
+  accept: '采纳',                                   // accepted, but the executed plan is unknown
 } as const
+/** retro.BASIS_TEXT: which Agent version a track follows (`facts.tracks.agent.version_basis` is the code). */
+export const VERSION_BASIS_TEXT: Record<string, string> = { decision: '决定时看到的版本', first: '首版' }
 /** The four discipline flags and 「待定」 (spec §4.3, §13). */
 export const DISCIPLINE_TEXT: Record<string, string> = {
   chase: '追高', early_take: '过早止盈', held_loser: '死扛亏损', unplanned: '计划外', pending: '待定',
@@ -398,7 +401,10 @@ export function conflictText(message: string): string {
 /** Page text of a failed growth-loop request. Migration 027 missing reads as exactly that sentence. */
 export function growthError(error: unknown): string {
   if (error instanceof WorkbenchError) {
-    if (error.status === 503) return error.message.includes('迁移 027') ? '迁移 027 未执行' : `数据库未就绪：${error.message}`
+    if (error.status === 503) {
+      return error.message.includes('迁移 027') || error.message.startsWith('migration_027_missing')
+        ? AGENT_REASON_TEXT.migration_027_missing : `数据库未就绪：${error.message}`
+    }
     if (error.status === 409) return conflictText(error.message)
     if (error.status === 400) return `输入有误：${error.message}`
     if (error.status === 404) return `不存在：${error.message}`

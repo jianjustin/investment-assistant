@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CARD_STATUS_TEXT, DECISION_TEXT, DISCIPLINE_TEXT, DISCUSS_POLL_MS, END_TEXT, EXIT_BASIS_TEXT,
   changedFields, conflictText, endText, growthError, idempotentRequests, isKnowRef, knowHref, knowledgeProblem, parseKnowRef,
-  refKind, sampleLine, userInputRequestId,
+  refKind, sampleLine, userInputRequestId, VERSION_BASIS_TEXT,
 } from './growth'
 import { WorkbenchError } from './workbench'
 import { USER_INPUT_REQUEST_ID_VECTOR } from './growth-fixtures'
@@ -21,9 +21,11 @@ describe('constants (spec 4.1, 4.3, 4.6, 13)', () => {
       reviewed: '已审定', to_review: '待审定', draft_failed: '起草失败（可手动审定或重新起草）', drafting: '起草中',
     })
     expect(DECISION_TEXT).toEqual({
-      accept_rule: '采纳（照规则计划）', accept_agent: '采纳（照 Agent 第 {n} 版）', accept_agent1: '采纳（照 Agent agent-1）',
-      accept_own: '自改价位', reject: '否决', downgrade: '降为观察', none: '未决定（计划外成交）',
+      accept_rule: '采纳（照规则计划）', accept_agent: '采纳（照 Agent 第 {n} 版）',
+      accept_agent_legacy: '采纳（照 Agent agent-1）', accept_own: '自改价位', reject: '否决', downgrade: '降为观察',
+      none: '未决定（计划外成交）', accept: '采纳',
     })
+    expect(VERSION_BASIS_TEXT).toEqual({ decision: '决定时看到的版本', first: '首版' })
     expect(DISCIPLINE_TEXT).toEqual({
       chase: '追高', early_take: '过早止盈', held_loser: '死扛亏损', unplanned: '计划外', pending: '待定',
     })
@@ -118,6 +120,7 @@ describe('error texts', () => {
   })
   it('growthError reads migration 027 as exactly that sentence', () => {
     expect(growthError(new WorkbenchError('迁移 027 未执行', 503))).toBe('迁移 027 未执行')
+    expect(growthError(new WorkbenchError('migration_027_missing', 503))).toBe('迁移 027 未执行')
     expect(growthError(new WorkbenchError('down', 503))).toBe('数据库未就绪：down')
     expect(growthError(new WorkbenchError('discussion_busy', 409))).toBe('上一个问题还在回答')
     expect(growthError(new WorkbenchError('bad', 400))).toBe('输入有误：bad')
