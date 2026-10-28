@@ -9,4 +9,4 @@
 - **plan 里标出并行关系。** 在「执行顺序与依赖」里明确写出哪些 Task 的文件互不重叠、可以同时做（典型：前端与后端），以及共享的接口文件由谁负责。
 - **测试分级。** 每个 Task 只跑与本 Task 相关的测试文件；离线全量 pytest、一次性库全量 pytest、前端 `npm test && npm run build` 三套只在收尾 Task 跑一次。写进 plan 的 Global Constraints。
 - **审查一轮。** 每个 Task 派一轮审查，修复后由编排者看 diff 与相关测试确认，不派复审；全量 code review 只在收尾 Task 做一次。
-- **子代理分工。** 实现子代理优先用 sonnet（Agent 工具只认别名 `sonnet`，不认完整模型 id），审查与设计用 opus；别名解析失败时回 opus，并在汇报里说明。
+- **子代理分工。** 实现子代理用别名 `sonnet`，审查与设计用 `opus`（Agent 工具只认别名，不认完整模型 id）。若别名子代理报 404 且错误里的模型名是 `ccs-…`，是 cc-switch 把 `ANTHROPIC_DEFAULT_*_MODEL` 重新写进了 `~/.claude/settings.json`，删掉那几行再开新 session。
