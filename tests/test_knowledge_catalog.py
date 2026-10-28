@@ -5,8 +5,8 @@ updating the cards fails here. Offline: no database."""
 import pytest
 
 from investment_assistant.workbench import (
-    backcheck, derivation, families, knowledge, labels, monthly, plan_shadow, plans, regime, review, rules, screen,
-    stages, timeline, tracks,
+    backcheck, derivation, families, knowledge, knowledge_items, knowledge_perf, labels, monthly, plan_shadow,
+    plans, regime, retro, review, rules, screen, stages, timeline, tracks,
 )
 from investment_assistant.workbench.agent import REASON_TEXT, conditions, graph, tools
 from investment_assistant.workbench.knowledge import DEFAULT_ROOT, load
@@ -40,6 +40,8 @@ REQUIRED_IDS = (
     'system.gate_hold', 'system.cutoff', 'system.append_only', 'system.stages', 'system.stage_status',
     'system.pool_tiers', 'system.screen', 'system.decision_unit', 'system.conflict', 'system.decision',
     'system.push', 'system.versions', 'system.concept_card',
+    # v2.7 growth loop (4 of 7; the rest arrive with the agent and orchestration tasks)
+    'review.retro_card', 'review.retro_end', 'system.my_knowledge', 'review.knowledge_performance',
 )
 
 STAGE_STATUSES = ('success', 'partial', 'degraded', 'failed', 'skipped')
@@ -65,6 +67,9 @@ CURRENT_VERSIONS = {
     'backcheck.CALC_VERSION': backcheck.CALC_VERSION,
     'rules.RULE_VERSION': 'rules-' + rules.RULE_VERSION,
     'knowledge.KNOWLEDGE_VERSION': knowledge.KNOWLEDGE_VERSION,
+    'retro.RETRO_VERSION': retro.RETRO_VERSION,
+    'knowledge_items.MY_KNOWLEDGE_VERSION': knowledge_items.MY_KNOWLEDGE_VERSION,
+    'knowledge_perf.KNOWLEDGE_PERF_VERSION': knowledge_perf.KNOWLEDGE_PERF_VERSION,
 }
 
 
@@ -78,7 +83,7 @@ def body_of(catalog, card_id: str) -> str:
 
 
 def test_catalog_loads_and_matches_required_ids(catalog):
-    assert len(REQUIRED_IDS) == 88 and len(set(REQUIRED_IDS)) == 88
+    assert len(REQUIRED_IDS) == 92 and len(set(REQUIRED_IDS)) == 92
     assert set(catalog.concepts) == set(REQUIRED_IDS)
 
 
@@ -102,6 +107,9 @@ CODE_SET_CASES = [
     ('stage_status', list(STAGE_STATUSES), ('system.stage_status',)),
     ('track_status', sorted(tracks.TRACK_STATUS_TEXT), ('review.track_status',)),
     ('tools', sorted(set(tools.TOOLS) | {'get_concept'}), ('agent.tool_calls',)),
+    ('retro_end_kinds', list(retro.END_KINDS), ('review.retro_end',)),
+    ('retro_card_statuses', list(retro.CARD_STATUSES), ('review.retro_card',)),
+    ('retro_fact_keys', list(retro.FACT_KEYS), ('review.retro_card',)),
 ]
 
 

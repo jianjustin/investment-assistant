@@ -323,3 +323,27 @@ def test_generate_weekly_counts_first_and_latest(workbench_db, monkeypatch):
     assert out['stats']['plans']['agent_latest']['count'] == 1
     agent = out['stats']['tracks']['units'][0]['agent']
     assert agent['version_no'] == 0 and agent['version_basis'] == 'first'
+
+
+def _agent_row(r, *, status='closed', version_no=0, is_head=True):
+    return {'kind': 'agent', 'outcome': {'status': status, 'r': r},
+            'chain': {'version_no': version_no, 'is_head': is_head}}
+
+
+def test_shadow_block_matches_previous_summary():
+    """v2.7 Task 1 extracted ``shadow_block`` unchanged out of ``shadow_agent_summary``; the literal
+    expectations below are what the summary returned before the extraction."""
+    rows = [_agent_row(1.0), _agent_row(-1.0), _agent_row(3.0), _agent_row(0.0), _agent_row(2.0),
+            _agent_row(None, status='expired'), _agent_row(None, status='pending'),
+            {'kind': 'rule', 'outcome': {'status': 'closed', 'r': 9.0}, 'chain': None},
+            _agent_row(5.0, version_no=1, is_head=False)]                      # a later version: not "first"
+    out = review.shadow_agent_summary(rows)
+    assert out == {
+        'first': {'count': 7, 'determined': 5, 'expired': 1, 'r_mean': 1.0, 'r_median': 1.0},
+        'latest': {'count': 7, 'determined': 5, 'expired': 1, 'r_mean': 1.0, 'r_median': 1.0}}
+    assert review.shadow_block([row['outcome'] for row in rows if row['kind'] == 'agent']) \
+        == {'count': 8, 'determined': 6, 'expired': 1, 'r_mean': 1.6666666666666667, 'r_median': 1.5}
+    # below the threshold no mean / median
+    assert review.shadow_block([{'status': 'closed', 'r': 1.0}] * 4) \
+        == {'count': 4, 'determined': 4, 'expired': 0, 'r_mean': None, 'r_median': None}
+    assert review.shadow_block([]) == {'count': 0, 'determined': 0, 'expired': 0, 'r_mean': None, 'r_median': None}

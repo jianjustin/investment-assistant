@@ -148,21 +148,25 @@ def _plan_summary(plan_outcomes: list[dict[str, Any]], week_start: date, week_en
     return out
 
 
+def shadow_block(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    """One summary block over plan-shadow outcomes: ``determined`` = outcomes with an R; mean and median
+    only from ``SHADOW_MIN_SAMPLE`` determined outcomes on. Shared by the plan-shadow view's
+    ``agent_summary`` and the my-knowledge performance look-back (v2.7 D26)."""
+    rs = [o['r'] for o in outcomes if o.get('r') is not None]
+    enough = len(rs) >= SHADOW_MIN_SAMPLE
+    return {'count': len(outcomes), 'determined': len(rs),
+            'expired': sum(1 for o in outcomes if o.get('status') == 'expired'),
+            'r_mean': statistics.fmean(rs) if enough else None,
+            'r_median': statistics.median(rs) if enough else None}
+
+
 def shadow_agent_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """v2.5 §9.1 ``agent_summary`` of the plan-shadow view: ``first`` (each chain's first version) and
     ``latest`` (each chain's current head) over the agent rows; ``determined`` = rows with an R; mean
     and median only from ``SHADOW_MIN_SAMPLE`` determined rows on."""
-    def block(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
-        rs = [o['r'] for o in outcomes if o.get('r') is not None]
-        enough = len(rs) >= SHADOW_MIN_SAMPLE
-        return {'count': len(outcomes), 'determined': len(rs),
-                'expired': sum(1 for o in outcomes if o.get('status') == 'expired'),
-                'r_mean': statistics.fmean(rs) if enough else None,
-                'r_median': statistics.median(rs) if enough else None}
-
     agent = [row for row in rows if row.get('kind') == 'agent']
-    return {'first': block([row['outcome'] for row in agent if is_first_version(row)]),
-            'latest': block([row['outcome'] for row in agent if is_latest_version(row)])}
+    return {'first': shadow_block([row['outcome'] for row in agent if is_first_version(row)]),
+            'latest': shadow_block([row['outcome'] for row in agent if is_latest_version(row)])}
 
 
 def pool_of(context: dict | None, entry: dict | None) -> str:

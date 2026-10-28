@@ -1436,3 +1436,309 @@ def macro_revision_counts(conn, series_id: str, *, cutoff_at: datetime) -> dict[
                         'WHERE series_id = %s AND fetched_at <= %s GROUP BY obs_date',
                         (series_id, cutoff_at)).fetchall()
     return {row[0]: row[1] for row in rows}
+
+
+# --- growth loop (v2.7 §11): review cards, my knowledge, citations, discussions ---
+# Eleven append-only tables from migration 027, deliberately not in WORKBENCH_TABLES (spec D29): an
+# unmigrated database degrades through growth_ready(). This layer only INSERTs into and SELECTs from them
+# (spec D30; tests/test_migration_027.py reads this file's source to hold it to that).
+
+GROWTH_TABLES = ('review_cards', 'review_card_drafts', 'discussions', 'knowledge_items', 'discussion_turns',
+                 'knowledge_drafts', 'knowledge_versions', 'knowledge_status', 'knowledge_draft_verdicts',
+                 'review_card_verdicts', 'knowledge_citations')
+
+_CARD_COLUMNS = ('id, event_key, subject, ticker, signal_date, buy_trade_id, end_kind, end_session, '
+                 'retro_version, facts, detected_run_id, created_at')
+_CARD_DRAFT_COLUMNS = 'id, card_id, attempt, trigger, agent_run_id, status, reason, output, created_at'
+_CARD_VERDICT_COLUMNS = 'id, card_id, request_id, request_hash, draft_id, note, created_at'
+_KNOWLEDGE_ITEM_COLUMNS = 'id, origin, source_card_id, source_discussion_id, created_at'
+_KNOWLEDGE_VERSION_COLUMNS = ('id, knowledge_id, version, supersedes_id, request_id, request_hash, draft_id, title, '
+                              'body, scope, counter_examples, concepts, tickers, schema_version, created_at')
+_KNOWLEDGE_STATUS_COLUMNS = 'id, knowledge_id, status, reason, request_id, request_hash, created_at'
+_KNOWLEDGE_DRAFT_COLUMNS = ('id, origin, card_draft_id, lesson_index, discussion_turn_id, target_knowledge_id, '
+                            'target_version, title, body, scope, counter_examples, concepts, tickers, refs, '
+                            'created_at')
+_CITATION_COLUMNS = 'id, agent_run_id, plan_id, review_id, knowledge_id, version, field, call_seq, created_at'
+_DISCUSSION_COLUMNS = ('id, request_id, request_hash, context_kind, ticker, signal_date, plan_id, card_id, '
+                       'created_at')
+_TURN_COLUMNS = ('id, discussion_id, seq, role, request_id, request_hash, body, attachment, run_id, reply_to, '
+                 'status, reason, refs, detail, agent_run_id, cutoff_at, created_at')
+
+
+def growth_ready(conn) -> bool:
+    """True when migration 027 has run: all eleven tables exist. One ``to_regclass`` query, resolved through
+    the search_path, that never raises on a missing table."""
+    checks = ' AND '.join(f"to_regclass('{table}') IS NOT NULL" for table in GROWTH_TABLES)
+    return bool(conn.execute(f'SELECT {checks}').fetchone()[0])
+
+
+def try_advisory_lock(conn, key: str) -> bool:
+    """Transaction-scoped, non-blocking advisory lock on ``key``; False when another transaction holds it."""
+    return bool(conn.execute('SELECT pg_try_advisory_xact_lock(hashtext(%s))', (key,)).fetchone()[0])
+
+
+def retro_subjects(conn, *, since: date, until: date) -> list[dict[str, Any]]:
+    """Everything ``retro.end_event`` needs from the ledger, one dict per card subject (spec §4.1, D1):
+
+    * a ``unit``: a buy unit (some decision proposed ``buy``) whose signal date is in ``[since, until]``, with
+      its head decision, every decision id of the chain, the live buys on any of those decisions, its plans
+      and its review rows (the caller adds bars, books and shadow results);
+    * a ``trade``: a live buy with no decision whose New York execution date is in ``[since, until]``.
+
+    Units come first (by signal date, ticker), then trades by execution time. The window is the caller's
+    to widen: a position held longer than the window is only found while its signal date is inside it."""
+    subjects: list[dict[str, Any]] = []
+    for unit in _all(conn, "SELECT DISTINCT ticker, signal_date FROM signal_decisions WHERE proposed_action = 'buy' "
+                           'AND signal_date BETWEEN %s AND %s ORDER BY signal_date, ticker', (since, until)):
+        ticker, signal_date = unit['ticker'], unit['signal_date']
+        decision_ids = [row[0] for row in conn.execute(
+            'SELECT id FROM signal_decisions WHERE ticker = %s AND signal_date = %s ORDER BY decided_at, id',
+            (ticker, signal_date)).fetchall()]
+        buys = _all(conn, f"SELECT {_TRADE_COLUMNS} FROM trades WHERE side = 'buy' AND voided_at IS NULL "
+                          'AND decision_id = ANY(%s) ORDER BY executed_at, id', (decision_ids,))
+        subjects.append({'kind': 'unit', 'ticker': ticker, 'signal_date': signal_date, 'buy_trade_id': None,
+                         'decision': decision_head(conn, ticker, signal_date, timeline=True),
+                         'decision_ids': decision_ids, 'buys': buys,
+                         'plans': plans_for_unit(conn, ticker, signal_date),
+                         'reviews': chain_reviews(conn, ticker, signal_date)})
+    for buy in _all(conn, f"SELECT {_TRADE_COLUMNS} FROM trades WHERE side = 'buy' AND decision_id IS NULL "
+                          "AND voided_at IS NULL AND (executed_at AT TIME ZONE 'America/New_York')::date "
+                          'BETWEEN %s AND %s ORDER BY executed_at, id', (since, until)):
+        subjects.append({'kind': 'trade', 'ticker': buy['ticker'], 'signal_date': None, 'buy_trade_id': buy['id'],
+                         'decision': None, 'decision_ids': [], 'buys': [buy], 'plans': [], 'reviews': []})
+    return subjects
+
+
+# review cards, drafts and verdicts
+
+def insert_review_card(conn, row: dict[str, Any]) -> int | None:
+    """The new card's id, or None when ``event_key`` already has one (one card per end event, D4).
+    ``facts`` is stored as JSONB, which does not keep key order: readers order by ``retro.FACT_KEYS``."""
+    found = conn.execute(
+        'INSERT INTO review_cards (event_key, subject, ticker, signal_date, buy_trade_id, end_kind, end_session, '
+        'retro_version, facts, detected_run_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s) '
+        'ON CONFLICT (event_key) DO NOTHING RETURNING id',
+        (row['event_key'], row['subject'], row['ticker'], row.get('signal_date'), row.get('buy_trade_id'),
+         row['end_kind'], row['end_session'], row['retro_version'], _plan_json(row['facts']),
+         row.get('detected_run_id'))).fetchone()
+    return found[0] if found else None
+
+
+def review_card(conn, card_id: int) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_CARD_COLUMNS} FROM review_cards WHERE id = %s', (card_id,))
+
+
+def review_card_by_key(conn, event_key: str) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_CARD_COLUMNS} FROM review_cards WHERE event_key = %s', (event_key,))
+
+
+def review_cards(conn, *, ticker: str | None = None, since: date | None = None) -> list[dict[str, Any]]:
+    """Cards newest end first; ``since`` keeps those that ended on or after it."""
+    clauses, params = [], []
+    if ticker is not None:
+        clauses.append('ticker = %s')
+        params.append(ticker.upper())
+    if since is not None:
+        clauses.append('end_session >= %s')
+        params.append(since)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
+    return _all(conn, f'SELECT {_CARD_COLUMNS} FROM review_cards{where} ORDER BY end_session DESC, id DESC', params)
+
+
+def insert_card_draft(conn, row: dict[str, Any]) -> int:
+    output = row.get('output')
+    return conn.execute(
+        'INSERT INTO review_card_drafts (card_id, attempt, trigger, agent_run_id, status, reason, output) '
+        'VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb) RETURNING id',
+        (row['card_id'], row['attempt'], row['trigger'], row.get('agent_run_id'), row['status'], row.get('reason'),
+         _plan_json(output) if output is not None else None)).fetchone()[0]
+
+
+def card_drafts(conn, card_id: int) -> list[dict[str, Any]]:
+    return _all(conn, f'SELECT {_CARD_DRAFT_COLUMNS} FROM review_card_drafts WHERE card_id = %s '
+                      'ORDER BY attempt', (card_id,))
+
+
+def insert_card_verdict(conn, row: dict[str, Any]) -> int:
+    return conn.execute(
+        'INSERT INTO review_card_verdicts (card_id, request_id, request_hash, draft_id, note) '
+        'VALUES (%s, %s, %s, %s, %s) RETURNING id',
+        (row['card_id'], row['request_id'], row['request_hash'], row.get('draft_id'),
+         row.get('note') or '')).fetchone()[0]
+
+
+def card_verdict(conn, card_id: int) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_CARD_VERDICT_COLUMNS} FROM review_card_verdicts WHERE card_id = %s', (card_id,))
+
+
+# my knowledge: items, versions, status records
+
+def insert_knowledge_item(conn, row: dict[str, Any]) -> int:
+    return conn.execute(
+        'INSERT INTO knowledge_items (origin, source_card_id, source_discussion_id) VALUES (%s, %s, %s) '
+        'RETURNING id', (row['origin'], row.get('source_card_id'), row.get('source_discussion_id'))).fetchone()[0]
+
+
+def knowledge_item(conn, knowledge_id: int) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_KNOWLEDGE_ITEM_COLUMNS} FROM knowledge_items WHERE id = %s', (knowledge_id,))
+
+
+def insert_knowledge_version(conn, row: dict[str, Any]) -> int:
+    return conn.execute(
+        'INSERT INTO knowledge_versions (knowledge_id, version, supersedes_id, request_id, request_hash, draft_id, '
+        'title, body, scope, counter_examples, concepts, tickers, schema_version) '
+        'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id',
+        (row['knowledge_id'], row['version'], row.get('supersedes_id'), row['request_id'], row['request_hash'],
+         row.get('draft_id'), row['title'], row['body'], row['scope'], row.get('counter_examples') or '',
+         list(row.get('concepts') or []), list(row.get('tickers') or []), row['schema_version'])).fetchone()[0]
+
+
+def insert_knowledge_status(conn, row: dict[str, Any]) -> int:
+    return conn.execute(
+        'INSERT INTO knowledge_status (knowledge_id, status, reason, request_id, request_hash) '
+        'VALUES (%s, %s, %s, %s, %s) RETURNING id',
+        (row['knowledge_id'], row['status'], row.get('reason') or '', row['request_id'],
+         row['request_hash'])).fetchone()[0]
+
+
+def knowledge_rows(conn, *, cutoff: datetime | None, ticker: str | None = None, concept: str | None = None,
+                   knowledge_id: int | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Version rows and status rows written at or before ``cutoff`` (None = no limit), the input of
+    ``knowledge_items.visible``.
+
+    The filters pick whole items: an item qualifies when its highest version written by the cutoff has the
+    ``ticker``, a ``concepts`` entry of that concept id (``concept:<id>@<n>``, matched on the whole id) and/or
+    the ``knowledge_id``; all of a qualifying item's versions and status records up to the cutoff come back, so
+    the caller's ``visible`` still sees the full history. Nothing written after the cutoff is returned."""
+    clauses, params = [], []
+    if knowledge_id is not None:
+        clauses.append('t.knowledge_id = %s')
+        params.append(knowledge_id)
+    if ticker is not None:
+        clauses.append('%s = ANY(t.tickers)')
+        params.append(ticker.upper())
+    if concept is not None:
+        clauses.append('EXISTS (SELECT 1 FROM unnest(t.concepts) AS c WHERE starts_with(c, %s))')
+        params.append(f'concept:{concept}@')
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
+    versions = _all(
+        conn,
+        f'WITH seen AS (SELECT {_KNOWLEDGE_VERSION_COLUMNS} FROM knowledge_versions '
+        'WHERE (%s::timestamptz IS NULL OR created_at <= %s)), '
+        'top AS (SELECT DISTINCT ON (knowledge_id) * FROM seen ORDER BY knowledge_id, version DESC) '
+        f'SELECT s.* FROM seen s WHERE s.knowledge_id IN (SELECT t.knowledge_id FROM top t{where}) '
+        'ORDER BY s.knowledge_id, s.version', [cutoff, cutoff, *params])
+    if not versions:
+        return [], []
+    statuses = _all(conn, f'SELECT {_KNOWLEDGE_STATUS_COLUMNS} FROM knowledge_status WHERE knowledge_id = ANY(%s) '
+                          'AND (%s::timestamptz IS NULL OR created_at <= %s) ORDER BY created_at, id',
+                    (sorted({v['knowledge_id'] for v in versions}), cutoff, cutoff))
+    return versions, statuses
+
+
+# lesson drafts and their decisions
+
+def insert_knowledge_draft(conn, row: dict[str, Any]) -> int:
+    return conn.execute(
+        'INSERT INTO knowledge_drafts (origin, card_draft_id, lesson_index, discussion_turn_id, '
+        'target_knowledge_id, target_version, title, body, scope, counter_examples, concepts, tickers, refs) '
+        'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) RETURNING id',
+        (row['origin'], row.get('card_draft_id'), row.get('lesson_index'), row.get('discussion_turn_id'),
+         row.get('target_knowledge_id'), row.get('target_version'), row['title'], row['body'], row['scope'],
+         row['counter_examples'], list(row.get('concepts') or []), list(row.get('tickers') or []),
+         _plan_json(row.get('refs') or []))).fetchone()[0]
+
+
+def knowledge_drafts(conn, *, open_only: bool, card_draft_id: int | None = None,
+                     ids: list[int] | None = None) -> list[dict[str, Any]]:
+    """Lesson drafts by id; ``open_only`` keeps those nobody has decided yet."""
+    clauses, params = [], []
+    if open_only:
+        clauses.append('NOT EXISTS (SELECT 1 FROM knowledge_draft_verdicts v WHERE v.draft_id = d.id)')
+    if card_draft_id is not None:
+        clauses.append('d.card_draft_id = %s')
+        params.append(card_draft_id)
+    if ids is not None:
+        clauses.append('d.id = ANY(%s)')
+        params.append(list(ids))
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
+    columns = ', '.join('d.' + c.strip() for c in _KNOWLEDGE_DRAFT_COLUMNS.split(','))
+    return _all(conn, f'SELECT {columns} FROM knowledge_drafts d{where} ORDER BY d.id', params)
+
+
+def insert_draft_verdict(conn, row: dict[str, Any]) -> int:
+    return conn.execute(
+        'INSERT INTO knowledge_draft_verdicts (draft_id, action, knowledge_version_id, request_id) '
+        'VALUES (%s, %s, %s, %s) RETURNING id',
+        (row['draft_id'], row['action'], row.get('knowledge_version_id'), row['request_id'])).fetchone()[0]
+
+
+# citations of knowledge versions by plans and reviews
+
+def insert_knowledge_citations(conn, rows: list[dict[str, Any]]) -> int:
+    if not rows:
+        return 0
+    with conn.cursor() as cur:
+        cur.executemany(
+            'INSERT INTO knowledge_citations (agent_run_id, plan_id, review_id, knowledge_id, version, field, '
+            'call_seq) VALUES (%s, %s, %s, %s, %s, %s, %s)',
+            [(r['agent_run_id'], r.get('plan_id'), r.get('review_id'), r['knowledge_id'], r['version'], r['field'],
+              r['call_seq']) for r in rows])
+    return len(rows)
+
+
+def citations_of(conn, knowledge_id: int) -> list[dict[str, Any]]:
+    return _all(conn, f'SELECT {_CITATION_COLUMNS} FROM knowledge_citations WHERE knowledge_id = %s '
+                      'ORDER BY id', (knowledge_id,))
+
+
+def citations_for_plans(conn, plan_ids) -> list[dict[str, Any]]:
+    if not plan_ids:
+        return []
+    return _all(conn, f'SELECT {_CITATION_COLUMNS} FROM knowledge_citations WHERE plan_id = ANY(%s) ORDER BY id',
+                (list(plan_ids),))
+
+
+# discussions and their turns
+
+def insert_discussion(conn, row: dict[str, Any]) -> dict[str, Any]:
+    return _one(conn,
+                'INSERT INTO discussions (request_id, request_hash, context_kind, ticker, signal_date, plan_id, '
+                f'card_id) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING {_DISCUSSION_COLUMNS}',
+                (row['request_id'], row['request_hash'], row['context_kind'], row['ticker'], row['signal_date'],
+                 row.get('plan_id'), row.get('card_id')))
+
+
+def discussion(conn, discussion_id: int) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_DISCUSSION_COLUMNS} FROM discussions WHERE id = %s', (discussion_id,))
+
+
+def discussions_for(conn, *, plan_id=None, card_id: int | None = None) -> list[dict[str, Any]]:
+    """Discussions opened on a plan or on a review card, oldest first."""
+    clauses, params = [], []
+    if plan_id is not None:
+        clauses.append('plan_id = %s')
+        params.append(plan_id)
+    if card_id is not None:
+        clauses.append('card_id = %s')
+        params.append(card_id)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
+    return _all(conn, f'SELECT {_DISCUSSION_COLUMNS} FROM discussions{where} ORDER BY id', params)
+
+
+def insert_turn(conn, row: dict[str, Any]) -> dict[str, Any]:
+    attachment = row.get('attachment')
+    return _one(conn,
+                'INSERT INTO discussion_turns (discussion_id, seq, role, request_id, request_hash, body, '
+                'attachment, run_id, reply_to, status, reason, refs, detail, agent_run_id, cutoff_at) '
+                'VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s) '
+                f'RETURNING {_TURN_COLUMNS}',
+                (row['discussion_id'], row['seq'], row['role'], row.get('request_id'), row.get('request_hash'),
+                 row['body'], _plan_json(attachment) if attachment is not None else None, row.get('run_id'),
+                 row.get('reply_to'), row.get('status'), row.get('reason'), _plan_json(row.get('refs') or []),
+                 _plan_json(row.get('detail') or {}), row.get('agent_run_id'), row.get('cutoff_at')))
+
+
+def turns(conn, discussion_id: int) -> list[dict[str, Any]]:
+    return _all(conn, f'SELECT {_TURN_COLUMNS} FROM discussion_turns WHERE discussion_id = %s ORDER BY seq',
+                (discussion_id,))

@@ -335,18 +335,23 @@ def test_catalog_failure_not_cached(tmp_path, monkeypatch):
 
 
 def test_known_versions_cover_code_constants():
-    from investment_assistant.workbench import (backcheck, derivation, monthly, plan_shadow, plans, regime, review,
-                                                rules, screen, stages, timeline, tracks)
+    from investment_assistant.workbench import (backcheck, derivation, knowledge_items, knowledge_perf, monthly,
+                                                plan_shadow, plans, regime, retro, review, rules, screen, stages,
+                                                timeline, tracks)
     from investment_assistant.workbench.agent import conditions, graph
     current = {plans.PLAN_VERSION, plans.AGENT_VERSION, timeline.AGENT_V2, graph.REVIEW_VERSION,
                graph.INTERPRET_VERSION, conditions.CONDITIONS_VERSION, timeline.TIMELINE_VERSION,
                plans.CONTEXT_VERSION, screen.SCREEN_VERSION, regime.REGIME_VERSION, derivation.DERIVATION_VERSION,
                plan_shadow.SHADOW_VERSION, tracks.TRACKS_VERSION, review.CALC_VERSION, monthly.MONTHLY_VERSION,
                stages.STAGES_VERSION, backcheck.CALC_VERSION, 'rules-' + rules.RULE_VERSION,
-               knowledge.KNOWLEDGE_VERSION}
+               knowledge.KNOWLEDGE_VERSION, retro.RETRO_VERSION, knowledge_items.MY_KNOWLEDGE_VERSION,
+               knowledge_perf.KNOWLEDGE_PERF_VERSION}
     assert current <= knowledge.KNOWN_VERSIONS
+    # v2.7 versions whose code constants arrive in later tasks (stages.py, graph.py, review.py) are literal here
+    assert {'stages-3', 'retro-1', 'agent-retro-1', 'agent-discuss-1', 'my-knowledge-1', 'knowledge-perf-1',
+            'review-7'} <= knowledge.KNOWN_VERSIONS
     assert {'stages-1', 'review-5', 'monthly-2', 'regime-1', 'context-1', 'backcheck-1'} <= knowledge.KNOWN_VERSIONS
-    assert isinstance(knowledge.KNOWN_VERSIONS, frozenset) and len(knowledge.KNOWN_VERSIONS) == 25
+    assert isinstance(knowledge.KNOWN_VERSIONS, frozenset) and len(knowledge.KNOWN_VERSIONS) == 32
 
 
 def test_knowledge_module_does_not_import_agent_or_service_at_top_level():
