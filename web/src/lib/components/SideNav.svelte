@@ -1,5 +1,5 @@
 <script lang="ts">
-  type NavChild = { id: string; label: string }
+  type NavChild = { id: string; label: string; href?: string }
   type NavItem = { id: string; label: string; icon: string; children?: NavChild[] }
 
   let { current, sub }: { current: string; sub?: string } = $props()
@@ -15,6 +15,13 @@
       ],
     },
     { id: 'data', label: '数据', icon: '🗄️' },
+    {
+      // 概念浏览页是 #knowledge 本身，没有子路径
+      id: 'knowledge', label: '知识', icon: '📚', children: [
+        { id: 'concepts', label: '概念', href: '#knowledge' },
+        { id: 'principles', label: '原理' },
+      ],
+    },
   ]
 
   // Shared-base entries stay reachable, folded under 更多.
@@ -68,6 +75,13 @@
   function isChildActive(item: NavItem): boolean {
     return item.id === current && !!sub
   }
+
+  // 概念页是知识区的默认页：没有子路径（或 concepts / 具体的卡）时都算「概念」。
+  function isChildCurrent(item: NavItem, child: NavChild): boolean {
+    if (item.id !== current) return false
+    if (item.id === 'knowledge') return child.id === 'principles' ? sub === 'principles' : sub !== 'principles'
+    return sub === child.id
+  }
 </script>
 
 <nav
@@ -115,9 +129,9 @@
         {#if open && !collapsed}
           <div class="ml-3 pl-3 border-l border-border flex flex-col gap-0.5 mb-1">
             {#each item.children! as child}
-              {@const childActive = active && sub === child.id}
+              {@const childActive = isChildCurrent(item, child)}
               <a
-                href="#{item.id}/{child.id}"
+                href={child.href ?? `#${item.id}/${child.id}`}
                 class="block px-2 py-1.5 rounded text-xs transition-colors
                   {childActive ? 'bg-accent/10 text-accent font-medium' : 'text-muted hover:bg-surface-2 hover:text-ink'}"
               >

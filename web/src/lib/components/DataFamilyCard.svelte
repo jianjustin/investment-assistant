@@ -2,6 +2,8 @@
   import * as api from '../api'
   import StatusPill from './StatusPill.svelte'
   import CodeText from './CodeText.svelte'
+  import ConceptTerm from './ConceptTerm.svelte'
+  import { familyConcept } from '../knowledge'
   import { fmtBeijing } from '../format'
   import {
     cardNotes, extraEvidence, fetchButtonLabel, fetchTarget, kindLabel, noteText, triggerLabel,
@@ -53,7 +55,7 @@
 
 <article aria-label={card.title} class="border border-border rounded p-3 space-y-2 bg-surface text-sm">
   <div class="flex flex-wrap items-center gap-2">
-    <h2 class="font-semibold"><a class="hover:underline" href="#data/{card.id}">{card.title}</a></h2>
+    <h2 class="font-semibold" aria-label={card.title}><ConceptTerm id={familyConcept(card.id)}><a class="hover:underline" href="#data/{card.id}">{card.title}</a></ConceptTerm></h2>
     <span class="text-xs px-1.5 py-0.5 rounded bg-accent/10 text-accent">{kindLabel(card.kind)}</span>
   </div>
   <p class="text-xs text-muted"><CodeText text={card.purpose} /></p>

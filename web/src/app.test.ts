@@ -34,6 +34,10 @@ vi.mock('./lib/api', () => ({
   patchNotifySettings: vi.fn(async () => ({})),
   testNotifyChannel: vi.fn(async () => ({ ok: true })),
   getEnvStatus: vi.fn(async () => ({})),
+  // v2.6: the run overview on 今日 and the concept index behind ConceptTerm
+  getRunOverview: vi.fn(async () => ({ session: '2026-10-22', ready: true, note: null, runs: [], selected_run_id: null,
+                                       headline: '', stages: [] })),
+  getConcepts: vi.fn(async () => ({ knowledge_version: 'knowledge-1', groups: [], concepts: [] })),
   get: vi.fn(async () => ({})),
 }))
 vi.mock('./lib/workbench', async (importOriginal) => ({
@@ -78,5 +82,16 @@ describe('app routing', () => {
     expect(getAllByRole('article')).toHaveLength(6)
     expect(getByRole('link', { name: /数据/ })).toHaveAttribute('href', '#data')
     expect(queryByRole('heading', { name: '今日' })).toBeNull()
+  })
+
+  it('side nav shows 知识 with 概念 and 原理', async () => {
+    location.hash = '#knowledge'
+    const { getByRole } = render(App)
+    expect(getByRole('button', { name: /知识/ })).toBeInTheDocument()
+    expect(getByRole('link', { name: '概念' })).toHaveAttribute('href', '#knowledge')
+    expect(getByRole('link', { name: '原理' })).toHaveAttribute('href', '#knowledge/principles')
+    // 知识 sits right after 数据 in the primary menu
+    const names = [...document.querySelectorAll('nav > div > a, nav > div > button')].map(n => n.textContent!.trim())
+    expect(names.indexOf(names.find(n => n.includes('知识'))!)).toBe(names.indexOf(names.find(n => n.includes('数据'))!) + 1)
   })
 })

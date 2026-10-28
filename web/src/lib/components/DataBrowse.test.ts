@@ -2,6 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import DataBrowse from './DataBrowse.svelte'
 import * as api from '../api'
+import { resetConceptIndex } from '../knowledge'
+
+const conceptIndexOf = (ids: string[]) => ({
+  knowledge_version: 'knowledge-1', groups: [],
+  concepts: ids.map(id => ({ id, ref: `concept:${id}@1`, title: `T:${id}`, group: id.split('.')[0], version: 1,
+                             applies_to: [], summary: `S:${id}`, related: [] })),
+})
+const termIds = async () => new Set((await screen.findAllByRole('button', { name: /^概念：/, hidden: true }))
+  .map(b => b.getAttribute('aria-label')!.replace(/^概念：T:/, '')))
 import { fmtBeijing } from '../format'
 import type { BrowseResult, FamilyCard, FamilyId } from '../data-families'
 
@@ -28,6 +37,9 @@ const newsRow = {
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  resetConceptIndex()
+  vi.spyOn(api, 'getConcepts').mockResolvedValue(conceptIndexOf(
+    ['family.bars', 'indicator.atr14', 'indicator.hy_oas', 'indicator.t10y2y', 'system.screen']))
   vi.spyOn(api, 'browseData').mockResolvedValue(bars)
   vi.spyOn(api, 'fetchDataFamily').mockResolvedValue({ run_id: 'one', status: 'pending' })
   vi.spyOn(api, 'pollRun').mockResolvedValue({ run_id: 'one', status: 'done', result: { status: 'success' } })
@@ -314,5 +326,46 @@ describe('DataBrowse 单只拉取结果', () => {
     expect(await screen.findByText('仍在后台运行，稍后刷新')).toHaveClass('text-muted')
     expect(screen.getByRole('button', { name: '只拉这一只' })).toBeEnabled()
     expect(api.pollRun).toHaveBeenCalledWith('one', { timeoutMs: 900_000 })
+  })
+
+  describe('ConceptTerm', () => {
+    it('family names, ATR columns and FRED series carry ConceptTerm', async () => {
+      // bars: the split / dividend adjustment note
+      const bar = mount('bars')
+      await screen.findByRole('table', { name: '日线原始值' })
+      expect(await termIds()).toEqual(new Set(['family.bars']))
+      expect(screen.getByText('拆股调整、未分红调整；adj_close 全调整')).toBeTruthy()
+      bar.unmount()
+
+      // atr: the atr and atr_pct column headers
+      vi.mocked(api.browseData).mockResolvedValue({ family: 'atr', key: 'MU', has_data: true, rows: [
+        { price_date: '2026-10-22', close: 120, atr: 4.8, atr_pct: 0.04 }] })
+      const atr = render(DataBrowse, { family: family('atr'), targets: ['MU'] })
+      const table = await screen.findByRole('table', { name: 'ATR 原始值' })
+      const buttons = await within(table).findAllByRole('button', { name: /^概念：/, hidden: true })
+      expect(buttons).toHaveLength(2)
+      expect(buttons.every(b => b.getAttribute('aria-label') === '概念：T:indicator.atr14')).toBe(true)
+      expect(within(table).getAllByRole('columnheader', { name: /^atr/ })).toHaveLength(2)
+      atr.unmount()
+
+      // fred: the selected series
+      vi.mocked(api.browseData).mockResolvedValue({ family: 'fred', key: 'BAMLH0A0HYM2', has_data: true,
+        rows: [{ obs_date: '2026-10-21', value: -0.42, revisions: 4 }] })
+      mount('fred')
+      await screen.findByRole('table', { name: 'FRED 原始值' })
+      expect(await termIds()).toEqual(new Set(['indicator.hy_oas']))
+      await fireEvent.change(screen.getByRole('combobox', { name: 'FRED 序列' }), { target: { value: 'T10Y2Y' } })
+      await waitFor(async () => expect(await termIds()).toEqual(new Set(['indicator.t10y2y'])))
+    })
+
+    it('universe metadata carries the screen concept', async () => {
+      vi.mocked(api.browseData).mockResolvedValue({
+        family: 'universe', key: null, has_data: true,
+        meta: { name: 'nasdaq100', as_of: '2026-09-01', source: 'https://example.com/universe', note: '手动核对成分' },
+        rows: [{ ticker: 'MU', latest_bar: '2026-10-22' }] })
+      mount('universe')
+      await screen.findByText('nasdaq100')
+      expect(await termIds()).toEqual(new Set(['system.screen']))
+    })
   })
 })

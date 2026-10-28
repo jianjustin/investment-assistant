@@ -3,6 +3,8 @@
   import { fmtBeijing, fmtPct } from '../format'
   import { extraEvidence, fetchTarget, noteText, type BrowseResult, type FamilyCard } from '../data-families'
   import CodeText from './CodeText.svelte'
+  import ConceptTerm from './ConceptTerm.svelte'
+  import { ATTACH } from '../knowledge'
 
   let { family, targets, onfetched, pageEvidence = '' }: {
     family: FamilyCard
@@ -100,7 +102,7 @@
   }
 
   type Row = Record<string, unknown>
-  type Column = { key: string; label: string; format?: (value: unknown) => string; link?: string }
+  type Column = { key: string; label: string; format?: (value: unknown) => string; link?: string; concept?: string }
   const text = (value: unknown): string => value == null ? '—' : Array.isArray(value) ? value.join(', ') : String(value)
   const columns: Record<string, Column[]> = {
     bars: [
@@ -110,8 +112,9 @@
       { key: 'revisions', label: '修订次数' }, { key: 'fetched_at', label: '采集时间', format: fmtBeijing },
     ],
     atr: [
-      { key: 'price_date', label: '日期' }, { key: 'close', label: 'close' }, { key: 'atr', label: 'atr' },
-      { key: 'atr_pct', label: 'atr_pct（ATR/收盘）', format: value => fmtPct(value as number | null) },
+      { key: 'price_date', label: '日期' }, { key: 'close', label: 'close' },
+      { key: 'atr', label: 'atr', concept: ATTACH.data.atr },
+      { key: 'atr_pct', label: 'atr_pct（ATR/收盘）', format: value => fmtPct(value as number | null), concept: ATTACH.data.atr_pct },
     ],
     news: [
       { key: 'title', label: '标题 / 链接', link: 'url' }, { key: 'source', label: '来源' },
@@ -140,7 +143,7 @@
   <div class="overflow-x-auto border border-border rounded bg-surface">
     <table aria-label={label} class="w-full text-sm text-left whitespace-nowrap">
       <thead><tr class="text-muted">
-        {#each fields as column}<th class="px-3 py-2">{column.label}</th>{/each}
+        {#each fields as column}<th class="px-3 py-2">{#if column.concept}<ConceptTerm id={column.concept}>{column.label}</ConceptTerm>{:else}{column.label}{/if}</th>{/each}
       </tr></thead>
       <tbody>
         {#each values as row}
@@ -180,6 +183,7 @@
         <option value="BAMLH0A0HYM2">BAMLH0A0HYM2</option><option value="T10Y2Y">T10Y2Y</option>
       </select>
     </label>
+    <ConceptTerm id={series === 'T10Y2Y' ? ATTACH.data.T10Y2Y : ATTACH.data.BAMLH0A0HYM2} />
   {/if}
   {#if showFetchResult}
     {#if fetchError}<p class="text-xs text-red-600">{fetchError}</p>{/if}
@@ -193,11 +197,12 @@
     {#each result.notes ?? [] as note}<p class="text-xs text-warn">{noteText(note)}</p>{/each}
     {#if result.current_error}<p class="text-xs text-warn">{result.current_error}</p>{/if}
     {#if family.id === 'bars'}
-      <p class="text-xs text-muted">{text(rows[0]?.note ?? '拆股调整、未分红调整；adj_close 全调整')}</p>
+      <p class="text-xs text-muted">{text(rows[0]?.note ?? '拆股调整、未分红调整；adj_close 全调整')} <ConceptTerm id={ATTACH.data.barsAdjust} /></p>
     {:else if family.id === 'atr'}
       <p class="text-xs text-muted"><CodeText text={result.note ?? '现算，与 `plan-1` 同一函数；不入库'} /></p>
     {/if}
     {#if family.id === 'universe' && result.meta}
+      <p class="text-xs text-muted"><ConceptTerm id={ATTACH.data.universeMeta} /></p>
       <dl class="text-sm grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 break-words">
         {#each ['name', 'as_of', 'source', 'note'] as field}
           <dt class="text-muted">{field}</dt><dd class="min-w-0">{text(result.meta[field])}</dd>

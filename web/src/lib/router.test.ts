@@ -34,4 +34,11 @@ describe('parseHash', () => {
     const hrefs = screen.getAllByRole('link').map(a => a.getAttribute('href'))
     expect(hrefs.every(href => !href!.startsWith('#plan'))).toBe(true)
   })
+  it('#knowledge/plan.stop@1 parses to knowledge zone with sub', () => {
+    expect(zones).toContain('knowledge')
+    expect(workbenchZones).not.toContain('knowledge')
+    expect(parseHash('#knowledge/plan.stop@1')).toEqual({ zone: 'knowledge', sub: 'plan.stop@1' })
+    expect(parseHash('#knowledge/principles')).toEqual({ zone: 'knowledge', sub: 'principles' })
+    expect(parseHash('#knowledge')).toEqual({ zone: 'knowledge', sub: undefined })
+  })
 })

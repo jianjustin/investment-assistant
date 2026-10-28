@@ -1,9 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import AgentPlanCard from './AgentPlanCard.svelte'
+  import AgentReasoning from './AgentReasoning.svelte'
+  import ConceptTerm from './ConceptTerm.svelte'
   import Drawer from './Drawer.svelte'
   import * as api from '../api'
   import { fmtBeijing } from '../format'
+  import { ATTACH } from '../knowledge'
   import * as tl from '../timeline'
   import * as wb from '../workbench'
 
@@ -21,6 +24,8 @@
   let recheck = $state<{ busy: boolean; text: string }>({ busy: false, text: '' })
   let callDrawer = $state<{ open: boolean; call: wb.AgentToolCall | null }>({ open: false, call: null })
   let callError = $state('')
+  let reasoningOpen = $state<Record<string, boolean>>({})
+  const T = ATTACH.timeline
 
   async function load() {
     loading = true
@@ -128,6 +133,7 @@
     <div class="flex flex-wrap items-center gap-2">
       <h2 class="font-semibold">版本链</h2>
       <span class="text-xs px-1.5 py-0.5 rounded bg-accent/10 text-accent">{tl.CHAIN_STATE_TEXT[chain.state.state] ?? chain.state.state}</span>
+      <ConceptTerm id={T.chainState}>链状态</ConceptTerm>
       <span class="text-xs text-muted">{chain.state.basis}</span>
       <button class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50"
               disabled={!active || recheck.busy}
@@ -140,7 +146,8 @@
         <li class="border-l-2 border-border pl-2 space-y-1">
           <p><button class="font-medium text-accent underline" aria-expanded={!!open[v.version_no]}
                      onclick={() => open[v.version_no] = !open[v.version_no]}>第 {v.version_no} 版</button>
-            <span> · {versionLine(v)}</span></p>
+            <span> · {versionLine(v)}</span>
+            <span class="text-xs"><ConceptTerm id={T.origin}>来源</ConceptTerm> <ConceptTerm id={T.shadow}>影子</ConceptTerm></span></p>
           {#if v.diff?.length}<p class="text-xs">差异：{diffLine(v)}</p>{/if}
           {#if open[v.version_no]}
             <AgentPlanCard agent={versionAgent(v)} onCall={ref => showCall(v, ref)} />
@@ -155,17 +162,31 @@
       <ol aria-label="复查记录" class="space-y-2">
         {#each chain.reviews as r (r.id)}
           <li class="border-l-2 border-border pl-2 space-y-0.5">
-            <p class="font-medium">{reviewHead(r)}</p>
+            <p class="font-medium">{reviewHead(r)} <span class="text-xs font-normal"><ConceptTerm id={T.outcome}>复查结论</ConceptTerm></span></p>
             {#if reviewReason(r)}<p>{reviewReason(r)}</p>{/if}
             {#if r.outcome !== 'skipped'}
-              <p class="text-xs text-muted">信号：{firedText(r)}</p>
-              {#if r.conditions?.length}<p class="text-xs text-muted">条件：{conditionsText(r)}</p>{/if}
+              <p class="text-xs text-muted">信号：{firedText(r)} <ConceptTerm id={T.signals}>信号说明</ConceptTerm></p>
+              {#if r.conditions?.length}<p class="text-xs text-muted">条件：{conditionsText(r)} <ConceptTerm id={T.conditions}>条件说明</ConceptTerm></p>{/if}
             {/if}
             {#if r.user_input_ids?.length}
-              <p class="text-xs text-muted">给模型的新输入：{r.user_input_ids.map(id => `user:${id}`).join('、')}</p>
+              <p class="text-xs text-muted">给模型的新输入：{r.user_input_ids.map(id => `user:${id}`).join('、')} <ConceptTerm id={T.userInput}>用户输入</ConceptTerm></p>
             {/if}
             {#if userRefs(r).length}<p class="text-xs text-muted">引用：{userRefs(r).join('、')}</p>{/if}
             {#if revisionStatus(r)}<p class="text-xs text-amber-700">修订未通过：{tl.revisionReasonText(revisionStatus(r)!)}</p>{/if}
+            {#if r.review_agent_run_id || r.revision_agent_run_id}
+              <p class="text-xs flex flex-wrap gap-x-3">
+                {#if r.review_agent_run_id}
+                  <button type="button" class="text-accent underline" aria-expanded={!!reasoningOpen[`${r.id}|review`]}
+                          onclick={() => reasoningOpen[`${r.id}|review`] = !reasoningOpen[`${r.id}|review`]}>看复查推理</button>
+                {/if}
+                {#if r.revision_agent_run_id}
+                  <button type="button" class="text-accent underline" aria-expanded={!!reasoningOpen[`${r.id}|revision`]}
+                          onclick={() => reasoningOpen[`${r.id}|revision`] = !reasoningOpen[`${r.id}|revision`]}>看修订推理</button>
+                {/if}
+              </p>
+              {#if r.review_agent_run_id && reasoningOpen[`${r.id}|review`]}<AgentReasoning runId={r.review_agent_run_id} />{/if}
+              {#if r.revision_agent_run_id && reasoningOpen[`${r.id}|revision`]}<AgentReasoning runId={r.revision_agent_run_id} />{/if}
+            {/if}
           </li>
         {/each}
       </ol>

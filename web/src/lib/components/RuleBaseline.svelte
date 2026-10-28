@@ -1,5 +1,7 @@
 <script lang="ts">
+  import ConceptTerm from './ConceptTerm.svelte'
   import PlanDerivation from './PlanDerivation.svelte'
+  import { ATTACH } from '../knowledge'
   import * as wb from '../workbench'
 
   // §10.1 规则基线：折叠时一行，展开后是 v2.4 的规则计划块（含「展开推导」）。
@@ -8,6 +10,7 @@
     { plan: wb.Plan | null; expanded: boolean; ontoggle: () => void; collapsible?: boolean } = $props()
 
   let derivationOpen = $state(false)
+  const R = ATTACH.ruleBaseline
 
   const regimeText = (label?: string | null) => label ? (wb.REGIME_LABELS[label] ?? label) : '未知'
   const sectorText = (ctx: wb.PlanContext | undefined) => ctx?.sector
@@ -27,11 +30,13 @@
         <span>{foldedLine}</span>
         <button class="text-xs text-accent underline" aria-expanded="false" onclick={ontoggle}>展开</button>
       </p>
+      <p class="text-xs text-muted flex flex-wrap gap-x-2">说明：<ConceptTerm id={R.entry}>入场区间</ConceptTerm> <ConceptTerm id={R.stop}>止损</ConceptTerm> <ConceptTerm id={R.target1}>T1</ConceptTerm> <ConceptTerm id={R.sizing}>建议股数</ConceptTerm> <ConceptTerm id={R.status}>有效与作废</ConceptTerm></p>
     {:else}
       <p class="font-medium">计划（{p.kind === 'rule' ? '规则' : '自定'} · {p.plan_version}{p.status === 'invalid' ? ' · 已作废' : ''}）
         {#if collapsible}<button class="text-xs text-accent underline font-normal" aria-expanded="true" onclick={ontoggle}>收起</button>{/if}
       </p>
       <p>入场区间 {p.entry_low}–{p.entry_high} · 止损 {p.stop} · T1 {p.target1} · 有效期至 {p.valid_until}</p>
+      <p class="text-xs text-muted flex flex-wrap gap-x-2">说明：<ConceptTerm id={R.entry}>入场区间</ConceptTerm> <ConceptTerm id={R.stop}>止损</ConceptTerm> <ConceptTerm id={R.target1}>T1</ConceptTerm> <ConceptTerm id={R.sizing}>建议股数</ConceptTerm> <ConceptTerm id={R.status}>有效与作废</ConceptTerm></p>
       <p class="text-xs text-muted">区制 {regimeText(p.inputs?.context?.regime?.label)} · 下次财报 {p.inputs?.context?.next_earnings ?? '未知'} · 行业 {sectorText(p.inputs?.context)}</p>
       {#if p.sizing?.status === 'no_equity'}
         <p class="text-amber-700">缺资金快照，无法计算建议股数</p>

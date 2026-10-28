@@ -1,6 +1,7 @@
 import type * as df from './data-families'
 import type { Derivation, UnitDerivation } from './derivation'
 import type { Chain, PlanReview, TickerChain, UserInput, UserInputBody } from './timeline'
+import type { ConceptCard, ConceptsView, PrinciplesView, ReasoningView, RunOverviewView } from './knowledge'
 import { request as workbenchRequest } from './workbench'
 export async function get<T>(path: string, options: { errorDetails?: boolean } = {}): Promise<T> {
   const r = await fetch(path, { headers: { Accept: 'application/json' }, cache: 'no-store' })
@@ -214,3 +215,32 @@ export const getUserInputs = (ticker: string, signalDate?: string) =>
 export const postUserInput = (body: UserInputBody) =>
   workbenchRequest<{ status: 'created' | 'replayed'; record: UserInput }>(
     '/api/workbench/user-inputs', { method: 'POST', body: JSON.stringify(body) })
+
+// knowledge layer (v2.6): the knowledge endpoints never touch the database; a 503 carries the card problems
+export class KnowledgeError extends Error {
+  constructor(message: string, public status: number, public problems: string[] = []) { super(message) }
+}
+async function knowledgeRequest<T>(path: string): Promise<T> {
+  const r = await fetch(path, { headers: { Accept: 'application/json' }, cache: 'no-store' })
+  const data = await r.json().catch(() => null)
+  if (!r.ok) {
+    throw new KnowledgeError(
+      typeof data?.error === 'string' && data.error ? data.error : `HTTP ${r.status}`, r.status,
+      Array.isArray(data?.problems) ? data.problems.map(String) : [])
+  }
+  return data as T
+}
+export const getConcepts = () => knowledgeRequest<ConceptsView>('/api/knowledge/concepts')
+export const getConcept = (ref: string) => knowledgeRequest<ConceptCard>(`/api/knowledge/concepts/${seg(ref)}`)
+export const getPrinciples = () => knowledgeRequest<PrinciplesView>('/api/knowledge/principles')
+
+// run overview and the Agent reasoning view (v2.6 §7, §8): read-only workbench endpoints
+export const getRunOverview = (session?: string, runId?: string) => {
+  const q = new URLSearchParams()
+  if (session) q.set('session', session)
+  if (runId) q.set('run_id', runId)
+  const query = q.toString()
+  return workbenchRequest<RunOverviewView>(`/api/workbench/run-overview${query ? `?${query}` : ''}`)
+}
+export const getReasoning = (runId: string) =>
+  workbenchRequest<ReasoningView>(`/api/workbench/agent-runs/${seg(runId)}/reasoning`)

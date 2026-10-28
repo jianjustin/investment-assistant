@@ -1,5 +1,8 @@
 <script lang="ts">
+  import AgentReasoning from './AgentReasoning.svelte'
+  import ConceptTerm from './ConceptTerm.svelte'
   import PlanDerivation from './PlanDerivation.svelte'
+  import { ATTACH } from '../knowledge'
   import { fmtBeijing } from '../format'
   import * as tl from '../timeline'
   import * as wb from '../workbench'
@@ -8,6 +11,8 @@
   let { agent, onCall, onRerun }: { agent: tl.AgentView; onCall: (ref: string) => void; onRerun?: () => void } = $props()
 
   let derivationOpen = $state(false)
+  let reasoningOpen = $state(false)
+  const A = ATTACH.agentCard
 
   const LEVEL_TEXT = [['entry_low', '入场下限'], ['entry_high', '入场上限'], ['stop', '止损'], ['target1', 'T1']] as const
 
@@ -66,19 +71,19 @@
 
 <div role="region" aria-label="Agent 计划" class="text-sm border-l-2 border-sky-400/50 pl-2 space-y-1">
   {#if failed}
-    <p class="font-medium">Agent 未给出计划：{reasonText(failed.reason)}</p>
-    {#if legacy}<p class="text-xs text-amber-700">agent-1（旧版，不参与复查）</p>{/if}
+    <p class="font-medium">Agent 未给出计划：{reasonText(failed.reason)} <ConceptTerm id={A.rejectReasons}>作废原因</ConceptTerm></p>
+    {#if legacy}<p class="text-xs text-amber-700">agent-1（旧版，不参与复查） <ConceptTerm id={A.legacy}>旧版说明</ConceptTerm></p>{/if}
     {#if onRerun}
       <button class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2" onclick={onRerun}>重新运行 Agent</button>
     {/if}
   {:else if run && legacy}
     <!-- agent-1：原样展示（v2.4 的块），只加旧版标注。 -->
     <p class="font-medium">Agent 建议（{run.model} · {run.agent_version}）{run.status === 'ok' ? '买入' : '不建议买入'}</p>
-    <p class="text-xs text-amber-700">agent-1（旧版，不参与复查）</p>
+    <p class="text-xs text-amber-700">agent-1（旧版，不参与复查） <ConceptTerm id={A.legacy}>旧版说明</ConceptTerm></p>
     {#if output?.levels}
       {@const levels = output.levels}
       <p>入场区间 {levels.entry_low.value}–{levels.entry_high.value} · 止损 {levels.stop.value} · T1 {levels.target1.value}</p>
-      <p class="text-xs text-muted">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}（{#each levels[key].refs as ref, i}{#if i}、{/if}<button class="underline" onclick={() => onCall(ref)}>{ref}</button>{/each}）{/each}</p>
+      <p class="text-xs text-muted">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}（{#each levels[key].refs as ref, i}{#if i}、{/if}<button class="underline" onclick={() => onCall(ref)}>{ref}</button>{/each}）{/each} <ConceptTerm id={A.citation}>引用编号</ConceptTerm></p>
     {/if}
     {#if plan?.sizing?.shares != null}<p>建议 {plan.sizing.shares} 股</p>{/if}
     {#if output?.summary}<p>{output.summary}</p>{/if}
@@ -97,18 +102,18 @@
   {:else if run && run.status === 'pass'}
     <p class="font-medium">Agent 不建议买入：{output?.summary ?? ''}</p>
   {:else if run}
-    <p class="font-medium">{title}</p>
+    <p class="font-medium">{title} <span class="text-xs font-normal"><ConceptTerm id={A.version}>版本链</ConceptTerm> <ConceptTerm id={A.cutoff}>截止时间</ConceptTerm></span></p>
     <p class="text-xs text-muted">模型 {run.model} · {run.agent_version}{chain?.mode ? ` · ${tl.MODE_TEXT[chain.mode]}` : ''}</p>
     {#if output?.levels}
       {@const levels = output.levels}
-      <p>{levelsLine}</p>
-      <p class="text-xs text-muted">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}{@render refList(levels[key].refs)}{/each}</p>
+      <p>{levelsLine} <ConceptTerm id={A.levels}>动作与价位</ConceptTerm></p>
+      <p class="text-xs text-muted">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}{@render refList(levels[key].refs)}{/each} <ConceptTerm id={A.citation}>引用编号</ConceptTerm></p>
     {/if}
     {#if plan?.sizing?.shares != null}<p>建议 {plan.sizing.shares} 股</p>{/if}
     {#if output?.summary}<p>{output.summary}</p>{/if}
 
     {#if output?.thesis?.length}
-      <p class="text-xs text-muted">论点</p>
+      <p class="text-xs text-muted"><ConceptTerm id={A.thesis}>论点</ConceptTerm> · <ConceptTerm id={A.counter}>反方</ConceptTerm></p>
       <ol aria-label="论点" class="ml-1 space-y-1">
         {#each output.thesis as t, i}
           <li>
@@ -129,7 +134,7 @@
     {/if}
 
     {#if output?.invalidation?.length}
-      <p class="text-xs text-muted">失效条件</p>
+      <p class="text-xs text-muted"><ConceptTerm id={A.invalidation}>失效条件</ConceptTerm></p>
       <ul aria-label="失效条件" class="list-disc ml-5 text-xs">
         {#each output.invalidation as cond, i}
           {@const result = resultOf('invalidation', i)}
@@ -137,7 +142,7 @@
         {/each}
       </ul>
     {/if}
-    <p class="text-xs text-muted">下次复查条件</p>
+    <p class="text-xs text-muted"><ConceptTerm id={A.reviewWhen}>下次复查条件</ConceptTerm></p>
     <ul aria-label="下次复查条件" class="list-disc ml-5 text-xs">
       {#each output?.review_when ?? [] as cond}
         <li>{tl.conditionText(cond.kind, cond.params)}</li>
@@ -149,7 +154,7 @@
     {#if versionNo != null && versionNo >= 1}
       <div role="region" aria-label={`相对第 ${versionNo - 1} 版`} class="text-xs grid md:grid-cols-2 gap-2">
         <div>
-          <p class="text-muted">相对第 {versionNo - 1} 版 · 宿主差异</p>
+          <p class="text-muted"><ConceptTerm id={A.changes}>相对第 {versionNo - 1} 版 · 宿主差异</ConceptTerm></p>
           {#if chain?.diff}
             <ul class="list-disc ml-5">
               {#each chain.diff as d}
@@ -175,17 +180,23 @@
       </div>
     {/if}
 
-    {#if reviewLine}<p class="text-xs">{reviewLine}</p>{/if}
-    {#if revisionFailure}<p class="text-xs text-amber-700">{revisionFailure}</p>{/if}
+    {#if reviewLine}<p class="text-xs">{reviewLine} <ConceptTerm id={A.review}>复查结论</ConceptTerm></p>{/if}
+    {#if revisionFailure}<p class="text-xs text-amber-700">{revisionFailure} <ConceptTerm id={A.rejectReasons}>作废原因</ConceptTerm></p>{/if}
     {#if plan?.status === 'invalid'}
       {#if chain?.mode === 'holding'}
         <!-- §5.2：持仓期新版按仓位规则作废（如 no_room）只说明不能再加仓，链照常有效、照常复查。 -->
-        <p class="text-amber-700">本版按仓位规则不能加仓（{plan.invalid_reasons.join('、')}）</p>
+        <p class="text-amber-700">本版按仓位规则不能加仓（{plan.invalid_reasons.join('、')}） <ConceptTerm id={A.noAdd}>仓位规则</ConceptTerm></p>
       {:else}
         <p class="text-red-600">Agent 计划已作废：{plan.invalid_reasons.join('、')}</p>
       {/if}
     {/if}
     {@render derivation()}
   {/if}
-  <p class="text-xs text-muted">证据：未验证</p>
+  <p class="text-xs text-muted">证据：未验证 <ConceptTerm id={A.evidence}>证据状态</ConceptTerm></p>
+  <!-- v2.6 §8.6：看生成这一版的那次运行；展开时才请求 -->
+  <div class="space-y-1">
+    <button type="button" class="text-xs text-accent underline" aria-expanded={reasoningOpen}
+            onclick={() => reasoningOpen = !reasoningOpen}>看推理过程</button>
+    {#if reasoningOpen}<AgentReasoning runId={agent.id} />{/if}
+  </div>
 </div>

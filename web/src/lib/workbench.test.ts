@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   WorkbenchError, decisionPayload, describeError, finalAction, getAccount, getDiscipline, getMonthly,
-  getPlanShadow, getToday, levelsError, pct, publishedText, pushToday, ruleLabel, timeline,
+  getPlanShadow, getToday, levelsError, pct, publishedText, pushToday, RULE_LABELS, ruleLabel, timeline,
 } from './workbench'
 import type { DisciplineTrade, Plan, PlanShadow } from './workbench'
 
@@ -211,5 +211,16 @@ describe('planKindText', () => {
     expect(planKindText('agent_latest', 'review-6')).toBe('Agent（最新版）')
     expect(planKindText('rule', 'monthly-3')).toBe('规则')
     expect(planKindText('mystery', 'review-6')).toBe('mystery')
+  })
+})
+
+describe('rule labels', () => {
+  it('RULE_LABELS covers plan_stop and plan_target', () => {
+    expect(RULE_LABELS.plan_stop).toBe('计划止损')
+    expect(RULE_LABELS.plan_target).toBe('计划目标')
+    expect(ruleLabel('plan_stop')).toBe('计划止损')
+    // the original eight keep their wording
+    expect(RULE_LABELS.trend_reclaim).toBe('趋势回踩修复')
+    expect(Object.keys(RULE_LABELS)).toHaveLength(10)
   })
 })

@@ -80,4 +80,11 @@ describe('Plan', () => {
     render(Plan, { sub: 'not-a-uuid' })
     expect(await screen.findByRole('alert')).toHaveTextContent('计划 ID 不是合法 UUID')
   })
+
+  it('header links to instrument page', async () => {
+    vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation())
+    render(Plan, { sub: 'p1' })
+    await screen.findByRole('heading', { name: 'NVDA · 2026-10-22' })
+    expect(screen.getByRole('link', { name: '标的页' }).getAttribute('href')).toBe('#instrument/NVDA')
+  })
 })

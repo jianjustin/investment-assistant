@@ -8,6 +8,7 @@
   import Instrument from './routes/Instrument.svelte'
   import Review from './routes/Review.svelte'
   import Data from './routes/Data.svelte'
+  import Knowledge from './routes/Knowledge.svelte'
   import Plan from './routes/Plan.svelte'
   import { guardHashNavigation } from './lib/navigation-guard'
   import { parseHash, type Zone } from './lib/router'
@@ -38,6 +39,8 @@
     <Review {sub} />
   {:else if zone === 'data'}
     <Data {sub} />
+  {:else if zone === 'knowledge'}
+    <Knowledge {sub} />
   {:else if zone === 'tools'}
     <Tools {sub} />
   {:else if zone === 'settings'}

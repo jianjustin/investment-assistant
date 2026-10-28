@@ -1,6 +1,16 @@
-import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/svelte'
 import AgentPlanCard from './AgentPlanCard.svelte'
+import * as api from '../api'
+import { ATTACH, resetConceptIndex } from '../knowledge'
+
+const conceptIndexOf = (ids: string[]) => ({
+  knowledge_version: 'knowledge-1', groups: [],
+  concepts: ids.map(id => ({ id, ref: `concept:${id}@1`, title: `T:${id}`, group: id.split('.')[0], version: 1,
+                             applies_to: [], summary: `S:${id}`, related: [] })),
+})
+const termIds = async () => new Set((await screen.findAllByRole('button', { name: /^概念：/, hidden: true }))
+  .map(b => b.getAttribute('aria-label')!.replace(/^概念：T:/, '')))
 
 const agentPlan = (overrides: Record<string, unknown> = {}) => ({
   id: 'ap2', ticker: 'NVDA', signal_date: '2026-10-22', kind: 'agent', plan_version: 'agent-2', status: 'ok',
@@ -178,5 +188,68 @@ describe('AgentPlanCard', () => {
 
     render(AgentPlanCard, { agent: agent2({ plan: blocked }) as any, onCall: () => {} })
     expect(screen.getByText('Agent 计划已作废：no_room')).toBeInTheDocument()
+  })
+
+  describe('knowledge', () => {
+    beforeEach(() => { resetConceptIndex() })
+    afterEach(() => { cleanup(); vi.restoreAllMocks() })
+
+    it('ConceptTerm on each field per ATTACH.agentCard', async () => {
+      const wanted = new Set(Object.values(ATTACH.agentCard))
+      vi.spyOn(api, 'getConcepts').mockResolvedValue(conceptIndexOf([...wanted]))
+      const found = new Set<string>()
+      const a = agent2()
+      const blocked = agentPlan({ status: 'invalid', invalid_reasons: ['no_room'] })
+      const cases = [
+        agent2(),                                                                     // version, cutoff, levels, citation, thesis, counter, conditions, changes, review
+        { id: 'r1', status: 'ok', model: 'glm-5.3', agent_version: 'agent-1', legacy: true, output: agent2().output,
+          counter: { status: 'ok', risks: [], dropped: 0 }, plan: agentPlan({ plan_version: 'agent-1' }),
+          input_tokens: 1, output_tokens: 1, created_at: '2026-10-22T23:00:00Z', chain: null },   // legacy
+        agent2({ chain: { ...a.chain, latest_review: { ...a.chain.latest_review, outcome: 'revise', decided_by: 'agent',
+                 reason: '财报提前', revision_status: 'rejected: no_change' } } }),   // reject reasons
+        agent2({ plan: blocked, chain: { ...a.chain, state: 'holding', mode: 'holding' } }),   // no add
+      ]
+      for (const agent of cases) {
+        render(AgentPlanCard, { agent: agent as any, onCall: () => {} })
+        for (const id of await termIds()) found.add(id)
+        cleanup()
+      }
+      expect(found).toEqual(wanted)
+    })
+
+    it('chips keep the original lines intact', async () => {
+      vi.spyOn(api, 'getConcepts').mockResolvedValue(conceptIndexOf(Object.values(ATTACH.agentCard)))
+      render(AgentPlanCard, { agent: agent2() as any, onCall: () => {} })
+      await termIds()
+      expect(screen.getByText('买入 · 入场区间 98.50–101.50 · 止损 96.00 · T1 108.00')).toBeInTheDocument()
+      expect(screen.getByText('证据：未验证')).toBeInTheDocument()
+    })
+
+    it('看推理过程 opens AgentReasoning with the generating run id', async () => {
+      vi.spyOn(api, 'getConcepts').mockRejectedValue(new Error('offline'))
+      const getReasoning = vi.spyOn(api, 'getReasoning').mockResolvedValue({
+        run: { id: 'r2', ticker: 'NVDA', signal_date: '2026-10-22', mode: 'propose', agent_version: 'agent-2', status: 'ok',
+               reason: null, reason_text: null, model: 'glm-5.3', cutoff_at: '', started_at: '', finished_at: '',
+               input_tokens: 0, output_tokens: 0 },
+        legacy: false, version: null, review: null, steps: [
+          { kind: 'read', title: '提议者读了什么', concept: null, calls: [] }], notes: [] } as any)
+      render(AgentPlanCard, { agent: agent2() as any, onCall: () => {} })
+      expect(getReasoning).not.toHaveBeenCalled()                       // 展开时才请求
+      const open = screen.getByRole('button', { name: '看推理过程' })
+      expect(open).toHaveAttribute('aria-expanded', 'false')
+      await fireEvent.click(open)
+      expect(await screen.findByRole('region', { name: '提议者读了什么' })).toBeInTheDocument()
+      expect(getReasoning).toHaveBeenCalledWith('r2')
+      expect(open).toHaveAttribute('aria-expanded', 'true')
+      await fireEvent.click(open)
+      expect(screen.queryByRole('region', { name: '提议者读了什么' })).toBeNull()
+    })
+
+    it('failed runs can still be read', async () => {
+      vi.spyOn(api, 'getConcepts').mockRejectedValue(new Error('offline'))
+      render(AgentPlanCard, { agent: { id: 'r3', status: 'rejected', reason: 'thesis_count', created_at: 'c' } as any,
+                              onCall: () => {} })
+      expect(screen.getByRole('button', { name: '看推理过程' })).toBeInTheDocument()
+    })
   })
 })

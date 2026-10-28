@@ -1,6 +1,6 @@
-export type Zone = 'today' | 'instrument' | 'review' | 'data' | 'tools' | 'settings' | 'plan'
+export type Zone = 'today' | 'instrument' | 'review' | 'data' | 'knowledge' | 'tools' | 'settings' | 'plan'
 export const workbenchZones: Zone[] = ['today', 'instrument', 'review']
-export const zones: Zone[] = [...workbenchZones, 'data', 'tools', 'settings', 'plan']
+export const zones: Zone[] = [...workbenchZones, 'data', 'knowledge', 'tools', 'settings', 'plan']
 
 export function parseHash(hash: string): { zone: Zone; sub: string | undefined } {
   const [rawZone, rawSub] = hash.replace(/^#/, '').split('?')[0].split('/')

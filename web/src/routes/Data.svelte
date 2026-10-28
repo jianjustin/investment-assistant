@@ -5,6 +5,8 @@
   import DataFamilyCard from '../lib/components/DataFamilyCard.svelte'
   import DataBrowse from '../lib/components/DataBrowse.svelte'
   import StatusPill from '../lib/components/StatusPill.svelte'
+  import ConceptTerm from '../lib/components/ConceptTerm.svelte'
+  import { ATTACH } from '../lib/knowledge'
 
   let { sub }: { sub?: string } = $props()
 
@@ -62,7 +64,7 @@
       </div>
       {#if familyId}<a class="text-xs text-accent underline" href="#data">返回总览</a>{/if}
     </header>
-    <p aria-label="证据说明" class="text-xs text-muted border border-border rounded p-2 bg-surface">{overview.evidence}</p>
+    <p aria-label="证据说明" class="text-xs text-muted border border-border rounded p-2 bg-surface">{overview.evidence} <ConceptTerm id={ATTACH.data.evidence} /></p>
     {#if !overview.fetch_runs_ready || (familyId && detail && !detail.card.fetch_runs_ready)}
       <p class="text-xs text-warn border border-border rounded p-2 bg-surface"><span>迁移 024 未执行</span>：最近拉取不可见，拉取接口不可用。</p>
     {/if}

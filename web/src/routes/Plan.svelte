@@ -10,16 +10,19 @@
   // agent-2 计划另显示版本链、复查记录与「我的补充」（v2.5 spec §11）；其余计划页面不变。
   let { sub }: { sub: string } = $props()
   let title = $state('')
+  let ticker = $state('')
   let unit = $state<{ ticker: string; signal_date: string } | null>(null)
 
   $effect(() => {
     const id = sub
     let alive = true
     unit = null
+    ticker = ''
     void api.getPlanDerivation(id)
       .then((d: Derivation) => {
         if (!alive) return
         title = `${d.plan.ticker ?? '—'} · ${d.plan.signal_date ?? '—'}`
+        ticker = d.plan.ticker ?? ''
         unit = d.plan.plan_version === 'agent-2' && d.plan.ticker && d.plan.signal_date
           ? { ticker: d.plan.ticker, signal_date: d.plan.signal_date } : null
       })
@@ -37,6 +40,7 @@
   <header class="flex items-center gap-3">
     <a href="#today" onclick={goBack} class="text-sm text-accent underline">返回</a>
     <h1 class="text-lg font-semibold">{title || '加载中…'}</h1>
+    {#if ticker}<a href={`#instrument/${encodeURIComponent(ticker)}`} class="text-sm text-accent underline">标的页</a>{/if}
   </header>
   {#key sub}
     {#if unit}

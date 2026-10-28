@@ -1,7 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import PlanTimeline from './PlanTimeline.svelte'
 import * as api from '../api'
+import { ATTACH, resetConceptIndex } from '../knowledge'
+
+const conceptIndexOf = (ids: string[]) => ({
+  knowledge_version: 'knowledge-1', groups: [],
+  concepts: ids.map(id => ({ id, ref: `concept:${id}@1`, title: `T:${id}`, group: id.split('.')[0], version: 1,
+                             applies_to: [], summary: `S:${id}`, related: [] })),
+})
+const termIds = async () => new Set((await screen.findAllByRole('button', { name: /^概念：/, hidden: true }))
+  .map(b => b.getAttribute('aria-label')!.replace(/^概念：T:/, '')))
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
@@ -74,7 +83,8 @@ beforeEach(() => {
     calls.push({ url: String(url), init }); return respond(String(url), init)
   }))
 })
-afterEach(() => vi.unstubAllGlobals())
+beforeEach(() => resetConceptIndex())
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('PlanTimeline', () => {
   it('lists versions with origin, cutoff and diff', async () => {
@@ -180,5 +190,46 @@ describe('PlanTimeline', () => {
     render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
     expect(await screen.findByText(/迁移 026 未执行/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '重新复查' })).toBeNull()
+  })
+
+  it('review rows link review and revision reasoning', async () => {
+    vi.spyOn(api, 'getConcepts').mockRejectedValue(new Error('offline'))
+    const getReasoning = vi.spyOn(api, 'getReasoning').mockImplementation(async (id: string) => ({
+      run: { id, ticker: 'NVDA', signal_date: '2026-10-22', mode: id === 'rr-1' ? 'review' : 'revise',
+             agent_version: 'agent-2', status: 'ok', reason: null, reason_text: null, model: 'm', cutoff_at: '',
+             started_at: '', finished_at: '', input_tokens: 0, output_tokens: 0 },
+      legacy: false, version: null, review: null, notes: [],
+      steps: [{ kind: 'read', title: id === 'rr-1' ? '复查读了什么' : '修订读了什么', concept: null, calls: [] }],
+    }) as any)
+    render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
+    const list = await screen.findByRole('list', { name: '复查记录' })
+    const rows = list.querySelectorAll(':scope > li')
+    const [reviewButton, revisionButton] = [
+      within(rows[0] as HTMLElement).getByRole('button', { name: '看复查推理' }),
+      within(rows[0] as HTMLElement).getByRole('button', { name: '看修订推理' })]
+    expect(getReasoning).not.toHaveBeenCalled()
+    await fireEvent.click(reviewButton)
+    expect(await screen.findByRole('region', { name: '复查读了什么' })).toBeInTheDocument()
+    expect(getReasoning).toHaveBeenCalledWith('rr-1')
+    await fireEvent.click(revisionButton)
+    expect(await screen.findByRole('region', { name: '修订读了什么' })).toBeInTheDocument()
+    expect(getReasoning).toHaveBeenCalledWith('rv-1')
+  })
+
+  it('timeline fields carry ConceptTerm per ATTACH.timeline', async () => {
+    const wanted = new Set(Object.values(ATTACH.timeline))
+    vi.spyOn(api, 'getConcepts').mockResolvedValue(conceptIndexOf([...wanted]))
+    render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
+    await screen.findByRole('list', { name: '复查记录' })
+    expect(await termIds()).toEqual(wanted)
+  })
+
+  it('review rows without agent runs have no reasoning buttons', async () => {
+    vi.spyOn(api, 'getConcepts').mockRejectedValue(new Error('offline'))
+    respond = async () => json(chain({ reviews: [review({ review_agent_run_id: null, revision_agent_run_id: null })] }))
+    render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
+    await screen.findByRole('list', { name: '复查记录' })
+    expect(screen.queryByRole('button', { name: '看复查推理' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '看修订推理' })).toBeNull()
   })
 })

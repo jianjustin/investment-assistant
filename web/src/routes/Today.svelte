@@ -5,6 +5,9 @@
   import PlanDerivation from '../lib/components/PlanDerivation.svelte'
   import AgentPlanCard from '../lib/components/AgentPlanCard.svelte'
   import RuleBaseline from '../lib/components/RuleBaseline.svelte'
+  import RunOverview from '../lib/components/RunOverview.svelte'
+  import ConceptTerm from '../lib/components/ConceptTerm.svelte'
+  import { ATTACH } from '../lib/knowledge'
   import * as api from '../lib/api'
   import { fmtBeijing } from '../lib/format'
   import * as tl from '../lib/timeline'
@@ -275,6 +278,9 @@
   </header>
   {#if notice}<p class="text-xs text-muted">{notice}</p>{/if}
 
+  <!-- v2.6 §7.5：运行一览在最顶部（筛选、市场环境之前）；自己取数，不依赖下面的批处理视图 -->
+  <RunOverview />
+
   {#if view}
     <section class="border border-border rounded p-3 bg-surface text-sm" aria-label="筛选">
       {#if view.screen}
@@ -425,8 +431,8 @@
       {#if draft}
         <form class="space-y-2" onsubmit={e => { e.preventDefault(); submit(u) }}>
           {#if draft.choice === 'accept' && needsBasis(u)}
-            <fieldset class="flex gap-3 text-sm">
-              <legend class="text-xs text-muted">执行依据</legend>
+            <fieldset class="flex gap-3 text-sm" aria-label="执行依据">
+              <legend class="text-xs text-muted"><ConceptTerm id={ATTACH.today.basis}>执行依据</ConceptTerm></legend>
               <label class="flex items-center gap-1">
                 <input type="radio" name={`basis-${keyOf(u)}`} value="agent" bind:group={draft.basis}
                        disabled={!agentUsable(u)} />

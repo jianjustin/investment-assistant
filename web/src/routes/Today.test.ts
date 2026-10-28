@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import Today from './Today.svelte'
 import { confirmResearchNavigation } from '../lib/navigation-guard'
 import * as api from '../lib/api'
@@ -947,4 +947,30 @@ describe('agent-first layout', () => {
     expect(screen.queryByText(/此持仓无 Agent 计划/)).toBeNull()
     expect(screen.getByText(FULL_RULE)).toBeInTheDocument()
   })
+})
+
+
+it('run overview is the first section', async () => {
+  vi.spyOn(api, 'getConcepts').mockRejectedValue(new Error('offline'))
+  const getRunOverview = vi.spyOn(api, 'getRunOverview').mockResolvedValue({
+    session: '2026-10-22', ready: true, note: null, runs: [], selected_run_id: 'r1',
+    headline: '定时运行 · 06:30 开始 · 用时 3 分 12 秒 · 8 个阶段：成功 8',
+    stages: [{ id: 'collect', title: '数据采集', purpose: '', status: 'success', status_text: '成功', sentence: '采集 10/10 个目标',
+               input_count: 10, output_count: 10, skips: [], failures: [], degradations: [], reason: null, reason_text: null,
+               duration_ms: 1000, concepts: [] }],
+  } as any)
+  render(Today)
+  await screen.findByRole('heading', { name: /NVDA/ })
+  const overview = await screen.findByRole('region', { name: '运行一览' })
+  expect(await within(overview).findByText('采集 10/10 个目标')).toBeInTheDocument()
+  expect(getRunOverview).toHaveBeenCalledWith(undefined, undefined)
+  // before 筛选, 市场环境 and the unit cards
+  for (const name of ['筛选', '市场环境']) {
+    const other = screen.getByRole('region', { name })
+    expect(overview.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  }
+  const card = screen.getByRole('heading', { name: /NVDA/ })
+  expect(overview.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  // the overview does not depend on the batch view: today's request count is unchanged
+  expect(calls.filter(c => c.url === '/api/workbench/today')).toHaveLength(1)
 })

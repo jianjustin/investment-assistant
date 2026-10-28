@@ -1,7 +1,16 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/svelte'
 import PlanDerivation from './PlanDerivation.svelte'
 import * as api from '../api'
+import { resetConceptIndex } from '../knowledge'
+
+const conceptIndexOf = (ids: string[]) => ({
+  knowledge_version: 'knowledge-1', groups: [],
+  concepts: ids.map(id => ({ id, ref: `concept:${id}@1`, title: `T:${id}`, group: id.split('.')[0], version: 1,
+                             applies_to: [], summary: `S:${id}`, related: [] })),
+})
+const termIds = async () => new Set((await screen.findAllByRole('button', { name: /^概念：/, hidden: true }))
+  .map(b => b.getAttribute('aria-label')!.replace(/^概念：T:/, '')))
 import type { Derivation, Step, TriggerItem } from '../derivation'
 
 // 逐字文案来自 v2.4 spec §7 / 后端 derivation.py 常量（接口原样下发，前端不改动）
@@ -59,6 +68,7 @@ const derivation = (over: Partial<Derivation> = {}): Derivation => ({
 
 describe('PlanDerivation', () => {
   afterEach(() => vi.restoreAllMocks())
+  beforeEach(() => resetConceptIndex())
 
   it('shows consistency badge in three states', async () => {
     const states = [['consistent', '推导与重算一致'], ['mismatch', '推导与已存值不一致'],
@@ -196,5 +206,36 @@ describe('PlanDerivation', () => {
     expect(within(table).getAllByText('2.234567')).toHaveLength(2)   // 6 位小数原样
     expect(within(table).getByText('111.870')).toBeInTheDocument()   // 尾随 0 保留，不取整成 111.87
     expect(screen.getByText(/110\.750000/)).toBeInTheDocument()      // 冻结的参考价同样原样
+  })
+
+  it('rule names, inputs and step labels carry ConceptTerm', async () => {
+    const wanted = [
+      'plan.derivation', 'system.gate_hold', 'rule.trend_reclaim',                        // badge, evidence, trigger table
+      'plan.ref_price', 'plan.earnings', 'plan.sizing', 'indicator.regime', 'indicator.sector_strength', 'family.bars',
+      'system.stages',                                                                     // run evidence
+      'plan.entry_zone', 'indicator.atr14', 'plan.status',                                 // step labels
+    ]
+    vi.spyOn(api, 'getConcepts').mockResolvedValue(conceptIndexOf(wanted))
+    vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation({
+      steps: [step(), step({ key: 'tr_1', label: 'TR1' }), step({ key: 'levels_ordered', label: '价位顺序' }),
+              step({ key: 'not_mapped', label: '其余' })],
+      inputs: { ...derivation().inputs, bars: [
+        { id: '1', price_date: '2026-10-21', open: '109', high: '111', low: '108.9', close: '110.1', revision: '0' }] },
+    }))
+    render(PlanDerivation, { planId: 'p1' })
+    await screen.findByRole('table', { name: '逐项计算' })
+    expect(await termIds()).toEqual(new Set(wanted))
+    // the original row labels are still readable
+    expect(screen.getByText('入场下沿（公式）')).toBeInTheDocument()
+  })
+
+  it('trigger-only view maps rule names too', async () => {
+    vi.spyOn(api, 'getConcepts').mockResolvedValue(conceptIndexOf(['rule.trend_reclaim', 'system.gate_hold', 'plan.derivation']))
+    vi.spyOn(api, 'getUnitDerivation').mockResolvedValue({
+      derivation_version: 'derivation-1', trigger: [triggerItem()], note: TRIGGER_NOTE, plan_ids: [],
+      consistency: { status: 'consistent', mismatches: [], missing: [] }, evidence: EVIDENCE })
+    render(PlanDerivation, { unit: { ticker: 'NVDA', signal_date: '2026-10-22' } })
+    await screen.findByText('触发')
+    expect(await termIds()).toEqual(new Set(['rule.trend_reclaim', 'system.gate_hold', 'plan.derivation']))
   })
 })

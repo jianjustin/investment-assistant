@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import * as api from '../api'
+  import ConceptTerm from './ConceptTerm.svelte'
+  import { ATTACH, derivationStepConcept, ruleConcept } from '../knowledge'
   import { CLAUSE_TEXT, CONSISTENCY_TEXT, SOURCE_TEXT } from '../derivation'
   import type { Derivation, Step, TriggerItem, UnitDerivation } from '../derivation'
 
@@ -11,6 +13,7 @@
   let error = $state('')
   let plan = $state<Derivation | null>(null)
   let triggerOnly = $state<UnitDerivation | null>(null)
+  const D = ATTACH.derivation
 
   onMount(() => { void load() })
 
@@ -62,7 +65,7 @@
       <tbody>
         {#each rows as step (step.key)}
           <tr class="border-t border-border">
-            <td class="pr-2 py-1">{step.label}（{sourceLabel(step)}）</td>
+            <td class="pr-2 py-1">{step.label}（{sourceLabel(step)}）{#if derivationStepConcept(step.key)} <ConceptTerm id={derivationStepConcept(step.key)!} />{/if}</td>
             <td class="pr-2 py-1">{step.formula}</td>
             <td class="pr-2 py-1 whitespace-normal">{pairs(step.substitutions)}</td>
             <td class="pr-2 py-1">{text(step.result)}</td>
@@ -86,6 +89,7 @@
     {#if consistency}
       <p class="flex flex-wrap items-center gap-2">
         <span class="text-xs px-1.5 py-0.5 rounded {BADGE_CLASS[consistency.status]}">{CONSISTENCY_TEXT[consistency.status]}</span>
+        <span class="text-xs"><ConceptTerm id={D.consistency}>推导核对</ConceptTerm></span>
         <span class="text-xs text-muted">{plan?.derivation_version ?? triggerOnly?.derivation_version}</span>
       </p>
       {#each consistency.mismatches as m (m.key)}
@@ -95,14 +99,14 @@
         <p class="text-xs text-amber-700">缺失 {item}</p>
       {/each}
     {/if}
-    <p class="text-xs text-muted">{plan?.evidence ?? triggerOnly?.evidence}</p>
+    <p class="text-xs text-muted">{plan?.evidence ?? triggerOnly?.evidence} <ConceptTerm id={D.evidence} /></p>
 
     <details open class="space-y-1">
       <summary class="cursor-pointer font-medium text-xs">触发</summary>
       {#if triggerNote}<p class="text-xs text-muted">{triggerNote}</p>{/if}
       {#each candidates as c (c.candidate_id)}
         <div class="space-y-0.5">
-          <p class="text-xs">{c.rule_id} · v{c.rule_version} · {c.action}{c.note ? ` · ${c.note}` : ''}</p>
+          <p class="text-xs"><ConceptTerm id={ruleConcept(c.rule_id)}>{c.rule_id}</ConceptTerm> · v{c.rule_version} · {c.action}{c.note ? ` · ${c.note}` : ''}</p>
           <div class="overflow-x-auto">
             <table aria-label="触发条件 {c.rule_id}" class="w-full text-xs text-left whitespace-nowrap">
               <thead><tr class="text-muted">
@@ -128,20 +132,20 @@
     {#if plan}
       <details open class="space-y-1">
         <summary class="cursor-pointer font-medium text-xs">输入快照</summary>
-        <p class="text-xs">参考价 {text(plan.inputs.ref_price?.value)}（bar {text(plan.inputs.ref_price?.source_bar_id)}）</p>
-        <p class="text-xs">财报 {plan.inputs.earnings ? `${plan.inputs.earnings.status ?? '—'} · ${text(plan.inputs.earnings.earnings_date)} · 取于 ${text(plan.inputs.earnings.fetched_at)}` : text(plan.inputs.earnings_note)}</p>
-        <p class="text-xs">资金快照 {plan.inputs.snapshot ? `${text(plan.inputs.snapshot.as_of)} · equity {text(plan.inputs.snapshot.equity)}` : text(plan.inputs.snapshot_note)}</p>
+        <p class="text-xs"><ConceptTerm id={D.refPrice}>参考价</ConceptTerm> {text(plan.inputs.ref_price?.value)}（bar {text(plan.inputs.ref_price?.source_bar_id)}）</p>
+        <p class="text-xs"><ConceptTerm id={D.earnings}>财报</ConceptTerm> {plan.inputs.earnings ? `${plan.inputs.earnings.status ?? '—'} · ${text(plan.inputs.earnings.earnings_date)} · 取于 ${text(plan.inputs.earnings.fetched_at)}` : text(plan.inputs.earnings_note)}</p>
+        <p class="text-xs"><ConceptTerm id={D.snapshot}>资金快照</ConceptTerm> {plan.inputs.snapshot ? `${text(plan.inputs.snapshot.as_of)} · equity {text(plan.inputs.snapshot.equity)}` : text(plan.inputs.snapshot_note)}</p>
         {#if plan.inputs.exposure}
-          <p class="text-xs">敞口 该票 {text(plan.inputs.exposure.ticker_value)} / 总持仓 {text(plan.inputs.exposure.total_value)}（{plan.inputs.exposure.note}）</p>
+          <p class="text-xs"><ConceptTerm id={D.exposure}>敞口</ConceptTerm> 该票 {text(plan.inputs.exposure.ticker_value)} / 总持仓 {text(plan.inputs.exposure.total_value)}（{plan.inputs.exposure.note}）</p>
         {/if}
         {#if plan.inputs.sizing_params}
-          <p class="text-xs">仓位参数 risk_pct {text(plan.inputs.sizing_params.risk_pct)} · single_cap {text(plan.inputs.sizing_params.single_cap)} · total_cap {text(plan.inputs.sizing_params.total_cap)}（{plan.inputs.sizing_params.note}）</p>
+          <p class="text-xs"><ConceptTerm id={D.sizingParams}>仓位参数</ConceptTerm> risk_pct {text(plan.inputs.sizing_params.risk_pct)} · single_cap {text(plan.inputs.sizing_params.single_cap)} · total_cap {text(plan.inputs.sizing_params.total_cap)}（{plan.inputs.sizing_params.note}）</p>
         {/if}
         {#if plan.inputs.regime}
-          <p class="text-xs">区制 {text(plan.inputs.regime.label)}（{text(plan.inputs.regime.calc_version)}）</p>
+          <p class="text-xs"><ConceptTerm id={D.regime}>区制</ConceptTerm> {text(plan.inputs.regime.label)}（{text(plan.inputs.regime.calc_version)}）</p>
         {/if}
         {#if plan.inputs.sector}
-          <p class="text-xs">行业 {text(plan.inputs.sector.etf)} rs20 {text(plan.inputs.sector.rs20)} · rs60 {text(plan.inputs.sector.rs60)} · {text(plan.inputs.sector.state)}</p>
+          <p class="text-xs"><ConceptTerm id={D.sector}>行业</ConceptTerm> {text(plan.inputs.sector.etf)} rs20 {text(plan.inputs.sector.rs20)} · rs60 {text(plan.inputs.sector.rs60)} · {text(plan.inputs.sector.state)}</p>
         {/if}
         {#if plan.inputs.next_earnings}<p class="text-xs">下次财报 {plan.inputs.next_earnings}</p>{/if}
         {#if plan.inputs.pool_tier}<p class="text-xs">池 {plan.inputs.pool_tier}</p>{/if}
@@ -155,6 +159,7 @@
         {#if plan.inputs.bars}
           <details class="space-y-1">
             <summary class="cursor-pointer text-xs">日线（{plan.inputs.bars.length} 根，{plan.inputs.bars_note}）</summary>
+            <p class="text-xs"><ConceptTerm id={D.bars} /></p>
             <div class="overflow-x-auto">
               <table aria-label="输入日线" class="w-full text-xs text-left whitespace-nowrap">
                 <thead><tr class="text-muted">
@@ -205,7 +210,7 @@
       </details>
 
       {#if plan.run}
-        <p class="text-xs text-muted"><span class="font-medium">运行证据：</span>
+        <p class="text-xs text-muted"><span class="font-medium"><ConceptTerm id={D.run}>运行证据：</ConceptTerm></span>
           {#if !plan.run.ready}
             <span>{text(plan.run.note)}</span>
           {:else if plan.run.run_id}

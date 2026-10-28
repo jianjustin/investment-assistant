@@ -1,5 +1,6 @@
 /** US workbench API client and pure helpers (design 2026-10-23). */
 import type { AgentView, ChainRow, Change, Condition } from './timeline'
+import type { Annotations, FocusItem, InstrumentContext, InstrumentPlan, KeyData } from './knowledge'
 
 export type Action = 'buy' | 'sell' | 'watch'
 export type FinalAction = Action | 'ignore'
@@ -196,7 +197,11 @@ export interface ChartBar {
 export interface InstrumentView {
   ticker: string; session: string; bars: any[]; filings: Filing[]; news: NewsItem[]; candidates: Candidate[]
   decisions: Decision[]; trades: Trade[]; position: Position | null; closed: any[]
-  chart: { bars: ChartBar[]; adjustment: string }
+  chart: { bars: ChartBar[]; adjustment: string; annotations?: Annotations }
+  // v2.6 (§9.4): additive keys; an older backend simply lacks them
+  focus?: FocusItem[]; key_data?: KeyData; context?: InstrumentContext; plans?: InstrumentPlan[]
+  // a new block that failed to read is null and its reason is here, keyed by block name (focus, key_data, ...)
+  errors?: Record<string, string>
 }
 export interface Window { status: 'mature' | 'immature'; exit_date?: string; return?: number; spy_return?: number; excess?: number; move?: number }
 export interface ShadowUnit extends Decision {
@@ -309,6 +314,7 @@ export const RULE_LABELS: Record<string, string> = {
   trend_reclaim: '趋势回踩修复', volume_breakout: '放量突破', earnings_gap_up: '财报跳空向上',
   trend_break: '跌破 MA50', earnings_gap_down: '财报跳空向下', position_drawdown: '持仓回撤',
   new_filing: '新财报', abnormal_move: '异常波动',
+  plan_stop: '计划止损', plan_target: '计划目标',   // v2.6 D27: sell rules of held positions with a plan
 }
 export const ACTION_LABELS: Record<string, string> = { buy: '买入', sell: '卖出', watch: '观察', ignore: '忽略' }
 export const UNIT_LABELS: Record<string, string> = { conflict: '冲突', avoid: '回避' }

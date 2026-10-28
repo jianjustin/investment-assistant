@@ -2,6 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import Data from './Data.svelte'
 import * as api from '../lib/api'
+import { resetConceptIndex } from '../lib/knowledge'
+
+const conceptIndexOf = (ids: string[]) => ({
+  knowledge_version: 'knowledge-1', groups: [],
+  concepts: ids.map(id => ({ id, ref: `concept:${id}@1`, title: `T:${id}`, group: id.split('.')[0], version: 1,
+                             applies_to: [], summary: `S:${id}`, related: [] })),
+})
+const termIds = async () => new Set((await screen.findAllByRole('button', { name: /^概念：/, hidden: true }))
+  .map(b => b.getAttribute('aria-label')!.replace(/^概念：T:/, '')))
 import { fmtBeijing } from '../lib/format'
 import type { DataOverview, FamilyCard, FamilyDetail, FamilyId, FamilyJob, FetchRun } from '../lib/data-families'
 
@@ -35,6 +44,9 @@ const overview = (families: FamilyCard[], extra: Partial<DataOverview> = {}): Da
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  resetConceptIndex()
+  vi.spyOn(api, 'getConcepts').mockResolvedValue(conceptIndexOf(
+    ['family.bars', 'family.sec_filings', 'family.news', 'family.atr', 'family.fred', 'family.universe', 'system.gate_hold']))
   vi.spyOn(api, 'getDataFamilies').mockResolvedValue(overview(six()))
   vi.spyOn(api, 'getDataFamily').mockResolvedValue(detail())
   vi.spyOn(api, 'browseData').mockResolvedValue({ family: 'bars', key: 'MU', has_data: false, rows: [] })
@@ -490,5 +502,16 @@ describe('Data 详情', () => {
     expect(await screen.findByText('迁移 024 未执行')).toBeTruthy()
     expect(screen.getByRole('table', { name: '最近拉取' })).toHaveTextContent('无记录')
     expect(screen.getByRole('table', { name: '逐目标覆盖' })).toHaveTextContent('无目标')
+  })
+
+  it('family names, ATR columns and FRED series carry ConceptTerm', async () => {
+    render(Data)
+    await screen.findAllByRole('article')
+    // six family names plus the page evidence banner
+    expect(await termIds()).toEqual(new Set(['family.bars', 'family.sec_filings', 'family.news', 'family.atr',
+                                              'family.fred', 'family.universe', 'system.gate_hold']))
+    expect(screen.getByRole('link', { name: '日线' })).toHaveAttribute('href', '#data/bars')
+    expect(screen.getByRole('heading', { name: '日线' })).toBeTruthy()      // the card heading keeps its name
+    expect(screen.getByLabelText('证据说明')).toHaveTextContent(EVIDENCE)
   })
 })

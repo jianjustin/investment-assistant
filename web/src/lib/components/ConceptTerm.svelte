@@ -1,0 +1,76 @@
+<script module lang="ts">
+  // At most one box is open per page: opening a term closes the one that was open.
+  let closeOpenTerm: (() => void) | null = null
+</script>
+
+<script lang="ts">
+  import { onDestroy, type Snippet } from 'svelte'
+  import { conceptIndex, type ConceptSummary } from '../knowledge'
+
+  // <ConceptTerm id="plan.stop">止损</ConceptTerm>; without content it shows the card's title.
+  // The id always comes from `ATTACH` / helpers in knowledge.ts, never from a template literal.
+  let { id, children }: { id: string; children?: Snippet } = $props()
+
+  let phase = $state<'loading' | 'ready' | 'failed'>('loading')
+  let entry = $state<ConceptSummary | null>(null)
+  let failure = $state('')
+  let open = $state(false)
+
+  $effect(() => {
+    const wanted = id
+    let alive = true
+    phase = 'loading'
+    entry = null
+    conceptIndex().then(index => {
+      if (!alive) return
+      entry = index.get(wanted) ?? null
+      phase = 'ready'
+    }).catch((e: unknown) => {
+      if (!alive) return
+      failure = String((e as Error)?.message ?? e)
+      phase = 'failed'
+    })
+    return () => { alive = false }
+  })
+
+  const closer = () => { open = false }
+  function toggle() {
+    if (open) {
+      open = false
+      if (closeOpenTerm === closer) closeOpenTerm = null
+      return
+    }
+    if (closeOpenTerm && closeOpenTerm !== closer) closeOpenTerm()
+    closeOpenTerm = closer
+    open = true
+  }
+  onDestroy(() => { if (closeOpenTerm === closer) closeOpenTerm = null })
+
+  // A known card or a failed index gets the button; an id the index does not know is plain text.
+  const hasButton = $derived(phase === 'failed' || (phase === 'ready' && entry !== null))
+</script>
+
+<svelte:window onkeydown={e => { if (open && e.key === 'Escape') { open = false; if (closeOpenTerm === closer) closeOpenTerm = null } }} />
+
+<span class="concept-term">
+  {#if children}
+    <span class={hasButton ? 'border-b border-dotted border-muted' : ''}>{@render children()}</span>
+  {:else if entry}
+    <span class="border-b border-dotted border-muted">{entry.title}</span>
+  {:else if phase !== 'loading'}
+    <span>{id}</span>
+  {/if}{#if hasButton}<button type="button" class="ml-0.5 text-xs text-muted hover:text-accent"
+          aria-label={`概念：${entry?.title ?? id}`} aria-expanded={open} onclick={toggle}>ⓘ</button>{/if}
+  {#if open && hasButton}
+    <span role="note" class="block my-1 p-2 border border-border rounded bg-surface text-xs text-ink font-normal space-y-1 max-w-prose">
+      {#if entry}
+        <span class="block font-medium">{entry.title}</span>
+        <span class="block">{entry.summary}</span>
+        <span class="block text-muted"><code>{entry.ref}</code></span>
+        <span class="block"><a class="text-accent underline" href={`#knowledge/${entry.id}`}>看完整卡</a></span>
+      {:else}
+        <span class="block">概念卡暂不可用：{failure}</span>
+      {/if}
+    </span>
+  {/if}
+</span>
