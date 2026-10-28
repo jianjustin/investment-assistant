@@ -120,3 +120,21 @@ def test_ticker_chains_response_shape(client, monkeypatch):
     body = client.get("/api/workbench/chains?ticker=SYNTH").json()
     assert set(body) == {"ticker", "chains"}
     assert set(body["chains"][0]) == {"signal_date", "state", "mode", "version_no", "head_plan_id", "latest_review"}
+
+
+KNOWLEDGE_PATHS = {
+    "/api/knowledge/concepts",
+    "/api/knowledge/concepts/{ref}",
+    "/api/knowledge/principles",
+}
+
+
+def test_knowledge_routes_in_openapi_and_read_only(client):
+    spec = client.get("/openapi.json").json()
+    assert KNOWLEDGE_PATHS <= set(spec["paths"])
+    for path in KNOWLEDGE_PATHS:
+        assert set(spec["paths"][path].keys()) == {"get"}
+
+
+def test_knowledge_routes_work_without_db(client):
+    assert client.get("/api/knowledge/concepts").status_code == 200      # real docs/knowledge (may be empty)

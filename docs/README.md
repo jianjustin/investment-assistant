@@ -20,6 +20,7 @@
 | [review.md](features/review.md) | 影子跟踪、纪律、三方对比、周/月复盘、资金与月度收益、复盘推送 |
 | [pool-and-context.md](features/pool-and-context.md) | 观察池分层、每日筛选（纳指 100 `screen-1`、成员轮换、报告与只读回放）、市场环境（广度、区制、行业、FRED）、上线前检查 |
 | [data-menu.md](features/data-menu.md) | 「数据」菜单：数据族覆盖与最新时点、拉取记录、单族手动拉取、原始值浏览 |
+| [knowledge.md](features/knowledge.md) | 知识层：版本化的概念卡与原理页——卡的格式与校验、引用形式、加载与缓存、`/api/knowledge/*` 接口、`knowledge check` / `show` 命令 |
 | [sec-filings.md](features/sec-filings.md) | SEC 下载器与 SEC 监控 |
 | [fundamentals.md](features/fundamentals.md) | 「标的」页的基本面一栏：美股财季数据与公司指引 |
 | [legacy/](features/legacy/README.md) | v1 遗留功能的墓碑页：逐项列出 v2.1.0 的删除与去向（旧实现见 tag `v2.0.0`） |
@@ -51,5 +52,6 @@
 | spec | 某个阶段为什么这样设计 | 写成后冻结，只增不改；命名 `specs/YYYY-MM-DD-<topic>-design.md` |
 | plan | 某个阶段怎么实施 | 写成后冻结，只增不改；命名 `plans/YYYY-MM-DD-<topic>.md` |
 | features / architecture / operations | 系统现在能做什么、怎么用、怎么验证 | 和代码在同一个提交里更新 |
+| knowledge（概念卡与原理） | 系统里每个概念是什么意思、系统怎么跑 | 与改口径的代码同一个提交更新；口径变了该卡 `version` 加 1（改措辞、补例子不加）；改卡后需重启服务生效 |
 
 冻结文档只修失效链接，不改正文。`tests/test_docs_links.py` 会检查所有相对链接都指向存在的文件。
