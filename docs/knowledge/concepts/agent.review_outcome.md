@@ -35,3 +35,5 @@ sources: [investment_assistant/workbench/plan_review.py, investment_assistant/wo
 
 ## 注意
 "系统规则维持"只代表没有触发任何机械条件，不是 Agent 重新确认过。持仓期的新版即使按仓位规则不能加仓（如 `no_room`）也会成为最新版，链照常复查。
+
+这条口径同样**未经验证**（Phase 0 Gate HOLD，见[证据状态「未验证」](system.gate_hold.md)）：它只说明系统怎么运作，不说明复查结论有效。

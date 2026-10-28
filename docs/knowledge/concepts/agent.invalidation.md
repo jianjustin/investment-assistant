@@ -38,3 +38,5 @@ sources: [investment_assistant/workbench/agent/conditions.py, investment_assista
 
 ## 注意
 条件由模型挑选，系统只保证它们能被机械判定，不保证选得恰当。`unknown` 不等于安全，只是数据不够判断。
+
+这条口径同样**未经验证**（Phase 0 Gate HOLD，见[证据状态「未验证」](system.gate_hold.md)）：它只说明系统怎么运作，不说明这些条件有效。

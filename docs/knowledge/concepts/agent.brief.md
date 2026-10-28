@@ -23,3 +23,5 @@ sources: [investment_assistant/workbench/briefs.py, investment_assistant/workben
 
 ## 注意
 解读是对规则信号的补充说明，不改变规则给出的动作（见[决策单元](system.decision_unit.md)与[冲突与回避](system.conflict.md)）。它和 Agent 计划一样未经验证。
+
+这条口径同样**未经验证**（Phase 0 Gate HOLD，见[证据状态「未验证」](system.gate_hold.md)）：它只说明系统怎么运作，不说明解读有效。

@@ -11,7 +11,7 @@ version: 1
 
 **不做什么**：它不预测行情，也不保证任何结果。更要紧的是，所有规则和 Agent 都**未经验证**——Phase 0 的正式结论是暂不放行（Gate HOLD），所以每份计划都带着"证据：未验证"。推导一致、数据完整、Agent 默认展示在前，都不等于有效，详见 [证据状态「未验证」](concepts/system.gate_hold.md)。
 
-三条贯穿全系统的口径：规则、计划和 Agent 工具只读[截止时间](concepts/system.cutoff.md)之前已入库的数据，所以能还原"当时知道什么"（不是严格的历史回测）；业务记录[只追加](concepts/system.append_only.md)，更正是新记录指向旧记录，错误不会被悄悄抹掉；每套口径都有版本号，旧记录保留它当时的版本。
+三条贯穿全系统的口径：规则、计划和 Agent 的数据类工具只读[截止时间](concepts/system.cutoff.md)之前已入库的数据，所以能还原"当时知道什么"（不是严格的历史回测；`get_trigger`、`get_position` 读当日候选与持仓记录，不按截止时间过滤）；业务记录[只追加](concepts/system.append_only.md)，更正是新记录指向旧记录，错误不会被悄悄抹掉；每套口径都有版本号，旧记录保留它当时的版本。
 
 读这一页时，每一步都有「当天这一步」的链接，点开会回到「今日」顶部的运行一览，看当天这一步实际做了什么、跳过了什么。
 
@@ -27,7 +27,7 @@ version: 1
 
 ## ② 筛选（screen-1）
 
-**做什么**：在纳指 100 范围里按固定阈值挑出值得多看一眼的股票，让它们并入扩展观察池，之后规则照常运行。过滤条件是 20 日平均成交额达到 5000 万美元（见 [20 日平均成交额](concepts/indicator.dollar_volume_20.md)）、避开财报前后 5 个交易日；触发了买入规则的股票排在前面，形态合格的再按[相对强弱](concepts/indicator.screen_rs.md)补齐，每天新入选不超过 20 只。成员有保留期和上限，细节见[每日筛选](concepts/system.screen.md)；它们属于扩展池，见[观察池分层](concepts/system.pool_tiers.md)。
+**做什么**：在纳指 100 范围里按固定阈值挑出值得多看一眼的股票，让它们并入扩展观察池，之后规则照常运行。过滤条件是 20 日平均成交额达到 5000 万美元（见 [20 日平均成交额](concepts/indicator.dollar_volume_20.md)）、避开今天至其后第 5 个交易日内的已知财报（财报日未知的不排除）；触发了买入规则的股票排在前面，形态合格的再按[相对强弱](concepts/indicator.screen_rs.md)补齐，每天新入选不超过 20 只。成员有保留期和上限，细节见[每日筛选](concepts/system.screen.md)；它们属于扩展池，见[观察池分层](concepts/system.pool_tiers.md)。
 
 **读什么、写什么**：读范围文件和范围内股票的日线与财报日，写筛选运行记录与结果；成员写入观察池分层。
 
@@ -73,7 +73,7 @@ version: 1
 **做什么**：只为"建议买入、无冲突、未决定"的单元生成规则计划。公式固定，价位四舍五入到 0.01：
 
 - 参考价：信号日 T 的收盘价，见[参考价](concepts/plan.ref_price.md)。
-- ATR：ATR14（Wilder，拆股调整口径），见 [ATR14](concepts/indicator.atr14.md)。
+- ATR：ATR14（Wilder 方法，拆股调整口径；系统只取最近 15 根日线，实际等于最近 14 个真实波幅的简单平均），见 [ATR14](concepts/indicator.atr14.md)。
 - 入场区间：参考价 ± 0.5 ATR，见[入场区间](concepts/plan.entry_zone.md)。
 - 止损：参考价 − 2 ATR，见[止损](concepts/plan.stop.md)。
 - 目标 T1：参考价 + 4 ATR（2R），触及后卖出一半，见[目标 T1](concepts/plan.target1.md)；之后用[移动止损](concepts/plan.trailing_stop.md)。
@@ -94,7 +94,7 @@ version: 1
 
 **做什么**：Agent 是"挑战者"：对每个买入候选独立给出一份计划，并行展示在规则计划旁，不改主计划。整个流程：
 
-- **取数**：Agent 只能调用九个只读工具：`get_trigger`、`get_price_bars`、`get_indicators`、`get_filings`、`get_news`、`get_earnings`、`get_market_context`、`get_position`，以及 `get_concept`。工具不接受日期参数，只读截止时间之前入库的数据，只允许查本单元标的和 SPY、SMH、XLK、QQQ，每次调用的参数、返回值和 SHA-256 都留痕。见[工具调用](concepts/agent.tool_calls.md)。
+- **取数**：Agent 只能调用九个只读工具：`get_trigger`、`get_price_bars`、`get_indicators`、`get_filings`、`get_news`、`get_earnings`、`get_market_context`、`get_position`，以及 `get_concept`。工具不接受日期参数，读价格、申报、资讯、财报日和市场环境时只读截止时间之前入库的数据（`get_trigger`、`get_position` 读当日候选与持仓记录，不按截止时间过滤），只允许查本单元标的和 SPY、SMH、XLK、QQQ，每次调用的参数、返回值和 SHA-256 都留痕。见[工具调用](concepts/agent.tool_calls.md)。
 - **`get_concept` 的例外**：它读的是概念卡（也就是你正在读的这类解释），随代码版本走，**不按截止时间回读**，结果标 `point_in_time: false`，记录里照样留痕。卡里只有定义，没有行情；见[概念卡](concepts/system.concept_card.md)。
 - **提议**：给出买或不买，买时给入场区间、止损、T1，加 1 到 3 条[论点](concepts/agent.thesis.md)、1 到 5 条[失效条件](concepts/agent.invalidation.md)和 0 到 3 条[下次复查条件](concepts/agent.review_when.md)。每个价位和论点都必须[引用](concepts/agent.citation.md)本次真实发生的工具调用，价位还必须引用价格类工具；见[动作与价位](concepts/agent.action_levels.md)。
 - **反方**：另一轮调用逐条对论点找[关键反证](concepts/agent.counter.md)，不能改价位和动作。
@@ -116,7 +116,7 @@ version: 1
 2. 没有信号、没有新用户输入、复查条件都没满足：系统规则直接维持，不调用模型。
 3. 预算闸门（超出时限、Agent 不可用、额度或 token 上限）：写一条跳过记录。
 4. 否则调用一次单阶段复查，让 Agent 判定维持、修订或作废。
-5. 结论为修订时，再走一遍完整的提议、反方、校验；通过才成为新版，并写明[相对上版变化](concepts/agent.changes.md)。
+5. 结论为修订时，再走一遍完整的提议、反方、校验；通过才成为[版本链](concepts/agent.version_chain.md)的新一版，并写明[相对上版变化](concepts/agent.changes.md)。
 
 你贴入的研报、新闻和判断是[用户输入](concepts/agent.user_input.md)：它们只是证据，不是指令，会触发 `user_input` 信号，让当天的复查认真看一次。你也可以在「今日」点"重新复查"，立即对一条链复查一次；除非失效条件已经成立（那仍由系统规则作废），否则一定会调用模型。
 
@@ -132,7 +132,7 @@ version: 1
 
 **读什么、写什么**：读当天所有结果，写发送记录进运行报告。
 
-**怎么失败与降级**：手动运行不推送；同一交易日已推送过就不重复；休市日只发一行"休市，未运行"；推送失败只写进运行报告，下一次推送附"上次推送失败"。
+**怎么失败与降级**：手动运行不推送；同一交易日已推送过就不重复；休市日只发一行"纽约休市，未运行"；推送失败只写进运行报告，下一次推送附"上次推送失败"。
 
 [当天这一步](#stage-push)
 

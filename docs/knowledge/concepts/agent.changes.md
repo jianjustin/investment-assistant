@@ -26,3 +26,5 @@ sources: [investment_assistant/workbench/agent/plan_check.py, investment_assista
 
 ## 注意
 并列显示是为了让你能核对模型"说的"和系统"算的"是否一致；字段集合相等只保证没有遗漏或虚报，不保证说明的理由正确。
+
+这条口径同样**未经验证**（Phase 0 Gate HOLD，见[证据状态「未验证」](system.gate_hold.md)）：它只说明系统怎么运作，不说明修订有效。

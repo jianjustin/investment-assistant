@@ -33,6 +33,6 @@ sources: [investment_assistant/workbench/plans.py, investment_assistant/config.p
 
 ## 注意
 
-- 最小值不大于 0，说明没有空间：计划作废，原因 `no_room`，股数记 0。
+- 最小值不大于 0，说明没有空间：计划作废，原因 `no_room`；代码保存的是三个上限中的最小值本身，所以股数字段可能是 0，也可能是负数，都表示没有可买的空间。
 - 自定计划和 Agent 计划的每股风险按**入场区间中点**减止损来算。
 - 这是风险预算的算术结果，不是投资建议，也**未经验证**（Phase 0 Gate HOLD）。

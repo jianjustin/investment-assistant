@@ -39,3 +39,5 @@ sources: [investment_assistant/workbench/agent/conditions.py, investment_assista
 
 ## 注意
 复查条件越具体，系统规则维持的天数越多、模型调用越少；但这是 Agent 自己的选择，系统不评价它选得好坏。
+
+这条口径同样**未经验证**（Phase 0 Gate HOLD，见[证据状态「未验证」](system.gate_hold.md)）：它只说明系统怎么运作，不说明这些条件有效。

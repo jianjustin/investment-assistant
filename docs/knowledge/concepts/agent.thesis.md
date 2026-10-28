@@ -24,3 +24,5 @@ sources: [investment_assistant/workbench/agent/plan_check.py, investment_assista
 
 ## 注意
 论点是模型的解释，不是事实核查结果；它们的价值在于让你看到推理路径并能追溯到工具数据。修订版会重写论点，变化出现在[相对上版变化](agent.changes.md)里。
+
+这条口径同样**未经验证**（Phase 0 Gate HOLD，见[证据状态「未验证」](system.gate_hold.md)）：它只说明系统怎么运作，不说明论点有效。

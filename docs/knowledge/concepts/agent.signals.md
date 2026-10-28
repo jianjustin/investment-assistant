@@ -35,3 +35,5 @@ sources: [investment_assistant/workbench/timeline.py]
 
 ## 注意
 信号只说明"发生了某件事"，不判断它对计划是好是坏。"未知"表示数据不够判断，并不表示没发生。
+
+这条口径同样**未经验证**（Phase 0 Gate HOLD，见[证据状态「未验证」](system.gate_hold.md)）：它只说明系统怎么运作，不说明这些信号有效。
