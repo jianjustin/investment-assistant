@@ -72,3 +72,39 @@ def test_plan_derivation_response_top_level_keys(client, monkeypatch):
     assert resp.status_code == 200
     assert set(resp.json().keys()) == {"derivation_version", "plan", "trigger", "inputs", "steps",
                                        "checks", "consistency", "evidence", "run"}
+
+
+TIMELINE_ROUTES = {
+    "/api/workbench/chains/{ticker}/{signal_date}": {"get"},
+    "/api/workbench/plan-reviews": {"get"},
+    "/api/workbench/chains/{ticker}/{signal_date}/recheck": {"post"},
+    "/api/workbench/user-inputs": {"get", "post"},
+}
+
+
+def test_plan_timeline_routes_in_openapi(client):
+    spec = client.get("/openapi.json").json()
+    for path, methods in TIMELINE_ROUTES.items():
+        assert path in spec["paths"], path
+        assert set(spec["paths"][path].keys()) == methods, path
+
+
+def test_chain_view_response_top_level_keys(client, monkeypatch):
+    from investment_assistant.workbench import plan_review
+    use_case = {"ticker": "SYNTH", "signal_date": "2026-09-01", "session": "2026-09-02",
+                "state": {"state": "entry", "mode": "entry", "basis": "未决定"},
+                "head_plan_id": "p1", "version_no": 0, "latest_review": None,
+                "versions": [], "reviews": [], "inputs": []}
+    monkeypatch.setattr(plan_review, "chain_view", lambda ticker, signal_date, *, now: dict(use_case))
+    resp = client.get("/api/workbench/chains/SYNTH/2026-09-01")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert {"state", "versions", "reviews", "inputs"} <= set(body)
+    assert set(body) == set(use_case)
+
+
+def test_timeline_routes_without_db_are_503(client):
+    assert client.get("/api/workbench/chains/SYNTH/2026-09-01").status_code == 503
+    assert client.get("/api/workbench/plan-reviews?session=2026-09-02").status_code == 503
+    assert client.get("/api/workbench/user-inputs?ticker=SYNTH").status_code == 503
+    assert client.post("/api/workbench/chains/SYNTH/2026-09-01/recheck").status_code == 503

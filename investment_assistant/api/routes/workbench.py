@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException
 
 from investment_assistant.tasks import runner
-from investment_assistant.workbench import derivation_view, ledger, service
+from investment_assistant.workbench import derivation_view, ledger, plan_review, service, user_inputs
 
 router = APIRouter()
 
@@ -18,7 +18,7 @@ def _call(fn, *args, **kwargs):
         return fn(*args, **kwargs)
     except service.Unavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except (ledger.Conflict, service.AgentConflict) as exc:
+    except (ledger.Conflict, service.AgentConflict, plan_review.RecheckConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (ledger.NotFound, LookupError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -248,3 +248,43 @@ def stage_runs(session: str | None = None, run_id: str | None = None):
     result['stages'] = [{'id': s.id, 'title': s.title, 'purpose': s.purpose}   # StageDef 显式序列化
                         for s in result['stages']]
     return result
+
+
+# --- v2.5 plan timeline (spec §8, §12): chains, reviews, recheck, user inputs ---
+
+@router.get('/api/workbench/chains/{ticker}/{signal_date}')
+def chain_view(ticker: str, signal_date: str):
+    return _call(plan_review.chain_view, ticker, _date(signal_date, 'signal_date'), now=_now())
+
+
+@router.get('/api/workbench/plan-reviews')
+def plan_reviews(session: str | None = None):
+    day = _date(session, 'session')
+    if day is None:
+        raise HTTPException(status_code=400, detail='session is required')
+    return _call(plan_review.reviews_view, day)
+
+
+@router.post('/api/workbench/chains/{ticker}/{signal_date}/recheck')
+def recheck_chain(ticker: str, signal_date: str):
+    """Preconditions run here (503 / 404 / 409, nothing written); the review runs in the background with
+    the cutoff taken now, when the request came in (D14)."""
+    day = _date(signal_date, 'signal_date')
+    now = _now()
+    _call(plan_review.recheck_check, ticker, day, now=now)
+    run_id = runner.submit('plan_recheck',
+                           lambda run_id: plan_review.recheck(ticker, day, now=now, run_id=run_id),
+                           with_run_id=True)
+    return {'run_id': run_id, 'status': 'pending'}
+
+
+@router.get('/api/workbench/user-inputs')
+def list_user_inputs(ticker: str | None = None, signal_date: str | None = None):
+    if not ticker:
+        raise HTTPException(status_code=400, detail='ticker is required')
+    return {'inputs': _call(user_inputs.list_for, ticker, _date(signal_date, 'signal_date'))}
+
+
+@router.post('/api/workbench/user-inputs')
+def add_user_input(payload: dict[str, Any] = Body(default_factory=dict)):
+    return _call(user_inputs.add, payload, now=_now())

@@ -435,3 +435,140 @@ def test_derivation_routes_503_without_db(client, monkeypatch, path, target, kwa
     monkeypatch.setattr(derivation_view, target, raiser(service.Unavailable('工作台数据表未就绪')))
     resp = client.get(path, **kwargs)
     assert resp.status_code == 503 and '未就绪' in resp.json()['error']
+
+
+# ---------------------------------------------------------------- v2.5 plan timeline (spec §12)
+
+def test_chain_view_route_delegates(client, monkeypatch):
+    from investment_assistant.workbench import plan_review
+    seen = {}
+
+    def chain_view(ticker, signal_date, *, now):
+        seen.update(ticker=ticker, signal_date=signal_date, now=now)
+        return {'state': {'state': 'entry'}, 'versions': [], 'reviews': [], 'inputs': []}
+
+    monkeypatch.setattr(plan_review, 'chain_view', chain_view)
+    resp = client.get('/api/workbench/chains/SYNTH/2026-09-01')
+    assert resp.status_code == 200 and resp.json()['state'] == {'state': 'entry'}
+    assert (seen['ticker'], seen['signal_date']) == ('SYNTH', date(2026, 9, 1)) and seen['now'].tzinfo is not None
+    assert client.get('/api/workbench/chains/SYNTH/2026-13-01').status_code == 400
+
+
+def test_plan_reviews_route_delegates(client, monkeypatch):
+    from investment_assistant.workbench import plan_review
+    monkeypatch.setattr(plan_review, 'reviews_view', lambda session: {'session': session, 'reviews': []})
+    assert client.get('/api/workbench/plan-reviews', params={'session': '2026-09-02'}).json() == \
+        {'session': '2026-09-02', 'reviews': []}
+    assert client.get('/api/workbench/plan-reviews').status_code == 400
+    assert client.get('/api/workbench/plan-reviews', params={'session': 'bad'}).status_code == 400
+
+
+def test_recheck_route_checks_then_submits_with_request_time(client, monkeypatch):
+    from investment_assistant.api.routes import workbench as routes
+    from investment_assistant.tasks import runner
+    from investment_assistant.workbench import plan_review
+    t0 = datetime(2026, 9, 2, 22, 30, tzinfo=UTC)
+    clock = iter([t0, t0.replace(minute=35)])
+    monkeypatch.setattr(routes, '_now', lambda: next(clock))
+    checked, ran, submitted = [], [], []
+    monkeypatch.setattr(plan_review, 'recheck_check',
+                        lambda ticker, signal_date, *, now: checked.append((ticker, signal_date, now)))
+    monkeypatch.setattr(plan_review, 'recheck', lambda ticker, signal_date, *, now, run_id=None, deps=None:
+                        ran.append((ticker, signal_date, now, run_id)) or {'id': 1})
+
+    def submit(kind, fn, *, with_run_id=False):
+        submitted.append((kind, fn, with_run_id))
+        return 'plan_recheck-1'
+
+    monkeypatch.setattr(runner, 'submit', submit)
+    resp = client.post('/api/workbench/chains/SYNTH/2026-09-01/recheck')
+    assert resp.status_code == 200 and resp.json() == {'run_id': 'plan_recheck-1', 'status': 'pending'}
+    assert checked == [('SYNTH', date(2026, 9, 1), t0)]
+    [(kind, fn, with_run_id)] = submitted
+    assert kind == 'plan_recheck' and ran == []                       # 后台执行，路由里不跑复查
+    routes._now()                                                    # 时间往前走：后台晚 5 分钟才开始
+    fn('plan_recheck-1') if with_run_id else fn()
+    assert ran[0][:3] == ('SYNTH', date(2026, 9, 1), t0)              # 截止时间仍是请求进入时刻
+    if with_run_id:
+        assert ran[0][3] == 'plan_recheck-1'
+
+
+@pytest.mark.parametrize('exc, code, message', [
+    ('conflict', 409, 'review_in_progress'),
+    ('not_active', 409, 'chain_not_active'),
+    ('agent', 409, 'agent_unavailable: not_configured'),
+    ('lookup', 404, None),
+    ('value', 400, None),
+    ('unavailable', 503, '迁移 026 未执行'),
+])
+def test_recheck_route_errors_do_not_submit(client, monkeypatch, exc, code, message):
+    from investment_assistant.tasks import runner
+    from investment_assistant.workbench import plan_review
+    error = {'conflict': plan_review.RecheckConflict('review_in_progress'),
+             'not_active': plan_review.RecheckConflict('chain_not_active'),
+             'agent': plan_review.RecheckConflict('agent_unavailable: not_configured'),
+             'lookup': LookupError('没有计划链'), 'value': ValueError('Invalid US stock ticker'),
+             'unavailable': service.Unavailable('迁移 026 未执行')}[exc]
+    monkeypatch.setattr(plan_review, 'recheck_check', raiser(error))
+    submitted = []
+    monkeypatch.setattr(runner, 'submit', lambda *a, **k: submitted.append(a) or 'x')
+    resp = client.post('/api/workbench/chains/SYNTH/2026-09-01/recheck')
+    assert resp.status_code == code and submitted == []
+    if message:
+        assert resp.json()['error'] == message
+    assert client.post('/api/workbench/chains/SYNTH/nope/recheck').status_code == 400
+
+
+def test_user_inputs_routes_delegate(client, monkeypatch):
+    from investment_assistant.workbench import user_inputs
+    seen = {}
+
+    def list_for(ticker, signal_date):
+        seen.update(ticker=ticker, signal_date=signal_date)
+        return [{'id': 1, 'ref': 'user:1'}]
+
+    def add(payload, *, now):
+        seen.update(payload=payload, now=now)
+        return {'status': 'created', 'record': {'id': 2}}
+
+    monkeypatch.setattr(user_inputs, 'list_for', list_for)
+    monkeypatch.setattr(user_inputs, 'add', add)
+    resp = client.get('/api/workbench/user-inputs', params={'ticker': 'SYNTH', 'signal_date': '2026-09-01'})
+    assert resp.json() == {'inputs': [{'id': 1, 'ref': 'user:1'}]}
+    assert seen == {'ticker': 'SYNTH', 'signal_date': date(2026, 9, 1)}
+    client.get('/api/workbench/user-inputs', params={'ticker': 'SYNTH'})
+    assert seen['signal_date'] is None
+    assert client.get('/api/workbench/user-inputs').status_code == 400
+    assert client.get('/api/workbench/user-inputs', params={'ticker': 'SYNTH', 'signal_date': 'x'}).status_code == 400
+    body = {'request_id': 'r', 'ticker': 'SYNTH', 'kind': 'news', 'body': '新闻'}
+    resp = client.post('/api/workbench/user-inputs', json=body)
+    assert resp.json() == {'status': 'created', 'record': {'id': 2}}
+    assert seen['payload'] == body and seen['now'].tzinfo is not None
+
+
+@pytest.mark.parametrize('exc, code', [
+    (ValueError('body must be 1–4000 characters'), 400),
+    (LookupError('该单元没有候选'), 404),
+    (ledger.Conflict('request_id was already used with different content'), 409),
+    (service.Unavailable('迁移 026 未执行'), 503),
+])
+def test_user_inputs_post_errors(client, monkeypatch, exc, code):
+    from investment_assistant.workbench import user_inputs
+    monkeypatch.setattr(user_inputs, 'add', raiser(exc))
+    resp = client.post('/api/workbench/user-inputs', json={})
+    assert resp.status_code == code and resp.json()['error'] == str(exc)
+
+
+@pytest.mark.parametrize('path, module, target', [
+    ('/api/workbench/chains/SYNTH/2026-09-01', 'plan_review', 'chain_view'),
+    ('/api/workbench/plan-reviews?session=2026-09-02', 'plan_review', 'reviews_view'),
+    ('/api/workbench/user-inputs?ticker=SYNTH', 'user_inputs', 'list_for'),
+])
+def test_timeline_reads_map_errors(client, monkeypatch, path, module, target):
+    import importlib
+    mod = importlib.import_module(f'investment_assistant.workbench.{module}')
+    for exc, code in ((service.Unavailable('迁移 026 未执行'), 503), (LookupError('没有'), 404),
+                      (ValueError('Invalid US stock ticker'), 400)):
+        monkeypatch.setattr(mod, target, raiser(exc))
+        resp = client.get(path)
+        assert resp.status_code == code and resp.json()['error'] == str(exc)

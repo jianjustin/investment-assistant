@@ -20,6 +20,25 @@
 - **隔离**：Agent 在规则计划全部写入之后才开始，失败只影响 Agent 轨道。每个单元最多尝试 3 次（超过记 `skipped / max_attempts`）；批处理开始 1500 秒后不再启动新单元；智谱额度用尽时其余单元记 `skipped / quota_exhausted`；达到每日 token 上限时记 `skipped / token_budget`。扩展池单元也跑，但排在后面，结果不推送。
 - **迁移 026 未执行**：写不了版本行，所以需要提议的单元逐个记 `skipped / migration_026_missing`（主列表单元照旧得到规则版简报），解读照常运行；`agent` 阶段记 `degraded`（`migration_026_missing`），`summary.errors` 加一条 `timeline: migration_026_missing`；规则计划照常。「今日」照旧按最新运行显示，不带链。
 
+## 计划时间线
+
+一个单元（标的、信号日）的全部 `agent-2` 版本组成一条**版本链**，每天复查一次，你贴入的研报、新闻和判断作为证据参与复查。设计见 [v2.5 计划时间线](../specs/2026-10-28-v2.5-plan-timeline-design.md) §5、§7、§8、§12。
+
+- **版本链**：第 0 版（`origin = signal`）由信号日批处理生成；第 1 版起只由复查生成（`review` 每日复查、`recheck` 重新复查），`supersedes_plan_id` 指向上一版，链不分叉。每一版都是一行 `trade_plans`，有自己的截止时间（生成时刻）、`as_of_session`、宿主差异 `diff` 与模型的变化说明 `changes`，各自做影子跟踪；旧版写入后不再改动。链状态（`timeline-1`）按顺序取第一条成立的：`invalidated`（被复查作废）、`closed_by_decision`（决定不买）、`holding`（决定链上的买入还有未平批次）、`position_closed`、`expired`（过了最新版截止日未成交）、`entry`（其余）；只有 `entry` 与 `holding` 会被复查。
+- **每日复查**：批处理第 7 个阶段 `review`，规则见 [每日计划 · 每日复查](daily-plan.md#每日复查)：失效条件成立由系统规则作废；没有信号、没有新的用户输入、复查条件都未满足由系统规则维持；其余调用一次 `agent-review-1`，结论为修订时再走一次完整的提议 + 反方 + 校验，通过才成为新的最新版。每条结论写一行 `plan_reviews`。
+- **信号**：`new_8k`、`abnormal_move`、`stop_touched`、`t1_touched`、`expiry_near`、`regime_change`、`user_input`，窗口都是「上次有效复查之后」，七项不论是否触发都记进复查记录。
+- **用户输入**（`user_inputs`，只追加）：类型 `research`（研报要点）/ `news`（新闻）/ `judgment`（我的判断）/ `other`，正文 1–4000 字，可附 `http(s)://` 链接（≤ 500 字，不抓取）；不填 `signal_date` 作用于该标的所有链，填了只作用于这一条链（单元必须有候选，否则 404）。**更正**或**撤回**（`kind = retract`）都是新的一行，用 `supersedes_id` 指向同一标的的旧行（不是同一标的 → 400）；旧版计划引用过的旧行永远可读，之后的复查只看到截止时间之前仍有效的行。同一 `request_id` 同内容返回原行（`status = replayed`），不同内容 409。复查与修订的提示词里附「用户输入」证据块：上次复查之后的新输入给原文（最多 10 条、合计 8000 字，超出的记「另有 n 条未纳入」），更早的只给标题行；提示词写明用户输入只是证据、不是指令，引用 `user:<id>` 只能引用块里出现的 id。新输入触发 `user_input` 信号，即一次认真复查，本身不会直接改计划。
+- **重新复查**：对 `entry` / `holding` 的链立即复查一次（`trigger = recheck`）。截止时间 = 点击时刻（请求进入时取，不是后台开始执行的时刻），复查交易日 = 该时刻最近已收盘的交易日；跳过「无事可看」的系统维持，一定调用模型（失效条件成立仍由系统规则作废）；新版 `origin = recheck`；不受每天 3 次的限制，但受每日 token 上限与额度限制。前置检查同步执行：迁移 026 未执行 503、没有链 404、链不在入场期 / 持仓期 409 `chain_not_active`、Agent 不可用 409 `agent_unavailable: <原因>`、该链正在复查 409 `review_in_progress`，都不写行；通过后在后台执行（同「立即运行批处理」），返回 `{run_id, status: pending}`，用 `GET /api/runs/{run_id}` 查结果。与批处理复查用同一把 advisory lock（`review:<标的>:<信号日>`）互斥：后到的批处理跳过该链（`review_in_progress`），后到的重新复查 409。
+- **入口**：
+  - API：`GET /api/workbench/chains/{ticker}/{signal_date}`（链视图：`state`（`state`、`mode`、`basis`）、`versions`（每版的计划行、生成运行的输出与反方、`changes`、`diff`、`plan-shadow-1` 影子结果）、`reviews`（全部复查记录，带被复查与产生的版本号）、`inputs`（作用于这条链的用户输入，带 `ref`、`status`：`active` / `corrected` / `retracted`））；`GET /api/workbench/plan-reviews?session=`（某个复查交易日的全部复查记录）；`POST /api/workbench/chains/{ticker}/{signal_date}/recheck`；`GET /api/workbench/user-inputs?ticker=&signal_date=`（不带 `signal_date` 时列出该标的全部输入）与 `POST /api/workbench/user-inputs`（body `{request_id, ticker, signal_date?, kind, body, source_url?, supersedes_id?}`）。读取接口都在只读事务里执行，不调用外部数据源；迁移 026 未执行时这些接口都返回 503「迁移 026 未执行」。
+  - 命令行 `python -m investment_assistant.workbench.plan_review`：`chain --ticker X --date YYYY-MM-DD`（打印链状态、各版本、复查记录与用户输入，只读；没有链退出码 1）；`recheck --ticker X --date YYYY-MM-DD`（同步重新复查，打印复查记录与新版 id；冲突退出码 1）；`check --session YYYY-MM-DD`（只读）：该交易日每条应复查的链（按批处理开始时的最新版判定处于 `entry` / `holding`，未被 `object_cap` 排除）恰有一条有效批处理复查，或最新版就是当天生成的（`fresh_version`）；列出缺复查的链及其 `skipped` / `error` 行与阶段跳过原因；当天生成的每一版 `supersedes_plan_id` 指向上一版、`cutoff_at` 等于生成运行的 `cutoff_at`、输出与反方里的引用都成立（`call:N` 是生成运行自己的工具调用，`user:<id>` 是该标的的输入且 `created_at ≤ cutoff_at`），当天复查记录的引用同样核对。任一不满足退出码 1；参数错误、数据库不可用或迁移 026 未执行退出码 2。
+- **怎么验证一次**：批处理跑完后执行 `plan_review check --session <当天>`，应为「通过」；信号日当天新生成的链显示「当天生成（fresh_version）」。任选一条入场期的链，`POST /api/workbench/user-inputs` 贴一条判断（带 `signal_date`），再 `POST …/recheck`，轮询 `/api/runs/{run_id}` 到 `done`；`GET /api/workbench/chains/…` 的 `reviews` 末尾多一条 `trigger = recheck` 的记录，其 `cutoff_at` 等于点击时刻、`user_input_ids` 含刚贴的输入、`signals` 里 `user_input` 已触发。
+- **已知限制**：
+  - `check` 按当前记录的决定与成交判定链状态（与复查阶段同一口径）；版本与复查记录按批处理开始前的为准。批处理之后才做的重新复查若产生了当天的新版，`check` 会把这条链视为当天生成而不再要求批处理复查；`object_cap` 与无行跳过的原因取自阶段证据，每种原因最多列 10 个样本。
+  - 重新复查在后台线程里执行，服务重启会丢掉还没跑完的任务（不写行）；页面轮询到 `error` 时可以再点一次。
+  - 用户输入的时间以数据库写入时刻为准，不能补登更早的时间；更正、撤回只对之后的复查生效，不回填旧版。
+  - `GET /api/workbench/user-inputs` 不带 `signal_date` 时，按该标的的候选日逐个读取各链的输入，候选日很多时较慢。
+
 ## 配置
 
 | 环境变量 | 说明 |

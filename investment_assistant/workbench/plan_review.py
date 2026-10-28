@@ -1,4 +1,5 @@
-"""The daily review stage `review` and the per-chain review use case (v2.5 spec §7, `stages-2`).
+"""The daily review stage `review`, the per-chain review use case, the manual recheck, the chain read views
+and the ``plan_review`` command line (v2.5 spec §7, §8.2, §12; `stages-2`).
 
 After the agent stage, every active agent-2 chain (state ``entry`` or ``holding``, spec §5.3) is reviewed
 once per trading day S: the host first (any met invalidation condition invalidates, D8; a quiet day with no
@@ -14,14 +15,21 @@ A busy lock (a recheck running on the chain) skips the chain without a row.
 """
 from __future__ import annotations
 
+import argparse
 import os
+import re
+import sys
+import time
 import uuid
 from contextlib import ExitStack
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Callable, Iterable
 
-from investment_assistant.workbench import families, repository, service, timeline
+from investment_assistant.data import identity
+from investment_assistant.workbench import bars as bars_module
+from investment_assistant.workbench import families, repository, service, timeline, user_inputs
+from investment_assistant.workbench import plan_shadow as plan_shadow_module
 from investment_assistant.workbench import stages as stages_module
 from investment_assistant.workbench.agent import conditions as condition_registry
 from investment_assistant.workbench.agent import graph as agent_graph
@@ -637,3 +645,430 @@ def _record(obj: dict, out: dict, *, review: dict, detail: dict, acc: stages_mod
         acc.fail(ticker, out['reason'])
     elif outcome == 'revise' and out['new_plan_id'] is None:
         acc.degrade('revision_failed', f"{ticker}: {(out['detail'] or {}).get('revision_status')}")
+
+
+# ---------------------------------------------------------------- recheck (spec §8.2, D14)
+
+MIGRATION_MISSING = '迁移 026 未执行'
+
+
+class RecheckConflict(RuntimeError):
+    """A recheck clashes with the chain's state (HTTP 409); ``reason`` is ``chain_not_active``,
+    ``agent_unavailable: <reason>`` or ``review_in_progress``. Nothing is written."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _ticker(ticker: Any) -> str:
+    identity.stock_id(ticker if isinstance(ticker, str) else '')     # ValueError for anything not a US ticker
+    return ticker.strip().upper()
+
+
+def _require_ready(conn) -> None:
+    if not repository.timeline_ready(conn):
+        raise service.Unavailable(MIGRATION_MISSING)
+
+
+def _precheck(ticker: str, signal_date: date, *, session: date, settings) -> None:
+    """§8.2's preconditions in order, in one read-only transaction: migration 026 (Unavailable), the chain
+    exists (LookupError) and is entry / holding at S, the agent is available, no review holds the chain's
+    lock (RecheckConflict). The lock is only tried: it is released when the transaction ends."""
+    with service.read_only_tx() as conn:
+        _require_ready(conn)
+        status = service.chain_status(conn, ticker, signal_date, session=session)
+        if status is None:
+            raise LookupError(f'该单元没有 agent-2 计划链：{ticker} {signal_date}')
+        if status['state']['state'] not in ACTIVE_STATES:
+            raise RecheckConflict('chain_not_active')
+        unavailable = agent_model.unavailable_reason(settings)
+        if unavailable is not None:
+            raise RecheckConflict(f'agent_unavailable: {unavailable}')
+        if not repository.try_review_lock(conn, ticker, signal_date):
+            raise RecheckConflict('review_in_progress')
+
+
+def recheck_check(ticker: str, signal_date: date, *, now: datetime) -> None:
+    """The synchronous part of ``POST …/recheck``: raises service.Unavailable (503), LookupError (404),
+    ValueError for a bad ticker (400) or RecheckConflict (409); returns None when a recheck may start.
+    S is the latest closed trading day at ``now`` (the click time)."""
+    ticker = _ticker(ticker)
+    _precheck(ticker, signal_date, session=bars_module.latest_closed_session(now),
+              settings=agent_model.settings_from_env())
+
+
+def recheck(ticker: str, signal_date: date, *, now: datetime, deps=None, run_id: str | None = None) -> dict:
+    """Review one chain now, on request (spec §8.2): ``trigger = 'recheck'``, cutoff = ``now`` — the click
+    time captured by the caller, never when this runs — and S = the latest closed trading day at ``now``.
+    The quiet-day maintain (§7.4 step 2) is skipped, so the model is always asked unless a met invalidation
+    condition decides it for the host; REVIEW_MAX_ATTEMPTS does not apply, the token cap and quota do.
+    New versions get ``origin = 'recheck'``. The preconditions are checked again (a background job may start
+    later than its request); a busy chain or one that moved meanwhile raises RecheckConflict and writes no
+    row. Returns the written plan_reviews row."""
+    ticker = _ticker(ticker)
+    deps = deps or service.Deps()
+    settings = deps.agent_settings if deps.agent_settings is not None else agent_model.settings_from_env()
+    session = bars_module.latest_closed_session(now)
+    _precheck(ticker, signal_date, session=session, settings=settings)
+    clock = deps.clock or time.monotonic
+    out = review_chain({'ticker': ticker, 'signal_date': signal_date}, session=session, now=now,
+                       trigger='recheck', run_id=run_id, deps=deps, settings=settings, started=clock(),
+                       clock=clock, quota={'exhausted': False})
+    if 'skipped_without_row' in out:
+        raise RecheckConflict(out['skipped_without_row'])
+    return out
+
+
+# ---------------------------------------------------------------- read views (spec §12)
+
+def _run_view(run: dict | None) -> dict | None:
+    if run is None:
+        return None
+    keys = ('id', 'mode', 'agent_version', 'model', 'status', 'reason', 'cutoff_at', 'output', 'counter',
+            'input_tokens', 'output_tokens', 'created_at')
+    return {**{k: run.get(k) for k in keys}, 'id': str(run['id'])}
+
+
+def _review_row(row: dict, numbers: dict[str, int]) -> dict:
+    """A stored plan_reviews row plus the version numbers it reviewed and produced."""
+    new = row.get('new_plan_id')
+    return {**row, 'head_version_no': numbers.get(str(row['head_plan_id'])),
+            'new_version_no': numbers.get(str(new)) if new is not None else None}
+
+
+def chain_view(ticker: str, signal_date: date, *, now: datetime) -> dict:
+    """One chain read at S = the latest closed trading day at ``now`` (spec §12 GET chains): ``state``
+    (``{state, mode, basis}`` of ``timeline.chain_state``), every version (plan row, the generating run's
+    output and counter, ``changes``, host ``diff``, the ``plan-shadow-1`` simulation of that version's own
+    levels), every review row, and the user inputs that apply to the chain. Read-only, no external source.
+    ValueError for a bad ticker, LookupError without an agent-2 chain, Unavailable without migration 026."""
+    ticker = _ticker(ticker)
+    session = bars_module.latest_closed_session(now)
+    with service.read_only_tx() as conn:
+        _require_ready(conn)
+        status = service.chain_status(conn, ticker, signal_date, session=session)
+        if status is None:
+            raise LookupError(f'该单元没有 agent-2 计划链：{ticker} {signal_date}')
+        head_id = str(status['head']['plan']['id'])
+        ticker_bars = repository.read_bars(conn, ticker, session, cutoff_at=now, limit=400)
+        spy = repository.read_bars(conn, service.BENCHMARK, session, cutoff_at=now, limit=400)
+        splits = repository.split_events(conn, ticker)
+        numbers = {str(v['plan_id']): v['version_no'] for v in status['versions']}
+        versions = []
+        for version in status['versions']:
+            plan = repository.plan_by_id(conn, version['plan_id'])
+            run = repository.agent_run_by_id(conn, version['agent_run_id'])
+            output = (run or {}).get('output') or {}
+            versions.append({
+                'version_no': version['version_no'], 'plan_id': str(version['plan_id']),
+                'origin': version['origin'],
+                'supersedes_plan_id': (str(version['supersedes_plan_id'])
+                                       if version['supersedes_plan_id'] is not None else None),
+                'agent_run_id': str(version['agent_run_id']), 'cutoff_at': version['cutoff_at'],
+                'as_of_session': version['as_of_session'], 'created_at': version['created_at'],
+                'is_head': str(version['plan_id']) == head_id, 'diff': version['diff'],
+                'changes': output.get('changes') or [], 'plan': plan, 'run': _run_view(run),
+                'shadow': (plan_shadow_module.simulate(plan, ticker_bars, spy, splits=splits)
+                           if plan is not None else None)})
+        reviews = [_review_row(row, numbers) for row in status['reviews']]
+        inputs = user_inputs.view(user_inputs.ticker_rows(conn, ticker), signal_date)
+    return {'ticker': ticker, 'signal_date': signal_date, 'session': session,
+            'state': status['state'], 'head_plan_id': head_id,
+            'version_no': status['head']['version']['version_no'],
+            'latest_review': service._review_view(status['latest_review']),
+            'shadow_version': plan_shadow_module.SHADOW_VERSION,
+            'versions': versions, 'reviews': reviews, 'inputs': inputs}
+
+
+def reviews_view(session: date) -> dict:
+    """Every review row of review session S (batch and recheck, oldest first) with the version numbers
+    it reviewed and produced. Read-only; Unavailable without migration 026."""
+    with service.read_only_tx() as conn:
+        _require_ready(conn)
+        rows = repository.reviews_on(conn, session)
+        numbers: dict[str, int] = {}
+        for row in rows:
+            for plan_id in (row['head_plan_id'], row['new_plan_id']):
+                if plan_id is not None and str(plan_id) not in numbers:
+                    version = repository.version_by_plan(conn, plan_id)
+                    if version is not None:
+                        numbers[str(plan_id)] = version['version_no']
+    return {'session': session, 'reviews': [_review_row(row, numbers) for row in rows]}
+
+
+# ---------------------------------------------------------------- check (spec §12)
+
+_CALL_REF = re.compile(r'call:(\d+)')
+_USER_REF = re.compile(r'user:(\d+)')
+
+
+def _refs_in(value: Any) -> list[str]:
+    """Every string under a ``refs`` key, anywhere in an output / counter JSON."""
+    found: list[str] = []
+
+    def walk(item: Any) -> None:
+        if isinstance(item, dict):
+            for key, inner in item.items():
+                if key == 'refs' and isinstance(inner, list):
+                    found.extend(str(ref) for ref in inner)
+                else:
+                    walk(inner)
+        elif isinstance(item, list):
+            for inner in item:
+                walk(inner)
+
+    walk(value)
+    return found
+
+
+def _ref_problem(ref: str, *, calls: set[int], inputs: dict[int, dict], cutoff: datetime) -> str | None:
+    """None when ``ref`` holds: ``call:N`` is a tool call of the run itself, ``user:<id>`` an input of the
+    ticker created at or before ``cutoff``."""
+    if match := _CALL_REF.fullmatch(ref):
+        return None if int(match.group(1)) in calls else f'引用 {ref} 不是生成运行的工具调用'
+    if match := _USER_REF.fullmatch(ref):
+        row = inputs.get(int(match.group(1)))
+        if row is None:
+            return f'引用 {ref} 不是该标的的用户输入'
+        if row['created_at'] > cutoff:
+            return (f"引用 {ref} 晚于截止时间（created_at {row['created_at'].isoformat()} > "
+                    f'cutoff_at {cutoff.isoformat()}）')
+        return None
+    return f'引用 {ref} 无法识别'
+
+
+def _stage_skips(conn, session: date) -> dict[str, list[str]]:
+    """Ticker -> the review stage's skip reasons on S (stage evidence, samples capped), when stage rows exist."""
+    if not repository.stage_runs_ready(conn):
+        return {}
+    out: dict[str, list[str]] = {}
+    for row in repository.stage_runs_for_session(conn, session):
+        if row['stage'] != 'review':
+            continue
+        for group in row.get('skips') or []:
+            for sample in group.get('samples') or []:
+                out.setdefault(str(sample), []).append(group['reason'])
+    return out
+
+
+def _before_batch(version: dict, session: date, first_batch: datetime | None) -> bool:
+    """Whether the version existed when the batch reviewed session S: anything generated before S, the
+    signal-day version 0 of S, and a recheck version of S written before the batch's first review row.
+    A batch review's own version (origin review, as_of S) is the batch's output, not its input."""
+    if version['as_of_session'] < session:
+        return True
+    if version['as_of_session'] > session:
+        return False
+    if version['origin'] == 'signal':
+        return True
+    return version['origin'] == 'recheck' and (first_batch is None or version['created_at'] < first_batch)
+
+
+def _check_chain(conn, chain: dict, session: date, *, stage_skips: dict[str, list[str]],
+                 out: Callable[[str], None]) -> str | None:
+    """One chain's completeness on S: 'complete', 'fresh', 'missing' or None (not due)."""
+    ticker, signal_date = chain['ticker'], chain['signal_date']
+    versions = repository.chain_versions(conn, ticker, signal_date)
+    reviews = repository.chain_reviews(conn, ticker, signal_date)
+    batch = [r for r in reviews if r['session'] == session and r['trigger'] == 'batch']
+    first_batch = min((r['created_at'] for r in batch), default=None)
+    known = [v for v in versions if _before_batch(v, session, first_batch)]
+    if not known:
+        return None                                       # the chain was born after S
+    head = max(known, key=lambda v: v['version_no'])
+    tag = f"{ticker} {signal_date} 第 {head['version_no']} 版"
+    if head['as_of_session'] == session:
+        out(f'  {tag}：当天生成（fresh_version）')
+        return 'fresh'
+    prior = [r for r in reviews if r['session'] < session or (
+        r['session'] == session and r['trigger'] == 'recheck' and (first_batch is None or r['created_at'] < first_batch))]
+    state = timeline.chain_state(
+        versions=known, head_plan=repository.plan_by_id(conn, head['plan_id']), reviews=prior,
+        decision=repository.decision_head(conn, ticker, signal_date),
+        unit_buys=service.unit_buys(conn, ticker, signal_date), open_lots=service._book(conn, ticker)['open'],
+        session=session, legacy=False)['state']
+    if state not in ACTIVE_STATES:
+        out(f'  {tag}：{state}，不需复查')
+        return None
+    if 'object_cap' in stage_skips.get(ticker, []):
+        out(f'  {tag} {state}：超出复查上限（object_cap）')
+        return None
+    effective = [r for r in batch if r['outcome'] in repository.EFFECTIVE_REVIEW_OUTCOMES]
+    if len(effective) == 1:
+        out(f"  {tag} {state}：有效批处理复查 1 条（{effective[0]['outcome']}）")
+        return 'complete'
+    why = [f"{'' if r['trigger'] == 'batch' else '重新复查 '}{r['outcome']}（{r['reason']}）"
+           for r in reviews if r['session'] == session and r['outcome'] not in repository.EFFECTIVE_REVIEW_OUTCOMES]
+    why += [f'阶段跳过（{reason}）' for reason in stage_skips.get(ticker, [])]
+    if len(effective) > 1:
+        why.insert(0, f'有效批处理复查 {len(effective)} 条')
+    out(f"缺有效复查  {tag} {state}：{'；'.join(why) or '无复查记录'}")
+    return 'missing'
+
+
+def _check_versions(conn, session: date, inputs_of: Callable[[str], dict[int, dict]]) -> tuple[int, list[str]]:
+    """(new versions of S, problems): each version generated on S points at the previous version, carries
+    its generating run's cutoff_at, and every ref of that run's output and counter holds; every review row
+    of S cites only its own review run's calls and inputs created by its cutoff."""
+    problems: list[str] = []
+    count = 0
+    for chain in repository.all_chains(conn):
+        ticker, signal_date = chain['ticker'], chain['signal_date']
+        versions = repository.chain_versions(conn, ticker, signal_date)
+        by_no = {v['version_no']: v for v in versions}
+        for version in versions:
+            if version['as_of_session'] != session:
+                continue
+            count += 1
+            tag = f"{ticker} {signal_date} 第 {version['version_no']} 版 {str(version['plan_id'])[:8]}"
+            previous = by_no.get(version['version_no'] - 1)
+            expected = str(previous['plan_id']) if previous is not None else None
+            actual = str(version['supersedes_plan_id']) if version['supersedes_plan_id'] is not None else None
+            if version['version_no'] >= 1 and actual != expected:
+                problems.append(f'{tag}：supersedes_plan_id 没有指向上一版')
+            run = repository.agent_run_by_id(conn, version['agent_run_id'])
+            if run is None or run['cutoff_at'] != version['cutoff_at']:
+                problems.append(f'{tag}：cutoff_at 与生成运行不一致')
+            if run is None:
+                continue
+            calls = {c['seq'] for c in repository.agent_tool_calls(conn, run['id'])}
+            for ref in _refs_in(run['output']) + _refs_in(run['counter']):
+                if problem := _ref_problem(ref, calls=calls, inputs=inputs_of(ticker), cutoff=version['cutoff_at']):
+                    problems.append(f'{tag}：{problem}')
+    for row in repository.reviews_on(conn, session):
+        tag = f"{row['ticker']} {row['signal_date']} 复查 {row['id']}"
+        calls = ({c['seq'] for c in repository.agent_tool_calls(conn, row['review_agent_run_id'])}
+                 if row['review_agent_run_id'] is not None else set())
+        refs = [str(r) for r in row['refs'] or []] + [f'user:{i}' for i in row['user_input_ids'] or []]
+        for ref in refs:
+            if problem := _ref_problem(ref, calls=calls, inputs=inputs_of(row['ticker']), cutoff=row['cutoff_at']):
+                problems.append(f'{tag}：{problem}')
+    return count, problems
+
+
+def check(session: date, out: Callable[[str], None] = print) -> int:
+    """§12 ``check --session``: every chain due on S — entry / holding as of the head the batch saw, not
+    generated on S (``fresh_version``, accepted) and not capped (``object_cap``) — has exactly one effective
+    batch review; plus the version and ref checks of ``_check_versions``. 0 when everything holds, 1
+    otherwise. Read-only; Unavailable (exit 2 in ``main``) without a database or migration 026.
+    Decisions and fills are read as stored (the same reading as the review stage)."""
+    cache: dict[str, dict[int, dict]] = {}
+    with service.read_only_tx() as conn:
+        _require_ready(conn)
+
+        def inputs_of(ticker: str) -> dict[int, dict]:
+            if ticker not in cache:
+                cache[ticker] = {row['id']: row for row in user_inputs.ticker_rows(conn, ticker)}
+            return cache[ticker]
+
+        skips = _stage_skips(conn, session)
+        out(f'复查完整性 {session}')
+        verdicts = [_check_chain(conn, chain, session, stage_skips=skips, out=out)
+                    for chain in repository.all_chains(conn)]
+        new_versions, problems = _check_versions(conn, session, inputs_of)
+    for problem in problems:
+        out(f'问题  {problem}')
+    complete, missing, fresh = (verdicts.count(v) for v in ('complete', 'missing', 'fresh'))
+    passed = not missing and not problems
+    out(f"汇总：{session} 应复查 {complete + missing} 条，齐全 {complete} 条，缺 {missing} 条；当天生成 {fresh} 条；"
+        f"新版 {new_versions} 份，问题 {len(problems)} 处 → {'通过' if passed else '不通过'}")
+    return 0 if passed else 1
+
+
+# ---------------------------------------------------------------- command line (spec §12)
+
+def _cli_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _cli_deps():
+    return service.Deps()
+
+
+def _date_arg(text: str) -> date:
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f'日期格式应为 YYYY-MM-DD：{text}') from None
+
+
+def _money(value: Any) -> str:
+    return '-' if value is None else f'{Decimal(str(value)):.2f}'
+
+
+def _beijing(moment: datetime | None) -> str:
+    from investment_assistant.workbench.review_digest import SH      # the workbench's Beijing-time constant
+
+    return moment.astimezone(SH).strftime('%Y-%m-%d %H:%M') if moment is not None else '-'
+
+
+def _chain_cmd(args: argparse.Namespace, out: Callable[[str], None]) -> int:
+    try:
+        view = chain_view(args.ticker, args.date, now=_cli_now())
+    except LookupError as exc:
+        out(str(exc))
+        return 1
+    state = view['state']
+    out(f"链 {view['ticker']} {view['signal_date']}  状态 {state['state']}（{state['basis']}）  "
+        f"复查交易日 {view['session']}  最新第 {view['version_no']} 版")
+    for v in view['versions']:
+        plan = v['plan'] or {}
+        shadow = (v['shadow'] or {}).get('status', '-')
+        out(f"第 {v['version_no']} 版  {v['origin']}  {v['plan_id'][:8]}  生成 {_beijing(v['created_at'])}  "
+            f"截止 {_beijing(v['cutoff_at'])}  入场 {_money(plan.get('entry_low'))}–{_money(plan.get('entry_high'))}  "
+            f"止损 {_money(plan.get('stop'))}  T1 {_money(plan.get('target1'))}  "
+            f"有效 {plan.get('valid_from')}…{plan.get('valid_until')}  {plan.get('status')}  影子 {shadow}")
+        if v['diff']:
+            out('  差异：' + '；'.join(f"{d['field']} {d['before']} → {d['after']}" for d in v['diff']))
+    for r in view['reviews']:
+        produced = f" → 第 {r['new_version_no']} 版" if r['new_version_no'] is not None else ''
+        failed = (r['detail'] or {}).get('revision_status')
+        out(f"复查 {r['session']}  {r['trigger']}  {r['outcome']}（{r['decided_by']}）  第 {r['head_version_no']} 版"
+            f"{produced}  {r['reason']}{f'  修订未通过：{failed}' if failed else ''}")
+    for row in view['inputs']:
+        body = ' '.join(row['body'].split())[:40]
+        out(f"输入 {row['ref']}  {row['kind']}  {row['status']}  {_beijing(row['created_at'])}  {body}")
+    return 0
+
+
+def _recheck_cmd(args: argparse.Namespace, out: Callable[[str], None]) -> int:
+    run_id = f'plan_recheck-cli-{uuid.uuid4().hex[:8]}'
+    try:
+        row = recheck(args.ticker, args.date, now=_cli_now(), deps=_cli_deps(), run_id=run_id)
+    except (RecheckConflict, LookupError) as exc:
+        out(f'不能重新复查：{exc}')
+        return 1
+    out(f"复查记录 {row['id']}  {row['session']}  {row['outcome']}（{row['decided_by']}）  {row['reason']}")
+    out(f"新版：{row['new_plan_id'] or '无'}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``chain`` prints one chain (read-only; 1 without a chain); ``recheck`` reviews one chain now
+    (writes; 1 on a 409-type conflict or without a chain); ``check`` verifies one session's reviews
+    (read-only; 1 on any violation). Exit 2 for bad arguments or an unavailable database / migration 026."""
+    parser = argparse.ArgumentParser(prog='python -m investment_assistant.workbench.plan_review',
+                                     description='Agent 计划链：查看、重新复查与复查完整性核对。')
+    commands = parser.add_subparsers(dest='command', required=True)
+    for name, text in (('chain', '打印链状态、各版本与复查记录（只读）'), ('recheck', '立即重新复查一条链（写）')):
+        sub = commands.add_parser(name, help=text)
+        sub.add_argument('--ticker', required=True, help='标的')
+        sub.add_argument('--date', type=_date_arg, required=True, help='信号日，YYYY-MM-DD')
+    checker = commands.add_parser('check', help='核对一个交易日的复查完整性（只读）')
+    checker.add_argument('--session', type=_date_arg, required=True, help='复查交易日，YYYY-MM-DD')
+    args = parser.parse_args(argv)
+    try:
+        if args.command == 'check':
+            return check(args.session, print)
+        return (_chain_cmd if args.command == 'chain' else _recheck_cmd)(args, print)
+    except service.Unavailable as exc:
+        print(f'数据库不可用：{exc}', file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(f'参数错误：{exc}', file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
