@@ -8,7 +8,7 @@ with an UPDATE (test data only; the code never updates these rows).
 import os
 import re
 import uuid
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import timedelta
 
 import psycopg
@@ -34,6 +34,27 @@ def add(db, now=None, **overrides):
 def backdate(db, input_id, when):
     db.execute('UPDATE user_inputs SET created_at = %s WHERE id = %s', [when, input_id])
     db.commit()
+
+
+@pytest.fixture
+def own_lock_connections(monkeypatch):
+    """Each run lock on a connection of its own, as in production (the db fixture otherwise hands every
+    caller the one shared test connection, and session-level advisory locks are re-entrant per session)."""
+    url = os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']
+
+    @contextmanager
+    def connect():
+        with psycopg.connect(url) as conn:
+            yield conn
+
+    monkeypatch.setattr(plan_review, '_lock_connection', connect)
+
+
+@pytest.fixture
+def agent_env(monkeypatch):
+    monkeypatch.setenv('WORKBENCH_AGENT_PROVIDER', 'zhipu')
+    monkeypatch.setenv('ZHIPU_API_KEY', 'sk-test')
+    monkeypatch.delenv('WORKBENCH_AGENT_DAILY_TOKENS', raising=False)
 
 
 def deps_for(model, agent=None):
@@ -75,6 +96,17 @@ def test_add_without_migration_026_is_unavailable(db, monkeypatch):
         user_inputs.add(payload(), now=evening(day(1)))
     with pytest.raises(service.Unavailable, match='迁移 026 未执行'):
         user_inputs.list_for('SYNTH', None)
+
+
+def test_request_id_reused_concurrently_is_conflict(db, monkeypatch):
+    """Two requests with one request_id under different tickers each pass their own ticker's lock; the
+    unique index decides, and the loser is a 409, not a 500."""
+    request_id = str(uuid.uuid4())
+    user_inputs.add(payload(request_id=request_id), now=evening(day(1)))
+    monkeypatch.setattr(repository, 'user_input_by_request', lambda conn, rid: None)   # 另一请求还没提交时的视角
+    with pytest.raises(ledger.Conflict):
+        user_inputs.add(payload(request_id=request_id, ticker='SYNA'), now=evening(day(1)))
+    assert db.execute('SELECT count(*) FROM user_inputs').fetchone()[0] == 1
 
 
 def test_idempotent_and_conflict(db):
@@ -217,15 +249,16 @@ def test_recheck_preconditions(db, monkeypatch):
     assert [r['outcome'] for r in reviews(db, 'SYNTH')] == []          # 前置检查不写行
 
 
-def test_recheck_and_batch_are_mutually_exclusive(db, monkeypatch):
-    """Review Focus 5: while another connection holds review:<ticker>:<signal_date>, a recheck is a 409
-    (review_in_progress) and the batch skips the chain without a row."""
+@pytest.mark.parametrize('lock', ['review', 'review-run'])
+def test_recheck_and_batch_are_mutually_exclusive(db, agent_env, lock):
+    """Review Focus 5: while another connection holds the chain's write lock review:<ticker>:<signal_date>
+    or its run lock review-run:<ticker>:<signal_date>, a recheck is a 409 (review_in_progress) and the batch
+    skips the chain without a row."""
     market = Market()
     signal_day(db, market, ['SYNTH'])
-    monkeypatch.setenv('ZHIPU_API_KEY', 'sk-test')
-    monkeypatch.setenv('WORKBENCH_AGENT_PROVIDER', 'zhipu')
     with psycopg.connect(os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']) as other:
-        other.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', [f'review:SYNTH:{S1.isoformat()}'])
+        other.execute('SELECT pg_advisory_xact_lock(hashtext(%s))' if lock == 'review'
+                      else 'SELECT pg_advisory_lock(hashtext(%s))', [f'{lock}:SYNTH:{S1.isoformat()}'])
         with pytest.raises(plan_review.RecheckConflict, match='review_in_progress'):
             plan_review.recheck_check('SYNTH', S1, now=evening(day(1)))
         model = make_model()
@@ -233,6 +266,7 @@ def test_recheck_and_batch_are_mutually_exclusive(db, monkeypatch):
             plan_review.recheck('SYNTH', S1, now=evening(day(1)), deps=deps_for(model))
         summary, rows, batch_model = run(db, market, 1, tickers=['SYNTH'])
         other.rollback()
+        other.execute('SELECT pg_advisory_unlock_all()')
     assert model.calls == {} and batch_model.calls.get('review', 0) == 0
     assert reviews(db) == []
     assert skips(rows['review']) == {'review_in_progress': ['SYNTH']}
@@ -254,3 +288,73 @@ def test_recheck_on_a_held_chain_reviews_in_holding_mode(db):
     model = make_model(review=verdict('SYNTH', 'maintain', '持仓照常', first=tool('get_trigger', {}, 'r1')))
     row = plan_review.recheck('SYNTH', S1, now=evening(day(1)) + timedelta(minutes=30), deps=deps_for(model))
     assert (row['mode'], row['outcome'], row['trigger']) == ('holding', 'maintain', 'recheck')
+
+
+def test_recheck_while_batch_reviews_the_chain_is_409(db, agent_env, own_lock_connections):
+    """Important: the batch holds the chain's run lock through its model call, so a recheck clicked
+    meanwhile is a 409 at the precheck and, if it was already queued, stops before any model call."""
+    market = Market()
+    signal_day(db, market, ['SYNTH'])
+    seen = []
+    late = make_model()
+
+    def click():
+        for attempt in (lambda: plan_review.recheck_check('SYNTH', S1, now=evening(day(1))),
+                        lambda: plan_review.recheck('SYNTH', S1, now=evening(day(1)), deps=deps_for(late))):
+            with pytest.raises(plan_review.RecheckConflict) as raised:
+                attempt()
+            seen.append(raised.value.reason)
+
+    model = make_model(review=[click, *verdict('SYNTH', 'maintain', '批处理照旧')])
+    run(db, market, 1, tickers=['SYNTH'], model=model)
+    assert seen == ['review_in_progress', 'review_in_progress'] and late.calls == {}
+    [row] = reviews(db)
+    assert (row['trigger'], row['outcome'], row['reason']) == ('batch', 'maintain', '批处理照旧')
+    plan_review.recheck_check('SYNTH', S1, now=evening(day(1)))        # 批处理结束、锁已释放
+
+
+def test_second_recheck_is_409(db, agent_env, own_lock_connections):
+    """A double click (or Today plus the plan page): the second recheck finds the first one's run lock."""
+    market = Market()
+    signal_day(db, market, ['SYNTH'], review_when={'SYNTH': QUIET})
+    run(db, market, 1, tickers=['SYNTH'])
+    seen = []
+    second = make_model()
+
+    def click_again():
+        with pytest.raises(plan_review.RecheckConflict) as raised:
+            plan_review.recheck_check('SYNTH', S1, now=evening(day(1)) + timedelta(hours=1))
+        seen.append(raised.value.reason)
+        with pytest.raises(plan_review.RecheckConflict) as raised:
+            plan_review.recheck('SYNTH', S1, now=evening(day(1)) + timedelta(hours=1), deps=deps_for(second))
+        seen.append(raised.value.reason)
+
+    first = make_model(review=[click_again, *verdict('SYNTH', 'maintain', '第一次', cite=False)])
+    row = plan_review.recheck('SYNTH', S1, now=evening(day(1)) + timedelta(hours=1), deps=deps_for(first))
+    assert seen == ['review_in_progress', 'review_in_progress'] and second.calls == {}
+    assert row['reason'] == '第一次' and [r['trigger'] for r in reviews(db)] == ['batch', 'recheck']
+    assert db.execute("SELECT count(*) FROM agent_runs WHERE mode = 'review'").fetchone()[0] == 1
+
+
+def test_ticker_chains_lists_every_chain_newest_first(db):
+    market = Market()
+    heads = signal_day(db, market, ['SYNA', 'SYNTH'])[0]
+    repository.insert_plan_review(db, {
+        'ticker': 'SYNA', 'signal_date': S1, 'head_plan_id': heads['SYNA']['plan']['id'], 'session': day(1),
+        'trigger': 'batch', 'run_id': 'run-x', 'mode': 'entry', 'timeline_version': 'timeline-1',
+        'outcome': 'invalidate', 'decided_by': 'host', 'reason': '失效条件成立：收盘跌破 112.00', 'attempt': 1,
+        'cutoff_at': evening(day(1))})
+    db.commit()
+    before = db.execute('SELECT count(*) FROM plan_reviews').fetchone()[0]
+    out = plan_review.ticker_chains('syna', now=evening(day(1)))
+    assert out == {'ticker': 'SYNA', 'chains': [{
+        'signal_date': S1, 'state': 'invalidated', 'mode': None, 'version_no': 0,
+        'head_plan_id': str(heads['SYNA']['plan']['id']),
+        'latest_review': {'outcome': 'invalidate', 'decided_by': 'host', 'created_at': out['chains'][0]['latest_review']['created_at'],
+                          'reason': '失效条件成立：收盘跌破 112.00'}}]}
+    [synth] = plan_review.ticker_chains('SYNTH', now=evening(day(1)))['chains']
+    assert (synth['state'], synth['latest_review']) == ('entry', None)
+    assert plan_review.ticker_chains('SYNB', now=evening(day(1))) == {'ticker': 'SYNB', 'chains': []}
+    assert db.execute('SELECT count(*) FROM plan_reviews').fetchone()[0] == before
+    with pytest.raises(ValueError):
+        plan_review.ticker_chains('mu!', now=evening(day(1)))

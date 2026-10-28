@@ -252,6 +252,13 @@ def stage_runs(session: str | None = None, run_id: str | None = None):
 
 # --- v2.5 plan timeline (spec §8, §12): chains, reviews, recheck, user inputs ---
 
+@router.get('/api/workbench/chains')
+def ticker_chains(ticker: str | None = None):
+    if not ticker:
+        raise HTTPException(status_code=400, detail='ticker is required')
+    return _call(plan_review.ticker_chains, ticker, now=_now())
+
+
 @router.get('/api/workbench/chains/{ticker}/{signal_date}')
 def chain_view(ticker: str, signal_date: str):
     return _call(plan_review.chain_view, ticker, _date(signal_date, 'signal_date'), now=_now())

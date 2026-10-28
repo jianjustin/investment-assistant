@@ -288,6 +288,8 @@ def test_fresh_version_not_reviewed_same_run(db):
     review = rows['review']
     assert review['status'] == 'success' and review['input_count'] == 0 and review['output_count'] == 0
     assert skips(review) == {'fresh_version': ['SYNTH']}
+    assert review['detail']['excluded'] == [{'ticker': 'SYNTH', 'signal_date': S1.isoformat(),
+                                             'reason': 'fresh_version'}]
     assert reviews(db) == []
     assert summary['review']['objects'] == 0
     assert model.calls.get('review', 0) == 0
@@ -570,6 +572,8 @@ def test_extended_pool_chain_reviewed_last(db, monkeypatch):
                            model=make_model(review=verdict('SYNTH', 'maintain', '主列表', cite=False)))
     assert [r['ticker'] for r in repository.reviews_on(db, day(2))] == ['SYNTH']
     assert skips(stage_rows['review']) == {'object_cap': ['SYNA']}
+    assert stage_rows['review']['detail']['excluded'] == [
+        {'ticker': 'SYNA', 'signal_date': S1.isoformat(), 'reason': 'object_cap'}]
     assert stage_rows['review']['input_count'] == 1
 
 
@@ -640,7 +644,26 @@ def test_review_lock_held_skips_without_row(db):
         other.rollback()
     assert reviews(db) == [] and model.calls.get('review', 0) == 0
     assert skips(rows['review']) == {'review_in_progress': ['SYNTH']}
+    assert rows['review']['detail']['excluded'] == [
+        {'ticker': 'SYNTH', 'signal_date': S1.isoformat(), 'reason': 'review_in_progress'}]
     assert summary['review']['objects'] == 1
+
+
+def test_run_lock_held_skips_without_row(db):
+    """A review of the chain running elsewhere holds the session-level run lock review-run:<ticker>:<date>
+    for its whole run (model calls included): the batch skips the chain before reading or calling the model."""
+    import os
+
+    import psycopg
+
+    market = Market()
+    signal_day(db, market, ['SYNTH'])
+    with psycopg.connect(os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']) as other:
+        other.execute('SELECT pg_advisory_lock(hashtext(%s))', [f'review-run:SYNTH:{S1.isoformat()}'])
+        summary, rows, model = run(db, market, 1, tickers=['SYNTH'])
+        other.execute('SELECT pg_advisory_unlock_all()')
+    assert reviews(db) == [] and model.calls.get('review', 0) == 0
+    assert skips(rows['review']) == {'review_in_progress': ['SYNTH']}
 
 
 def test_chain_ticker_collected_without_rules(db):
@@ -670,9 +693,11 @@ def test_chain_ticker_collected_without_rules(db):
 
 @pytest.mark.parametrize('winner', ['invalidate', 'decision'])
 def test_chain_ended_while_model_runs_writes_nothing(db, winner):
-    """Review Focus 5: while the batch's model call runs (no lock held), a recheck invalidates the head or
-    a non-buy decision lands; the batch's write transaction sees the chain no longer active and writes no
-    version and no review row (review_in_progress)."""
+    """Review Focus 5: while the batch's model call runs, a review row written without the run lock (as a
+    stand-in for any writer that moves the chain) invalidates the head, or a non-buy decision lands; the
+    batch's write transaction sees the chain no longer active and writes no version and no review row
+    (review_in_progress). Its model runs are kept as ``skipped`` runs with their tokens, so the daily token
+    cap still counts them."""
     market = Market()
     v0 = signal_day(db, market, ['SYNTH'])[0]['SYNTH']
 
@@ -694,7 +719,11 @@ def test_chain_ended_while_model_runs_writes_nothing(db, winner):
     assert [v['version_no'] for v in repository.chain_versions(db, 'SYNTH', S1)] == [0]
     batch_rows = [r for r in reviews(db) if r['trigger'] == 'batch']
     assert batch_rows == []
-    assert db.execute("SELECT count(*) FROM agent_runs WHERE mode IN ('review', 'revise')").fetchone()[0] == 0
+    lost = db.execute("SELECT mode, status, reason, input_tokens, output_tokens, plan_id FROM agent_runs "
+                      "WHERE mode IN ('review', 'revise') ORDER BY mode").fetchall()
+    assert lost == [('review', 'skipped', 'review_in_progress', 20, 10, None),
+                    ('revise', 'skipped', 'review_in_progress', 40, 20, None)]
+    assert repository.agent_tokens_on(db, day(1)) >= 90
     assert skips(rows['review']) == {'review_in_progress': ['SYNTH']}
     assert summary['review']['outcomes'] == {'maintain': 0, 'revise': 0, 'invalidate': 0, 'skipped': 0, 'error': 0}
 

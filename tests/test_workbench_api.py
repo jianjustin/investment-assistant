@@ -572,3 +572,23 @@ def test_timeline_reads_map_errors(client, monkeypatch, path, module, target):
         monkeypatch.setattr(mod, target, raiser(exc))
         resp = client.get(path)
         assert resp.status_code == code and resp.json()['error'] == str(exc)
+
+
+def test_ticker_chains_route_delegates_and_maps_errors(client, monkeypatch):
+    from investment_assistant.workbench import plan_review
+    seen = {}
+
+    def ticker_chains(ticker, *, now):
+        seen.update(ticker=ticker, now=now)
+        return {'ticker': 'SYNTH', 'chains': [{'signal_date': date(2026, 9, 1), 'state': 'entry'}]}
+
+    monkeypatch.setattr(plan_review, 'ticker_chains', ticker_chains)
+    resp = client.get('/api/workbench/chains', params={'ticker': 'synth'})
+    assert resp.status_code == 200
+    assert resp.json() == {'ticker': 'SYNTH', 'chains': [{'signal_date': '2026-09-01', 'state': 'entry'}]}
+    assert seen['ticker'] == 'synth' and seen['now'].tzinfo is not None
+    assert client.get('/api/workbench/chains').status_code == 400
+    for exc, code in ((ValueError('Invalid US stock ticker'), 400), (service.Unavailable('迁移 026 未执行'), 503)):
+        monkeypatch.setattr(plan_review, 'ticker_chains', raiser(exc))
+        resp = client.get('/api/workbench/chains', params={'ticker': 'SYNTH'})
+        assert resp.status_code == code and resp.json()['error'] == str(exc)

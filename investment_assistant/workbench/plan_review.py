@@ -12,6 +12,12 @@ model runs with no transaction open; everything the review produces (review run,
 version row, review row) is written in ONE transaction that takes the lock again and re-checks that the
 head did not move (a recheck may have written a version meanwhile → ``review_in_progress``, no row).
 A busy lock (a recheck running on the chain) skips the chain without a row.
+
+On top of that, the whole review of one chain — read, model calls, write — runs under a session-level
+advisory lock ``review-run:<ticker>:<signal_date>`` held on a connection of its own (``_run_lock``), so a
+batch review, a recheck and a second recheck of the same chain never run their model calls side by side:
+the later one skips (batch, no row) or is a 409 (recheck). The key differs from the transaction-level write
+lock, so the review's own write transaction on another connection is not blocked by it.
 """
 from __future__ import annotations
 
@@ -21,7 +27,7 @@ import re
 import sys
 import time
 import uuid
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Callable, Iterable
@@ -82,13 +88,15 @@ def review_objects(conn, session: date, *, now: datetime) -> tuple[list[dict], d
     Objects are the chains in state entry / holding, minus a head generated on S (``fresh_version``) and a
     chain already holding an effective batch review for S (``already_reviewed``), capped at
     REVIEW_MAX_OBJECTS (``object_cap``, the tail of the order: extended entry chains go first). Exclusions:
-    ``{'skips': [(reason, ticker)], 'ended': {expired, closed_by_decision, position_closed},
-    'failures': [(ticker, reason)], 'holdings_without_chain': [ticker]}`` (held tickers without a chain in
+    ``{'skips': [(reason, ticker)], 'excluded': [{ticker, signal_date, reason}] (the same exclusions per
+    chain, uncapped), 'ended': {expired, closed_by_decision, position_closed}, 'failures': [(ticker, reason)],
+    'holdings_without_chain': [ticker]}`` (held tickers without a chain in
     the holding state, D7). A chain whose reading raises is read under a savepoint and only listed in
     ``failures``; the other chains go on.
     Records are read as stored; ``now`` is the batch cutoff, kept for symmetry with the other readers."""
     objects: list[dict] = []
     skips: list[tuple[str, str]] = []
+    excluded: list[dict] = []
     failures: list[tuple[str, str]] = []
     ended = {state: 0 for state in ENDED_STATES}
     holding: set[str] = set()
@@ -114,18 +122,24 @@ def review_objects(conn, session: date, *, now: datetime) -> tuple[list[dict], d
             continue
         if obj['state'] == 'holding':
             holding.add(obj['ticker'])
-        if obj['as_of_session'] == session:
-            skips.append(('fresh_version', obj['ticker']))
-            continue
-        if reviewed:
-            skips.append(('already_reviewed', obj['ticker']))
+        reason = ('fresh_version' if obj['as_of_session'] == session
+                  else 'already_reviewed' if reviewed else None)
+        if reason is not None:
+            skips.append((reason, obj['ticker']))
+            excluded.append(_excluded(obj, reason))
             continue
         objects.append(obj)
     objects.sort(key=_order)
     skips += [('object_cap', obj['ticker']) for obj in objects[REVIEW_MAX_OBJECTS:]]
+    excluded += [_excluded(obj, 'object_cap') for obj in objects[REVIEW_MAX_OBJECTS:]]
     held = repository.open_position_tickers(conn)
-    return objects[:REVIEW_MAX_OBJECTS], {'skips': skips, 'ended': ended, 'failures': failures,
-                                          'holdings_without_chain': sorted(held - holding)}
+    return objects[:REVIEW_MAX_OBJECTS], {'skips': skips, 'excluded': excluded, 'ended': ended,
+                                          'failures': failures, 'holdings_without_chain': sorted(held - holding)}
+
+
+def _excluded(obj: dict, reason: str) -> dict:
+    """One chain the stage did not review on S, as recorded in the stage's ``detail.excluded``."""
+    return {'ticker': obj['ticker'], 'signal_date': obj['signal_date'].isoformat(), 'reason': reason}
 
 
 def chain_tickers(conn, session: date, *, now: datetime, exclude: Iterable[str],
@@ -279,8 +293,54 @@ def _reason(text: Any, settings) -> str:
 
 # ---------------------------------------------------------------- one chain
 
+def _lock_connection():
+    """A connection of its own for the run lock: a session-level lock must not ride on a connection whose
+    transactions commit and roll back underneath it."""
+    return service.connection()
+
+
+@contextmanager
+def _run_lock(ticker: str, signal_date: date):
+    """Try the chain's session-level run lock ``review-run:<ticker>:<signal_date>``; yields whether it is
+    held. Held for the whole ``with`` block on a dedicated connection and released on the way out. The
+    connection comes from the process pool and goes back to it, so if the unlock itself fails the
+    connection is closed (a closed connection releases its session locks and the pool drops it) rather than
+    returned still holding the lock."""
+    import psycopg
+
+    key = f'review-run:{ticker.upper()}:{signal_date.isoformat()}'
+    try:
+        with _lock_connection() as conn:
+            got = bool(conn.execute('SELECT pg_try_advisory_lock(hashtext(%s))', (key,)).fetchone()[0])
+            conn.commit()
+            try:
+                yield got
+            finally:
+                if got:
+                    try:
+                        if conn.info.transaction_status == psycopg.pq.TransactionStatus.INERROR:
+                            conn.rollback()
+                        conn.execute('SELECT pg_advisory_unlock(hashtext(%s))', (key,))
+                        conn.commit()
+                    except Exception:      # noqa: BLE001 - never hand a pooled connection back still locked
+                        conn.close()
+    except psycopg.OperationalError:
+        raise service.Unavailable('数据库不可达') from None
+
+
 def review_chain(obj: dict, *, session: date, now: datetime, trigger: str, run_id: str | None, deps, settings,
                  started: float, clock: Callable[[], float], quota: dict) -> dict:
+    """Review one chain under its run lock (a busy lock → ``{'skipped_without_row': 'review_in_progress'}``,
+    nothing read, no model call); see ``_review_chain`` for the review itself."""
+    with _run_lock(obj['ticker'], obj['signal_date']) as got:
+        if not got:
+            return {'skipped_without_row': 'review_in_progress'}
+        return _review_chain(obj, session=session, now=now, trigger=trigger, run_id=run_id, deps=deps,
+                             settings=settings, started=started, clock=clock, quota=quota)
+
+
+def _review_chain(obj: dict, *, session: date, now: datetime, trigger: str, run_id: str | None, deps, settings,
+                  started: float, clock: Callable[[], float], quota: dict) -> dict:
     """Review one chain at session S and cutoff ``now`` (spec §7.3–§7.4); returns the written plan_reviews
     row, or ``{'skipped_without_row': reason}`` (review_in_progress, fresh_version, already_reviewed,
     max_attempts, chain_not_active).
@@ -323,15 +383,19 @@ def review_chain(obj: dict, *, session: date, now: datetime, trigger: str, run_i
 
     def commit(build: Callable[[Any, int], dict]) -> dict:
         try:
-            return _commit(seen, ticker=ticker, signal_date=signal_date, session=session, trigger=trigger,
-                           build=build)
+            out = _commit(seen, ticker=ticker, signal_date=signal_date, session=session, trigger=trigger,
+                          build=build)
         except service.Unavailable:
             raise
         except Exception as exc:      # the write failed and rolled back: record it, so attempts and tokens count
-            return _commit(seen, ticker=ticker, signal_date=signal_date, session=session, trigger=trigger,
-                           build=lambda conn, attempt: _write_failed(conn, attempt, exc=exc, base=base,
-                                                                     spent=spent, run_row=run_row,
-                                                                     settings=settings))
+            out = _commit(seen, ticker=ticker, signal_date=signal_date, session=session, trigger=trigger,
+                          build=lambda conn, attempt: _write_failed(conn, attempt, exc=exc, base=base,
+                                                                    spent=spent, run_row=run_row,
+                                                                    settings=settings))
+        if 'skipped_without_row' in out and spent:
+            _record_lost_runs(spent, reason=out['skipped_without_row'], run_row=run_row,
+                              attempt=len(seen['attempts']) + 1)
+        return out
 
     verdict = timeline.host_verdict(signals=signals, conditions=conditions, recheck=recheck)
     if verdict is not None:                           # §7.4 steps 1–2: the host decides, no model call
@@ -498,6 +562,16 @@ def _revision(conn, attempt: int, *, seen: dict, said_base: dict, review_run: Ca
     return {**row, 'new_plan_id': plan_id}
 
 
+def _record_lost_runs(spent: dict, *, reason: str, run_row: Callable, attempt: int) -> None:
+    """The chain moved while the model ran (a decision, or a review written without the run lock), so the
+    review writes no row; its model runs are still recorded — ``skipped`` with the reason and their tokens —
+    so the daily token cap counts them."""
+    with service._tx() as conn:
+        for run_id, (mode, tokens_in, tokens_out) in spent.items():
+            repository.insert_agent_run(conn, run_row(run_id, mode, 'skipped', attempt, reason=reason,
+                                                      input_tokens=tokens_in, output_tokens=tokens_out), [])
+
+
 def _write_failed(conn, attempt: int, *, exc: BaseException, base: dict, spent: dict, run_row: Callable,
                   settings) -> dict:
     """The review row after a failed write: every model run made so far as an ``error`` run with its
@@ -570,6 +644,7 @@ def run_stage(session: date, *, now: datetime, deps, summary: dict[str, Any], st
     detail = {'outcomes': dict(review['outcomes']), 'decided_by': {'agent': 0, 'host': 0},
               'signals': {kind: 0 for kind in timeline.SIGNAL_KINDS},
               'modes': {'entry': 0, 'holding': 0}, 'ended': excluded['ended'],
+              'excluded': list(excluded['excluded']),
               'holdings_without_chain': excluded['holdings_without_chain'], 'tokens': review['tokens']}
     if acc is not None:
         acc.input(len(objects))
@@ -618,6 +693,7 @@ def _record(obj: dict, out: dict, *, review: dict, detail: dict, acc: stages_mod
     """Fold one chain's result into summary['review'] and the stage accumulator."""
     ticker = obj['ticker']
     if 'skipped_without_row' in out:
+        detail['excluded'].append(_excluded(obj, out['skipped_without_row']))
         if acc is not None:
             acc.skip(out['skipped_without_row'], ticker)
         return
@@ -671,10 +747,11 @@ def _require_ready(conn) -> None:
         raise service.Unavailable(MIGRATION_MISSING)
 
 
-def _precheck(ticker: str, signal_date: date, *, session: date, settings) -> None:
+def _precheck(ticker: str, signal_date: date, *, session: date, settings, run_lock: bool = True) -> None:
     """§8.2's preconditions in order, in one read-only transaction: migration 026 (Unavailable), the chain
-    exists (LookupError) and is entry / holding at S, the agent is available, no review holds the chain's
-    lock (RecheckConflict). The lock is only tried: it is released when the transaction ends."""
+    exists (LookupError) and is entry / holding at S, the agent is available, no review is running on the
+    chain (RecheckConflict): neither its write lock nor — with ``run_lock`` — its run lock is held. Both
+    locks are only tried and released again; the recheck itself takes the run lock for its whole run."""
     with service.read_only_tx() as conn:
         _require_ready(conn)
         status = service.chain_status(conn, ticker, signal_date, session=session)
@@ -687,6 +764,10 @@ def _precheck(ticker: str, signal_date: date, *, session: date, settings) -> Non
             raise RecheckConflict(f'agent_unavailable: {unavailable}')
         if not repository.try_review_lock(conn, ticker, signal_date):
             raise RecheckConflict('review_in_progress')
+    if run_lock:
+        with _run_lock(ticker, signal_date) as got:
+            if not got:
+                raise RecheckConflict('review_in_progress')
 
 
 def recheck_check(ticker: str, signal_date: date, *, now: datetime) -> None:
@@ -703,18 +784,23 @@ def recheck(ticker: str, signal_date: date, *, now: datetime, deps=None, run_id:
     time captured by the caller, never when this runs — and S = the latest closed trading day at ``now``.
     The quiet-day maintain (§7.4 step 2) is skipped, so the model is always asked unless a met invalidation
     condition decides it for the host; REVIEW_MAX_ATTEMPTS does not apply, the token cap and quota do.
-    New versions get ``origin = 'recheck'``. The preconditions are checked again (a background job may start
-    later than its request); a busy chain or one that moved meanwhile raises RecheckConflict and writes no
-    row. Returns the written plan_reviews row."""
+    New versions get ``origin = 'recheck'``. The chain's run lock is taken first and held to the end (a
+    background job may start later than its request: a review that got there first makes this a
+    RecheckConflict before any model call), then the preconditions are checked again. A chain that moved
+    while the model ran raises RecheckConflict too; its model runs are kept as ``skipped`` runs with their
+    tokens. Returns the written plan_reviews row."""
     ticker = _ticker(ticker)
     deps = deps or service.Deps()
     settings = deps.agent_settings if deps.agent_settings is not None else agent_model.settings_from_env()
     session = bars_module.latest_closed_session(now)
-    _precheck(ticker, signal_date, session=session, settings=settings)
-    clock = deps.clock or time.monotonic
-    out = review_chain({'ticker': ticker, 'signal_date': signal_date}, session=session, now=now,
-                       trigger='recheck', run_id=run_id, deps=deps, settings=settings, started=clock(),
-                       clock=clock, quota={'exhausted': False})
+    with _run_lock(ticker, signal_date) as got:
+        if not got:
+            raise RecheckConflict('review_in_progress')
+        _precheck(ticker, signal_date, session=session, settings=settings, run_lock=False)
+        clock = deps.clock or time.monotonic
+        out = _review_chain({'ticker': ticker, 'signal_date': signal_date}, session=session, now=now,
+                            trigger='recheck', run_id=run_id, deps=deps, settings=settings, started=clock(),
+                            clock=clock, quota={'exhausted': False})
     if 'skipped_without_row' in out:
         raise RecheckConflict(out['skipped_without_row'])
     return out
@@ -797,6 +883,34 @@ def reviews_view(session: date) -> dict:
     return {'session': session, 'reviews': [_review_row(row, numbers) for row in rows]}
 
 
+def ticker_chains(ticker: str, *, now: datetime) -> dict:
+    """Every agent-2 chain of one ticker (ended ones included), newest signal date first, read at S = the
+    latest closed trading day at ``now`` (spec §11 「标的」页): ``{ticker, chains: [{signal_date, state,
+    mode, version_no, head_plan_id, latest_review: {outcome, decided_by, created_at, reason} | None}]}``.
+    Read-only; ValueError for a bad ticker, Unavailable without migration 026."""
+    ticker = _ticker(ticker)
+    session = bars_module.latest_closed_session(now)
+    rows = []
+    with service.read_only_tx() as conn:
+        _require_ready(conn)
+        book = service._book(conn, ticker)
+        for chain in repository.all_chains(conn):
+            if chain['ticker'].upper() != ticker:
+                continue
+            status = service.chain_status(conn, ticker, chain['signal_date'], session=session, book=book)
+            if status is None:
+                continue
+            latest = status['latest_review']
+            rows.append({'signal_date': chain['signal_date'], 'state': status['state']['state'],
+                         'mode': status['state']['mode'], 'version_no': status['head']['version']['version_no'],
+                         'head_plan_id': str(status['head']['plan']['id']),
+                         'latest_review': ({'outcome': latest['outcome'], 'decided_by': latest['decided_by'],
+                                            'created_at': latest['created_at'], 'reason': latest['reason']}
+                                           if latest is not None else None)})
+    rows.sort(key=lambda r: r['signal_date'], reverse=True)
+    return {'ticker': ticker, 'chains': rows}
+
+
 # ---------------------------------------------------------------- check (spec §12)
 
 _CALL_REF = re.compile(r'call:(\d+)')
@@ -838,42 +952,47 @@ def _ref_problem(ref: str, *, calls: set[int], inputs: dict[int, dict], cutoff: 
     return f'引用 {ref} 无法识别'
 
 
-def _stage_skips(conn, session: date) -> dict[str, list[str]]:
-    """Ticker -> the review stage's skip reasons on S (stage evidence, samples capped), when stage rows exist."""
+def _stage_evidence(conn, session: date) -> tuple[datetime | None, dict[tuple[str, str], list[str]]]:
+    """(batch start, exclusions) of S from the ``review`` stage rows: the earliest review-stage start time
+    (None without stage rows) and (ticker, signal_date ISO) -> the reasons the stage did not review that
+    chain (``detail.excluded``: fresh_version, already_reviewed, object_cap and the row-less skips)."""
     if not repository.stage_runs_ready(conn):
-        return {}
-    out: dict[str, list[str]] = {}
+        return None, {}
+    start: datetime | None = None
+    out: dict[tuple[str, str], list[str]] = {}
     for row in repository.stage_runs_for_session(conn, session):
         if row['stage'] != 'review':
             continue
-        for group in row.get('skips') or []:
-            for sample in group.get('samples') or []:
-                out.setdefault(str(sample), []).append(group['reason'])
-    return out
+        if row['started_at'] is not None and (start is None or row['started_at'] < start):
+            start = row['started_at']
+        for item in (row.get('detail') or {}).get('excluded') or []:
+            out.setdefault((str(item['ticker']).upper(), str(item['signal_date'])), []).append(item['reason'])
+    return start, out
 
 
-def _before_batch(version: dict, session: date, first_batch: datetime | None) -> bool:
+def _before_batch(version: dict, session: date, batch_start: datetime | None) -> bool:
     """Whether the version existed when the batch reviewed session S: anything generated before S, the
-    signal-day version 0 of S, and a recheck version of S written before the batch's first review row.
-    A batch review's own version (origin review, as_of S) is the batch's output, not its input."""
+    signal-day version 0 of S, and a recheck version of S written before the batch started. Without any
+    evidence of the batch's start, a recheck version of S is not taken as the batch's input (it must not
+    mask a missing batch review). A batch review's own version (origin review, as_of S) is its output."""
     if version['as_of_session'] < session:
         return True
     if version['as_of_session'] > session:
         return False
     if version['origin'] == 'signal':
         return True
-    return version['origin'] == 'recheck' and (first_batch is None or version['created_at'] < first_batch)
+    return version['origin'] == 'recheck' and batch_start is not None and version['created_at'] < batch_start
 
 
-def _check_chain(conn, chain: dict, session: date, *, stage_skips: dict[str, list[str]],
-                 out: Callable[[str], None]) -> str | None:
+def _check_chain(conn, chain: dict, session: date, *, stage_start: datetime | None,
+                 excluded: dict[tuple[str, str], list[str]], out: Callable[[str], None]) -> str | None:
     """One chain's completeness on S: 'complete', 'fresh', 'missing' or None (not due)."""
     ticker, signal_date = chain['ticker'], chain['signal_date']
     versions = repository.chain_versions(conn, ticker, signal_date)
     reviews = repository.chain_reviews(conn, ticker, signal_date)
     batch = [r for r in reviews if r['session'] == session and r['trigger'] == 'batch']
-    first_batch = min((r['created_at'] for r in batch), default=None)
-    known = [v for v in versions if _before_batch(v, session, first_batch)]
+    batch_start = stage_start or min((r['created_at'] for r in batch), default=None)
+    known = [v for v in versions if _before_batch(v, session, batch_start)]
     if not known:
         return None                                       # the chain was born after S
     head = max(known, key=lambda v: v['version_no'])
@@ -882,7 +1001,8 @@ def _check_chain(conn, chain: dict, session: date, *, stage_skips: dict[str, lis
         out(f'  {tag}：当天生成（fresh_version）')
         return 'fresh'
     prior = [r for r in reviews if r['session'] < session or (
-        r['session'] == session and r['trigger'] == 'recheck' and (first_batch is None or r['created_at'] < first_batch))]
+        r['session'] == session and r['trigger'] == 'recheck' and batch_start is not None
+        and r['created_at'] < batch_start)]
     state = timeline.chain_state(
         versions=known, head_plan=repository.plan_by_id(conn, head['plan_id']), reviews=prior,
         decision=repository.decision_head(conn, ticker, signal_date),
@@ -891,7 +1011,8 @@ def _check_chain(conn, chain: dict, session: date, *, stage_skips: dict[str, lis
     if state not in ACTIVE_STATES:
         out(f'  {tag}：{state}，不需复查')
         return None
-    if 'object_cap' in stage_skips.get(ticker, []):
+    reasons = excluded.get((ticker.upper(), signal_date.isoformat()), [])
+    if 'object_cap' in reasons:
         out(f'  {tag} {state}：超出复查上限（object_cap）')
         return None
     effective = [r for r in batch if r['outcome'] in repository.EFFECTIVE_REVIEW_OUTCOMES]
@@ -900,7 +1021,7 @@ def _check_chain(conn, chain: dict, session: date, *, stage_skips: dict[str, lis
         return 'complete'
     why = [f"{'' if r['trigger'] == 'batch' else '重新复查 '}{r['outcome']}（{r['reason']}）"
            for r in reviews if r['session'] == session and r['outcome'] not in repository.EFFECTIVE_REVIEW_OUTCOMES]
-    why += [f'阶段跳过（{reason}）' for reason in stage_skips.get(ticker, [])]
+    why += [f'阶段跳过（{reason}）' for reason in reasons]
     if len(effective) > 1:
         why.insert(0, f'有效批处理复查 {len(effective)} 条')
     out(f"缺有效复查  {tag} {state}：{'；'.join(why) or '无复查记录'}")
@@ -948,9 +1069,10 @@ def _check_versions(conn, session: date, inputs_of: Callable[[str], dict[int, di
 
 
 def check(session: date, out: Callable[[str], None] = print) -> int:
-    """§12 ``check --session``: every chain due on S — entry / holding as of the head the batch saw, not
-    generated on S (``fresh_version``, accepted) and not capped (``object_cap``) — has exactly one effective
-    batch review; plus the version and ref checks of ``_check_versions``. 0 when everything holds, 1
+    """§12 ``check --session``: every chain due on S — entry / holding as of the head the batch saw (the
+    batch's start is the review stage row's ``started_at``, else its first review row), not generated on S
+    (``fresh_version``, accepted) and not capped (``object_cap`` in the stage's ``detail.excluded``) — has
+    exactly one effective batch review; plus the version and ref checks of ``_check_versions``. 0 when everything holds, 1
     otherwise. Read-only; Unavailable (exit 2 in ``main``) without a database or migration 026.
     Decisions and fills are read as stored (the same reading as the review stage)."""
     cache: dict[str, dict[int, dict]] = {}
@@ -962,9 +1084,9 @@ def check(session: date, out: Callable[[str], None] = print) -> int:
                 cache[ticker] = {row['id']: row for row in user_inputs.ticker_rows(conn, ticker)}
             return cache[ticker]
 
-        skips = _stage_skips(conn, session)
+        stage_start, excluded = _stage_evidence(conn, session)
         out(f'复查完整性 {session}')
-        verdicts = [_check_chain(conn, chain, session, stage_skips=skips, out=out)
+        verdicts = [_check_chain(conn, chain, session, stage_start=stage_start, excluded=excluded, out=out)
                     for chain in repository.all_chains(conn)]
         new_versions, problems = _check_versions(conn, session, inputs_of)
     for problem in problems:
@@ -991,6 +1113,13 @@ def _date_arg(text: str) -> date:
         return date.fromisoformat(text)
     except ValueError:
         raise argparse.ArgumentTypeError(f'日期格式应为 YYYY-MM-DD：{text}') from None
+
+
+def _ticker_arg(text: str) -> str:
+    try:
+        return _ticker(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f'不是美股代码：{text}') from None
 
 
 def _money(value: Any) -> str:
@@ -1047,13 +1176,14 @@ def _recheck_cmd(args: argparse.Namespace, out: Callable[[str], None]) -> int:
 def main(argv: list[str] | None = None) -> int:
     """``chain`` prints one chain (read-only; 1 without a chain); ``recheck`` reviews one chain now
     (writes; 1 on a 409-type conflict or without a chain); ``check`` verifies one session's reviews
-    (read-only; 1 on any violation). Exit 2 for bad arguments or an unavailable database / migration 026."""
+    (read-only; 1 on any violation). Exit 2 for bad arguments (argparse, including a ticker that is not a US
+    ticker) or an unavailable database / migration 026; any other error is a bug and propagates."""
     parser = argparse.ArgumentParser(prog='python -m investment_assistant.workbench.plan_review',
                                      description='Agent 计划链：查看、重新复查与复查完整性核对。')
     commands = parser.add_subparsers(dest='command', required=True)
     for name, text in (('chain', '打印链状态、各版本与复查记录（只读）'), ('recheck', '立即重新复查一条链（写）')):
         sub = commands.add_parser(name, help=text)
-        sub.add_argument('--ticker', required=True, help='标的')
+        sub.add_argument('--ticker', type=_ticker_arg, required=True, help='标的')
         sub.add_argument('--date', type=_date_arg, required=True, help='信号日，YYYY-MM-DD')
     checker = commands.add_parser('check', help='核对一个交易日的复查完整性（只读）')
     checker.add_argument('--session', type=_date_arg, required=True, help='复查交易日，YYYY-MM-DD')
@@ -1064,9 +1194,6 @@ def main(argv: list[str] | None = None) -> int:
         return (_chain_cmd if args.command == 'chain' else _recheck_cmd)(args, print)
     except service.Unavailable as exc:
         print(f'数据库不可用：{exc}', file=sys.stderr)
-        return 2
-    except ValueError as exc:
-        print(f'参数错误：{exc}', file=sys.stderr)
         return 2
 
 

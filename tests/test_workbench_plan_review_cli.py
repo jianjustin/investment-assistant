@@ -37,16 +37,15 @@ def _lines(out: str, needle: str) -> list[str]:
 def test_bad_arguments_exit_two(capsys):
     for argv in (['check'], ['check', '--session', 'yesterday'], ['chain', '--ticker', 'SYNTH'],
                  ['chain', '--ticker', 'SYNTH', '--date', '2026-13-01'], ['recheck', '--date', '2026-09-01'],
-                 ['nope']):
+                 ['chain', '--ticker', 'mu!', '--date', '2026-09-01'],
+                 ['recheck', '--ticker', '1234', '--date', '2026-09-01'], ['nope']):
         with pytest.raises(SystemExit) as raised:
             plan_review.main(argv)
         assert raised.value.code == 2
     capsys.readouterr()
 
 
-def test_bad_ticker_and_unavailable_database_exit_two(capsys, monkeypatch):
-    assert plan_review.main(['chain', '--ticker', 'mu!', '--date', '2026-09-01']) == 2
-
+def test_unavailable_database_exits_two_other_errors_propagate(capsys, monkeypatch):
     def down():
         raise service.Unavailable('数据库未配置')
 
@@ -55,6 +54,13 @@ def test_bad_ticker_and_unavailable_database_exit_two(capsys, monkeypatch):
                  ['recheck', '--ticker', 'SYNTH', '--date', '2026-09-01']):
         assert plan_review.main(argv) == 2
     assert '数据库不可用' in capsys.readouterr().err
+
+    def broken(*args, **kwargs):
+        raise ValueError('a bug, not an argument')
+
+    monkeypatch.setattr(plan_review, 'check', broken)
+    with pytest.raises(ValueError, match='a bug'):                     # 只有参数错误才是退出码 2
+        plan_review.main(['check', '--session', '2026-09-02'])
 
 
 def test_migration_026_missing_exits_two(db, monkeypatch, capsys):
@@ -196,3 +202,58 @@ def test_recheck_command_writes_one_review(db, capsys, monkeypatch):
                         lambda: service.Deps(agent_model=make_model(), agent_settings=settings(api_key=None)))
     code, out = _run(capsys, 'recheck', '--ticker', 'SYNTH', '--date', S1.isoformat())
     assert code == 1 and 'agent_unavailable: not_configured' in out
+
+
+def _store_stage_rows(db, rows):
+    """The run helper records stage rows in a list; write them to stage_runs as a real batch would."""
+    for row in rows.values():
+        repository.insert_stage_run(db, row)
+    db.commit()
+
+
+def test_check_reads_object_cap_per_chain_from_stage_evidence(db, capsys, monkeypatch):
+    market = Market()
+    signal_day(db, market, ['SYNA', 'SYNTH'])
+    monkeypatch.setattr(plan_review, 'REVIEW_MAX_OBJECTS', 1)
+    _, rows, _ = run(db, market, 1, tickers=['SYNA', 'SYNTH'],
+                     model=make_model(review=verdict('SYNA', 'maintain', '照旧')))
+    assert rows['review']['detail']['excluded'] == [
+        {'ticker': 'SYNTH', 'signal_date': S1.isoformat(), 'reason': 'object_cap'}]
+    db.commit()
+    code, out = _run(capsys, 'check', '--session', day(1).isoformat())
+    assert code == 1 and _lines(out, '缺有效复查  SYNTH')                  # 没有阶段证据：看不出被上限排除
+    _store_stage_rows(db, rows)
+    code, out = _run(capsys, 'check', '--session', day(1).isoformat())
+    assert code == 0, out
+    assert _lines(out, 'SYNTH 2026-09-01 第 0 版 entry：超出复查上限（object_cap）')
+
+
+def test_later_recheck_version_does_not_mask_missing_batch_review(db, capsys):
+    """The batch skipped the chain without a row (its lock was busy); a recheck after the batch produced a
+    version of S. The batch's start comes from the review stage row, so that version is not the batch's
+    input and the chain is reported missing with the stage's reason."""
+    import os
+
+    import psycopg
+
+    market = Market()
+    signal_day(db, market, ['SYNTH'])
+    with psycopg.connect(os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']) as other:
+        other.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', [f'review:SYNTH:{S1.isoformat()}'])
+        _, rows, _ = run(db, market, 1, tickers=['SYNTH'])
+        other.rollback()
+    _store_stage_rows(db, rows)
+    model = make_model(review=verdict('SYNTH', 'revise', '止损应上移'),
+                       revise=proposal('SYNTH', stop=117.0,
+                                       changes=[{'field': 'stop', 'text': '止损上移到 117', 'refs': ['call:1']}]),
+                       counter=counter())
+    deps = service.Deps(agent_model=model, agent_checkpointer=lambda: nullcontext(InMemorySaver()),
+                        agent_settings=settings())
+    row = plan_review.recheck('SYNTH', S1, now=evening(day(1)) + timedelta(hours=1), deps=deps)
+    assert row['new_plan_id'] is not None
+    assert repository.chain_head(db, 'SYNTH', S1)['version']['as_of_session'] == day(1)
+    db.commit()
+    code, out = _run(capsys, 'check', '--session', day(1).isoformat())
+    assert code == 1
+    [missing] = _lines(out, '缺有效复查')
+    assert 'SYNTH 2026-09-01 第 0 版 entry' in missing and '阶段跳过（review_in_progress）' in missing

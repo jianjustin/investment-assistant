@@ -12,6 +12,8 @@ import uuid
 from datetime import date, datetime
 from typing import Any
 
+import psycopg
+
 from investment_assistant.data import identity
 from investment_assistant.workbench import ledger, repository, service
 
@@ -147,7 +149,12 @@ def add(payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:
         if rec['supersedes_id'] is not None and not any(
                 row['id'] == rec['supersedes_id'] for row in ticker_rows(conn, rec['ticker'])):
             raise ValueError(f"supersedes_id {rec['supersedes_id']} 不是 {rec['ticker']} 的输入")
-        return {'status': 'created', 'record': repository.insert_user_input(conn, {**rec, 'request_hash': digest})}
+        try:
+            record = repository.insert_user_input(conn, {**rec, 'request_hash': digest})
+        except psycopg.errors.UniqueViolation:
+            # the same request_id landed meanwhile under another ticker (the lock is per ticker): a reuse
+            raise ledger.Conflict('request_id was already used with different content') from None
+        return {'status': 'created', 'record': record}
 
 
 def list_for(ticker: str, signal_date: date | None) -> list[dict[str, Any]]:
