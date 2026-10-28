@@ -1,0 +1,47 @@
+---
+id: agent.reject_reasons
+title: "作废与跳过原因"
+group: agent
+version: 1
+applies_to: [agent-2, agent-1, agent-review-1]
+summary: "Agent 一份建议为什么被作废、跳过或出错，共 20 个原因代码，每个有固定的中文文案；被作废的建议只显示原因、不显示内容。"
+related: [agent.action_levels, agent.citation, agent.review_outcome, agent.invalidation]
+sources: [investment_assistant/workbench/agent/__init__.py, investment_assistant/workbench/plan_review.py]
+---
+
+## 是什么
+Agent 运行的状态有五种：`ok`（通过）、`pass`（不建议买）、`rejected`（校验作废）、`error`（出错）、`skipped`（没有运行）。后三种都带一个原因代码，页面上显示对应的中文文案。作废（`rejected`）的建议**只显示原因，不显示内容**，因为内容没通过校验，不能当作建议看待。
+
+## 怎么算 / 从哪来
+原因代码与文案由系统固定，下表是全部 20 个：
+
+| 代码 | 文案 | 一般出现的情形 |
+| --- | --- | --- |
+| `disabled` | 已关闭 | Agent 被配置为关闭，整个轨道跳过 |
+| `not_configured` | 未配置 | 缺少模型密钥 |
+| `quota_exhausted` | 额度用尽 | 模型服务额度用完，其余单元跳过 |
+| `token_budget` | 超出 token 上限 | 达到每日 token 上限 |
+| `stage_budget` | 超出时限 | 批处理开始 1500 秒后不再启动新单元 |
+| `max_attempts` | 已达重试上限 | 同一单元尝试已达上限 |
+| `malformed` | 输出格式无效 | 输出不是合法 JSON，或字段缺失、类型不对 |
+| `invalid_citation` | 引用无效已作废 | 引用不存在，或价位缺少价格类工具支撑 |
+| `level_check` | 价位校验未通过 | 价位顺序不对，或超出最近收盘价 ±50% |
+| `tool_rounds_exceeded` | 工具调用超限 | 工具调用轮数超过上限 |
+| `model_error` | 模型调用失败 | 模型服务出错 |
+| `checkpoint_unavailable` | 状态库未就绪 | 运行状态存储不可用 |
+| `thesis_count` | 论点数量不符 | 论点不在 1 到 3 条 |
+| `invalid_condition` | 失效或复查条件无效 | `kind` 未登记、不能用在该栏、参数不合法或缺引用 |
+| `changes_mismatch` | 变化说明与实际差异不符 | 修订的说明字段与系统算出的差异不一致 |
+| `no_change` | 修订与上版没有差异 | 修订版和上一版完全相同 |
+| `review_malformed` | 复查输出格式无效 | 复查结论的格式不对 |
+| `migration_026_missing` | 迁移 026 未执行 | 库里缺版本链所需的表 |
+| `review_in_progress` | 正在复查 | 这条链正被另一次复查占用 |
+| `plan_invalid` | 修订版按规则作废 | 入场期的修订版按计划规则作废（如有效期内有财报） |
+
+大致规律：校验类原因（`malformed` 到 `no_change` 一带）对应 `rejected`；预算和可用性类（`disabled`、`quota_exhausted`、`token_budget`、`stage_budget`、`max_attempts` 等）对应 `skipped`；`model_error`、`checkpoint_unavailable` 对应 `error`。
+
+## 在系统里哪里看到
+「今日」Agent 块的"Agent 未给出计划：原因"；计划页复查记录里的跳过、出错和"修订未通过"的原因；「运行一览」阶段行的跳过原因。
+
+## 注意
+作废不等于模型错了：很多是格式或预算问题。同一个单元一天内可能因不同原因多次尝试，最终展示的是最后一次的结果。
