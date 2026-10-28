@@ -77,6 +77,8 @@ NOT_READY_NOTE = '迁移 025 未执行，暂无阶段证据'
 NO_ROWS_NOTE = '这一天没有阶段证据：当天没有运行，或运行早于 v2.4（2026-10-27 起才记录）'
 STAGES_1_NOTE = '这次运行按 stages-1 记账（早于 v2.5 或迁移 026 未执行），没有每日复查阶段'
 MISSING_NOTE = '这一阶段没有证据行（记账失败，见运行报告）'
+UNFINISHED_NOTE = '还没有这一阶段的记录：运行可能仍在进行，或中途被终止'
+RUNNING_SUFFIX = '（可能仍在运行）'
 UNKNOWN_STAGE_NOTE = '未知阶段'
 CLOSED_HEADLINE = '纽约休市，未运行（只推送一行休市说明）'
 SKIP_SAMPLE_REASONS = 3                 # the sentence names the first three skip reasons (spec §7.3)
@@ -319,12 +321,28 @@ def _select(runs: list[dict], run_id: str | None) -> dict:
     return (real or runs)[-1]
 
 
+def _unfinished(run: dict) -> bool:
+    """The run has no row for its version's last stage and everything missing comes after the last recorded stage.
+
+    ``StageRecorder`` commits a stage's row as the stage ends, so a batch still running (or killed midway) looks
+    like this; a gap before a recorded stage is a bookkeeping failure instead."""
+    recorded = {r['stage'] for r in run['_members']}
+    ids = stages_module.STAGE_IDS_BY_VERSION.get(run['stages_version'], stages_module.STAGE_IDS)
+    if not ids or ids[-1] in recorded:
+        return False
+    order = [s.id for s in stages_module.STAGES]
+    last_recorded = max((order.index(stage) for stage in recorded if stage in order), default=-1)
+    missing = [order.index(stage) for stage in ids if stage not in recorded]
+    return bool(missing) and all(index > last_recorded for index in missing)
+
+
 def _stage_views(run: dict) -> list[dict]:
     members = {}
     for r in run['_members']:
         members[r['stage']] = r                        # a repeated stage keeps its last row
     registry = {s.id: s for s in stages_module.STAGES}
     ids = stages_module.STAGE_IDS_BY_VERSION.get(run['stages_version'], stages_module.STAGE_IDS)
+    missing_note = UNFINISHED_NOTE if _unfinished(run) else MISSING_NOTE
     views = []
     for stage in stages_module.STAGES:
         if stage.id in members:
@@ -333,7 +351,7 @@ def _stage_views(run: dict) -> list[dict]:
             views.append(_placeholder(stage.id, stage.title, stage.purpose, status='not_recorded',
                                       sentence=STAGES_1_NOTE))
         else:
-            views.append(_placeholder(stage.id, stage.title, stage.purpose, status='missing', sentence=MISSING_NOTE))
+            views.append(_placeholder(stage.id, stage.title, stage.purpose, status='missing', sentence=missing_note))
     for stage_id, r in members.items():
         if stage_id not in registry:
             views.append({**describe(r, title=stage_id, purpose=''), 'sentence': UNKNOWN_STAGE_NOTE})
@@ -352,8 +370,9 @@ def _headline(run: dict, stages: list[dict]) -> str:
     seconds = int((run['finished_at'] - run['started_at']).total_seconds())
     counts = [f"{text} {n}" for status, text in STATUS_TEXT.items()
               if (n := sum(1 for s in stages if s['status'] == status))]
+    suffix = RUNNING_SUFFIX if _unfinished(run) else ''
     return (f"{run['trigger_text']}运行 · {started} 开始 · 用时 {_duration_text(seconds)} · "
-            f"{len(stages)} 个阶段：{' · '.join(counts)}")
+            f"{len(stages)} 个阶段：{' · '.join(counts)}{suffix}")
 
 
 def build(rows: list[dict], *, session: date, run_id: str | None, ready: bool) -> dict:

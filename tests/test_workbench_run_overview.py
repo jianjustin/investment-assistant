@@ -282,6 +282,58 @@ def test_missing_and_unknown_stage():
     assert unknown['status'] == 'success'
 
 
+def test_unfinished_run_is_not_an_accounting_failure():
+    rows = [row('collect', i=10, o=10), row('screen', i=100, o=7)]
+    view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
+    assert [s['status'] for s in view['stages']] == ['success', 'success'] + ['missing'] * 6
+    for stage in view['stages'][2:]:
+        assert stage['sentence'] == '还没有这一阶段的记录：运行可能仍在进行，或中途被终止'
+        assert stage['status_text'] == '缺证据'
+    assert view['headline'].endswith('成功 2 · 缺证据 6（可能仍在运行）')
+
+
+def test_gap_before_a_recorded_stage_stays_an_accounting_failure():
+    rows = [row(s) for s in stages_module.STAGE_IDS if s != 'regime']
+    view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
+    assert view['stages'][2]['sentence'] == '这一阶段没有证据行（记账失败，见运行报告）'
+    assert '可能仍在运行' not in view['headline']
+    # a gap in the middle plus an unrecorded tail: the middle one is still a bookkeeping failure
+    rows = [row(s) for s in ('collect', 'signals')]
+    view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
+    assert view['stages'][1]['sentence'] == '这一阶段没有证据行（记账失败，见运行报告）'
+    assert '可能仍在运行' not in view['headline']
+
+
+def test_unfinished_run_is_not_an_accounting_failure():
+    rows = [row('collect', i=10, o=10), row('screen', i=100, o=7)]
+    view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
+    assert [s['status'] for s in view['stages']] == ['success', 'success'] + ['missing'] * 6
+    for stage in view['stages'][2:]:
+        assert stage['sentence'] == '还没有这一阶段的记录：运行可能仍在进行，或中途被终止'
+        assert stage['status_text'] == '缺证据'
+    assert view['headline'].endswith('成功 2 · 缺证据 6（可能仍在运行）')
+
+
+def test_gap_before_a_recorded_stage_stays_an_accounting_failure():
+    rows = [row(s) for s in stages_module.STAGE_IDS if s != 'regime']
+    view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
+    assert view['stages'][2]['sentence'] == '这一阶段没有证据行（记账失败，见运行报告）'
+    assert '可能仍在运行' not in view['headline']
+    # a gap in the middle plus an unrecorded tail: the middle ones are still bookkeeping failures
+    view = run_overview.build([row('collect'), row('signals')], session=SESSION, run_id=None, ready=True)
+    assert view['stages'][1]['sentence'] == '这一阶段没有证据行（记账失败，见运行报告）'
+    assert '可能仍在运行' not in view['headline']
+
+
+def test_cli_exit_code_for_an_unfinished_run(monkeypatch, capsys):
+    view = run_overview.build([row('collect'), row('screen')], session=SESSION, run_id=None, ready=True)
+    monkeypatch.setattr(run_overview, 'overview', lambda **kwargs: view)
+    assert run_overview.main(['--session', '2026-10-27']) == 0
+    out = capsys.readouterr().out.strip().splitlines()
+    assert out[0].endswith('（可能仍在运行）') and len(out) == 9
+    assert '运行可能仍在进行' in out[3]
+
+
 def test_not_ready_and_no_rows_notes():
     view = run_overview.build([], session=SESSION, run_id=None, ready=False)
     assert view == {'session': '2026-10-27', 'ready': False, 'note': '迁移 025 未执行，暂无阶段证据', 'runs': [],

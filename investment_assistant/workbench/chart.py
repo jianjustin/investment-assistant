@@ -107,7 +107,9 @@ def _plan_label(plan: dict, versions: dict[str, dict]) -> str:
 
 
 def _segments(plans: list[dict], versions: dict[str, dict], days: list[date]) -> tuple[list[dict], int]:
-    """Four short segments per plan over the chart days inside its validity; at most MAX_PLANS plans."""
+    """Four short segments per plan over the chart days inside its validity; at most MAX_PLANS plans.
+
+    Each segment carries the plan's ``status`` (``ok`` / ``invalid``) so the chart can fade voided plans."""
     clipped = []
     for plan in plans:
         start = bisect_left(days, _day(plan['valid_from']))
@@ -121,7 +123,8 @@ def _segments(plans: list[dict], versions: dict[str, dict], days: list[date]) ->
         label = _plan_label(plan, versions)
         for level, column in _LEVELS:
             segments.append({'plan_id': str(plan['id']), 'kind': plan['kind'], 'label': label, 'level': level,
-                             'from': first.isoformat(), 'to': last.isoformat(), 'value': float(plan[column])})
+                             'from': first.isoformat(), 'to': last.isoformat(), 'value': float(plan[column]),
+                             'status': plan.get('status') or 'ok'})
     return segments, max(len(clipped) - MAX_PLANS, 0)
 
 

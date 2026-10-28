@@ -134,6 +134,8 @@ export interface Segment {
   plan_id?: string; kind: string; label?: string
   level: 'entry_high' | 'entry_low' | 'stop' | 'target1' | string
   from: string; to: string; value: string | number
+  /** The plan's status: `ok`, or `invalid` for a voided plan (drawn faded). Absent reads as `ok`. */
+  status?: 'ok' | 'invalid' | string
 }
 export interface Annotations { markers: Marker[]; segments: Segment[]; omitted: number }
 

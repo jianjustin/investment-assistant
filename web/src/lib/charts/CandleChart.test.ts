@@ -103,6 +103,22 @@ it('draws one line series per segment', () => {
   expect(segmentLines[2].options.color).not.toBe(segmentLines[0].options.color)
 })
 
+it('draws segments of voided plans faded', () => {
+  render(CandleChart, {
+    data: [],
+    segments: [
+      { plan_id: 'p1', kind: 'rule', level: 'stop', from: '2026-10-20', to: '2026-10-27', value: 94, status: 'ok' },
+      { plan_id: 'p2', kind: 'rule', level: 'stop', from: '2026-10-20', to: '2026-10-27', value: 94, status: 'invalid' },
+      { plan_id: 'p3', kind: 'rule', level: 'stop', from: '2026-10-20', to: '2026-10-27', value: 94 },
+    ] as any,
+  })
+  const [ok, voided, unmarked] = made.lines
+  expect(ok.options.color).toBe('#0ea5e9')
+  expect(unmarked.options.color).toBe(ok.options.color)            // no status reads as ok
+  expect(voided.options.color).not.toBe(ok.options.color)
+  expect(voided.options.color).toMatch(/^rgba\(14, 165, 233, 0\.[0-9]+\)$/)   // same hue, lower opacity
+})
+
 it('replaces segment lines when the segments change', async () => {
   const { rerender } = render(CandleChart, { data: [], segments: [
     { plan_id: 'p1', kind: 'rule', label: '规则', level: 'stop', from: '2026-10-20', to: '2026-10-27', value: '94' }] as any })

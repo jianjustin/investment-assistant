@@ -321,7 +321,7 @@ def _validate_card(parsed: _Parsed, concept_ids: set[str], repo_root: Path,
                       if t.type == 'link_open' and (m := CARD_LINK_RE.match(t.attrGet('href') or ''))
                       and not m.group(1))
     if rewritten != card_tokens:
-        problems.append(f'{label}: 概念卡链接必须是行内的 [文字](<id>.md)，不能用引用式、带标题或文字里含方括号')
+        problems.append(f'{label}: 概念卡链接必须是行内的 [文字](<id>.md)，不能用引用式、带标题、文字里含方括号，或写在缩进代码块里')
     if len(problems) > start:
         return None
     _rewrite(found)

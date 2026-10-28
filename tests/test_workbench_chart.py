@@ -64,8 +64,8 @@ def _candidate(cid, day, rule_id, action):
     return {'id': cid, 'signal_date': day, 'rule_id': rule_id, 'action': action}
 
 
-def _plan(pid, *, valid_from, valid_until, kind='rule', plan_version='plan-1', level=100):
-    return {'id': pid, 'kind': kind, 'plan_version': plan_version, 'entry_low': Decimal(level - 1),
+def _plan(pid, *, valid_from, valid_until, kind='rule', plan_version='plan-1', level=100, status='ok'):
+    return {'id': pid, 'status': status, 'kind': kind, 'plan_version': plan_version, 'entry_low': Decimal(level - 1),
             'entry_high': Decimal(level + 1), 'stop': Decimal(level - 5), 'target1': Decimal(level + 8),
             'valid_from': valid_from, 'valid_until': valid_until, 'created_at': datetime(2026, 10, 1, tzinfo=UTC)}
 
@@ -191,3 +191,15 @@ def test_annotate_agent_label_uses_version_no():
     assert {s['label'] for s in out['segments']} == {'Agent v0'}
     out = annotate(plans=[{**plan, 'id': 'ag7'}], versions={'ag7': {'version_no': 3}})
     assert {s['label'] for s in out['segments']} == {'Agent v3'}
+
+
+def test_annotate_segments_carry_the_plan_status():
+    ok = _plan('p-ok', valid_from=date(2026, 10, 12), valid_until=date(2026, 10, 14))
+    voided = _plan('p-void', valid_from=date(2026, 10, 12), valid_until=date(2026, 10, 14), status='invalid')
+    out = annotate(plans=[ok, voided])
+    status = {}
+    for seg in out['segments']:
+        status.setdefault(seg['plan_id'], set()).add(seg['status'])
+    assert status == {'p-ok': {'ok'}, 'p-void': {'invalid'}}
+    legacy = {k: v for k, v in ok.items() if k != 'status'}                 # a row without the column reads as ok
+    assert {s['status'] for s in annotate(plans=[legacy])['segments']} == {'ok'}

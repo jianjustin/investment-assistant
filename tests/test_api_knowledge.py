@@ -91,6 +91,18 @@ def test_api_knowledge_503_lists_problems(client, root, path):
 
 
 def test_knowledge_api_works_without_database(client, root, monkeypatch):
-    monkeypatch.setenv('INVESTMENT_ASSISTANT_DATABASE_URL', '')
+    from investment_assistant.workbench import service
+
+    attempts = []
+
+    def no_database():
+        attempts.append(1)
+        raise service.Unavailable('数据库不可达')
+
+    monkeypatch.setattr(service, 'connection', no_database)
     for path in ('/api/knowledge/concepts', '/api/knowledge/concepts/plan.stop', '/api/knowledge/principles'):
         assert client.get(path).status_code == 200
+    assert attempts == []
+    # sanity: a database-backed endpoint does hit the broken connection under the same patch
+    assert client.get('/api/workbench/run-overview').status_code != 200
+    assert attempts == [1]

@@ -370,6 +370,7 @@ it('chart receives markers and segments', async () => {
   const props = chartProps.at(-1)
   expect(props.markers).toEqual(annotations.markers)
   expect(props.segments).toEqual(annotations.segments)
+  expect(await screen.findByText(/作废的计划线段淡显/)).toBeInTheDocument()      // the legend says voided plans are faded
   expect(screen.getByTestId('instrument-chart')).toHaveTextContent('候选')
 })
 

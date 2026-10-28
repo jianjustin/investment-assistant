@@ -204,6 +204,14 @@ def test_raw_html_escaped(tmp_path):
     assert '<b>' not in html and '<img' not in html
 
 
+def test_card_link_in_indented_code_block_is_rejected_with_a_hint(tmp_path):
+    write_card(tmp_path, 'indicator.atr14', title='ATR14')
+    write_card(tmp_path, 'plan.stop', related=['indicator.atr14'],
+               body='用 [ATR](indicator.atr14.md) 计算。\n\n    [示例](indicator.atr14.md)\n')
+    [problem] = problems_of(tmp_path)
+    assert 'plan.stop.md' in problem and '概念卡链接必须是行内的' in problem and '或写在缩进代码块里' in problem
+
+
 def test_javascript_href_never_becomes_a_link(tmp_path):
     write_card(tmp_path, 'plan.stop', body='[x](javascript:alert(1))')
     html = load(tmp_path).concepts['plan.stop'].html      # markdown-it refuses the scheme: plain text, no <a>

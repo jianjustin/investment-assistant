@@ -18,6 +18,15 @@
 
   // Candidate arrows follow the up / down colours; fills are blue (B) / purple (S); watch circles are amber.
   const KIND_COLOR: Record<string, string> = { rule: '#0ea5e9', own: '#a855f7', agent: '#f97316' }
+  const FADED_ALPHA = 0.3
+
+  // Segments of a voided plan (status other than ok) keep their hue at a lower opacity.
+  function segmentColor(seg: Segment): string {
+    const hex = KIND_COLOR[seg.kind] ?? '#64748b'
+    if (!seg.status || seg.status === 'ok') return hex
+    const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16))
+    return `rgba(${r}, ${g}, ${b}, ${FADED_ALPHA})`
+  }
 
   onMount(() => {
     const style = getComputedStyle(document.documentElement)
@@ -69,7 +78,7 @@
     for (const s of segmentSeries) chart.removeSeries(s)
     segmentSeries = (segments ?? []).filter(seg => seg.from <= seg.to).map((seg) => {
       const s = chart!.addLineSeries({
-        color: KIND_COLOR[seg.kind] ?? '#64748b', lineWidth: 1, lineStyle: seg.level === 'stop' ? 2 : 0,
+        color: segmentColor(seg), lineWidth: 1, lineStyle: seg.level === 'stop' ? 2 : 0,
         priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       })
       const value = Number(seg.value)

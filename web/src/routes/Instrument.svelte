@@ -366,7 +366,7 @@
           {#if blockError('chart.annotations')}<p class="text-xs text-muted">图上标注暂不可用：{blockError('chart.annotations')}</p>{/if}
           {#if annotations?.markers?.length || annotations?.segments?.length}
             <p class="text-xs text-muted">标注：▲ 买入候选 · ▼ 卖出候选 · ● 观察候选 · B / S 你的成交 · 计划价位线（入场上下沿、止损、T1）：
-              <span style={`color:${KIND_COLOR.rule}`}>规则</span> · <span style={`color:${KIND_COLOR.own}`}>自定</span> · <span style={`color:${KIND_COLOR.agent}`}>Agent</span>（虚线为止损）</p>
+              <span style={`color:${KIND_COLOR.rule}`}>规则</span> · <span style={`color:${KIND_COLOR.own}`}>自定</span> · <span style={`color:${KIND_COLOR.agent}`}>Agent</span>（虚线为止损；作废的计划线段淡显）</p>
           {/if}
         </div>
       {:else}
