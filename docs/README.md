@@ -37,6 +37,7 @@
 | 位置 | 内容 |
 | --- | --- |
 | [roadmap/roadmap.md](roadmap/roadmap.md) | 唯一的路线文档：最终目标与成功标准、原则与边界、版本总览、当前路线 v2.5–v2.9（2026-10-27 重排待确认）、远期方向、backlog、DoD 与状态用语、决策记录；同目录 `v2.x-acceptance.md` 是各版验收证据 |
+| [roadmap/v2.8-runtime-feasibility.md](roadmap/v2.8-runtime-feasibility.md) | v2.8 运行时可行性报告（2026-10-28）：`claude-code`、`codex`、`pi` 在无人值守、禁用自带工具、接本地 MCP、token 用量、批处理时限五项上的实测，以及对 v2.8 spec 的建议 |
 | [specs/](specs/) | 各阶段的设计 spec |
 | [plans/](plans/) | 各阶段的实施 plan |
 | [archive/roadmap-v1/](archive/roadmap-v1/README.md) | roadmap v1 及其 spec、plan、评审 |
