@@ -2,6 +2,52 @@
 
 版本号与 roadmap 版本对应，见 [roadmap](docs/roadmap/roadmap.md)。
 
+## v2.6.0 — 2026-10-28
+
+看懂系统（[spec](docs/specs/2026-10-28-v2.6-understanding-the-system-design.md)、[实施 plan](docs/plans/2026-10-28-v2.6-understanding-the-system.md)）：在系统里就能看懂系统——「今日」顶部的运行一览、仓库内版本化的 88 张概念卡与「知识」菜单、「原理」页、四处就地展开、Agent 推理阅读视图、「标的」页四段重排与 K 线标注，另给 Agent 加只读工具 `get_concept`。没有迁移、没有新表，不改任何计算口径与 Agent 流程。状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`（代码已合入 `main`，服务尚未重启跑 v2.6 代码；没有真实浏览器验收）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。
+
+### 新增
+
+- **知识层 `knowledge-1`**（`workbench/knowledge.py`）：读 `docs/knowledge/` 的概念卡（YAML 头 + Markdown 正文）与原理页，一次报出全部校验问题，渲染时关闭原始 HTML、卡内只许指向其它卡的链接，进程内缓存（失败不缓存），不依赖数据库。引用形式 `concept:<id>@<version>`，指向旧版时只返回当前版并带 `stale` 说明。
+- **88 张概念卡与一页原理**：七组（数据族 / 指标 / 规则 v1 / 规则计划 `plan-1` / Agent 计划 / 复盘 / 系统运作），`docs/knowledge/principles.md` 讲系统每天怎么跑；守护测试（`tests/test_knowledge_catalog.py`）让规则、原因、状态、工具、版本号变了而卡没改时失败。
+- **四个只读接口**：`GET /api/knowledge/concepts`、`GET /api/knowledge/concepts/{ref}`、`GET /api/knowledge/principles`（加载失败 503 并列出问题）；`GET /api/workbench/run-overview?session=&run_id=`（只读 `stage_runs`，每个阶段一句话、原因文案、跳过 / 失败 / 降级明细）；`GET /api/workbench/agent-runs/{run_id}/reasoning`（把一次 Agent 运行按阅读步骤摊开）。读取都在只读事务里，不调用外部数据源。
+- **两个 CLI**：`python -m investment_assistant.workbench.knowledge check | show <ref>`（校验目录、打印一张卡）；`python -m investment_assistant.workbench.run_overview --session D [--run-id R]`。
+- **Agent 工具 `get_concept`**：只读，不碰数据库、不受截止时间约束，结果带 `point_in_time: false` 与说明，调用记录里标出这一例外；是否调用由模型决定。
+- **页面与组件**：侧栏「知识」菜单（「概念」浏览与单卡页、「原理」页）；`ConceptTerm`（就地展开概念摘要）挂到「数据」菜单、推导视图、计划卡、规则基线、版本链、「今日」决定表单与「标的」页；`RunOverview`（「今日」顶部运行一览）；`AgentReasoning`（计划卡与版本链的「看推理过程」）。
+- **依赖**：显式声明 `markdown-it-py`、`PyYAML`。
+
+### 变更
+
+- **「标的」页重排**为四段：信号与计划（含「今天该关注什么」）、关键数据、背景、历史；K 线图叠加标记（触发候选、决定、成交）与计划价位线段（最多 12 份计划）。`GET /api/workbench/instruments/{ticker}` 新增 `focus`、`key_data`、`context`、`plans`、`chart.annotations` 等键（另见下文偏差），`plans` 的候选窗口比图上日期范围更宽；旧键不变。
+- **Agent 工具由八个变九个**：`agent/tools.py` 只新增 `get_concept`，原有八个工具的函数、参数、返回值、标的范围与截止时间不变。
+- **`RULE_LABELS` / `labels.RULE_TEXT`**：补 `plan_stop`（计划止损）、`plan_target`（计划目标），前后端逐字对齐，由跨语言测试固定。
+
+### 实现偏差（相对 spec）
+
+- **`instruments` 接口多两个键**：`holding`（该标的的「今日」持仓行：当前止损、T1、距离；§9.1 要求持仓块展示当前止损与 T1，而 §9.4 没有对应的键）与 `errors`（`{块: 原因}`，说明新增块里哪个读取失败）。
+- **`plans` 的候选窗口**：列出 `valid_until` 不早于图上第一根日线日期的计划，因此包含今天生成、有效期从下一交易日开始的计划，而不是严格按「与窗口相交」；这份计划在第一根有效日线出现之前没有图上线段（§9.3 字面）。
+- **财报日当天的焦点句**：写「今天发布财报（日期）」，不写「0 个交易日后…」。
+- **运行一览的带参数原因**也翻译已知参数：`agent_unavailable: not_configured` 写成「Agent 不可用：未配置」。
+- **推理视图**：反方没有调用工具或没有运行时写「反方没有调用工具 / 反方没有运行」，而不是 §13 的通用句「没有记录到工具调用」；推导校验未通过时，结果步骤里显示 `consistency_error`。
+- **知识接口 503 时 `ConceptTerm`** 保留 ⓘ 按钮并显示「概念卡暂不可用：<原因>」（按 §6.1；§13 写的是只显示文字）。
+- **卡校验比 §4.1 更严**：引用式链接、带标题的链接、原理页 `##` 标题里的链接一律不通过；原理页一节最多链接一个阶段。
+- **`get_concept` 的 id 带 `@版本`时忽略版本**，返回当前版的卡。
+- **卡内容以代码为准**（文档或 spec 与代码不一致处）：ATR14 是最近 14 个真实波幅的简单平均（只读 15 根日线），不是 Wilder 平滑；`get_trigger` / `get_position` 不按截止时间过滤；「死扛亏损」= `plan_stop` 已触发且下一交易日前未卖出。
+- **「我的补充」的概念标签**：`agent.user_input` 放在 `UserInputs` 组件上方一行（标题在组件内部，本轮不改该组件）。
+
+### 已知限制
+
+- **概念卡不按时点回读**：卡随代码版本走，`get_concept` 与卡页读到的永远是当前版，不受截止时间约束。
+- **不保存旧版正文**：`@n` 指向旧版时只返回当前版加 `stale` 说明；Agent 实际读到的正文连同 SHA-256 存在 `agent_tool_calls`，旧版看 git 历史。
+- **改卡需重启服务**，没有热加载。
+- **`get_concept` 是否被调用由模型决定**，不保证每次运行都会读卡。
+- **给 Agent 的卡正文**会改写卡内链接，包括四空格缩进代码块里的写法（围栏代码块与行内代码保持原样）。
+
+### 验收
+
+- 测试：离线 pytest 1521 passed / 495 skipped；一次性库 pytest 2016 passed；前端 `npm test` 411 passed（34 个文件），`npm run build` 通过；`knowledge check` 通过（88 张卡、原理页 12 节）。
+- **验收未完成**：只有自动化测试，没有真实浏览器用户验收，服务尚未重启；不宣称用户验收已过。重启服务、打 tag `v2.6.0`、推送 `origin` 不在本轮执行，各自先征得用户同意。
+
 ## v2.5.0 — 2026-10-28
 
 计划时间线（[spec](docs/specs/2026-10-28-v2.5-plan-timeline-design.md)、[实施 plan](docs/plans/2026-10-28-v2.5-plan-timeline.md)）：Agent 计划结构化为可复查的论点并成为默认复查对象，同一单元的 Agent 计划组成版本链，批处理每日复查，系统信号与你贴入的信息触发修订，每版各自影子跟踪。状态：`engineering_done`、`user_acceptance_pending`（迁移 026 已于 2026-10-28 在真实库执行、服务已重启跑 v2.5 代码；没有真实浏览器验收与定时运行证据）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。
