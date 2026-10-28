@@ -38,7 +38,8 @@ export interface Holding {
   stop: number | null; mode: string | null; t1_reached: boolean; target1: number | null
   last_close: number | null; to_stop_pct: number | null; to_target_pct: number | null
   next_earnings: string | null
-  has_chain?: boolean            // v2.5: the ticker has a holding agent-2 chain
+  has_chain?: boolean            // v2.5 D7: the holding's unit has an agent-2 chain (in any state)
+  chain_state?: string | null    // that chain's state at S: holding, or ended under the holding (e.g. invalidated)
 }
 export interface Snapshot {
   id: string; request_id: string; as_of: string; equity: number; note: string | null
@@ -316,7 +317,14 @@ export const SECTOR_STATE_LABELS: Record<string, string> = { strong: '强', weak
 export const TIER_LABELS: Record<string, string> = { excellent_plus: '非常优秀', excellent: '优秀', viable: '可行', attention: '需关注' }
 export const FLAG_LABELS: Record<string, string> = { chase: '追高', early_take: '过早止盈', held_loser: '死扛亏损', unplanned: '计划外' }
 export const CHOICE_LABELS: Record<Choice, string> = { accept: '采纳', reject: '否决', downgrade: '降级为观察' }
-export const KIND_TEXT: Record<string, string> = { rule: '规则', own: '自定', agent: 'Agent' }
+export const KIND_TEXT: Record<string, string> = { rule: '规则', own: '自定', agent: 'Agent', agent_latest: 'Agent（最新版）' }
+// v2.5 D17: from weekly review-6 / monthly review monthly-3 on, plans.agent counts each chain's first version
+// (plans.agent_latest its head); older snapshots keep the plain「Agent」.
+const FIRST_VERSION_CALCS = new Set(['review-6', 'monthly-3'])
+export function planKindText(kind: string, calcVersion: string | null | undefined): string {
+  if (kind === 'agent' && calcVersion && FIRST_VERSION_CALCS.has(calcVersion)) return 'Agent（首版）'
+  return KIND_TEXT[kind] ?? kind
+}
 export const AGENT_REASON_TEXT: Record<string, string> = {
   disabled: '已关闭', not_configured: '未配置', quota_exhausted: '额度用尽', token_budget: '超出 token 上限',
   stage_budget: '超出时限', max_attempts: '已达重试上限', malformed: '输出格式无效',

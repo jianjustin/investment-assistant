@@ -540,7 +540,8 @@
             · 无计划持仓（回撤规则看护）
           {/if}
           {#if h.next_earnings}<span class="text-amber-700"> · 下次财报 {h.next_earnings}</span>{/if}
-          {#if timelineReady() && h.has_chain === false}<span class="text-xs text-muted"> · 此持仓无 Agent 计划，不参与复查</span>{/if}
+          {#if timelineReady() && h.chain_state === 'invalidated'}<span class="text-xs text-muted"> · Agent 计划已作废，不再复查</span>
+          {:else if timelineReady() && h.has_chain === false}<span class="text-xs text-muted"> · 此持仓无 Agent 计划，不参与复查</span>{/if}
         </li>
       {/each}
     </ul>

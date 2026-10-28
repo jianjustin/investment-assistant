@@ -922,6 +922,18 @@ describe('agent-first layout', () => {
     expect(items.find(t => t.includes('AMD'))).not.toContain('此持仓无 Agent 计划')
   })
 
+  it('holding whose agent plan was invalidated says so instead of the no-chain note', async () => {
+    respond = today([], { holdings: [holding({ has_chain: true, chain_state: 'invalidated' }),
+                                     holding({ ticker: 'AMD', has_chain: true, chain_state: 'holding' })] })
+    render(Today)
+    await screen.findByText(/持仓止损/)
+    const items = [...document.querySelectorAll('li')].map(li => li.textContent ?? '')
+    const nvda = items.find(t => t.includes('NVDA'))
+    expect(nvda).toContain('Agent 计划已作废，不再复查')
+    expect(nvda).not.toContain('此持仓无 Agent 计划')
+    expect(items.find(t => t.includes('AMD'))).not.toContain('Agent 计划已作废')
+  })
+
   it('hides review controls when migration 026 is missing', async () => {
     const chains = [{ ticker: 'AMD', signal_date: '2026-10-20', state: 'holding', mode: 'holding', basis: '持仓中',
                       version_no: 0, head_plan_id: 'hp', valid_until: '2026-10-27', pool: 'core',

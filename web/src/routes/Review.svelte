@@ -416,7 +416,7 @@
         {#if r.stats.plans && Object.keys(r.stats.plans).length}
           <p class="text-xs text-muted">计划影子（数量 / 已过期 / R 均值 / 中位数）</p>
           <ul>{#each Object.entries(r.stats.plans as Record<string, { count: number; expired: number; r_mean: number | null; r_median: number | null }>) as [kind, p]}
-            <li>{wb.KIND_TEXT[kind] ?? kind}：{p.count} · 已过期 {p.expired} · R {p.r_mean ?? '—'} / {p.r_median ?? '—'}</li>
+            <li>{wb.planKindText(kind, r.calc_version)}：{p.count} · 已过期 {p.expired} · R {p.r_mean ?? '—'} / {p.r_median ?? '—'}</li>
           {/each}</ul>
         {/if}
         {#if r.stats.tracks}
@@ -480,7 +480,7 @@
         {#if r.stats.plans && Object.keys(r.stats.plans).length}
           <p class="text-xs text-muted">计划影子</p>
           <ul>{#each Object.entries(r.stats.plans) as [kind, p]}
-            <li>{wb.KIND_TEXT[kind] ?? kind}：{p.count} · 已过期 {p.expired} · R {p.r_mean ?? '—'} / {p.r_median ?? '—'}</li>
+            <li>{wb.planKindText(kind, r.calc_version)}：{p.count} · 已过期 {p.expired} · R {p.r_mean ?? '—'} / {p.r_median ?? '—'}</li>
           {/each}</ul>
         {/if}
         {#if r.stats.discipline}

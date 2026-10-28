@@ -554,6 +554,26 @@ def test_chain_ends(db):
     assert model.calls.get('review', 0) == 0 and reviews(db, 'SYNA') == reviews(db, 'SYNB') == []
 
 
+def test_invalidated_holding_chain_is_not_a_holding_without_chain(db):
+    """D7: a holding whose unit's agent-2 chain was invalidated has a chain — it is just no longer reviewed —
+    so only a holding with no chain at all is listed in holdings_without_chain."""
+    market = Market()
+    v0 = signal_day(db, market, ['SYNTH'])[0]['SYNTH']
+    decision = _decide(db, 'SYNTH', 'buy', plan_id=v0['plan']['id'], now=evening(S1))
+    service.add_trade(_trade('SYNTH', 'buy', '10', '125', day(1), decision['id']), now=evening(day(1)))
+    service.add_trade(_trade('SYNB', 'buy', '5', '90', day(1)), now=evening(day(1)))      # 无链的持仓
+    repository.insert_plan_review(db, {
+        'ticker': 'SYNTH', 'signal_date': S1, 'head_plan_id': v0['plan']['id'], 'session': day(1),
+        'trigger': 'batch', 'run_id': 'run-x', 'mode': 'holding', 'timeline_version': 'timeline-1',
+        'outcome': 'invalidate', 'decided_by': 'host', 'reason': '失效条件成立', 'attempt': 1,
+        'cutoff_at': evening(day(1))})
+    db.commit()
+    _, rows, model = run(db, market, 2, tickers=['SYNTH'])
+    assert model.calls.get('review', 0) == 0
+    assert rows['review']['detail']['holdings_without_chain'] == ['SYNB']
+    assert service.held_chain_states(db, day(2)) == {'SYNTH': 'invalidated'}
+
+
 def test_extended_pool_chain_reviewed_last(db, monkeypatch):
     market = Market()
     db.execute('INSERT INTO pool_tiers (ticker, tier, effective_session, recorded_at) '

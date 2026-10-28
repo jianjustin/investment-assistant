@@ -136,7 +136,7 @@ it('shows an agent suggestion and accepts against the agent plan', async () => {
   render(App)
   expect(await screen.findByText('Agent 建议（glm-5.3 · agent-1）买入')).toBeInTheDocument()
   expect(screen.getByText(/反方：/)).toBeInTheDocument()
-  expect((screen.getByLabelText(/Agent 建议/) as HTMLInputElement).checked).toBe(true)   // 规则作废 → 默认 Agent
+  expect((screen.getByRole('radio', { name: 'Agent 计划' }) as HTMLInputElement).checked).toBe(true)   // 规则作废 → 默认 Agent
   await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '按 Agent 建议执行' } })
   await fireEvent.click(screen.getByRole('button', { name: '提交决定' }))
   await waitFor(() => expect(decisions.length).toBe(1))

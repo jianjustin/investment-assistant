@@ -76,11 +76,11 @@
 
 批处理的第 7 个阶段 `review`（「每日复查」，在 `agent` 之后、`push` 之前，设计见 [v2.5 计划时间线 §7](../specs/2026-10-28-v2.5-plan-timeline-design.md#7-每日复查阶段-review)）对每条有效的 `agent-2` 计划链做一次复查，每条链每个交易日至多一条有效批处理复查记录（`plan_reviews`）。
 
-- **对象**：链状态为入场期（`entry`）或持仓期（`holding`）的链；当天刚生成的版本不复查（`fresh_version`，生成本身就是当天的记录），当天已有有效批处理复查的不再复查（`already_reviewed`）。顺序：持仓期在前，然后主列表入场期，扩展池入场期最后，各自按最新版截止日、再按标的；超过 20 条的记 `object_cap`。已作废、已否决、已平仓、已过期的链不复查，计入阶段 `detail.ended`；没有 `agent-2` 链的持仓列在 `detail.holdings_without_chain`。
+- **对象**：链状态为入场期（`entry`）或持仓期（`holding`）的链；当天刚生成的版本不复查（`fresh_version`，生成本身就是当天的记录），当天已有有效批处理复查的不再复查（`already_reviewed`）。顺序：持仓期在前，然后主列表入场期，扩展池入场期最后，各自按最新版截止日、再按标的；超过 20 条的记 `object_cap`。已作废、已否决、已平仓、已过期的链不复查，计入阶段 `detail.ended`；持仓所在单元完全没有 `agent-2` 链的列在 `detail.holdings_without_chain`（链在持仓期间被作废等已结束的不算「无链」）。
 - **链标的只采集**：有效链的标的若已不在观察池与持仓里，批处理在逐只采集之后单独采集它的日线、资讯、财报日，并计入 SEC 列表，**不跑规则**（不产生候选、单元、计划或推送）；运行报告 `pool.chains` 记这类标的数，`collect` 阶段计数照常包含它们。
 - **信号与条件**：宿主只读取截止时间之前的数据，判定七项系统信号（`new_8k`、`abnormal_move`、`stop_touched`、`t1_touched`、`expiry_near`、`regime_change`、`user_input`，窗口是「上次有效复查之后」）以及最新版的失效条件与下次复查条件（`met` / `not_met` / `unknown`，数据缺失不当作成立；当天日线缺失时 `detail.bars_missing`），全部写进复查记录。
 - **结论顺序**：① 任一失效条件成立 → 系统规则作废（「失效条件成立：<条件文案>」），不调用模型；② 没有信号、没有新的用户输入、复查条件都未满足 → 系统规则维持（「无新信号，复查条件未满足（<条件文案>）」），不调用模型；③ 预算闸门（批处理开始 1500 秒后 `stage_budget`、Agent 不可用、本次已遇额度用尽 `quota_exhausted`、当日 token 上限 `token_budget`）→ 写 `skipped` 记录；同链同日已有 3 条 `skipped` / `error` 记录后不再写行，只在阶段 `skips` 记 `max_attempts`；④ 一次 `agent-review-1` 单阶段复查（`agent_runs.mode = review`，工具按复查交易日取数，信号日的原始触发由宿主写进证据块），输出无效或模型出错 → `error` 记录；⑤ 维持 / 作废照写；⑥ 修订 → 完整的提议 + 反方 + 校验（`mode = revise`）：通过则新计划行、新版本行（`origin = review`，有效期复查日 S+1 至 S+3，入场期不晚于信号日后第 10 个交易日）、修订运行、复查运行与复查记录同一事务写入；校验不过、入场期新版按规则作废（如有效期内有财报，`plan_invalid: earnings_in_validity`）或出错 → 记录为 `revise`、没有新版、`detail.revision_status` 写原因，最新版不变，阶段 `degraded`（`revision_failed`）；修订时改口不买（`pass`）→ 作废（`detail.via = revision_pass`）。持仓期的新版即使按仓位规则作废（`no_room`）也成为最新版，链照常复查。
-- **互斥**：每条链的复查全程（读取、调用模型、写入）在单独的连接上持有会话级 advisory lock `review-run:<标的>:<信号日>`，读取与写入事务里另有事务级锁 `review:<标的>:<信号日>`；任一把被占（正在重新复查）时本次跳过（`review_in_progress`），不写行，也不调用模型。写入前核对链仍有效、最新版没变；模型调用期间链被改动（如提交了不买的决定）时不写复查记录，但模型运行记为 `skipped`（`review_in_progress`）并带 token，计入每日上限。模型调用期间不占用数据库事务。阶段 `detail.excluded` 逐链记下未复查的链与原因（`fresh_version`、`already_reviewed`、`object_cap` 与无行跳过），供 `plan_review check` 核对。
+- **互斥**：每条链的复查全程（读取、调用模型、写入）在一条不经连接池的专用连接上持有会话级 advisory lock `review-run:<标的>:<信号日>`，读取与写入事务里另有事务级锁 `review:<标的>:<信号日>`；任一把被占（正在重新复查）时本次跳过（`review_in_progress`），不写行，也不调用模型。写入前核对链仍有效、最新版没变；模型调用期间链被改动（如提交了不买的决定）时不写复查记录，但模型运行记为 `skipped`（`review_in_progress`）并带 token，计入每日上限。模型调用期间不占用数据库事务。阶段 `detail.excluded` 逐链记下未复查的链与原因（`fresh_version`、`already_reviewed`、`object_cap` 与无行跳过），供 `plan_review check` 核对。
 - **阶段证据**：`review` 行的输入 = 复查对象数，产出 = 有效复查记录数，`outputs` 列出复查记录、新版计划与复查 / 修订运行的 id，`detail` 有各结论与 `decided_by` 计数、信号触发次数、入场 / 持仓对象数、`ended`、`holdings_without_chain`、token 与新版推导核对；Agent 不可用但有对象时宿主可判定的照写、其余写 `skipped`、阶段 `degraded`（`agent_unavailable`），没有对象时整阶段 `skipped`（`agent_unavailable: <原因>`）。迁移 026 未执行时本阶段不运行，本次按 `stages-1` 记账。
 - **验证一次**：手动运行批处理后，`stage_runs` 该 `run_id` 有 8 行，`review` 行的输出计数等于 `plan_reviews` 里该交易日 `trigger = batch` 的有效记录数；信号日当天的新链只出现在 `review` 行的 `skips`（`fresh_version`）里，次一交易日才有复查记录。
 
@@ -97,7 +97,7 @@
 - **布局开关**：页头「布局：Agent 优先 / 规则优先（旧）」，存在浏览器本地（`localStorage` 键 `workbench.today.layout`，值 `agent_first` / `legacy`）；读写失败（隐私模式、禁用存储）一律按默认「Agent 优先」，切换只在本页生效。旧布局 = v2.4 的顺序：规则计划块在前、Agent 块在后，都不折叠，结构化字段照样显示在 Agent 块里。
 - **进行中的 Agent 计划**：单元列表之后一段，列出已决定买入、等待成交的入场期链与持仓期链，每行：标的 · 入场期 / 持仓期 · 第 n 版 · 最近复查（结论、决定方、时间、理由前 40 字，没有写「尚未复查」）· 今日触发的信号 ·「查看」（`#plan/<最新版 id>`）·「重新复查」。
 - **重新复查**（「今日」与计划页同一做法）：提交后轮询 `/api/runs/<run_id>`，最长 900 秒（复查加修订常超过 2 分钟）；完成显示「复查完成：<结论>」（跳过或出错时附原因，如「复查完成：跳过（超出 token 上限）」）并刷新；轮询到时限仍未结束时显示「复查仍在后台进行，稍后刷新查看」，按钮保持不可点，不当作失败；409 显示「不能重新复查：<原因>」（正在复查 / 这条链不在入场期或持仓期 / Agent 不可用：<原因>）。
-- **持仓止损**：没有 `agent-2` 链的持仓行尾标「此持仓无 Agent 计划，不参与复查」。
+- **持仓止损**：没有 `agent-2` 链的持仓行尾标「此持仓无 Agent 计划，不参与复查」；链在持仓期间被复查作废的标「Agent 计划已作废，不再复查」。
 - **降级**：迁移 026 未执行（`timeline_ready = false`）时隐藏「进行中的 Agent 计划」、「重新复查」与无链持仓的标注，规则计划与 Agent 原有内容照旧显示。
 
 ### 计划页与「标的」页

@@ -90,8 +90,8 @@ def review_objects(conn, session: date, *, now: datetime) -> tuple[list[dict], d
     REVIEW_MAX_OBJECTS (``object_cap``, the tail of the order: extended entry chains go first). Exclusions:
     ``{'skips': [(reason, ticker)], 'excluded': [{ticker, signal_date, reason}] (the same exclusions per
     chain, uncapped), 'ended': {expired, closed_by_decision, position_closed}, 'failures': [(ticker, reason)],
-    'holdings_without_chain': [ticker]}`` (held tickers without a chain in
-    the holding state, D7). A chain whose reading raises is read under a savepoint and only listed in
+    'holdings_without_chain': [ticker]}`` (held tickers whose holding unit
+    has no agent-2 chain at all, D7; a chain that ended under the holding — e.g. invalidated — still counts). A chain whose reading raises is read under a savepoint and only listed in
     ``failures``; the other chains go on.
     Records are read as stored; ``now`` is the batch cutoff, kept for symmetry with the other readers."""
     objects: list[dict] = []
@@ -132,9 +132,17 @@ def review_objects(conn, session: date, *, now: datetime) -> tuple[list[dict], d
     objects.sort(key=_order)
     skips += [('object_cap', obj['ticker']) for obj in objects[REVIEW_MAX_OBJECTS:]]
     excluded += [_excluded(obj, 'object_cap') for obj in objects[REVIEW_MAX_OBJECTS:]]
-    held = repository.open_position_tickers(conn)
+    without = repository.open_position_tickers(conn) - holding
+    if without:                             # D7: a chain that ended under a holding is still its chain
+        try:
+            with conn.transaction():
+                without -= set(service.held_chain_states(conn, session, tickers=without))
+        except service.Unavailable:
+            raise
+        except Exception:                   # noqa: BLE001 - its chain is already in ``failures``
+            pass
     return objects[:REVIEW_MAX_OBJECTS], {'skips': skips, 'excluded': excluded, 'ended': ended,
-                                          'failures': failures, 'holdings_without_chain': sorted(held - holding)}
+                                          'failures': failures, 'holdings_without_chain': sorted(without)}
 
 
 def _excluded(obj: dict, reason: str) -> dict:
@@ -294,36 +302,41 @@ def _reason(text: Any, settings) -> str:
 # ---------------------------------------------------------------- one chain
 
 def _lock_connection():
-    """A connection of its own for the run lock: a session-level lock must not ride on a connection whose
-    transactions commit and roll back underneath it."""
-    return service.connection()
+    """A connection of its own for the run lock, opened outside the process pool (autocommit): the run
+    lock is held for minutes (model calls), so it must not take one of the pool's few connections away
+    from the batch and the API, and a session-level lock must not ride on a connection whose transactions
+    commit and roll back underneath it."""
+    import psycopg
+
+    url = os.environ.get('INVESTMENT_ASSISTANT_DATABASE_URL')
+    if not url:
+        raise service.Unavailable('数据库未配置')
+    return psycopg.connect(url, autocommit=True)
 
 
 @contextmanager
 def _run_lock(ticker: str, signal_date: date):
     """Try the chain's session-level run lock ``review-run:<ticker>:<signal_date>``; yields whether it is
-    held. Held for the whole ``with`` block on a dedicated connection and released on the way out. The
-    connection comes from the process pool and goes back to it, so if the unlock itself fails the
-    connection is closed (a closed connection releases its session locks and the pool drops it) rather than
-    returned still holding the lock."""
+    held. Held for the whole ``with`` block on a dedicated, non-pooled connection, released on the way out
+    and the connection always closed (closing releases its session locks too, so a failed unlock cannot
+    leave the lock behind)."""
     import psycopg
 
     key = f'review-run:{ticker.upper()}:{signal_date.isoformat()}'
     try:
-        with _lock_connection() as conn:
+        conn = _lock_connection()
+        try:
             got = bool(conn.execute('SELECT pg_try_advisory_lock(hashtext(%s))', (key,)).fetchone()[0])
-            conn.commit()
             try:
                 yield got
             finally:
                 if got:
                     try:
-                        if conn.info.transaction_status == psycopg.pq.TransactionStatus.INERROR:
-                            conn.rollback()
                         conn.execute('SELECT pg_advisory_unlock(hashtext(%s))', (key,))
-                        conn.commit()
-                    except Exception:      # noqa: BLE001 - never hand a pooled connection back still locked
-                        conn.close()
+                    except Exception:      # noqa: BLE001 - the close below releases it anyway
+                        pass
+        finally:
+            conn.close()
     except psycopg.OperationalError:
         raise service.Unavailable('数据库不可达') from None
 
@@ -749,9 +762,11 @@ def _require_ready(conn) -> None:
 
 def _precheck(ticker: str, signal_date: date, *, session: date, settings, run_lock: bool = True) -> None:
     """§8.2's preconditions in order, in one read-only transaction: migration 026 (Unavailable), the chain
-    exists (LookupError) and is entry / holding at S, the agent is available, no review is running on the
-    chain (RecheckConflict): neither its write lock nor — with ``run_lock`` — its run lock is held. Both
-    locks are only tried and released again; the recheck itself takes the run lock for its whole run."""
+    exists (LookupError) and is entry / holding at S, the agent is available; then — with ``run_lock`` —
+    no review is running on the chain (RecheckConflict): its run lock is only tried and released again; the
+    recheck itself takes it for its whole run. The transaction-level write lock is never probed here: the
+    run lock already excludes a concurrent review, and a probe landing during the batch's write
+    transaction would make the batch drop its row after its model calls."""
     with service.read_only_tx() as conn:
         _require_ready(conn)
         status = service.chain_status(conn, ticker, signal_date, session=session)
@@ -762,8 +777,6 @@ def _precheck(ticker: str, signal_date: date, *, session: date, settings, run_lo
         unavailable = agent_model.unavailable_reason(settings)
         if unavailable is not None:
             raise RecheckConflict(f'agent_unavailable: {unavailable}')
-        if not repository.try_review_lock(conn, ticker, signal_date):
-            raise RecheckConflict('review_in_progress')
     if run_lock:
         with _run_lock(ticker, signal_date) as got:
             if not got:

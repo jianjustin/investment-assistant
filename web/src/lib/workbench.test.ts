@@ -200,3 +200,16 @@ it('rText formats sign and null', () => {
   expect(rText(0)).toBe('+0.00R')
   expect(rText(null)).toBe('—')
 })
+
+describe('planKindText', () => {
+  it('labels agent as the first version from review-6 / monthly-3 on and names agent_latest', async () => {
+    const { planKindText } = await import('./workbench')
+    expect(planKindText('agent', 'review-6')).toBe('Agent（首版）')
+    expect(planKindText('agent', 'monthly-3')).toBe('Agent（首版）')
+    expect(planKindText('agent', 'review-5')).toBe('Agent')
+    expect(planKindText('agent', 'monthly-2')).toBe('Agent')
+    expect(planKindText('agent_latest', 'review-6')).toBe('Agent（最新版）')
+    expect(planKindText('rule', 'monthly-3')).toBe('规则')
+    expect(planKindText('mystery', 'review-6')).toBe('mystery')
+  })
+})

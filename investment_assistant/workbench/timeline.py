@@ -453,6 +453,9 @@ def _input_title(row: dict) -> str:
     return f"- user:{row['id']} · {row.get('kind')} · {_iso(row.get('created_at'))} · {preview}"
 
 
+BODY_PREFIX = '    │ '          # each user-input body line in the evidence block (never on a host marker line)
+
+
 def prompt_evidence(*, head: dict, trigger: list[dict], signals: list[dict], conditions: list[dict],
                     inputs_new: list[dict], inputs_old: list[dict], last_review: dict | None) -> str:
     """The evidence block of the review and revision prompts (spec §4.3, §7.3, §8.1, D24).
@@ -491,9 +494,10 @@ def prompt_evidence(*, head: dict, trigger: list[dict], signals: list[dict], con
     for row in included:
         source = f" · 来源 {' '.join(str(row['source_url']).split())}" if row.get('source_url') else ''
         lines.append(f"[user:{row['id']}] {row.get('kind')} · {_iso(row.get('created_at'))}{source}")
-        # Indented so a body line can never pose as a heading or another input's marker.
+        # Every body line carries the bar prefix the host's markers never have, so a body line can pose
+        # neither as a heading nor as an input's start / end marker.
         lines.append(f"    <<< user:{row['id']} 原文开始")
-        lines += [f'    {line}' for line in (row.get('body') or '').splitlines() or ['']]
+        lines += [f'{BODY_PREFIX}{line}' for line in (row.get('body') or '').splitlines() or ['']]
         lines.append(f"    >>> user:{row['id']} 原文结束")
     if omitted:
         lines.append(f'另有 {omitted} 条未纳入')

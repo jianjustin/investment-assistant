@@ -278,6 +278,24 @@ it('plan shadow and discipline label agent track', async () => {
 })
 
 
+it('review-6 weekly plan shadow labels the agent first version and latest version', async () => {
+  respond = async (url: string, init?: RequestInit) => {
+    if (url.includes('/weekly-reviews')) return json({ reviews: [{
+      id: 'w1', week_start: '2026-10-26', calc_version: 'review-6', notes: '', supersedes_id: null,
+      created_at: '2026-10-31T01:00:00Z',
+      stats: { plans: { agent: { count: 2, expired: 1, r_mean: 1.5, r_median: 1.5 },
+                        agent_latest: { count: 2, expired: 0, r_mean: 2.0, r_median: 2.0 } } } }] })
+    if (url.includes('/review/trades')) return json({ session: '2026-10-29', calc_version: 'review-1', closed: [], open: [] })
+    if (url === '/api/workbench/trades' && init?.method !== 'POST') return json({ trades: [] })
+    if (url.includes('/review/shadow')) return json({ session: '2026-10-29', since: '2026-07-24', calc_version: 'review-1', units: [] })
+    return json({})
+  }
+  render(Review, { sub: 'weekly' })
+  expect(await screen.findByText(/Agent（首版）：2 · 已过期 1/)).toBeInTheDocument()
+  expect(screen.getByText(/Agent（最新版）：2 · 已过期 0 · R 2/)).toBeInTheDocument()
+  expect(screen.queryByText(/agent_latest/)).toBeNull()
+})
+
 // --- three-track tab and review pushes (P4 §4, §6) ---
 
 const emptyStats = (units = 0, mean: number | null = null) => ({ units, determined: units, pending: 0, missing: 0,

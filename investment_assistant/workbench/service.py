@@ -843,9 +843,10 @@ def today(*, now: datetime) -> dict[str, Any]:
                 units.append(unit)
         holdings = _holdings(conn, session, now=now)
         chains = _active_chains(conn, session) if ready else []
-        held = {c['ticker'] for c in chains if c['state'] == 'holding'}
+        held = held_chain_states(conn, session) if ready else {}
         for holding in holdings:      # D7: a holding without an agent-2 chain is not reviewed
             holding['has_chain'] = holding['ticker'] in held
+            holding['chain_state'] = held.get(holding['ticker'])
         market = repository.latest_regime(conn, on_or_before=session, cutoff_at=now)
         screen_report = screening.report(conn, session, now=now)
     return {'session': session, 'units': units, 'extended_units': extended_units,
@@ -2043,6 +2044,39 @@ def _active_chains(conn, session: date) -> list[dict[str, Any]]:
             'signals_today': fired,
         })
     return rows
+
+
+def _unit_held(conn, ticker: str, signal_date: date, book: dict[str, Any]) -> bool:
+    """Whether a live buy on the unit's decision chain still has an open lot (§5.3's reading)."""
+    buy_ids = {str(b['id']) for b in unit_buys(conn, ticker, signal_date) if b.get('voided_at') is None}
+    return any(str(lot.get('buy_trade_id')) in buy_ids and Decimal(str(lot.get('quantity') or 0)) > 0
+               for lot in book['open'])
+
+
+def held_chain_states(conn, session: date, *, tickers: set[str] | None = None) -> dict[str, str]:
+    """D7: held ticker -> state at S of the agent-2 chain on the unit that holds the position: a chain in
+    state holding, or one that ended while its unit's buys still have open lots (invalidated by a review,
+    closed by a later decision) — such a holding has a chain, it just is no longer reviewed. ``holding``
+    wins when a ticker has several. A held ticker absent from the result has no agent-2 chain at all.
+    ``tickers`` limits the read to those tickers."""
+    out: dict[str, str] = {}
+    books: dict[str, dict[str, Any]] = {}
+    for chain in repository.all_chains(conn):
+        ticker, signal_date = chain['ticker'], chain['signal_date']
+        if tickers is not None and ticker not in tickers:
+            continue
+        book = books.get(ticker) or books.setdefault(ticker, _book(conn, ticker))
+        if book['position'] is None:
+            continue
+        status = chain_status(conn, ticker, signal_date, session=session, book=book)
+        if status is None:
+            continue
+        state = status['state']['state']
+        if state != 'holding' and not _unit_held(conn, ticker, signal_date, book):
+            continue
+        if out.get(ticker) != 'holding':
+            out[ticker] = state
+    return out
 
 
 def _agent_status_line(run: dict[str, Any] | None) -> str | None:

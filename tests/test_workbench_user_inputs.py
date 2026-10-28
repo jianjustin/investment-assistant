@@ -20,6 +20,8 @@ from test_workbench_plan_review import (QUIET, S1, Market, counter, day, evening
                                         reviews, run, settings, signal_day, skips, tool, verdict)
 from investment_assistant.workbench import ledger, plan_review, repository, service, user_inputs
 
+REAL_LOCK_CONNECTION = plan_review._lock_connection      # before the db fixture points it at the test database
+
 
 def payload(**overrides):
     out = {'request_id': str(uuid.uuid4()), 'ticker': 'SYNTH', 'kind': 'research', 'body': '研报：毛利率上行'}
@@ -34,20 +36,6 @@ def add(db, now=None, **overrides):
 def backdate(db, input_id, when):
     db.execute('UPDATE user_inputs SET created_at = %s WHERE id = %s', [when, input_id])
     db.commit()
-
-
-@pytest.fixture
-def own_lock_connections(monkeypatch):
-    """Each run lock on a connection of its own, as in production (the db fixture otherwise hands every
-    caller the one shared test connection, and session-level advisory locks are re-entrant per session)."""
-    url = os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']
-
-    @contextmanager
-    def connect():
-        with psycopg.connect(url) as conn:
-            yield conn
-
-    monkeypatch.setattr(plan_review, '_lock_connection', connect)
 
 
 @pytest.fixture
@@ -249,16 +237,13 @@ def test_recheck_preconditions(db, monkeypatch):
     assert [r['outcome'] for r in reviews(db, 'SYNTH')] == []          # 前置检查不写行
 
 
-@pytest.mark.parametrize('lock', ['review', 'review-run'])
-def test_recheck_and_batch_are_mutually_exclusive(db, agent_env, lock):
-    """Review Focus 5: while another connection holds the chain's write lock review:<ticker>:<signal_date>
-    or its run lock review-run:<ticker>:<signal_date>, a recheck is a 409 (review_in_progress) and the batch
-    skips the chain without a row."""
+def test_recheck_and_batch_are_mutually_exclusive(db, agent_env):
+    """Review Focus 5: while another connection holds the chain's run lock review-run:<ticker>:<signal_date>,
+    a recheck is a 409 (review_in_progress) and the batch skips the chain without a row."""
     market = Market()
     signal_day(db, market, ['SYNTH'])
     with psycopg.connect(os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']) as other:
-        other.execute('SELECT pg_advisory_xact_lock(hashtext(%s))' if lock == 'review'
-                      else 'SELECT pg_advisory_lock(hashtext(%s))', [f'{lock}:SYNTH:{S1.isoformat()}'])
+        other.execute('SELECT pg_advisory_lock(hashtext(%s))', [f'review-run:SYNTH:{S1.isoformat()}'])
         with pytest.raises(plan_review.RecheckConflict, match='review_in_progress'):
             plan_review.recheck_check('SYNTH', S1, now=evening(day(1)))
         model = make_model()
@@ -271,6 +256,63 @@ def test_recheck_and_batch_are_mutually_exclusive(db, agent_env, lock):
     assert reviews(db) == []
     assert skips(rows['review']) == {'review_in_progress': ['SYNTH']}
     plan_review.recheck_check('SYNTH', S1, now=evening(day(1)))         # 锁释放后可以重新复查
+
+
+def test_recheck_precheck_does_not_probe_the_write_lock(db, agent_env):
+    """The run lock alone decides the 409 at the precheck: a held transaction-level write lock
+    review:<ticker>:<signal_date> (another review's write transaction) does not, so a probe can never land
+    inside the batch's write transaction. A recheck that does run into it still stops before any model call
+    (its read takes the write lock), and the batch skips the chain without a row."""
+    market = Market()
+    signal_day(db, market, ['SYNTH'])
+    with psycopg.connect(os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']) as other:
+        other.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', [f'review:SYNTH:{S1.isoformat()}'])
+        assert plan_review.recheck_check('SYNTH', S1, now=evening(day(1))) is None
+        model = make_model()
+        with pytest.raises(plan_review.RecheckConflict, match='review_in_progress'):
+            plan_review.recheck('SYNTH', S1, now=evening(day(1)), deps=deps_for(model))
+        summary, rows, batch_model = run(db, market, 1, tickers=['SYNTH'])
+        other.rollback()
+    assert model.calls == {} and batch_model.calls.get('review', 0) == 0
+    assert reviews(db) == []
+    assert skips(rows['review']) == {'review_in_progress': ['SYNTH']}
+
+
+@pytest.mark.parametrize('unlock_fails', [False, True])
+def test_run_lock_connection_is_dedicated_and_closed(db, monkeypatch, unlock_fails):
+    """The run lock rides on a connection opened outside the process pool (autocommit, so the pool's few
+    connections are never held through model calls) and that connection is always closed on the way
+    out — also when the unlock fails, which then releases the lock by closing."""
+    url = os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']
+    monkeypatch.setenv('INVESTMENT_ASSISTANT_DATABASE_URL', url)
+    monkeypatch.setattr(service, 'connection', lambda: pytest.fail('the run lock must not use the pool'))
+    opened = []
+
+    class Conn:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def execute(self, sql, params=()):
+            if unlock_fails and 'unlock' in sql:
+                raise psycopg.OperationalError('unlock lost')
+            return self.conn.execute(sql, params)
+
+        def close(self):
+            self.conn.close()
+
+    def spy():
+        conn = REAL_LOCK_CONNECTION()
+        opened.append(conn)
+        return Conn(conn)
+
+    monkeypatch.setattr(plan_review, '_lock_connection', spy)
+    with plan_review._run_lock('SYNTH', S1) as got:
+        assert got and opened[0].autocommit
+    assert opened[0].closed
+    with psycopg.connect(url) as probe:                                 # 锁已释放
+        assert probe.execute('SELECT pg_try_advisory_lock(hashtext(%s))',
+                             [f'review-run:SYNTH:{S1.isoformat()}']).fetchone()[0]
+        probe.execute('SELECT pg_advisory_unlock_all()')
 
 
 def test_recheck_on_a_held_chain_reviews_in_holding_mode(db):
@@ -290,7 +332,7 @@ def test_recheck_on_a_held_chain_reviews_in_holding_mode(db):
     assert (row['mode'], row['outcome'], row['trigger']) == ('holding', 'maintain', 'recheck')
 
 
-def test_recheck_while_batch_reviews_the_chain_is_409(db, agent_env, own_lock_connections):
+def test_recheck_while_batch_reviews_the_chain_is_409(db, agent_env):
     """Important: the batch holds the chain's run lock through its model call, so a recheck clicked
     meanwhile is a 409 at the precheck and, if it was already queued, stops before any model call."""
     market = Market()
@@ -313,7 +355,7 @@ def test_recheck_while_batch_reviews_the_chain_is_409(db, agent_env, own_lock_co
     plan_review.recheck_check('SYNTH', S1, now=evening(day(1)))        # 批处理结束、锁已释放
 
 
-def test_second_recheck_is_409(db, agent_env, own_lock_connections):
+def test_second_recheck_is_409(db, agent_env):
     """A double click (or Today plus the plan page): the second recheck finds the first one's run lock."""
     market = Market()
     signal_day(db, market, ['SYNTH'], review_when={'SYNTH': QUIET})

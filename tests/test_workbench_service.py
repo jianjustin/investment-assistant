@@ -78,6 +78,15 @@ def db(workbench_db, monkeypatch):
     def connection():
         yield workbench_db
     monkeypatch.setattr(service, 'connection', connection)
+    # The plan review's run lock opens a dedicated non-pooled connection of its own, as in production;
+    # here it points at the explicit test database (advisory locks only, no table access).
+    import os
+
+    import psycopg
+
+    from investment_assistant.workbench import plan_review
+    url = os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']
+    monkeypatch.setattr(plan_review, '_lock_connection', lambda: psycopg.connect(url, autocommit=True))
     return workbench_db
 
 
@@ -1641,6 +1650,18 @@ def test_today_chains_and_has_chain(db, scripted_model):
         ('holding', 'holding', None, [])
     holdings = {h['ticker']: h for h in view['holdings']}
     assert holdings['NVDA']['has_chain'] is True and holdings['AMD']['has_chain'] is False
+    assert holdings['NVDA']['chain_state'] == 'holding' and holdings['AMD']['chain_state'] is None
+
+    repository.insert_plan_review(db, {                            # 持仓期的链被复查作废
+        'ticker': 'NVDA', 'signal_date': SESSION, 'head_plan_id': heads['NVDA']['plan']['id'], 'session': SESSION,
+        'trigger': 'batch', 'mode': 'holding', 'timeline_version': 'timeline-1', 'outcome': 'invalidate',
+        'decided_by': 'host', 'reason': '失效条件成立', 'attempt': 1, 'cutoff_at': NOW})
+    db.commit()
+    view = service.today(now=NOW)
+    assert {c['ticker'] for c in view['chains']} == {'MU'}
+    holdings = {h['ticker']: h for h in view['holdings']}
+    assert (holdings['NVDA']['has_chain'], holdings['NVDA']['chain_state']) == (True, 'invalidated')
+    assert (holdings['AMD']['has_chain'], holdings['AMD']['chain_state']) == (False, None)
 
 
 def test_agent_view_legacy_only_for_agent1_plans():
