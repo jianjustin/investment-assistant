@@ -443,8 +443,8 @@ def test_agent_track_end_to_end(offline, scripted_model):
     push_out = service.push(now=evening(S1), force=True, summary=batch, notify_cfg=NotifyConfig(), client=spy)
     assert push_out['sent'] is True
     pushed_text = json.dumps(spy.payloads, ensure_ascii=False)
-    assert 'Agent（glm-5.3）买入' in pushed_text
-    assert 'Agent 未给出建议（引用无效已作废）' in pushed_text
+    assert 'Agent 第 0 版：区间 120–128 · 止损 115 · T1 140' in pushed_text        # v2.5 §10.3
+    assert 'Agent 未给出计划（引用无效已作废）' in pushed_text
     assert 'SYNE' not in pushed_text                                       # 扩展池不推送
     assert 'Agent 建议 1 · 不建议 0 · 未给出 1' in pushed_text
 

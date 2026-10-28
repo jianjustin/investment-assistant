@@ -1653,3 +1653,86 @@ def test_agent_view_legacy_only_for_agent1_plans():
     for status in ('skipped', 'error', 'rejected'):
         assert 'legacy' not in service._agent_view(run(status), None), status
     assert 'legacy' not in service._agent_view(run('ok', 'agent-2'), None)
+
+
+# ---------------------------------------------------------------- v2.5 Task 10: plan updates in the push (D25)
+
+def _revision(db, prev, version_no, *, stop, session, text, trigger='recheck'):
+    """Version n of the NVDA chain the way a review writes it: plan, revise run, version row, review row."""
+    plan = repository.insert_plan(db, {**prev, 'stop': Decimal(stop)})
+    at = datetime.now(UTC)
+    review_run = _insert_run(db, mode='review', status='ok', at=at, agent_version='agent-review-1')
+    run = _insert_run(db, mode='revise', status='ok', at=at, plan_id=plan['id'],
+                      output={'action': 'buy', 'summary': '修订',
+                              'changes': [{'field': 'stop', 'text': text, 'refs': ['call:1']}]})
+    repository.insert_plan_version(db, {
+        'plan_id': plan['id'], 'ticker': 'NVDA', 'signal_date': SESSION, 'version_no': version_no,
+        'supersedes_plan_id': prev['id'], 'origin': 'recheck' if trigger == 'recheck' else 'review',
+        'agent_run_id': run['id'], 'cutoff_at': at, 'as_of_session': session,
+        'diff': [{'field': 'stop', 'before': str(prev['stop']), 'after': stop}], 'schema_version': 'agent-2'})
+    repository.insert_plan_review(db, {
+        'ticker': 'NVDA', 'signal_date': SESSION, 'head_plan_id': prev['id'], 'session': session,
+        'trigger': trigger, 'mode': 'entry', 'timeline_version': 'timeline-1', 'outcome': 'revise',
+        'decided_by': 'agent', 'reason': '新 8-K', 'review_agent_run_id': review_run['id'],
+        'revision_agent_run_id': run['id'], 'new_plan_id': plan['id'],
+        'attempt': 1, 'cutoff_at': at})
+    db.commit()
+    return plan
+
+
+def _report_push(db, push, *, created_at='clock_timestamp()', status=None):
+    summary = {'push': push, **({'status': status} if status else {})}
+    db.execute("INSERT INTO job_reports (task, run_id, status, started_at, finished_at, summary, created_at) "
+               f"VALUES ('workbench', %s, 'success', %s, %s, %s::jsonb, {created_at})",
+               [str(uuid.uuid4()), NOW, NOW, json.dumps(summary)])
+    db.commit()
+
+
+def test_push_window_includes_recheck_after_last_push(db, scripted_model):
+    from investment_assistant.config import NotifyConfig
+
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
+    v0 = repository.chain_head(db, 'NVDA', SESSION)['plan']
+    v1 = _revision(db, v0, 1, stop='95.5', session=SESSION, text='止损上移到 95.5')     # S 日推送之前
+    client = PushClient()
+    first = service.push(now=NOW, force=False, notify_cfg=NotifyConfig(), client=client)
+    assert first['sent'] is True and first['messages'] == 6                 # 从未推送过 → 只取 S 当日
+    text = json.dumps(client.sent, ensure_ascii=False)
+    assert '🔁 计划更新 · 2026-10-22' in text and 'NVDA 第 0 → 1 版：止损上移到 95.5' in text
+    _report_push(db, first)
+
+    _revision(db, v1, 2, stop='96', session=SESSION, text='止损上移到 96')            # S 日推送之后的重新复查
+    client = PushClient()
+    nxt = NOW + timedelta(days=1)                                           # 周五 S+1
+    second = service.push(now=nxt, force=False, notify_cfg=NotifyConfig(), client=client)
+    assert second['sent'] is True and second['messages'] == 6
+    text = json.dumps(client.sent, ensure_ascii=False)
+    assert '🔁 计划更新 · 2026-10-23' in text
+    assert 'NVDA 第 1 → 2 版：止损上移到 96 · 新价位 区间' in text and '止损 96 · T1' in text
+    assert '第 0 → 1 版' not in text                                         # S 日推送之前的复查不重复
+    assert '计划更新 修订 1 · 作废 0' in text
+
+
+def test_push_without_updates_sends_five(db):
+    from investment_assistant.config import NotifyConfig
+
+    client = PushClient()
+    out = service.push(now=NOW, force=False, notify_cfg=NotifyConfig(), client=client)
+    assert out['sent'] is True and out['messages'] == 5
+    assert '计划更新 修订 0 · 作废 0' in json.dumps(client.sent, ensure_ascii=False)
+
+
+def test_last_successful_push_at_skips_failed_closed_and_later(db):
+    _report_push(db, {'session': '2026-10-21', 'sent': True, 'messages': 5},
+                 created_at="'2026-10-21T23:00:00Z'::timestamptz")
+    _report_push(db, {'session': '2026-10-22', 'sent': False, 'reason': 'send_failed: x'},
+                 created_at="'2026-10-22T23:00:00Z'::timestamptz")
+    _report_push(db, {'session': '2026-10-22', 'sent': True, 'messages': 1}, status='skipped',   # 休市消息
+                 created_at="'2026-10-22T23:30:00Z'::timestamptz")
+    _report_push(db, {'session': '2026-10-23', 'sent': True, 'messages': 5},
+                 created_at="'2026-10-23T23:00:00Z'::timestamptz")
+    assert repository.last_successful_push_at(db, before_session=date(2026, 10, 23)) == \
+        datetime(2026, 10, 21, 23, 0, tzinfo=UTC)
+    assert repository.last_successful_push_at(db, before_session=date(2026, 10, 26)) == \
+        datetime(2026, 10, 23, 23, 0, tzinfo=UTC)
+    assert repository.last_successful_push_at(db, before_session=date(2026, 10, 21)) is None

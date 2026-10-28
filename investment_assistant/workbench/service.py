@@ -948,15 +948,55 @@ def push(*, now: datetime, force: bool, summary: dict[str, Any] | None = None, n
             if last and last.get('sent') is True:
                 return {'session': session.isoformat(), 'sent': False, 'reason': 'already_pushed', 'messages': 0}
         view = today(now=now)
+        plan_updates = None
+        if repository.timeline_ready(conn):
+            # D25: reviews written since the last successful daily push of an earlier session
+            # (batch and recheck alike); never pushed before → this session's reviews only.
+            since = repository.last_successful_push_at(conn, before_session=session)
+            plan_updates = _plan_update_rows(conn, repository.reviews_since(conn, since, session))
         payload = digest_module.build(
             session=session, units=view['units'], holdings=view.get('holdings', []), summary=summary or {},
             last_push_failed=_last_push_failed(conn, session),
             public_url=load_config().workbench.public_url,
             extended_plans=sum(1 for u in view.get('extended_units', []) if u.get('plan') is not None),
             market=view.get('market'), agent_summary=(summary or {}).get('agent'),
-            screen=view.get('screen'))
+            screen=view.get('screen'), plan_updates=plan_updates)
     out = notifier.send_notifications('workbench', templates.workbench_digest(payload), notify_cfg, client=client)
     return {'session': session.isoformat(), **out}
+
+
+def _plan_update_rows(conn, reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The window's review rows as digest.build reads them: invalidations and revisions carry their
+    chain's pool (version 0's run), the version numbers, the revision's `changes` texts and the new
+    version's levels; other outcomes pass through bare (the digest drops them)."""
+    pools: dict[tuple, str | None] = {}
+    out = []
+    for row in reviews:
+        item = {k: row[k] for k in ('ticker', 'signal_date', 'session', 'trigger', 'mode', 'outcome',
+                                    'decided_by', 'reason', 'new_plan_id', 'created_at')}
+        if row['outcome'] not in ('revise', 'invalidate'):
+            out.append(item)
+            continue
+        key = (row['ticker'], row['signal_date'])
+        if key not in pools:
+            first = next(iter(repository.chain_versions(conn, *key)), None)
+            run = repository.agent_run_by_id(conn, first['agent_run_id']) if first else None
+            pools[key] = run.get('pool') if run else None
+        reviewed = repository.version_by_plan(conn, row['head_plan_id'])
+        item.update(pool=pools[key], from_version=reviewed['version_no'] if reviewed else None,
+                    to_version=None, changes=[], levels=None, valid_until=None)
+        if row['outcome'] == 'revise' and row['new_plan_id'] is not None:
+            version = repository.version_by_plan(conn, row['new_plan_id'])
+            plan = repository.plan_by_id(conn, row['new_plan_id']) or {}
+            run = (repository.agent_run_by_id(conn, row['revision_agent_run_id'])
+                   if row.get('revision_agent_run_id') else None)
+            changes = ((run or {}).get('output') or {}).get('changes') or []
+            item.update(to_version=version['version_no'] if version else None,
+                        changes=[c['text'] for c in changes if isinstance(c, dict) and c.get('text')],
+                        levels={k: plan.get(k) for k in ('entry_low', 'entry_high', 'stop', 'target1')},
+                        valid_until=plan.get('valid_until'))
+        out.append(item)
+    return out
 
 
 def push_closed(*, now: datetime, notify_cfg, client=None) -> dict[str, Any]:

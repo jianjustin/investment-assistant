@@ -112,7 +112,8 @@ def filings_digest(summary: dict, *, date_label: str | None = None) -> Notificat
 
 
 def workbench_digest(digest: dict) -> list[Notification]:
-    """Overview, new plans, holdings, pending/errors: one message each (design §7.2)."""
+    """Overview, new plans, plan updates (when any), holdings, pending/errors, screen report: one
+    message each (design §7.2, v2.5 §10.3)."""
     session = digest.get('session', '')
     overview = digest.get('overview', {})
     lines = [f"交易日 {session}", f"新计划 {overview.get('new_plans', 0)} · 持仓 {overview.get('holdings', 0)}",
@@ -125,6 +126,9 @@ def workbench_digest(digest: dict) -> list[Notification]:
                      f" · 未给出 {agent.get('missing', 0)}")
     if overview.get('agent_quota_exhausted'):
         lines.append('⚠️ Agent 额度用尽，其余单元未运行')
+    updates = overview.get('plan_updates')
+    if updates is not None:
+        lines.append(f"计划更新 修订 {updates.get('revise', 0)} · 作废 {updates.get('invalidate', 0)}")
     if overview.get('core_empty'):
         lines.append('核心池为空，只推送持仓')
     if overview.get('last_push_failed'):
@@ -151,15 +155,23 @@ def workbench_digest(digest: dict) -> list[Notification]:
         band = (f"区间 {_num(p['entry_low'])}–{_num(p['entry_high'])} · 止损 {_num(p['stop'])}"
                 f" · T1 {_num(p['target1'])}"
                 if p.get('entry_low') is not None else None)   # agent-only units have no rule band
-        position = f"仓位 {sizing}" if p.get('sizing_status') is not None else None
         field_name = f"【筛选】{p['ticker']}" if p.get('source') == 'screen' else p['ticker']
+        agent = p.get('agent')
+        if agent:
+            # v2.5 §10.3: the agent line first, the rule plan after it as the baseline.
+            baseline = ' · '.join(filter(None, [band, sizing if p.get('sizing_status') is not None else None]))
+            lead = [_agent_line(agent), f"规则基线：{baseline}" if band else None]
+            position = None
+        else:
+            lead = []
+            position = f"仓位 {sizing}" if p.get('sizing_status') is not None else None
         _clip_field(fields, field_name, '；'.join(filter(None, [
+            *lead,
             head,
             context,
-            band,
+            None if agent else band,
             position, funding, f"有效期 至 {p['valid_until']}", notes, p.get('evidence', ''),
-            p.get('brief_summary') or '', p.get('contra') or '', p.get('url', ''),
-            _agent_line(p.get('agent'))])) or '—')
+            p.get('brief_summary') or '', p.get('contra') or '', p.get('url', '')])) or '—')
     plans_msg = _fit_message(f"🆕 新计划 · {session}", fields, _footer())
 
     fields = []
@@ -178,6 +190,7 @@ def workbench_digest(digest: dict) -> list[Notification]:
         _clip_field(fields, h['ticker'], '；'.join(filter(None, [
             f"{h.get('quantity')} 股 @ {h.get('avg_cost')}", stop_line, t1, pct, eve, alerts])) or '—')
     holdings_msg = _fit_message(f"💼 持仓 · {session}", fields, _footer())
+    updates_msg = _plan_updates_message(session, digest.get('plan_updates') or [])
 
     fields = []
     pending = digest.get('pending') or {}
@@ -193,7 +206,31 @@ def workbench_digest(digest: dict) -> list[Notification]:
         if items:
             _clip_field(fields, SOURCE_NAMES.get(source, source), '\n'.join(str(i) for i in items))
     pending_msg = _fit_message(f"⏳ 待处理与异常 · {session}", fields, _footer())
-    return [overview_msg, plans_msg, holdings_msg, pending_msg, _screen_message(session, digest.get('screen'))]
+    return [overview_msg, plans_msg, *([updates_msg] if updates_msg else []), holdings_msg, pending_msg,
+            _screen_message(session, digest.get('screen'))]
+
+
+def _plan_update_text(u: dict) -> str:
+    """One revision or invalidation of the plan-updates message (v2.5 §10.3, wording verbatim)."""
+    if u.get('kind') == 'invalidate':
+        by = 'Agent' if u.get('decided_by') == 'agent' else '系统规则'
+        return f"{u['ticker']} 作废（{by}）：{u.get('reason') or '—'}"
+    changes = '；'.join(str(c) for c in u.get('changes') or [])
+    head = f"{u['ticker']} 第 {u.get('from_version')} → {u.get('to_version')} 版"
+    levels = u.get('levels') or {}
+    return (f"{head}{'：' + changes if changes else ''} · 新价位 区间 {_num(levels.get('entry_low'))}"
+            f"–{_num(levels.get('entry_high'))} · 止损 {_num(levels.get('stop'))} · T1 {_num(levels.get('target1'))}"
+            f" · 有效期至 {u.get('valid_until') or '—'}")
+
+
+def _plan_updates_message(session: str, updates: list[dict]) -> Notification | None:
+    """「🔁 计划更新」: one field per revision / invalidation; no message on a day without any."""
+    if not updates:
+        return None
+    fields: list[NotifyField] = []
+    for u in updates:
+        _clip_field(fields, '作废' if u.get('kind') == 'invalidate' else '修订', _plan_update_text(u))
+    return _fit_message(f"🔁 计划更新 · {session}", fields, _footer())
 
 
 def _rs(value) -> str:
@@ -260,24 +297,37 @@ def workbench_closed(ny_date) -> list[Notification]:
 
 
 def _agent_line(agent: dict | None) -> str:
-    """The agent's line beside the rule plan (P3 §10.2, wording verbatim)."""
+    """The agent's line ahead of the rule baseline. agent-2: 「Agent 第 n 版：区间 · 止损 · T1 · 股数 · 摘要
+    · 首条反证」 (v2.5 §10.3); agent-1 units keep their P3 §10.2 line, marked as the old version."""
     if not agent:
         return ''
+    from investment_assistant.workbench.agent import REASON_TEXT
+    legacy = agent.get('legacy')
+    if agent['status'] == 'ok' and not legacy and agent.get('chain_state') == 'invalidated':
+        return f"Agent 已作废此计划（第 {agent.get('version_no')} 版）：{agent.get('invalidated_reason') or '—'}"
     if agent['status'] == 'ok':
         shares = (f"{agent['shares']} 股" if agent.get('shares') is not None
                   else '缺资金快照，无法计算')   # same wording as the rule plan line
-        line = (f"Agent（{agent['model']}）买入 · 区间 {_num(agent['entry_low'])}–{_num(agent['entry_high'])}"
-                f" · 止损 {_num(agent['stop'])} · T1 {_num(agent['target1'])} · {shares}；{agent['summary']}")
-        if agent.get('first_risk'):
-            line += f"；反方：{agent['first_risk']}"
+        band = (f"区间 {_num(agent['entry_low'])}–{_num(agent['entry_high'])}"
+                f" · 止损 {_num(agent['stop'])} · T1 {_num(agent['target1'])} · {shares}")
+        if legacy:
+            line = f"Agent（{agent['model']}）买入 · {band}；{agent['summary']}"
+            if agent.get('first_risk'):
+                line += f"；反方：{agent['first_risk']}"
+        else:
+            version = f"第 {agent['version_no']} 版" if agent.get('version_no') is not None else ''
+            line = f"Agent {version}：{band} · {agent['summary']}" if version else f"Agent：{band} · {agent['summary']}"
+            if agent.get('first_counter'):
+                line += f" · 反证：{agent['first_counter']}"
         voided = '；'.join(f"作废 {r}" for r in agent.get('invalid_reasons') or [])
         if voided:
             line += f"；{voided}"
+        if legacy:
+            line += '；agent-1（旧版，不参与复查）'
         return line
     if agent['status'] == 'pass':
         return f"Agent（{agent['model']}）不建议买入；{agent['summary']}"
-    from investment_assistant.workbench.agent import REASON_TEXT
-    return f"Agent 未给出建议（{REASON_TEXT.get(agent.get('reason'), agent.get('reason'))}）"
+    return f"Agent 未给出计划（{REASON_TEXT.get(agent.get('reason'), agent.get('reason'))}）"
 
 
 # --- weekly / monthly review pushes (P4 §6.2) ---

@@ -196,3 +196,45 @@ def test_unknown_channel_is_structured_failure():
     out = notifier.send_notifications("workbench", [n], cfg, client=Fake())
     assert out == {"sent": False, "messages": 0, "reason": "unknown_channel: daily"}
     assert sent == []
+
+
+# --- v2.5 §10.3: the plan-updates message ---
+
+def _digest_payload(updates):
+    return {'session': '2026-10-22', 'overview': {'plan_updates': {'revise': 0, 'invalidate': len(updates)}},
+            'plans': [], 'holdings': [], 'pending': {}, 'errors': [], 'errors_by_source': {},
+            'plan_updates': updates}
+
+
+def _invalidate(ticker, reason='失效条件成立：收盘跌破 112'):
+    return {'ticker': ticker, 'kind': 'invalidate', 'from_version': 0, 'to_version': None, 'changes': [],
+            'levels': None, 'valid_until': None, 'decided_by': 'host', 'reason': reason}
+
+
+def test_plan_updates_message_is_third():
+    from investment_assistant.notify.templates import workbench_digest
+    messages = workbench_digest(_digest_payload([_invalidate('NVDA')]))
+    assert len(messages) == 6
+    assert messages[2].title == '🔁 计划更新 · 2026-10-22'
+    assert [m.title.split(' · ')[0] for m in messages] == ['📊 工作台', '🆕 新计划', '🔁 计划更新', '💼 持仓',
+                                                          '⏳ 待处理与异常', '🔎 筛选报告']
+    assert messages[2].fields[0].value == 'NVDA 作废（系统规则）：失效条件成立：收盘跌破 112'
+
+
+def test_no_plan_updates_no_message():
+    from investment_assistant.notify.templates import workbench_digest
+    messages = workbench_digest(_digest_payload([]))
+    assert len(messages) == 5
+    assert not any(m.title.startswith('🔁 计划更新') for m in messages)
+    no_key = {k: v for k, v in _digest_payload([]).items() if k != 'plan_updates'}
+    assert len(workbench_digest(no_key)) == 5
+
+
+def test_plan_updates_respect_field_and_message_limits():
+    from investment_assistant.notify.templates import workbench_digest
+    messages = workbench_digest(_digest_payload([_invalidate(f'T{i:02d}', '长' * 3000) for i in range(12)]))
+    updates = messages[2]
+    assert all(len(f.value) <= 1024 for f in updates.fields)
+    total = len(updates.title) + sum(len(f.name) + len(f.value) for f in updates.fields) + len(updates.footer)
+    assert total <= 6000
+    assert updates.fields[-1].name == '溢出'

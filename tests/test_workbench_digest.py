@@ -40,12 +40,12 @@ def holding(ticker='NVDA', **over):
 
 
 def build(units=(), holdings=(), summary=None, last_push_failed=False, extended_plans=0, market=None,
-          agent_summary=None, screen=None):
+          agent_summary=None, screen=None, plan_updates=None):
     return digest.build(session=SESSION, units=list(units), holdings=list(holdings),
                         summary=summary or {'errors': [], 'earnings': {}},
                         last_push_failed=last_push_failed, public_url=URL,
                         extended_plans=extended_plans, market=market, agent_summary=agent_summary,
-                        screen=screen)
+                        screen=screen, plan_updates=plan_updates)
 
 
 def agent_ok(ticker='NVDA', summary='回踩修复放量', first_risk='财报临近'):
@@ -292,7 +292,7 @@ def test_agent_line_missing_reason():
     agent = {'id': 'r3', 'status': 'skipped', 'reason': 'quota_exhausted',
              'created_at': '2026-10-22T23:00:00+00:00'}
     text = all_text(templates.workbench_digest(build(units=[unit(plan=plan_row(), agent=agent)])))
-    assert 'Agent 未给出建议（额度用尽）' in text
+    assert 'Agent 未给出计划（额度用尽）' in text      # v2.5 §10.3
 
 
 def test_agent_only_unit_listed():
@@ -481,3 +481,127 @@ def test_numeric_padding_is_trimmed_in_every_message():
     assert 'S00 · RS 0.334 · ATR 4.56%' in text
     assert 'HY OAS 3.4（20 期 +0.6）' in text and '2s10s 0.31（' in text
     assert '0000' not in text
+
+
+# --- v2.5 §10.3: agent line first, rule baseline after; plan updates (D25) ---
+
+def agent2_ok(ticker='NVDA', version_no=0, summary='回踩修复放量', counter_text='量能未放大'):
+    plan = plan_row(ticker=ticker, kind='agent', plan_version='agent-2', entry_low=D('99'), entry_high=D('102'),
+                    stop=D('95'), target1=D('115'))
+    return {'id': 'r9', 'status': 'ok', 'model': 'glm-5.3', 'agent_version': 'agent-2',
+            'output': {'action': 'buy', 'summary': summary,
+                       'thesis': [{'text': '放量突破', 'refs': ['call:1']}]},
+            'counter': {'status': 'ok', 'counter': [{'thesis': 1, 'text': counter_text, 'refs': ['call:1']}],
+                        'risks': [{'text': '大盘走弱', 'refs': ['call:1']}], 'dropped': 0, 'uncountered': []},
+            'plan': plan, 'input_tokens': 10, 'output_tokens': 5, 'created_at': '2026-10-22T23:00:00+00:00',
+            'chain': {'version_no': version_no, 'head_plan_id': 'p9', 'state': 'entry', 'mode': 'entry',
+                      'basis': None, 'latest_review': None}}
+
+
+def plan_field(dg, ticker='NVDA'):
+    msgs = templates.workbench_digest(dg)
+    return next(f.value for f in msgs[1].fields if f.name == ticker)
+
+
+def test_agent_line_before_rule_baseline():
+    dg = build(units=[unit(plan=plan_row(), agent=agent2_ok())])
+    agent = dg['plans'][0]['agent']
+    assert (agent['version_no'], agent['first_counter'], agent['legacy']) == (0, '量能未放大', False)
+    value = plan_field(dg)
+    agent_line = 'Agent 第 0 版：区间 99–102 · 止损 95 · T1 115 · 166 股 · 回踩修复放量 · 反证：量能未放大'
+    baseline = '规则基线：区间 98.5–101.5 · 止损 94 · T1 112 · 166 股 · 风险 1000'
+    assert agent_line in value and baseline in value
+    assert value.index('Agent 第 0 版') < value.index('规则基线')
+    assert value.startswith('Agent 第 0 版')
+    assert '证据：未验证' in value
+
+
+def test_agent_missing_writes_reason_then_baseline():
+    agent = {'id': 'r3', 'status': 'error', 'reason': 'model_error', 'created_at': '2026-10-22T23:00:00+00:00'}
+    value = plan_field(build(units=[unit(plan=plan_row(), agent=agent)]))
+    assert value.startswith('Agent 未给出计划（')
+    assert value.index('Agent 未给出计划') < value.index('规则基线：区间 98.5–101.5')
+
+
+def test_legacy_agent1_line_marked_and_first():
+    value = plan_field(build(units=[unit(plan=plan_row(), agent={**agent_ok(), 'legacy': True})]))
+    assert value.startswith('Agent（glm-5.3）买入 · 区间 98.5–101.5')
+    assert 'agent-1（旧版，不参与复查）' in value
+    assert value.index('agent-1（旧版') < value.index('规则基线')
+
+
+def test_unit_without_agent_keeps_plain_rule_line():
+    value = plan_field(build(units=[unit(plan=plan_row(), agent=None)]))
+    assert '规则基线' not in value and 'Agent' not in value
+    assert '区间 98.5–101.5 · 止损 94 · T1 112' in value and '仓位 166 股 · 风险 1000' in value
+
+
+def test_agent2_brief_not_repeated_in_plan_line():
+    """Task 6 review: an agent-2 brief (summary + first counter) already sits in the agent line."""
+    u = unit(plan=plan_row(), agent=agent2_ok())
+    u['brief'] = {'status': 'ok', 'prompt_version': 'agent-2',
+                  'output': {'summary': '回踩修复放量', 'contra': [{'text': '量能未放大', 'refs': ['call:1']}]}}
+    dg = build(units=[u])
+    assert dg['plans'][0]['brief_summary'] is None and dg['plans'][0]['contra'] is None
+    value = plan_field(dg)
+    assert value.count('回踩修复放量') == 1 and value.count('量能未放大') == 1
+
+
+def review(outcome, *, ticker='NVDA', decided_by='agent', reason='理由', mode='entry', pool='main',
+           new_plan_id=None, from_version=0, to_version=None, changes=(), levels=None, valid_until=None):
+    return {'ticker': ticker, 'signal_date': SESSION, 'session': SESSION, 'trigger': 'batch', 'mode': mode,
+            'outcome': outcome, 'decided_by': decided_by, 'reason': reason, 'new_plan_id': new_plan_id,
+            'pool': pool, 'from_version': from_version, 'to_version': to_version, 'changes': list(changes),
+            'levels': levels, 'valid_until': valid_until}
+
+
+LEVELS = {'entry_low': D('99.000000'), 'entry_high': D('102'), 'stop': D('97'), 'target1': D('115')}
+
+
+def update_rows():
+    return [
+        review('maintain', ticker='AAA', decided_by='host'),
+        review('revise', ticker='NVDA', new_plan_id='p1', to_version=1, levels=LEVELS,
+               valid_until=date(2026, 10, 28), changes=['止损上移到 97', '论点补充 8-K 订单']),
+        review('revise', ticker='MU', reason='changes_mismatch'),                     # 修订失败：无新版
+        review('skipped', ticker='AMD', reason='stage_budget'),
+        review('error', ticker='AMD', reason='model_error'),
+        review('invalidate', ticker='TSM', decided_by='host', reason='失效条件成立：收盘跌破 112'),
+        review('revise', ticker='EXT', pool='extended', new_plan_id='p2', to_version=1, levels=LEVELS,
+               valid_until=date(2026, 10, 28), changes=['x']),                     # 扩展池入场期：只影子跟踪
+        review('invalidate', ticker='EXH', pool='extended', mode='holding', reason='论点被证伪'),  # 持仓链总推
+    ]
+
+
+def test_plan_updates_only_revise_with_version_and_invalidate():
+    dg = build(plan_updates=update_rows())
+    assert [(u['ticker'], u['kind']) for u in dg['plan_updates']] == \
+        [('NVDA', 'revise'), ('TSM', 'invalidate'), ('EXH', 'invalidate')]
+    nvda = dg['plan_updates'][0]
+    assert nvda == {'ticker': 'NVDA', 'kind': 'revise', 'from_version': 0, 'to_version': 1,
+                    'changes': ['止损上移到 97', '论点补充 8-K 订单'], 'levels': LEVELS,
+                    'valid_until': date(2026, 10, 28), 'decided_by': 'agent', 'reason': '理由'}
+    assert build()['plan_updates'] == []
+
+
+def test_overview_counts_plan_updates():
+    dg = build(plan_updates=update_rows())
+    assert dg['overview']['plan_updates'] == {'revise': 1, 'invalidate': 2}
+    assert '计划更新 修订 1 · 作废 2' in all_text(templates.workbench_digest(dg))
+    assert build()['overview']['plan_updates'] == {'revise': 0, 'invalidate': 0}
+
+
+def test_plan_update_field_texts():
+    msgs = templates.workbench_digest(build(plan_updates=update_rows()))
+    values = [f.value for f in msgs[2].fields]
+    assert values[0] == ('NVDA 第 0 → 1 版：止损上移到 97；论点补充 8-K 订单 · '
+                         '新价位 区间 99–102 · 止损 97 · T1 115 · 有效期至 2026-10-28')
+    assert values[1] == 'TSM 作废（系统规则）：失效条件成立：收盘跌破 112'
+    assert values[2] == 'EXH 作废（Agent）：论点被证伪'
+
+
+def test_invalidated_chain_says_so_before_baseline():
+    agent = agent2_ok(version_no=1)
+    agent['chain'].update(state='invalidated', latest_review={'outcome': 'invalidate', 'reason': '失效条件成立：收盘跌破 95'})
+    value = plan_field(build(units=[unit(plan=plan_row(), agent=agent)]))
+    assert value.startswith('Agent 已作废此计划（第 1 版）：失效条件成立：收盘跌破 95；规则基线：')
