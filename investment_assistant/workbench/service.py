@@ -1034,22 +1034,124 @@ def replay_screen(*, now: datetime, sessions: int) -> dict[str, Any]:
     return {'reports': screening.replay(sessions=sessions, now=now)}
 
 
+def _instrument_position(conn, ticker: str, book: dict[str, Any], ticker_bars: list[dict[str, Any]], session: date,
+                         *, now: datetime) -> dict[str, Any] | None:
+    """The held position with its current stop, the same function and reading as the 「今日」 holdings."""
+    position = book['position']
+    if position is None:
+        return None
+    plan, state = _position_plan_state(conn, ticker, book, ticker_bars, session, now=now)
+    last_close = ticker_bars[-1]['close'] if ticker_bars else None
+    return {'quantity': position['quantity'], 'avg_cost': position['avg_cost'],
+            'plan_id': str(plan['id']) if plan else None, 'stop': state['stop'] if state else None,
+            'to_stop_pct': float(last_close / float(state['stop']) - 1) if state and last_close else None}
+
+
+def _instrument_chains(conn, ticker: str, book: dict[str, Any], session: date) -> list[dict[str, Any]]:
+    """The ticker's agent-2 chains in state entry / holding, newest signal date first (empty without 026)."""
+    if not repository.timeline_ready(conn):
+        return []
+    rows = []
+    for chain in repository.all_chains(conn):
+        if chain['ticker'] != ticker:
+            continue
+        status = chain_status(conn, ticker, chain['signal_date'], session=session, book=book)
+        if status is None or status['state']['state'] not in ('entry', 'holding'):
+            continue
+        plan = status['head']['plan']
+        rows.append({'signal_date': chain['signal_date'], 'state': status['state']['state'],
+                     'mode': status['state']['mode'], 'version_no': status['head']['version']['version_no'],
+                     'head_plan_id': str(plan['id']), 'entry_low': plan['entry_low'], 'entry_high': plan['entry_high'],
+                     'stop': plan['stop'], 'target1': plan['target1'], 'latest_review': status['latest_review']})
+    rows.sort(key=lambda r: r['signal_date'], reverse=True)
+    return rows
+
+
+def _instrument_plans(conn, ticker: str, since: date) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """(plan rows of the page, str(plan_id) -> version row): every plan whose validity reaches the chart window.
+    Version rows exist for agent-2 plans once migration 026 has run; without them ``version_no`` is None."""
+    rows = repository.plans_for_ticker(conn, ticker, since=since)
+    ready = repository.timeline_ready(conn)
+    versions: dict[str, dict[str, Any]] = {}
+    if ready:
+        for plan in rows:
+            if plan['kind'] == 'agent' and plan['plan_version'] == agent_graph.AGENT_V2:
+                version = repository.version_by_plan(conn, plan['id'])
+                if version is not None:
+                    versions[str(plan['id'])] = version
+    return rows, versions
+
+
 def instrument(ticker: str, *, now: datetime) -> dict[str, Any]:
+    """The instrument page payload. The original keys are read as before; v2.6 adds ``focus``, ``key_data``,
+    ``context``, ``plans`` and ``chart.annotations`` (spec §9.4), each in its own savepoint: a failing block is
+    ``None`` and its reason lands in ``errors`` (keyed by block), the rest of the page is unaffected."""
+    from investment_assistant.workbench import instrument_view
+
     ticker = ticker.strip().upper()
     session = bars.latest_closed_session(now)
-    with _tx() as conn:
+    errors: dict[str, str] = {}
+    with read_only_tx() as conn:
+        def guarded(key: str, fn: Callable[[], Any]) -> Any:
+            try:
+                with conn.transaction():          # a savepoint: one failed statement must not poison the page
+                    return fn()
+            except Exception as exc:              # noqa: BLE001 - isolate the block, report why
+                errors[key] = str(exc) or type(exc).__name__
+                return None
+
         book = _book(conn, ticker)
+        chart_bars = repository.read_bars(conn, ticker, session, cutoff_at=now, limit=chart.READ_LIMIT)
+        chart_payload = chart.build(chart_bars)
+        shown = chart_payload['bars']
+        first_day = shown[0]['price_date'] if shown else session - timedelta(days=120)
+        candidates = repository.read_candidates(conn, ticker, since=first_day)
+        trades = repository.list_trades(conn, ticker)
+        earnings = repository.latest_earnings(conn, ticker, cutoff_at=now)
+
+        plan_data = guarded('plans', lambda: _instrument_plans(conn, ticker, first_day))
+        plan_rows, versions = plan_data if plan_data is not None else ([], {})
+        plans_view = None if plan_data is None else [
+            {'id': str(p['id']), 'kind': p['kind'], 'plan_version': p['plan_version'],
+             'signal_date': p['signal_date'], 'entry_low': p['entry_low'], 'entry_high': p['entry_high'],
+             'stop': p['stop'], 'target1': p['target1'], 'valid_from': p['valid_from'],
+             'valid_until': p['valid_until'], 'status': p['status'],
+             'version_no': versions[str(p['id'])]['version_no'] if str(p['id']) in versions else None}
+            for p in plan_rows]
+        annotations = guarded('chart.annotations', lambda: chart.annotate(
+            bars=shown, candidates=candidates, plans=plan_rows, versions=versions, trades=trades))
+        focus = guarded('focus', lambda: instrument_view.focus(
+            position=_instrument_position(conn, ticker, book, chart_bars, session, now=now),
+            chains=_instrument_chains(conn, ticker, book, session),
+            candidates_today=[c for c in candidates if c['signal_date'] == session],
+            earnings=earnings, session=session))
+
+        def key_data():
+            ticker_bars = repository.read_bars(conn, ticker, session, cutoff_at=now)     # what get_indicators reads
+            spy = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now)
+            as_of = ticker_bars[-1]['price_date'] if ticker_bars else session
+            return instrument_view.key_data(ticker_bars, spy, as_of=as_of)
+
+        def context():
+            entry = repository.pool_entry_at(conn, ticker, session, cutoff_at=now)
+            return instrument_view.context_view(
+                earnings=earnings, regime=repository.latest_regime(conn, on_or_before=session, cutoff_at=now),
+                sector_etf=entry.get('sector_etf') if entry else None, session=session)
+
+        key_data_view = guarded('key_data', key_data)
+        context_view = guarded('context', context)
         return {
             'ticker': ticker, 'session': session,
             'bars': repository.read_bars(conn, ticker, session, cutoff_at=now, limit=120),
-            'chart': chart.build(repository.read_bars(
-                conn, ticker, session, cutoff_at=now, limit=chart.READ_LIMIT)),
+            'chart': {**chart_payload, 'annotations': annotations},
             'filings': repository.read_filings(conn, ticker, since=session - timedelta(days=180), cutoff_at=now),
             'news': repository.read_news(conn, ticker, cutoff_at=now, since=_midnight(session - timedelta(days=60))),
-            'candidates': repository.read_candidates(conn, ticker, since=session - timedelta(days=120)),
+            'candidates': candidates,
             'decisions': repository.decision_heads(conn, ticker=ticker),
-            'trades': repository.list_trades(conn, ticker),
+            'trades': trades,
             'position': book['position'], 'closed': book['closed'],
+            'focus': focus, 'key_data': key_data_view, 'context': context_view, 'plans': plans_view,
+            'errors': errors,
         }
 
 

@@ -51,6 +51,15 @@
 - 休市日的 `push` 发的是休市一行，记 `detail.closed = true`。
 - 写入失败（含迁移 025 未执行）只记在运行报告 `summary.stage_status = {"written": n, "error": …}`，不进 `summary.errors`，不改变任务状态。任务因异常失败时运行报告只有 `error`，没有 `stage_status`。
 
+### 运行一览（v2.6）
+
+阶段证据在「今日」顶部以「运行一览」展示，数据来自只读接口 `GET /api/workbench/run-overview?session=YYYY-MM-DD[&run_id=…]`（`session` 缺省为最近已收盘交易日），实现是 `workbench/run_overview.py`。它**只读 `stage_runs`**（一个只读事务，不读别的表、不调用外部数据源），每个阶段返回与行逐字段相同的数字（`input_count`、`output_count`、`skips`、`failures`、`degradations`、`reason`、`duration_ms`），另加后端按模板拼好的一句话 `sentence`、原因文案（`reason_text`、`skips[].text`、`degradations[].text`）、状态文案 `status_text` 和该阶段的概念卡 `concepts`；整次运行另有 `headline`（如「定时运行 · 06:30 开始 · 用时 3 分 12 秒 · 8 个阶段：成功 6 · 降级 1 · 跳过 1」，时间为北京时间）。
+
+- **同一天多次运行**：默认显示该交易日最后开始的、**不是休市空跑**的那次（休市空跑 = `push` 之前的阶段全部 `skipped` 且原因为 `not_trading_day`）；只有休市空跑时才显示它，`headline` 写「纽约休市，未运行（只推送一行休市说明）」。`runs` 列出同日全部运行（`run_id`、`trigger`、`trigger_text`：定时 / 手动 / 休市、`stages_version`、开始与结束时间、行数、`closed`），`run_id` 指定其中一次；不属于该日 → 404，日期非法 → 400，数据库不可用 → 503。
+- **边界**：`stage_runs` 表不存在 → `ready: false`、`note`「迁移 025 未执行，暂无阶段证据」；这一天没有任何行 → `note`「这一天没有阶段证据：当天没有运行，或运行早于 v2.4（2026-10-27 起才记录）」；`stages-1` 运行在 `push` 前补一行 `not_recorded` 占位（计数为 `null`）；缺某个阶段行 → `missing`「这一阶段没有证据行（记账失败，见运行报告）」；注册表之外的阶段排在最后，句子「未知阶段」。
+- **原因文案**：先查 `run_overview.REASON_TEXT`（只放 `agent.REASON_TEXT` 没有的代码，含降级 kind 与规则跳过原因），再查 `agent.REASON_TEXT`，不认识的代码原样显示；带参数的 `agent_unavailable: <x>`、`aborted: <x>`、`<规则 id>:<原因>` 按规则拼。
+- **命令行（只读）**：`python -m investment_assistant.workbench.run_overview --session YYYY-MM-DD [--run-id ID]`，先打印 `headline`，再逐行打印 `阶段 · 状态 · 句子 · 输入/产出`；没有阶段证据（打印说明）退出码 1，参数错误、`--run-id` 不属于该日或数据库不可用退出码 2。
+
 ## 通知
 
 配置是 `config.py` 的 `NotifyConfig`，「设置 → 推送配置」写入 `notify_settings` 后覆盖它：

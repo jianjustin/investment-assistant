@@ -592,3 +592,134 @@ def test_ticker_chains_route_delegates_and_maps_errors(client, monkeypatch):
         monkeypatch.setattr(plan_review, 'ticker_chains', raiser(exc))
         resp = client.get('/api/workbench/chains', params={'ticker': 'SYNTH'})
         assert resp.status_code == code and resp.json()['error'] == str(exc)
+
+
+# --- v2.6 run overview, reasoning view, instrument page additions ---
+
+def test_run_overview_endpoint(client, monkeypatch):
+    from investment_assistant.workbench import run_overview
+    seen = {}
+
+    def overview(*, session, run_id, now):
+        seen.update(session=session, run_id=run_id, now=now)
+        return {'session': '2026-10-27', 'ready': True, 'stages': []}
+    monkeypatch.setattr(run_overview, 'overview', overview)
+    resp = client.get('/api/workbench/run-overview?session=2026-10-27&run_id=run-a')
+    assert resp.status_code == 200 and resp.json()['ready'] is True
+    assert seen['session'] == date(2026, 10, 27) and seen['run_id'] == 'run-a' and seen['now'].tzinfo is not None
+    assert client.get('/api/workbench/run-overview').status_code == 200
+    assert seen['session'] is None and seen['run_id'] is None
+    assert client.get('/api/workbench/run-overview?session=nope').status_code == 400
+    monkeypatch.setattr(run_overview, 'overview', raiser(LookupError('run_id 不属于该日')))
+    assert client.get('/api/workbench/run-overview?run_id=zzz').status_code == 404
+    monkeypatch.setattr(run_overview, 'overview', raiser(service.Unavailable('数据库不可达')))
+    assert client.get('/api/workbench/run-overview').status_code == 503
+
+
+def test_reasoning_endpoint(client, monkeypatch):
+    from investment_assistant.workbench import reasoning
+    monkeypatch.setattr(reasoning, 'reasoning', lambda run_id: {'run': {'id': run_id}, 'steps': []})
+    resp = client.get('/api/workbench/agent-runs/6f1d1c1e-6666-4444-8888-000000000001/reasoning')
+    assert resp.status_code == 200 and resp.json()['run']['id'] == '6f1d1c1e-6666-4444-8888-000000000001'
+    monkeypatch.setattr(reasoning, 'reasoning', raiser(ValueError('运行 id 不是合法的 UUID')))
+    assert client.get('/api/workbench/agent-runs/nope/reasoning').status_code == 400
+    monkeypatch.setattr(reasoning, 'reasoning', raiser(LookupError('运行不存在')))
+    assert client.get('/api/workbench/agent-runs/6f1d1c1e-6666-4444-8888-000000000001/reasoning').status_code == 404
+    monkeypatch.setattr(reasoning, 'reasoning', raiser(service.Unavailable('数据库不可达')))
+    assert client.get('/api/workbench/agent-runs/6f1d1c1e-6666-4444-8888-000000000001/reasoning').status_code == 503
+
+
+def test_agent_run_detail_route_still_wins_for_plain_ids(client, monkeypatch):
+    monkeypatch.setattr(service, 'agent_run_detail', lambda run_id: {'id': run_id})
+    assert client.get('/api/workbench/agent-runs/abc').json() == {'id': 'abc'}
+
+
+# the instrument tests below run the real batch against the disposable schema
+from test_workbench_service import NOW as BATCH_NOW, SESSION as BATCH_SESSION, _ok_responses, agent_deps, db  # noqa: E402,F401,E501
+from investment_assistant.api.routes import workbench as workbench_routes  # noqa: E402
+
+OLD_KEYS = {'ticker', 'session', 'bars', 'chart', 'filings', 'news', 'candidates', 'decisions', 'trades',
+            'position', 'closed'}
+NEW_KEYS = {'focus', 'key_data', 'context', 'plans', 'errors'}
+
+
+@pytest.fixture
+def seeded(db, client, monkeypatch, scripted_model):
+    from investment_assistant.workbench import service as service_module
+    service_module.run_batch(tickers=['AAA'], now=BATCH_NOW, deps=agent_deps(scripted_model, _ok_responses('AAA')))
+    db.commit()
+    monkeypatch.setattr(workbench_routes, '_now', lambda: BATCH_NOW)
+    return db
+
+
+def test_instrument_keeps_existing_keys(seeded, client):
+    body = client.get('/api/workbench/instruments/AAA').json()
+    assert OLD_KEYS <= set(body) and NEW_KEYS <= set(body)
+    assert body['ticker'] == 'AAA' and body['session'] == BATCH_SESSION.isoformat()
+    assert isinstance(body['bars'], list) and body['bars'] and set(body['bars'][-1]) >= {'price_date', 'close'}
+    assert set(body['chart']) == {'bars', 'adjustment', 'annotations'} and body['chart']['adjustment'] == 'split_only'
+    assert set(body['chart']['bars'][-1]) >= {'price_date', 'ma20', 'ma50', 'ma200'}
+    for key in ('filings', 'news', 'candidates', 'decisions', 'trades'):
+        assert isinstance(body[key], list), key
+    assert body['position'] is None and body['closed'] == []
+    assert {c['rule_id'] for c in body['candidates']} >= {'trend_reclaim'}
+
+
+def test_instrument_new_keys(seeded, client):
+    body = client.get('/api/workbench/instruments/AAA').json()
+    assert body['errors'] == {}
+    kinds = [item['kind'] for item in body['focus']]
+    assert kinds == ['agent_plan', 'trigger']
+    agent_item, trigger_item = body['focus']
+    assert agent_item['text'].startswith('Agent 第 0 版 · 入场期 · 入场 ') and agent_item['text'].endswith('尚未复查')
+    assert agent_item['link'].startswith('#plan/')
+    assert trigger_item['text'].startswith('今天触发 ') and '趋势回踩修复（买入）' in trigger_item['text']
+    key_data = body['key_data']
+    assert key_data['as_of'] == BATCH_SESSION.isoformat() and key_data['values']['last_close'] is not None
+    assert set(key_data['values']) == set(key_data['concepts'])
+    assert set(body['context']) == {'earnings', 'regime', 'sector'}
+    assert body['context']['sector'] is None                                 # no sector tag on this ticker
+    plans = {p['kind']: p for p in body['plans']}
+    assert set(plans) == {'rule', 'agent'}
+    assert set(plans['rule']) == {'id', 'kind', 'plan_version', 'signal_date', 'entry_low', 'entry_high', 'stop',
+                                  'target1', 'valid_from', 'valid_until', 'status', 'version_no'}
+    assert plans['rule']['version_no'] is None and plans['agent']['version_no'] == 0
+    annotations = body['chart']['annotations']
+    assert set(annotations) == {'markers', 'segments', 'omitted'} and annotations['omitted'] == 0
+    marker = annotations['markers'][-1]
+    assert marker['time'] == BATCH_SESSION.isoformat() and marker['kind'] == 'candidate'
+    assert marker['shape'] == 'arrowUp' and marker['position'] == 'belowBar' and '回踩' in marker['text']
+    assert marker['refs']
+    # plans start the session after the last bar, so there is nothing to draw on the existing bars yet
+    assert annotations['segments'] == []
+
+
+def test_instrument_without_timeline_version_no_null(seeded, client):
+    seeded.execute('DROP TABLE plan_reviews, user_inputs, agent_plan_versions CASCADE')
+    seeded.commit()
+    resp = client.get('/api/workbench/instruments/AAA')
+    assert resp.status_code == 200
+    body = resp.json()
+    assert OLD_KEYS <= set(body) and body['errors'] == {}
+    assert {p['version_no'] for p in body['plans']} == {None}
+    assert [item['kind'] for item in body['focus']] == ['trigger']
+
+
+def test_instrument_new_key_failure_is_isolated(seeded, client, monkeypatch):
+    from investment_assistant.workbench import instrument_view
+
+    def broken(*args, **kwargs):
+        raise RuntimeError('指标算坏了')
+    monkeypatch.setattr(instrument_view, 'key_data', broken)
+    body = client.get('/api/workbench/instruments/AAA').json()
+    assert body['key_data'] is None and body['errors'] == {'key_data': '指标算坏了'}
+    assert body['focus'] and body['plans'] and OLD_KEYS <= set(body)
+    assert body['chart']['annotations']['markers']                          # other new keys unaffected
+
+
+def test_instrument_unknown_ticker_still_returns_empty_view(seeded, client):
+    body = client.get('/api/workbench/instruments/ZZZZ').json()
+    assert body['bars'] == [] and body['chart']['bars'] == []
+    assert body['chart']['annotations'] == {'markers': [], 'segments': [], 'omitted': 0}
+    assert body['key_data']['values']['last_close'] is None and body['plans'] == []
+    assert [item['kind'] for item in body['focus']] == ['none']

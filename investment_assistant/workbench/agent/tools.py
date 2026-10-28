@@ -214,6 +214,25 @@ def get_position(ctx: ToolContext) -> dict | None:
                    'opened_at': position['opened_at']})
 
 
+def get_concept(ctx: ToolContext, concept_id: str | None = None) -> dict:
+    """A concept card (or the index of all of them) from the versioned card directory (v2.6 spec §10).
+
+    The one tool that ignores the cutoff: it reads no database and never touches ``ctx``; the result says
+    ``point_in_time: false`` and carries the card's ref and SHA-256, and the recorder stores all of it."""
+    from investment_assistant.workbench import knowledge
+
+    if concept_id is not None and not isinstance(concept_id, str):
+        raise ToolError('concept_id 必须是字符串')
+    try:
+        cat = knowledge.catalog()
+    except knowledge.KnowledgeError as exc:
+        raise ToolError(f'概念卡不可用：{exc}') from exc
+    try:
+        return knowledge.agent_text(cat, concept_id)
+    except LookupError as exc:
+        raise ToolError(str(exc)) from exc
+
+
 TOOLS: dict[str, Callable] = {
     'get_trigger': get_trigger,
     'get_price_bars': get_price_bars,
@@ -223,6 +242,7 @@ TOOLS: dict[str, Callable] = {
     'get_earnings': get_earnings,
     'get_market_context': get_market_context,
     'get_position': get_position,
+    'get_concept': get_concept,
 }
 
 TOOL_DESCRIPTIONS: dict[str, str] = {
@@ -234,6 +254,7 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     'get_earnings': '读取下次财报日期与状态',
     'get_market_context': '读取本交易日的市场区制标签、广度、行业强弱与利差',
     'get_position': '读取当前持仓股数与成本，无持仓则为空',
+    'get_concept': '读取系统概念卡：不给 id 返回全部 id 与标题；给 id（如 `plan.stop`）返回整张卡。概念卡随代码版本走，不受截止时间约束',
 }
 
 

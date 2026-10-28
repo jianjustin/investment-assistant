@@ -450,6 +450,12 @@ def plans_since(conn, since: date) -> list[dict[str, Any]]:
                       'ORDER BY signal_date, created_at, id', (since,))
 
 
+def plans_for_ticker(conn, ticker: str, *, since: date) -> list[dict[str, Any]]:
+    """Every plan of one ticker (rule, own, agent) whose validity runs to ``since`` or later, oldest first."""
+    return _all(conn, f'SELECT {_PLAN_COLUMNS} FROM trade_plans WHERE ticker = %s AND valid_until >= %s '
+                      'ORDER BY signal_date, created_at, id', (ticker.upper(), since))
+
+
 _SNAPSHOT_COLUMNS = ('id, request_id, request_hash, as_of, equity, note, recorded_at, supersedes_id, '
                     'created_at')
 _FLOW_COLUMNS = 'id, request_id, request_hash, flow_date, amount, note, recorded_at, voided_at, void_reason'
@@ -1177,6 +1183,12 @@ def version_by_plan(conn, plan_id) -> dict[str, Any] | None:
     return _one(conn, f'SELECT {_VERSION_COLUMNS} FROM agent_plan_versions WHERE plan_id = %s', (plan_id,))
 
 
+def version_by_run(conn, agent_run_id) -> dict[str, Any] | None:
+    """The version row the agent run produced (``agent_run_id`` is unique); None for runs that made no version."""
+    return _one(conn, f'SELECT {_VERSION_COLUMNS} FROM agent_plan_versions WHERE agent_run_id = %s',
+                (agent_run_id,))
+
+
 def chain_head(conn, ticker: str, signal_date: date) -> dict[str, Any] | None:
     """The chain's head — its highest-numbered agent-2 version — as {'plan': trade_plans row,
     'version': agent_plan_versions row}; None when the unit has no agent-2 chain."""
@@ -1225,6 +1237,19 @@ def chain_reviews(conn, ticker: str, signal_date: date) -> list[dict[str, Any]]:
     """One chain's review rows (every outcome and trigger), oldest first."""
     return _all(conn, f'SELECT {_REVIEW_COLUMNS} FROM plan_reviews WHERE ticker = %s AND signal_date = %s '
                       'ORDER BY created_at, id', (ticker.upper(), signal_date))
+
+
+def review_by_run(conn, agent_run_id) -> dict[str, Any] | None:
+    """The review row a single-phase review run or a revision run belongs to (newest if several)."""
+    return _one(conn, f'SELECT {_REVIEW_COLUMNS} FROM plan_reviews '
+                      'WHERE review_agent_run_id = %s OR revision_agent_run_id = %s '
+                      'ORDER BY created_at DESC, id DESC LIMIT 1', (agent_run_id, agent_run_id))
+
+
+def reviews_of_head(conn, head_plan_id) -> list[dict[str, Any]]:
+    """Every review row that reviewed this version (``head_plan_id``), any outcome, oldest first."""
+    return _all(conn, f'SELECT {_REVIEW_COLUMNS} FROM plan_reviews WHERE head_plan_id = %s '
+                      'ORDER BY created_at, id', (head_plan_id,))
 
 
 def reviews_on(conn, session: date) -> list[dict[str, Any]]:

@@ -1,0 +1,423 @@
+"""Run overview (v2.6 spec §7): per-stage sentences from stage_runs rows, reason texts, run selection.
+
+The offline part feeds `build` / `describe` with rows written by the real StageRecorder (an injected writer
+collects them), so the counts are compared with what the recorder actually produced. The SQL part reads a
+disposable schema and pins the read-only behaviour and the CLI."""
+import inspect
+import re
+from datetime import UTC, date, datetime, timedelta
+
+import psycopg
+import pytest
+
+from investment_assistant.workbench import labels, repository, rules, run_overview, service
+from investment_assistant.workbench import stages as stages_module
+from investment_assistant.workbench.agent import REASON_TEXT as AGENT_REASON_TEXT
+
+SESSION = date(2026, 10, 27)
+T0 = datetime(2026, 10, 27, 22, 30, tzinfo=UTC)          # 06:30 Beijing on the 28th
+STAGE_TITLES = {s.id: s for s in stages_module.STAGES}
+
+
+def row(stage, *, run_id='run-1', status='success', reason=None, i=0, o=0, skips=(), failures=(),
+        degradations=(), outputs=None, detail=None, trigger='scheduled', version='stages-2',
+        started=T0, seconds=2, duration_ms=1234):
+    return {'run_id': run_id, 'job': 'workbench', 'trigger': trigger, 'session': SESSION, 'stage': stage,
+            'stages_version': version, 'status': status, 'reason': reason, 'input_count': i, 'output_count': o,
+            'skips': list(skips), 'failures': list(failures), 'degradations': list(degradations),
+            'outputs': outputs or {}, 'detail': detail or {}, 'started_at': started,
+            'finished_at': started + timedelta(seconds=seconds), 'duration_ms': duration_ms}
+
+
+def describe(r):
+    stage = STAGE_TITLES[r['stage']]
+    return run_overview.describe(r, title=stage.title, purpose=stage.purpose)
+
+
+# ---------------------------------------------------------------- describe: templates
+
+TEMPLATE_CASES = [
+    ('collect', dict(i=174, o=141, detail={'earnings': {'targets': 120, 'ok': 118, 'failed': 2}}),
+     '采集 141/174 个目标（日线、资讯、SEC、FRED 按族计）；财报日 118/120'),
+    ('screen', dict(i=100, o=12), '纳指 100 范围 100 只，今日入选 12 只进扩展池'),
+    ('regime', dict(i=140, o=1), '用 140 只股票的广度生成区制快照 1 份'),
+    ('signals', dict(i=30, o=5, detail={'units': {'buy': 2, 'watch': 1}}),
+     '评估 30 只，产生 5 条候选；决策单元：买入 2 · 观察 1'),
+    ('plan', dict(i=2, o=2, detail={'status': {'ok': 1, 'invalid': 1}, 'derivation': {'checked': 2, 'consistent': 2}}),
+     '2 个买入单元，生成规则计划 2 份（有效 1 · 作废 1）；推导核对一致 2/2'),
+    ('agent', dict(i=3, o=2, outputs={'plan_ids': ['a', 'b']}, detail={'tokens': {'input': 900, 'output': 120}}),
+     'Agent 处理 3 个单元，2 个给出结果，新 Agent 计划 2 份；token 输入 900 · 输出 120'),
+    ('review', dict(i=4, o=4, outputs={'plan_ids': ['n1']},
+                    detail={'outcomes': {'maintain': 2, 'revise': 1, 'invalidate': 1},
+                            'decided_by': {'host': 1, 'agent': 3},
+                            'ended': {'expired': 1, 'closed_by_decision': 0, 'position_closed': 2},
+                            'holdings_without_chain': ['AAPL', 'MSFT']}),
+     '复查 4 份 Agent 计划：维持 2 · 修订 1（出新版 1）· 作废 1；系统规则判定 1 · Agent 判定 3；'
+     '已结束的链：过期 1 · 否决 0 · 平仓 2；无 Agent 计划的持仓：AAPL, MSFT'),
+    ('push', dict(i=3, o=3, outputs={'push': {'sent': True, 'messages': 3, 'reason': None}}, ),
+     '发送 3 条消息'),
+]
+
+
+@pytest.mark.parametrize('stage,kwargs,sentence', TEMPLATE_CASES, ids=[c[0] for c in TEMPLATE_CASES])
+def test_describe_templates(stage, kwargs, sentence):
+    out = describe(row(stage, **kwargs))
+    assert out['sentence'] == sentence
+    assert out['status'] == 'success' and out['status_text'] == '成功'
+    assert out['id'] == stage and out['title'] == STAGE_TITLES[stage].title
+    assert out['purpose'] == STAGE_TITLES[stage].purpose
+
+
+def test_describe_review_all_zero_ended_and_no_holdings_omitted():
+    out = describe(row('review', i=1, o=1, detail={
+        'outcomes': {'maintain': 1, 'revise': 0, 'invalidate': 0}, 'decided_by': {'host': 1, 'agent': 0},
+        'ended': {'expired': 0, 'closed_by_decision': 0, 'position_closed': 0}, 'holdings_without_chain': []}))
+    assert '已结束的链' not in out['sentence'] and '无 Agent 计划的持仓' not in out['sentence']
+    assert out['sentence'] == '复查 1 份 Agent 计划：维持 1 · 修订 0（出新版 0）· 作废 0；系统规则判定 1 · Agent 判定 0'
+
+
+def test_describe_push_variants():
+    assert describe(row('push', detail={'closed': True}, i=1, o=1,
+                        outputs={'push': {'sent': True, 'messages': 1, 'reason': None}}))['sentence'] \
+        == '纽约休市，发送休市说明 1 条'
+    assert describe(row('push'))['sentence'] == '没有可发的消息'
+    assert describe(row('push', status='skipped', reason='manual_run'))['sentence'] == '跳过：手动运行不推送'
+
+
+def test_describe_skipped_and_failed():
+    skipped = describe(row('screen', status='skipped', reason='explicit_pool'))
+    assert skipped['sentence'] == '跳过：指定股票运行，不筛选'
+    assert skipped['reason'] == 'explicit_pool' and skipped['reason_text'] == '指定股票运行，不筛选'
+    failed = describe(row('agent', status='failed', reason='aborted: boom', i=2, o=0))
+    assert failed['sentence'] == '失败：运行中断：boom' and failed['status_text'] == '失败'
+    assert (failed['input_count'], failed['output_count']) == (2, 0)
+
+
+def test_suffix_order():
+    out = describe(row(
+        'agent', status='partial', i=5, o=3, outputs={'plan_ids': ['a']},
+        failures=[{'target': 'AAA', 'reason': 'x'}],
+        degradations=[{'kind': 'fred_not_configured', 'detail': ''}],
+        skips=[{'reason': 'token_budget', 'count': 2, 'samples': ['A', 'B']},
+               {'reason': 'max_attempts', 'count': 1, 'samples': ['C']}]))
+    assert out['sentence'] == ('Agent 处理 5 个单元，3 个给出结果，新 Agent 计划 1 份'
+                               '；1 处失败；降级：FRED 未配置'
+                               '；跳过 3（超出 token 上限 × 2、已达重试上限 × 1）')
+    assert out['skips'][0] == {'reason': 'token_budget', 'text': '超出 token 上限', 'count': 2, 'samples': ['A', 'B']}
+    assert out['degradations'] == [{'kind': 'fred_not_configured', 'text': 'FRED 未配置', 'detail': ''}]
+    assert out['failures'] == [{'target': 'AAA', 'reason': 'x'}]
+
+
+def test_suffix_only_first_three_skip_reasons():
+    skips = [{'reason': f'r{n}', 'count': n, 'samples': []} for n in range(1, 6)]
+    out = describe(row('signals', skips=skips, i=1, o=1))
+    assert out['sentence'].endswith('；跳过 15（r1 × 1、r2 × 2、r3 × 3）')
+
+
+# ---------------------------------------------------------------- reason texts
+
+def test_reason_texts():
+    assert run_overview.reason_text('agent_unavailable: 未配置') == 'Agent 不可用：未配置'
+    assert run_overview.reason_text('agent_unavailable: not_configured') == 'Agent 不可用：未配置'
+    assert run_overview.reason_text('aborted: boom') == '运行中断：boom'
+    assert run_overview.reason_text('not_trading_day') == '纽约休市'
+    assert run_overview.reason_text('never-heard-of-it') == 'never-heard-of-it'
+    assert run_overview.reason_text('x: y') == 'x: y'
+    assert run_overview.reason_text(None) is None
+    for code, text in {'explicit_pool': '指定股票运行，不筛选', 'manual_run': '手动运行不推送',
+                       'already_pushed': '今天已推送过', 'task_disabled': '推送任务已关闭',
+                       'not_reached': '运行提前结束，未执行到', 'already_completed': '已有结果',
+                       'already_reviewed': '今天已复查', 'fresh_version': '当天刚生成，不复查',
+                       'object_cap': '超出复查对象上限 20', 'atr_unavailable': 'ATR 无法计算'}.items():
+        assert run_overview.reason_text(code) == text
+
+
+def test_degradation_kind_texts():
+    expected = {'fred_not_configured': 'FRED 未配置', 'label_insufficient': '广度样本不足',
+                'macro_not_ok': '宏观序列不完整', 'conflict': '与已存记录不一致（未覆盖）',
+                'universe_load_failed': '范围文件加载失败', 'benchmark_missing': 'QQQ 缺当日数据',
+                'derivation_mismatch': '推导核对不一致', 'derivation_check_error': '推导核对出错',
+                'revision_failed': '修订未通过校验', 'agent_unavailable': 'Agent 不可用'}
+    for kind, text in expected.items():
+        assert run_overview.reason_text(kind) == text
+
+
+def _precondition_returns() -> list[str]:
+    return re.findall(r"return '([a-z_]+)'", inspect.getsource(rules.precondition))
+
+
+def test_rule_skip_texts_cover_precondition():
+    returns = _precondition_returns()
+    assert returns, 'precondition source should have string returns'
+    for rule_id in ('trend_reclaim', 'volume_breakout'):
+        for reason in returns + ['earnings_time_unknown']:
+            text = run_overview.reason_text(f'{rule_id}:{reason}')
+            assert text.startswith(f'{labels.RULE_TEXT[rule_id]}：')
+            assert text != f'{labels.RULE_TEXT[rule_id]}：{reason}'      # translated, not echoed
+
+
+def test_reason_tables_disjoint():
+    assert set(run_overview.REASON_TEXT) & set(AGENT_REASON_TEXT) == set()
+    assert run_overview.reason_text('token_budget') == AGENT_REASON_TEXT['token_budget']
+    assert set(run_overview.STATUS_TEXT) == {'success', 'partial', 'degraded', 'failed', 'skipped', 'missing',
+                                             'not_recorded'}
+    assert run_overview.STATUS_TEXT['partial'] == '部分失败'
+
+
+def test_stage_concepts_cover_registry():
+    assert set(run_overview.STAGE_CONCEPTS) == set(stages_module.STAGE_IDS)
+    assert run_overview.STAGE_CONCEPTS['collect'] == ('family.bars', 'family.news', 'family.sec_filings',
+                                                      'family.fred')
+    assert run_overview.STAGE_CONCEPTS['push'] == ('system.push',)
+
+
+@pytest.mark.parametrize('stage', stages_module.STAGE_IDS)
+def test_describe_tolerates_missing_detail_keys(stage):
+    out = describe(row(stage, detail={}, outputs={}))
+    assert out['sentence'] and '；' not in out['sentence'] or stage == 'push'
+    assert out['concepts'] == list(run_overview.STAGE_CONCEPTS[stage])
+    # an old row whose detail holds unrelated keys is fine too
+    assert describe(row(stage, detail={'weird': 1}, outputs={'x': 1}))['sentence']
+
+
+# ---------------------------------------------------------------- build: real recorder rows
+
+def _recorded_rows(version='stages-2', run_id='run-rec', trigger='scheduled'):
+    rows: list[dict] = []
+    tick = iter(range(1000))
+    wall = lambda: T0 + timedelta(seconds=next(tick))          # noqa: E731
+    rec = stages_module.StageRecorder(run_id, trigger, SESSION, writer=rows.append, wall_now=wall,
+                                      version=version)
+    acc = rec.open('collect')
+    acc.input(10)
+    acc.output(8)
+    acc.skip('FRED_API_KEY 未配置', 'FRED')
+    acc.fail('bars:MU', 'provider down')
+    acc.degrade('fred_not_configured', 'no key')
+    acc.detail['earnings'] = {'targets': 4, 'ok': 4, 'failed': 0}
+    rec.finish('collect')
+    with rec.stage('screen') as screen:
+        screen.input(100)
+        screen.output(7)
+    rec.skip('regime', 'explicit_pool')
+    signals = rec.open('signals')
+    signals.input(30)
+    signals.output(4)
+    signals.skip('trend_reclaim:insufficient_history', 'ZZZ')
+    signals.skip('trend_reclaim:insufficient_history', 'YYY')
+    signals.detail['units'] = {'buy': 1}
+    signals.ref('inserted', 'c1')
+    rec.finish('signals')
+    rec.close()
+    return rows
+
+
+def test_overview_counts_equal_recorder_rows():
+    rows = _recorded_rows()
+    assert len(rows) == 8
+    view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
+    assert view['ready'] is True and view['note'] is None and view['session'] == '2026-10-27'
+    assert [s['id'] for s in view['stages']] == list(stages_module.STAGE_IDS)
+    by_stage = {r['stage']: r for r in rows}
+    for stage in view['stages']:
+        src = by_stage[stage['id']]
+        assert stage['input_count'] == src['input_count']
+        assert stage['output_count'] == src['output_count']
+        assert stage['reason'] == src['reason']
+        assert stage['duration_ms'] == src['duration_ms']
+        assert stage['status'] == src['status']
+        assert [{k: s[k] for k in ('reason', 'count', 'samples')} for s in stage['skips']] == src['skips']
+        assert stage['failures'] == src['failures']
+        assert [{k: d[k] for k in ('kind', 'detail')} for d in stage['degradations']] == src['degradations']
+    collect = next(s for s in view['stages'] if s['id'] == 'collect')
+    assert collect['status'] == 'partial' and collect['status_text'] == '部分失败'
+    assert collect['sentence'] == ('采集 8/10 个目标（日线、资讯、SEC、FRED 按族计）；财报日 4/4；1 处失败；降级：FRED 未配置；'
+                                   '跳过 1（FRED_API_KEY 未配置 × 1）')
+    signals = next(s for s in view['stages'] if s['id'] == 'signals')
+    assert signals['skips'][0]['text'] == '趋势回踩修复：日线不足 200 根'
+    assert signals['skips'][0]['count'] == 2 and signals['skips'][0]['samples'] == ['ZZZ', 'YYY']
+    # run bookkeeping
+    [run] = view['runs']
+    assert run['run_id'] == 'run-rec' and run['trigger'] == 'scheduled' and run['trigger_text'] == '定时'
+    assert run['stages_version'] == 'stages-2' and run['rows'] == 8 and run['closed'] is False
+    assert view['selected_run_id'] == 'run-rec'
+
+
+def test_overview_stages_1_placeholder():
+    rows = _recorded_rows(version='stages-1')
+    assert len(rows) == 7
+    view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
+    assert [s['id'] for s in view['stages']] == list(stages_module.STAGE_IDS)
+    assert len(view['stages']) == 8
+    placeholder = view['stages'][6]
+    assert placeholder['id'] == 'review' and placeholder['status'] == 'not_recorded'
+    assert placeholder['status_text'] == '未记录'
+    assert placeholder['sentence'] == '这次运行按 stages-1 记账（早于 v2.5 或迁移 026 未执行），没有每日复查阶段'
+    assert placeholder['input_count'] is None and placeholder['output_count'] is None
+    assert placeholder['duration_ms'] is None and placeholder['skips'] == []
+    assert view['stages'][7]['id'] == 'push'
+    assert view['runs'][0]['stages_version'] == 'stages-1' and view['runs'][0]['rows'] == 7
+
+
+def test_missing_and_unknown_stage():
+    rows = [row(s) for s in stages_module.STAGE_IDS if s != 'regime']
+    rows.append(row('mystery', status='success', i=1, o=1))
+    view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
+    ids = [s['id'] for s in view['stages']]
+    assert ids[:8] == list(stages_module.STAGE_IDS) and ids[-1] == 'mystery' and len(ids) == 9
+    missing = view['stages'][2]
+    assert missing['id'] == 'regime' and missing['status'] == 'missing' and missing['status_text'] == '缺证据'
+    assert missing['sentence'] == '这一阶段没有证据行（记账失败，见运行报告）'
+    assert missing['input_count'] is None and missing['output_count'] is None
+    unknown = view['stages'][-1]
+    assert unknown['sentence'] == '未知阶段' and unknown['title'] == 'mystery'
+    assert unknown['status'] == 'success'
+
+
+def test_not_ready_and_no_rows_notes():
+    view = run_overview.build([], session=SESSION, run_id=None, ready=False)
+    assert view == {'session': '2026-10-27', 'ready': False, 'note': '迁移 025 未执行，暂无阶段证据', 'runs': [],
+                    'selected_run_id': None, 'headline': None, 'stages': []}
+    view = run_overview.build([], session=SESSION, run_id=None, ready=True)
+    assert view['ready'] is True and view['stages'] == [] and view['runs'] == [] and view['headline'] is None
+    assert view['note'] == '这一天没有阶段证据：当天没有运行，或运行早于 v2.4（2026-10-27 起才记录）'
+
+
+def closed_run(run_id='run-closed', started=T0 + timedelta(hours=1)):
+    rows = [row(s, run_id=run_id, status='skipped', reason='not_trading_day', started=started)
+            for s in stages_module.STAGE_IDS if s != 'push']
+    rows.append(row('push', run_id=run_id, i=1, o=1, started=started, detail={'closed': True},
+                    outputs={'push': {'sent': True, 'messages': 1, 'reason': None}}))
+    return rows
+
+
+def real_run(run_id='run-real', started=T0, statuses=None):
+    statuses = statuses or {}
+    return [row(s, run_id=run_id, started=started, status=statuses.get(s, 'success'))
+            for s in stages_module.STAGE_IDS]
+
+
+def test_non_trading_day_headline():
+    view = run_overview.build(closed_run(), session=SESSION, run_id=None, ready=True)
+    assert view['headline'] == '纽约休市，未运行（只推送一行休市说明）'
+    assert view['runs'][0]['closed'] is True and view['runs'][0]['trigger_text'] == '休市'
+    assert len(view['stages']) == 8
+    assert view['stages'][0]['sentence'] == '跳过：纽约休市'
+    assert view['stages'][-1]['sentence'] == '纽约休市，发送休市说明 1 条'
+
+
+def test_headline_counts():
+    rows = real_run(statuses={'regime': 'degraded', 'screen': 'skipped'})
+    rows[0] = row('collect', run_id='run-real', started=T0, seconds=192)             # run spans 3 min 12 s via the collect row
+    view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
+    assert view['headline'] == '定时运行 · 06:30 开始 · 用时 3 分 12 秒 · 8 个阶段：成功 6 · 降级 1 · 跳过 1'
+    short = run_overview.build(real_run(), session=SESSION, run_id=None, ready=True)['headline']
+    assert short == '定时运行 · 06:30 开始 · 用时 2 秒 · 8 个阶段：成功 8'
+    manual = run_overview.build([r | {'trigger': 'manual_batch'} for r in real_run()], session=SESSION,
+                                run_id=None, ready=True)
+    assert manual['headline'].startswith('手动运行 · 06:30 开始')
+
+
+def test_selects_latest_started_run():
+    first = real_run('run-a', started=T0)
+    second = real_run('run-b', started=T0 + timedelta(hours=2))
+    view = run_overview.build(first + second, session=SESSION, run_id=None, ready=True)
+    assert view['selected_run_id'] == 'run-b'
+    assert [r['run_id'] for r in view['runs']] == ['run-a', 'run-b']
+    chosen = run_overview.build(first + second, session=SESSION, run_id='run-a', ready=True)
+    assert chosen['selected_run_id'] == 'run-a'
+
+
+def test_skips_closed_run_by_default():
+    real = real_run('run-real', started=T0)
+    closed = closed_run('run-closed', started=T0 + timedelta(hours=3))
+    view = run_overview.build(real + closed, session=SESSION, run_id=None, ready=True)
+    assert view['selected_run_id'] == 'run-real'
+    runs = {r['run_id']: r for r in view['runs']}
+    assert runs['run-closed']['closed'] is True and runs['run-closed']['trigger_text'] == '休市'
+    assert runs['run-real']['closed'] is False
+    assert run_overview.build(real + closed, session=SESSION, run_id='run-closed',
+                              ready=True)['selected_run_id'] == 'run-closed'
+
+
+def test_only_closed_run_selected():
+    closed = closed_run('run-c1', started=T0) + closed_run('run-c2', started=T0 + timedelta(hours=1))
+    view = run_overview.build(closed, session=SESSION, run_id=None, ready=True)
+    assert view['selected_run_id'] == 'run-c2'
+
+
+def test_run_id_not_in_session_is_lookup_error_pure():
+    with pytest.raises(LookupError):
+        run_overview.build(real_run(), session=SESSION, run_id='nope', ready=True)
+
+
+# ---------------------------------------------------------------- SQL (disposable schema)
+
+from test_workbench_service import NOW, db  # noqa: E402,F401  (fixture)
+
+
+def _insert(db, rows):
+    for r in rows:
+        repository.insert_stage_run(db, r)
+    db.commit()
+
+
+def _stage_count(db):
+    return db.execute('SELECT count(*) FROM stage_runs').fetchone()[0]
+
+
+def test_overview_reads_session_rows_read_only(db):
+    _insert(db, real_run('run-a', started=T0) + closed_run('run-z', started=T0 + timedelta(hours=2)))
+    before = _stage_count(db)
+    view = run_overview.overview(session=SESSION, run_id=None, now=NOW)
+    assert view['ready'] is True and view['selected_run_id'] == 'run-a'
+    assert [r['run_id'] for r in view['runs']] == ['run-a', 'run-z']
+    assert [s['id'] for s in view['stages']] == list(stages_module.STAGE_IDS)
+    assert _stage_count(db) == before
+    # without a session, the latest closed session at `now` is used (2026-10-22 here: no rows)
+    assert run_overview.overview(session=None, run_id=None, now=NOW)['stages'] == []
+    # the use case runs in a read-only transaction: a write through it is refused
+    with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+        with service.read_only_tx() as conn:
+            conn.execute('DELETE FROM stage_runs')
+    db.rollback()
+    assert _stage_count(db) == before
+
+
+def test_run_id_not_in_session_is_lookup_error(db):
+    _insert(db, real_run('run-a'))
+    with pytest.raises(LookupError):
+        run_overview.overview(session=SESSION, run_id='other-run', now=NOW)
+
+
+def test_overview_without_stage_runs_table(db):
+    db.execute('DROP TABLE stage_runs CASCADE')
+    db.commit()
+    view = run_overview.overview(session=SESSION, run_id=None, now=NOW)
+    assert view['ready'] is False and view['note'] == '迁移 025 未执行，暂无阶段证据'
+    assert view['stages'] == [] and view['runs'] == []
+
+
+def test_cli_output_and_exit_codes(db, capsys):
+    _insert(db, real_run('run-a'))
+    assert run_overview.main(['--session', '2026-10-27']) == 0
+    out = capsys.readouterr().out.strip().splitlines()
+    assert len(out) == 8 + 1                                           # headline + 8 stage lines
+    assert out[0].startswith('定时运行')
+    collect = out[1]
+    assert collect.startswith(f'{STAGE_TITLES["collect"].title} · 成功 · ') and collect.endswith(' · 0/0')
+    assert run_overview.main(['--session', '2026-10-26']) == 1          # no evidence that day
+    assert '这一天没有阶段证据' in capsys.readouterr().out
+    assert run_overview.main(['--session', '2026-10-27', '--run-id', 'nope']) == 2
+    capsys.readouterr()
+    for argv in (['--session', 'yesterday'], []):
+        with pytest.raises(SystemExit) as raised:
+            run_overview.main(argv)
+        assert raised.value.code == 2
+    capsys.readouterr()
+
+
+def test_cli_database_unavailable_exits_two(monkeypatch, capsys):
+    monkeypatch.delenv('INVESTMENT_ASSISTANT_DATABASE_URL', raising=False)
+    assert run_overview.main(['--session', '2026-10-27']) == 2
+    assert '数据库' in capsys.readouterr().err

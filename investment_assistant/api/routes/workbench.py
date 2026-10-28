@@ -4,7 +4,8 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException
 
 from investment_assistant.tasks import runner
-from investment_assistant.workbench import derivation_view, ledger, plan_review, service, user_inputs
+from investment_assistant.workbench import (derivation_view, ledger, plan_review, reasoning, run_overview, service,
+                                            user_inputs)
 
 router = APIRouter()
 
@@ -199,6 +200,12 @@ def agent_run_detail(run_id: str):
     return _call(service.agent_run_detail, run_id)
 
 
+@router.get('/api/workbench/agent-runs/{run_id}/reasoning')
+def agent_run_reasoning(run_id: str):
+    """v2.6 reading view of one agent run (spec §8): read-only; 400 not a UUID, 404 unknown run."""
+    return _call(reasoning.reasoning, run_id)
+
+
 @router.post('/api/workbench/agent-runs')
 def run_agent(payload: dict[str, Any] = Body(default_factory=dict)):
     ticker = str(payload.get('ticker') or '')
@@ -240,6 +247,12 @@ def plan_derivation_view(plan_id: str):
 @router.get('/api/workbench/units/{ticker}/{signal_date}/derivation')
 def unit_derivation_view(ticker: str, signal_date: str):
     return _call(derivation_view.unit_derivation, ticker, _date(signal_date, 'signal_date'))
+
+
+@router.get('/api/workbench/run-overview')
+def run_overview_view(session: str | None = None, run_id: str | None = None):
+    """v2.6 run overview of one session (spec §7): read-only; 400 bad date, 404 run not of that day."""
+    return _call(run_overview.overview, session=_date(session, 'session'), run_id=run_id or None, now=_now())
 
 
 @router.get('/api/workbench/stage-runs')

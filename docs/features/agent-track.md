@@ -7,7 +7,8 @@
 ## 怎么工作
 
 - **运行时**：LangGraph，默认模型智谱 `glm-5.3`（OpenAI 兼容接口），检查点存在本库（PostgresSaver）。
-- **工具层**（`workbench/agent/tools.py`）：八个普通 Python 函数，只能读运行截止时间之前的数据，只允许查单元自身的标的和 SPY/SMH/XLK/QQQ，不接受日期参数。截止时间由批处理传入，模型无法修改。每次调用的参数、返回值和 SHA-256 都写入 `agent_tool_calls`。
+- **工具层**（`workbench/agent/tools.py`）：九个普通 Python 函数。前八个（`get_trigger`、`get_price_bars`、`get_indicators`、`get_filings`、`get_news`、`get_earnings`、`get_market_context`、`get_position`）只能读运行截止时间之前的数据，只允许查单元自身的标的和 SPY/SMH/XLK/QQQ，不接受日期参数。截止时间由批处理传入，模型无法修改。每次调用的参数、返回值和 SHA-256 都写入 `agent_tool_calls`。
+- **`get_concept`**（v2.6，第九个工具）：`get_concept(concept_id=None)` 读取系统概念卡（[知识层](knowledge.md)）：不给 id 返回全部 id、标题与分组，给 id（如 `plan.stop`）返回整张卡（`concept_ref`、版本、`summary`、给 Agent 的纯文本 `body`、`content_sha256`）。它是**截止时间的唯一例外**：不读数据库、不用截止时间，概念卡随代码版本走，任何时刻读到的都是当前代码版本的卡；结果里写明 `point_in_time: false` 和说明，连同 `concept_ref`、`content_sha256` 原样存进 `agent_tool_calls`，推理阅读视图对这类调用标「概念卡随代码版本走，不受截止时间约束」。未知 id 记成错误信封「未知概念 <id>，不给 id 可取全部列表」；卡目录校验失败记成「概念卡不可用：<第一条问题>」，只影响这个工具。它不是价格类工具（价位仍须引用 `get_price_bars` / `get_indicators`），它的 `call:N` 与其它工具一样可以被论点引用；提示词、`agent_version`、工具轮数上限与预算都不变。
 - **提议（`propose`，`agent-2`）**：独立给出动作、入场区间、止损、T1，以及下面几项结构化字段。每个价位和论点都要引用一次已写库的工具调用（`call:N`）；引用不存在，或价位找不到价格类工具支撑，整条作废（`rejected / invalid_citation`），只显示原因、不显示内容。还要通过基本校验，比如买入的止损必须低于入场。任一字段校验不过，整版作废：
   - **论点** `thesis`：1–3 条，每条带引用，宿主按顺序编号 `T1…T3`；条数不对 → `thesis_count`。
   - **失效条件** `invalidation`：1–5 条，取自条件集合（见下），每条带引用；**下次复查条件** `review_when`：0–3 条，留空等于「下一交易日」。`kind` 未登记、不能用在这一栏、参数不合法或缺引用 → `invalid_condition`。
@@ -39,6 +40,18 @@
   - 用户输入的时间以数据库写入时刻为准，不能补登更早的时间；更正、撤回只对之后的复查生效，不回填旧版。
   - `GET /api/workbench/user-inputs` 不带 `signal_date` 时，按该标的的候选日逐个读取各链的输入，候选日很多时较慢。
 
+## 推理阅读视图
+
+`GET /api/workbench/agent-runs/{run_id}/reasoning`（v2.6，`workbench/reasoning.py`，只读事务、不调用外部数据源）把**一次 Agent 运行**按阅读顺序摊开：`run_id` 不是 UUID → 400，不存在 → 404，数据库不可用 → 503。覆盖 `propose`（首版）、`revise`（修订）、`review`（单阶段复查）、`interpret`（解读）四种 `mode`，计划卡、版本链每版与复查记录各自链到生成它的运行。返回 `{run, legacy, version, review, steps, notes}`：
+
+- **步骤**（每步 `{kind, title, concept}`，`concept` 是这一步的概念卡）：首版 `read`（提议者读了什么）→ `proposal`（动作、摘要、价位、论点 `T1…`、失效与复查条件、修订另含 `changes` 与宿主 `diff`）→ `check`（校验结果，**在反方之前**，与图里的执行顺序一致）→ `read`（反方读了什么）→ `counter` → `response` → `outcome`（生成的计划行状态与推导一致性，只对生成了计划的运行）；修订在最前面多一步 `evidence`（触发这次修订的复查：复查交易日、七项信号、条件判定、给模型的用户输入 id，并链到该复查自己的单阶段运行）；单阶段复查是 `evidence → read → verdict → check`；解读是 `read → interpretation → check`。
+- **`read`**：每个调用 `{seq, ref: 'call:N', tool, tool_text, args, result, error, result_sha256_8, called_at, concept, fields, cutoff_exempt, cutoff_note}`。`fields` 把结果里的名字对应到概念卡：顶层键（`atr14`）、宏观序列（`macro.BAMLH0A0HYM2`）、`get_trigger` 返回的规则 id 取值（`trend_reclaim` → `rule.trend_reclaim`）、`get_concept` 返回的 `id`。`get_concept` 调用 `cutoff_exempt: true`。
+- **`check`**：列出这类运行适用的检查项，结果 `pass` / `implicated` / `not_recorded` / `not_run`。`ok` / `pass` → 全部通过；`rejected` → 作废原因出现在该项原因集合里的**全部**项标 `implicated`（校验器遇到第一处失败就停，只记原因，不推断哪些项通过了，`note` 写明这一点），其余 `not_recorded`；`error` / `skipped` → 全部 `not_run`，附原因文案。
+- **`response`（回应）**：`agent-2` 流程没有单独的「回应」步骤，也不新增；这里的「回应」= 本版之后以本版为被复查对象的复查记录（结论、判定方、理由、触发的信号，修订时附新版的版本号与「相对上版变化」）。没有复查就写「回应：本版之后还没有复查」。`agent-1` 运行与没有生成计划的运行没有这一步。
+- **作废的运行**（`rejected` / `error` / `skipped`）：已记录的工具调用照样给出；输出或反方存了就照常显示（例如入场期修订版因计划行作废而 `rejected / plan_invalid`，提议和反方都在），没存的那一步写「这次运行作废：<原因文案>，只保留工具调用」，`check` 照给。
+- **`agent-1` 旧运行**：`legacy: true`，`notes` 写「agent-1（旧版）：没有失效条件、下次复查条件与逐条对应的反证，也不参与复查；以下按原样显示」；步骤是 `read → proposal`（论点作为「理由」）`→ check → read → counter`（只有 `risks`）`→ outcome`，没有 `response`。
+- **迁移 026 未执行**：没有 `version`、`evidence`、`response`，`notes` 写「迁移 026 未执行，没有版本与复查记录」。
+
 ## 配置
 
 | 环境变量 | 说明 |
@@ -55,7 +68,7 @@
 
 - 页面：「今日」的 Agent 建议卡片（引用编号可以展开，看到工具调用的参数、返回值和哈希前 8 位；失败时有「重新运行 Agent」）；「复盘 → 轨道对比」里点 Agent 运行 id。
 - 「今日」接口（`GET /api/workbench/today`）：`agent-2` 单元的 `agent` 取**链的最新版**的运行与计划（不是最新一次运行），并带 `chain`（`version_no`、`head_plan_id`、最新版的生成时间 `cutoff_at` 与相对上一版的宿主差异 `diff`（第 0 版为 `null`）、`state`、`mode`、`basis`、`latest_review`（最近一次有效复查，含各条件的判定 `conditions`））；`agent-1` 单元带 `legacy: true`。另有 `chains`（已决定买入、等待成交的入场期链与持仓期链：第几版、最近复查的结论 / 判定方 / 时间 / 理由前 40 字、当日触发的信号）、持仓行的 `has_chain`（持仓所在单元有 `agent-2` 链，任何状态都算）与 `chain_state`（该链在 S 的状态：`holding`，或在持仓期间结束的状态如 `invalidated`；无链为 `null`），以及 `timeline_ready`（迁移 026 是否就绪）。
-- API：`GET /api/workbench/agent-runs?since=`（运行列表与覆盖率 `coverage`）、`GET /api/workbench/agent-runs/{id}`（详情和全部工具调用）、`POST /api/workbench/agent-runs`（body `{ticker, signal_date}`；已有 `ok`/`pass` 返回 409，不是买入单元返回 400）。
+- API：`GET /api/workbench/agent-runs?since=`（运行列表与覆盖率 `coverage`）、`GET /api/workbench/agent-runs/{id}`（详情和全部工具调用）、`GET /api/workbench/agent-runs/{id}/reasoning`（推理阅读视图，见上）、`POST /api/workbench/agent-runs`（body `{ticker, signal_date}`；已有 `ok`/`pass` 返回 409，不是买入单元返回 400）。
 - 命令行：`python -m investment_assistant.workbench.agent run --ticker X --date YYYY-MM-DD`。
 - 运行报告：`summary.agent`（`{runs, tokens, quota_exhausted}`）、`summary.sources.agent`、`summary.timings.agent`；`error` 状态的运行带脱敏后的 `detail`。
 - 验证一次：跑完批处理后 `GET /api/workbench/agent-runs`，`coverage.missing` 应为空；任选一个买入单元，Agent 卡片上每个价位旁都有引用编号，点开能看到工具调用和哈希。

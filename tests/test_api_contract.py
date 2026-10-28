@@ -138,3 +138,22 @@ def test_knowledge_routes_in_openapi_and_read_only(client):
 
 def test_knowledge_routes_work_without_db(client):
     assert client.get("/api/knowledge/concepts").status_code == 200      # real docs/knowledge (may be empty)
+
+
+UNDERSTANDING_PATHS = {
+    "/api/workbench/run-overview",
+    "/api/workbench/agent-runs/{run_id}/reasoning",
+}
+
+
+def test_run_overview_and_reasoning_routes_in_openapi_and_read_only(client):
+    spec = client.get("/openapi.json").json()
+    assert UNDERSTANDING_PATHS <= set(spec["paths"])
+    for path in UNDERSTANDING_PATHS:
+        assert set(spec["paths"][path].keys()) == {"get"}
+
+
+def test_run_overview_and_reasoning_without_db_are_503(client):
+    assert client.get("/api/workbench/run-overview?session=2026-10-27").status_code == 503
+    assert client.get(
+        "/api/workbench/agent-runs/6f1d1c1e-6666-4444-8888-000000000001/reasoning").status_code == 503

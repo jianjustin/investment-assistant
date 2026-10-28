@@ -138,3 +138,123 @@ def test_bars_after_cutoff_invisible(workbench_db):
     assert [(b['date'], b['close']) for b in get_price_bars(sql_ctx, 'NVDA', lookback=10)] \
         == [('2026-10-20', 100.0), ('2026-10-21', 101.0)]
     assert [n['title'] for n in get_news(sql_ctx, days=7)] == ['before']
+
+
+# ---------------------------------------------------------------- get_concept (v2.6 spec §10)
+
+import hashlib   # noqa: E402
+
+import yaml   # noqa: E402
+
+from investment_assistant.workbench import knowledge   # noqa: E402
+from investment_assistant.workbench.agent import tools as agent_tools   # noqa: E402
+
+CONCEPT_DESCRIPTION = ('读取系统概念卡：不给 id 返回全部 id 与标题；给 id（如 `plan.stop`）返回整张卡。'
+                       '概念卡随代码版本走，不受截止时间约束')
+
+
+def _card(root, card_id, *, title, summary='参考价减 2 倍 ATR14。', body='## 是什么\n\n止损是一个价位。\n'):
+    folder = root / 'concepts'
+    folder.mkdir(parents=True, exist_ok=True)
+    meta = {'id': card_id, 'title': title, 'group': card_id.split('.')[0], 'version': 2, 'applies_to': ['plan-1'],
+            'summary': summary, 'related': []}
+    front = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False, default_flow_style=None)
+    (folder / f'{card_id}.md').write_text(f'---\n{front}---\n\n{body}', encoding='utf-8')
+
+
+@pytest.fixture
+def cards(tmp_path, monkeypatch):
+    _card(tmp_path, 'plan.stop', title='止损')
+    _card(tmp_path, 'indicator.atr14', title='ATR14', summary='14 日平均真实波幅。')
+    monkeypatch.setattr(knowledge, 'DEFAULT_ROOT', tmp_path)
+    knowledge.reset_cache()
+    yield tmp_path
+    knowledge.reset_cache()
+
+
+def boom_ctx():
+    def read(fn):
+        raise AssertionError('get_concept must not read the database')
+    return ToolContext(ticker='AMD', session=S, cutoff_at=CUTOFF, read=read)
+
+
+def test_tools_count_is_nine():
+    assert len(agent_tools.TOOLS) == 9 and 'get_concept' in agent_tools.TOOLS
+    assert set(agent_tools.TOOLS) == set(agent_tools.TOOL_DESCRIPTIONS)
+    assert agent_tools.TOOL_DESCRIPTIONS['get_concept'] == CONCEPT_DESCRIPTION
+    assert list(agent_tools.TOOLS)[:8] == ['get_trigger', 'get_price_bars', 'get_indicators', 'get_filings',
+                                           'get_news', 'get_earnings', 'get_market_context', 'get_position']
+
+
+def test_get_concept_index_and_card(cards):
+    rec = Recorder()
+    index = call(boom_ctx(), rec, 'get_concept', {}, now=CUTOFF)['data']
+    assert index['knowledge_version'] == 'knowledge-1' and index['point_in_time'] is False
+    assert index['concepts'] == [{'id': 'indicator.atr14', 'title': 'ATR14', 'group': 'indicator'},
+                                 {'id': 'plan.stop', 'title': '止损', 'group': 'plan'}]
+    card = call(boom_ctx(), rec, 'get_concept', {'concept_id': 'plan.stop'}, now=CUTOFF)['data']
+    assert card['concept_ref'] == 'concept:plan.stop@2' and card['id'] == 'plan.stop' and card['title'] == '止损'
+    assert card['group'] == 'plan' and card['version'] == 2 and card['applies_to'] == ['plan-1']
+    assert card['summary'] == '参考价减 2 倍 ATR14。' and '止损是一个价位' in card['body']
+    assert card['knowledge_version'] == 'knowledge-1'
+    assert set(card) == {'concept_ref', 'id', 'title', 'group', 'version', 'applies_to', 'summary', 'body',
+                         'content_sha256', 'knowledge_version', 'point_in_time', 'note'}
+    assert [c['seq'] for c in rec.calls] == [1, 2] and rec.calls[1]['args'] == {'concept_id': 'plan.stop'}
+    assert rec.calls[1]['result'] == {'ref': 'call:2', 'data': card}
+
+
+def test_get_concept_never_reads_db_and_marks_exemption(cards):
+    rec = Recorder()
+    env = call(boom_ctx(), rec, 'get_concept', {'concept_id': 'plan.stop'}, now=CUTOFF)
+    data = env['data']
+    assert data['point_in_time'] is False and data['note'] == '概念卡随代码版本走，不按截止时间回读'
+    assert data['concept_ref'] == 'concept:plan.stop@2'
+    assert data['content_sha256'] == hashlib.sha256('## 是什么\n\n止损是一个价位。'.encode('utf-8')).hexdigest()
+    # the exemption is in the stored record, not only in the live result
+    stored = rec.calls[0]
+    assert stored['tool'] == 'get_concept' and stored['result']['data']['point_in_time'] is False
+    assert stored['result_sha256'] == result_hash(stored['result'])
+    # the cutoff is irrelevant: the same call under a much earlier cutoff returns the same card
+    early = ToolContext(ticker='AMD', session=S, cutoff_at=datetime(2020, 1, 1, tzinfo=UTC), read=boom_ctx().read)
+    assert agent_tools.get_concept(early, 'plan.stop') == data
+
+
+def test_get_concept_unknown_id_error_envelope(cards):
+    rec = Recorder()
+    env = call(boom_ctx(), rec, 'get_concept', {'concept_id': 'plan.nope'}, now=CUTOFF)
+    assert env == {'ref': 'call:1', 'error': '未知概念 plan.nope，不给 id 可取全部列表'}
+    assert call(boom_ctx(), rec, 'get_concept', {'concept_id': 'foo'}, now=CUTOFF)['error'] \
+        == '未知概念 foo，不给 id 可取全部列表'
+    assert 'error' in call(boom_ctx(), rec, 'get_concept', {'concept_id': 5}, now=CUTOFF)
+    assert rec.calls[0]['result'] == env and rec.calls[0]['result_sha256'] == result_hash(env)
+
+
+def test_get_concept_when_catalog_broken_records_error_envelope(tmp_path, monkeypatch):
+    _card(tmp_path, 'plan.stop', title='止损')
+    (tmp_path / 'concepts' / 'plan.stop.md').write_text('no frontmatter at all', encoding='utf-8')
+    monkeypatch.setattr(knowledge, 'DEFAULT_ROOT', tmp_path)
+    knowledge.reset_cache()
+    rec = Recorder()
+    env = call(boom_ctx(), rec, 'get_concept', {}, now=CUTOFF)
+    assert env['ref'] == 'call:1' and env['error'].startswith('概念卡不可用：')
+    assert 'data' not in env and rec.calls[0]['result'] == env
+    # a failed load is not cached: once the card is fixed the very next call works
+    _card(tmp_path, 'plan.stop', title='止损')
+    assert call(boom_ctx(), rec, 'get_concept', {}, now=CUTOFF)['data']['concepts'][0]['id'] == 'plan.stop'
+    knowledge.reset_cache()
+
+
+def test_get_concept_with_no_cards_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(knowledge, 'DEFAULT_ROOT', tmp_path / 'absent')
+    knowledge.reset_cache()
+    rec = Recorder()
+    assert call(boom_ctx(), rec, 'get_concept', {}, now=CUTOFF)['data']['concepts'] == []
+    assert call(boom_ctx(), rec, 'get_concept', {'concept_id': 'plan.stop'}, now=CUTOFF)['error'].startswith('未知概念')
+    knowledge.reset_cache()
+
+
+def test_get_concept_not_a_price_tool(cards):
+    assert 'get_concept' not in PRICE_TOOLS
+    rec = Recorder()
+    call(boom_ctx(), rec, 'get_concept', {'concept_id': 'plan.stop'}, now=CUTOFF)
+    assert rec.refs() == {'call:1'} and rec.price_refs() == set()

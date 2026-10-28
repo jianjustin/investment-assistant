@@ -519,3 +519,50 @@ def test_review_header_without_pool_tier(monkeypatch, scripted_model):
                           unit={'ticker': 'AMD', 'signal_date': S})
     human = next(m for m in model.seen[0] if m.type == 'human').content
     assert '分层' not in human.split('\n', 1)[0]
+
+
+# --- get_concept in the propose phase (v2.6 spec §10, D18) ---
+
+def test_v2_propose_may_call_get_concept(monkeypatch, scripted_model, tmp_path):
+    import yaml
+
+    from investment_assistant.workbench import knowledge
+
+    folder = tmp_path / 'concepts'
+    folder.mkdir()
+    front = yaml.safe_dump({'id': 'plan.stop', 'title': '止损', 'group': 'plan', 'version': 1,
+                            'applies_to': ['plan-1'], 'summary': '参考价减 2 倍 ATR14。', 'related': []},
+                           allow_unicode=True, sort_keys=False)
+    (folder / 'plan.stop.md').write_text(f'---\n{front}---\n\n## 是什么\n\n止损是一个价位。\n', encoding='utf-8')
+    monkeypatch.setattr(knowledge, 'DEFAULT_ROOT', tmp_path)
+    knowledge.reset_cache()
+    try:
+        result, _, _ = run_v2(monkeypatch, scripted_model, [
+            _tool_call('get_concept', {'concept_id': 'plan.stop'}, 't0'),
+            _tool_call('get_price_bars', {'ticker': 'AMD', 'lookback': 30}, 't1'),
+            AIMessage(content=_plan2_json(ref='call:2', thesis=[
+                {'text': '止损按 2 倍 ATR14 定义', 'refs': ['call:1', 'call:2']}])),
+            AIMessage(content=json.dumps({'counter': [{'thesis': 1, 'text': '波动放大', 'refs': ['call:2']}],
+                                          'risks': []}, ensure_ascii=False)),
+        ])
+    finally:
+        knowledge.reset_cache()
+    assert result['status'] == 'ok' and result['reason'] is None
+    assert [(c['seq'], c['phase'], c['tool']) for c in result['calls']] == \
+        [(1, 'propose', 'get_concept'), (2, 'propose', 'get_price_bars')]
+    concept_call = result['calls'][0]
+    assert concept_call['args'] == {'concept_id': 'plan.stop'}
+    assert concept_call['result']['ref'] == 'call:1'
+    assert concept_call['result']['data']['concept_ref'] == 'concept:plan.stop@1'
+    assert concept_call['result']['data']['point_in_time'] is False
+    assert len(concept_call['result_sha256']) == 64
+    assert result['output']['thesis'][0]['refs'] == ['call:1', 'call:2']      # the card call can be cited (D18)
+
+
+def test_wrapped_tools_include_get_concept(monkeypatch):
+    from investment_assistant.workbench.agent.tools import Recorder
+    tools = graph._wrapped_tools(_ctx(monkeypatch), Recorder(), now=lambda: NOW)
+    by_name = {t.name: t for t in tools}
+    assert len(by_name) == 9 and 'get_concept' in by_name
+    props = by_name['get_concept'].args_schema.model_json_schema()['properties']
+    assert list(props) == ['concept_id']
