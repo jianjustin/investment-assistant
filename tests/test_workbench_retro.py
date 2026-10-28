@@ -44,7 +44,7 @@ def bar(day, o=100, h=101, l=99, c=100, split=1.0):
 
 
 UNIT = {'kind': 'unit', 'ticker': 'NVDA', 'signal_date': D0}
-WINDOW_START = add_trading_days(S, -5)
+WINDOW_START = retro.window_start(S)
 
 
 def end(**overrides):
@@ -152,15 +152,16 @@ def test_closing_sell_is_the_last_segment():
 
 
 def test_window_bounds():
-    assert WINDOW_START == D1
-    assert end(buys=[buy()], segments=[segment(closed=D1)]) is not None                 # exactly at the start
-    assert end(buys=[buy()], segments=[segment(closed=D0)]) is None                     # one session before
+    # D6: 5 sessions including S (28, 27, 26, 23, 22), so the first day is S minus 4 sessions
+    assert WINDOW_START == D2 == add_trading_days(S, -(retro.RETRO_LOOKBACK_SESSIONS - 1))
+    assert end(buys=[buy()], segments=[segment(closed=D2)]) is not None                 # exactly at the start
+    assert end(buys=[buy()], segments=[segment(closed=D1)]) is None                     # one session before
     assert end(buys=[buy()], segments=[segment(closed=S)]) is not None                  # S itself
     assert end(buys=[buy()], segments=[segment(closed=S + timedelta(days=1))]) is None  # never after S
     assert end(shadow=sim(legs=[leg(D0, 'stop')])) is None
     assert end(shadow=sim(status='expired'), ref_plan=plan(valid_until=S + timedelta(days=2))) is None
     # --since moves the start
-    assert end(buys=[buy()], segments=[segment(closed=D0)], window_start=D0) is not None
+    assert end(buys=[buy()], segments=[segment(closed=D1)], window_start=D1) is not None
 
 
 def test_exit_basis_in_closed_event():

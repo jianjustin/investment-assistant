@@ -1,4 +1,5 @@
 """Repository helpers for the v2.7 growth-loop tables (SQL; throwaway schema via the workbench_db fixture)."""
+import os
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
@@ -162,6 +163,19 @@ def test_knowledge_rows_cutoff_and_filters(workbench_db):
     assert repository.knowledge_item(conn, a)['origin'] == 'manual' and repository.knowledge_item(conn, 99999) is None
 
 
+def test_try_advisory_lock_mutual_exclusion(workbench_db):
+    key = f'retro-test:{uuid.uuid4()}'
+    url = os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']                 # the fixture skipped without it
+    with psycopg.connect(url) as first, psycopg.connect(url) as second:
+        assert repository.try_advisory_lock(first, key) is True
+        assert repository.try_advisory_lock(second, key) is False              # held by the open transaction
+        assert repository.try_advisory_lock(second, key + ':other') is True    # another key is free
+        second.rollback()
+        first.commit()                                                         # transaction scope: released here
+        assert repository.try_advisory_lock(second, key) is True
+        second.rollback()
+
+
 def test_retro_subjects_scope(workbench_db):
     conn = workbench_db
     t = datetime(2026, 10, 21, 15, tzinfo=UTC)
@@ -173,7 +187,24 @@ def test_retro_subjects_scope(workbench_db):
     a_sell = trade(conn, 'NVDA', side='sell', decision_id=a_dec['id'], executed_at=t + timedelta(days=2))
     b_dec = decision(conn, 'AMD', DAY, decision='reject', decided_at=t)
     decision(conn, 'MSFT', DAY, action='sell', decided_at=t)
-    decision(conn, 'AAPL', date(2026, 8, 3), decided_at=t)
+    # an old unit that never filled and whose end was already carded: nothing new can end it
+    old_day = date(2026, 8, 3)
+    old_t = datetime(2026, 8, 4, 15, tzinfo=UTC)
+    decision(conn, 'AAPL', old_day, decided_at=old_t)
+    card(conn, key='unit:AAPL:2026-08-03:ended', ticker='AAPL', signal_date=old_day, end_session=date(2026, 8, 10))
+    # an old decided-but-unfilled unit with no card yet could still end inside the window: kept ("when in doubt")
+    decision(conn, 'AMZN', old_day, decided_at=old_t)
+    # signal long before `since`, the position closes inside the window: returned
+    f_dec = decision(conn, 'F', old_day, decided_at=old_t)
+    f_buy = trade(conn, 'F', decision_id=f_dec['id'], executed_at=old_t)
+    trade(conn, 'F', side='sell', decision_id=f_dec['id'], executed_at=datetime(2026, 10, 27, 15, tzinfo=UTC))
+    # signal long before `since`, the position closed before it: not returned
+    g_dec = decision(conn, 'GE', old_day, decided_at=old_t)
+    trade(conn, 'GE', decision_id=g_dec['id'], executed_at=old_t)
+    trade(conn, 'GE', side='sell', decision_id=g_dec['id'], executed_at=datetime(2026, 9, 15, 15, tzinfo=UTC))
+    # signal long before `since`, the position is still open: returned
+    h_dec = decision(conn, 'HD', old_day, decided_at=old_t)
+    h_buy = trade(conn, 'HD', decision_id=h_dec['id'], executed_at=old_t)
     # a corrected decision on the same unit: only the head is reported, with the whole chain's buys
     e_first = decision(conn, 'TSLA', DAY, decided_at=t)
     e_head = decision(conn, 'TSLA', DAY, supersedes_id=e_first['id'], decided_at=t + timedelta(hours=1))
@@ -183,7 +214,12 @@ def test_retro_subjects_scope(workbench_db):
     voided_free = trade(conn, 'KO', executed_at=t)
     repository.mark_trade_voided(conn, voided_free['id'], 'typo', voided_at=NOW)
     trade(conn, 'PEP', side='sell', executed_at=t)
-    trade(conn, 'XOM', executed_at=datetime(2026, 8, 3, 15, tzinfo=UTC))
+    # unplanned buys bought long before `since`: closed inside the window -> returned; closed before it -> out
+    low_buy = trade(conn, 'LOW', executed_at=old_t)
+    trade(conn, 'LOW', side='sell', executed_at=datetime(2026, 10, 28, 15, tzinfo=UTC))
+    trade(conn, 'XOM', executed_at=old_t)
+    trade(conn, 'XOM', side='sell', executed_at=datetime(2026, 9, 10, 15, tzinfo=UTC))
+    trade(conn, 'PG', executed_at=datetime(2026, 10, 29, 15, tzinfo=UTC))      # bought after `until`: not yet
     # a candidate-only unit (never decided, no trade) is simply not there
     conn.execute("INSERT INTO signal_candidates (ticker, signal_date, action, rule_id, rule_version, inputs) "
                  "VALUES ('ORCL', %s, 'buy', 'trend_reclaim', 'rules-1', '{}'::jsonb)", (DAY,))
@@ -191,8 +227,13 @@ def test_retro_subjects_scope(workbench_db):
     subjects = repository.retro_subjects(conn, since=date(2026, 10, 1), until=date(2026, 10, 28))
     units = {(s['ticker'], s['signal_date']): s for s in subjects if s['kind'] == 'unit'}
     trades = {s['buy_trade_id']: s for s in subjects if s['kind'] == 'trade'}
-    assert set(units) == {('NVDA', DAY), ('AMD', DAY), ('TSLA', DAY)}      # no sell unit, no old unit, no ORCL
-    assert set(trades) == {free_buy['id']}                                  # voided / sell / old buys are out
+    # no sell unit, no ORCL, no carded old unit (AAPL), no unit closed before `since` (GE)
+    assert set(units) == {('NVDA', DAY), ('AMD', DAY), ('TSLA', DAY), ('F', old_day), ('HD', old_day),
+                          ('AMZN', old_day)}
+    assert set(trades) == {free_buy['id'], low_buy['id']}                   # voided / sell / closed-before / future out
+    assert [b['id'] for b in units[('F', old_day)]['buys']] == [f_buy['id']]       # started before, ended inside
+    assert [b['id'] for b in units[('HD', old_day)]['buys']] == [h_buy['id']]
+    assert units[('AMZN', old_day)]['buys'] == []
     nvda = units[('NVDA', DAY)]
     assert nvda['decision']['id'] == a_dec['id']
     assert [b['id'] for b in nvda['buys']] == [a_buy['id']]                 # the voided buy does not count
@@ -209,11 +250,18 @@ def test_retro_subjects_scope(workbench_db):
     assert [b['id'] for b in free['buys']] == [free_buy['id']]
     assert a_sell['id'] not in {b['id'] for s in subjects for b in s['buys']}
     # ordering: units by (signal_date, ticker), then trades by execution time
-    assert [s['kind'] for s in subjects] == ['unit', 'unit', 'unit', 'trade']
-    # narrower windows
-    assert repository.retro_subjects(conn, since=date(2026, 10, 21), until=date(2026, 10, 28)) \
-        == [s for s in subjects if s['kind'] == 'trade']                    # units are windowed by signal date
-    assert repository.retro_subjects(conn, since=date(2026, 10, 22), until=date(2026, 10, 28)) == []
+    assert [s['kind'] for s in subjects] == ['unit'] * 6 + ['trade'] * 2
+    assert [(s['ticker'], s['signal_date']) for s in subjects if s['kind'] == 'unit'] == [
+        ('AMZN', old_day), ('F', old_day), ('HD', old_day), ('AMD', DAY), ('NVDA', DAY), ('TSLA', DAY)]
+    assert [s['ticker'] for s in subjects if s['kind'] == 'trade'] == ['LOW', 'IBM']     # by execution time
+    # since/until are the END-session window: NVDA sold on 10-23, so it is out once `since` is after that
+    later = repository.retro_subjects(conn, since=date(2026, 10, 24), until=date(2026, 10, 28))
+    assert {s['ticker'] for s in later if s['kind'] == 'unit'} == {'AMD', 'TSLA', 'F', 'HD', 'AMZN'}
+    assert {s['ticker'] for s in later if s['kind'] == 'trade'} == {'IBM', 'LOW'}        # IBM still open, LOW closes 10-28
+    # a window before everything closed: `until` caps the signal date and the buy date
+    early = repository.retro_subjects(conn, since=date(2026, 10, 1), until=date(2026, 10, 19))
+    assert {s['ticker'] for s in early if s['kind'] == 'unit'} == {'F', 'HD', 'AMZN'}    # signals of 10-20 are later
+    assert {s['ticker'] for s in early if s['kind'] == 'trade'} == {'LOW'}               # IBM was bought on 10-21
 
 
 def test_knowledge_drafts_citations_discussions(workbench_db):

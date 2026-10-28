@@ -11,6 +11,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from investment_assistant.data.calendar import add_trading_days
+# private helpers on purpose: reuse discipline's own split-basis / T1 judgement, as tracks.py does
 from investment_assistant.workbench.discipline import _current_basis, _splits_of, _t1_touched_while_held
 from investment_assistant.workbench.tracks import TRACK_STATUS_TEXT
 
@@ -202,6 +203,11 @@ def _ended_event(*, subject, ref_plan, shadow, invalidating_review, decided_sess
             'event_key': event_key(subject='unit', ticker=subject['ticker'], signal_date=_day(subject['signal_date']))}
 
 
+def window_start(session: date) -> date:
+    """First session of the detection window for ``session`` S (D6): 5 sessions counting S itself, so S minus 4."""
+    return add_trading_days(session, -(RETRO_LOOKBACK_SESSIONS - 1))
+
+
 def end_event(*, subject: dict[str, Any], ref_plan: dict[str, Any] | None, buys: list[dict[str, Any]],
               segments: list[dict[str, Any]], open_lots: list[dict[str, Any]], shadow: dict[str, Any] | None,
               invalidating_review: dict[str, Any] | None, decided_session: date | None, stop_days: list[date],
@@ -212,7 +218,7 @@ def end_event(*, subject: dict[str, Any], ref_plan: dict[str, Any] | None, buys:
     A position ends a card only by closing (D2): with buys, invalidation and expiry never count. Without
     buys the earliest of review invalidation, rule invalidation, the shadow's first stop / target leg and
     expiry wins, ties by ``END_PRIORITY``. Only the earliest end counts, and it is reported only while it
-    lies in ``[window_start, session]``, so an old end is never replaced by a later one."""
+    lies in ``[window_start, session]`` (callers pass ``window_start(session)``, or an earlier day for ``--since``), so an old end is never replaced by a later one."""
     if buys:
         event = _closed_event(subject=subject, ref_plan=ref_plan, buys=buys, segments=segments,
                               open_lots=open_lots, stop_days=stop_days, target_days=target_days, bars=bars)
@@ -317,6 +323,8 @@ def _bars_after(plans, bars, splits, trades, end_day) -> dict[str, Any]:
         summary.update(first_day=window[0]['price_date'], last_day=window[-1]['price_date'], high=top['high'],
                        high_date=top['price_date'], low=bottom['low'], low_date=bottom['price_date'],
                        close_end=window[-1]['close'])
+    # per-plan touch dates are searched from the entry-touch day on, on the same split-adjusted basis as
+    # plan_shadow.simulate (see _touches)
     summary['per_plan'] = [_touches(p, ordered, sorted(splits), end_day) for p in plans]
     return summary
 

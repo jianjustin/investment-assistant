@@ -7,6 +7,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from psycopg.rows import dict_row
 
@@ -1477,33 +1478,76 @@ def try_advisory_lock(conn, key: str) -> bool:
     return bool(conn.execute('SELECT pg_try_advisory_xact_lock(hashtext(%s))', (key,)).fetchone()[0])
 
 
+_NY = ZoneInfo('America/New_York')
+
+
+def _ny_date(moment: datetime) -> date:
+    return moment.astimezone(_NY).date()
+
+
+def _open_before(conn, ticker: str, since: date) -> bool:
+    """True when the ticker still has shares after the live trades executed before ``since`` (New York date).
+    A running quantity with the splits applied the way ``positions.build`` does; it does not match lots to
+    units, so it errs towards True (the caller then lets ``retro.end_event`` decide)."""
+    pending = split_events(conn, ticker)
+    quantity = Decimal(0)
+    for side, qty, day in conn.execute(
+            "SELECT side, quantity, (executed_at AT TIME ZONE 'America/New_York')::date FROM trades "
+            "WHERE ticker = %s AND voided_at IS NULL AND (executed_at AT TIME ZONE 'America/New_York')::date < %s "
+            'ORDER BY executed_at, id', (ticker.upper(), since)).fetchall():
+        while pending and pending[0][0] <= day:
+            quantity *= pending.pop(0)[1]
+        quantity += Decimal(str(qty)) if side == 'buy' else -Decimal(str(qty))
+    return quantity > 0
+
+
 def retro_subjects(conn, *, since: date, until: date) -> list[dict[str, Any]]:
-    """Everything ``retro.end_event`` needs from the ledger, one dict per card subject (spec §4.1, D1):
+    """Everything ``retro.end_event`` needs from the ledger, one dict per card subject (spec §4.1, D1).
+    ``since`` / ``until`` are the END-session window: every subject that could end inside it is returned, so a
+    unit signalled or bought long before ``since`` is found while its position is open or closes inside the
+    window. Pruning is cheap and errs towards keeping (``end_event`` decides):
 
-    * a ``unit``: a buy unit (some decision proposed ``buy``) whose signal date is in ``[since, until]``, with
-      its head decision, every decision id of the chain, the live buys on any of those decisions, its plans
-      and its review rows (the caller adds bars, books and shadow results);
-    * a ``trade``: a live buy with no decision whose New York execution date is in ``[since, until]``.
+    * a ``unit``: a buy unit (some decision proposed ``buy``) with signal date <= ``until``, with its head
+      decision, every decision id of the chain, the live buys on any of those decisions, its plans and its
+      review rows (the caller adds bars, books and shadow results). Dropped only when it has live buys, none
+      of them on/after ``since`` and its ticker was flat before ``since`` (closed before the window), or when
+      it has no buys and a review card already recorded its end;
+    * a ``trade``: a live buy with no decision executed (New York date) on/before ``until``, dropped under the
+      same flat-before-``since`` rule.
 
-    Units come first (by signal date, ticker), then trades by execution time. The window is the caller's
-    to widen: a position held longer than the window is only found while its signal date is inside it."""
+    Units come first (by signal date, ticker), then trades by execution time."""
     subjects: list[dict[str, Any]] = []
+    flat: dict[str, bool] = {}
+
+    def closed_before(ticker: str) -> bool:
+        if ticker not in flat:
+            flat[ticker] = not _open_before(conn, ticker, since)
+        return flat[ticker]
+
     for unit in _all(conn, "SELECT DISTINCT ticker, signal_date FROM signal_decisions WHERE proposed_action = 'buy' "
-                           'AND signal_date BETWEEN %s AND %s ORDER BY signal_date, ticker', (since, until)):
+                           'AND signal_date <= %s ORDER BY signal_date, ticker', (until,)):
         ticker, signal_date = unit['ticker'], unit['signal_date']
         decision_ids = [row[0] for row in conn.execute(
             'SELECT id FROM signal_decisions WHERE ticker = %s AND signal_date = %s ORDER BY decided_at, id',
             (ticker, signal_date)).fetchall()]
         buys = _all(conn, f"SELECT {_TRADE_COLUMNS} FROM trades WHERE side = 'buy' AND voided_at IS NULL "
                           'AND decision_id = ANY(%s) ORDER BY executed_at, id', (decision_ids,))
+        if buys:
+            if all(_ny_date(b['executed_at']) < since for b in buys) and closed_before(ticker):
+                continue
+        elif conn.execute("SELECT 1 FROM review_cards WHERE subject = 'unit' AND ticker = %s AND signal_date = %s",
+                          (ticker, signal_date)).fetchone():
+            continue
         subjects.append({'kind': 'unit', 'ticker': ticker, 'signal_date': signal_date, 'buy_trade_id': None,
                          'decision': decision_head(conn, ticker, signal_date, timeline=True),
                          'decision_ids': decision_ids, 'buys': buys,
                          'plans': plans_for_unit(conn, ticker, signal_date),
                          'reviews': chain_reviews(conn, ticker, signal_date)})
     for buy in _all(conn, f"SELECT {_TRADE_COLUMNS} FROM trades WHERE side = 'buy' AND decision_id IS NULL "
-                          "AND voided_at IS NULL AND (executed_at AT TIME ZONE 'America/New_York')::date "
-                          'BETWEEN %s AND %s ORDER BY executed_at, id', (since, until)):
+                          "AND voided_at IS NULL AND (executed_at AT TIME ZONE 'America/New_York')::date <= %s "
+                          'ORDER BY executed_at, id', (until,)):
+        if _ny_date(buy['executed_at']) < since and closed_before(buy['ticker']):
+            continue
         subjects.append({'kind': 'trade', 'ticker': buy['ticker'], 'signal_date': None, 'buy_trade_id': buy['id'],
                          'decision': None, 'decision_ids': [], 'buys': [buy], 'plans': [], 'reviews': []})
     return subjects
