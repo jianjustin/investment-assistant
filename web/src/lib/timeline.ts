@@ -1,6 +1,7 @@
 /** v2.5 plan timeline: chain / version / review types and their Chinese labels (spec §4, §5, §7, §11). */
 import { AGENT_REASON_TEXT, WorkbenchError } from './workbench'
 import type { AgentRunFailed, AgentRunOk, Plan, PlanShadowOutcome } from './workbench'
+import type { KnowledgeRefItem } from './growth'
 
 export type ChainState = 'legacy' | 'invalidated' | 'closed_by_decision' | 'holding' | 'position_closed' | 'expired' | 'entry'
 export type ChainMode = 'entry' | 'holding'
@@ -36,7 +37,11 @@ export interface ChainHead {
 }
 
 /** A unit's agent block: a run view plus its chain head (null for agent-1 or without migration 026). */
-export type AgentView = (AgentRunOk | AgentRunFailed) & { chain?: ChainHead | null; legacy?: boolean }
+export type AgentView = (AgentRunOk | AgentRunFailed) & {
+  chain?: ChainHead | null; legacy?: boolean
+  /** v2.7 §6.2: the knowledge this version cited; absent on an older backend or before migration 027 */
+  knowledge_refs?: KnowledgeRefItem[]
+}
 
 export interface PlanReview {
   id: number; ticker: string; signal_date: string; head_plan_id: string; session: string
@@ -59,6 +64,7 @@ export interface Version {
   version_no: number; plan_id: string; origin: Origin; supersedes_plan_id: string | null; agent_run_id: string
   cutoff_at: string; as_of_session: string; created_at: string; is_head: boolean
   diff: DiffItem[] | null; changes: Change[]; plan: Plan; run: VersionRun; shadow: PlanShadowOutcome | null
+  knowledge_refs?: KnowledgeRefItem[]
 }
 
 export interface UserInput {

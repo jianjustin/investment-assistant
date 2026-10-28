@@ -2,6 +2,11 @@ import type * as df from './data-families'
 import type { Derivation, UnitDerivation } from './derivation'
 import type { Chain, PlanReview, TickerChain, UserInput, UserInputBody } from './timeline'
 import type { ConceptCard, ConceptsView, PrinciplesView, ReasoningView, RunOverviewView } from './knowledge'
+import type {
+  CardVerdictInput, Discussion, DiscussionAttachment, DiscussionContext, DiscussionListItem, KnowledgeDraft,
+  KnowledgeDraftInput, KnowledgeEntry, KnowledgeItemView, KnowledgePerf, KnowledgeValues, ReviewCardsView,
+  ReviewCardView,
+} from './growth'
 import { request as workbenchRequest } from './workbench'
 export async function get<T>(path: string, options: { errorDetails?: boolean } = {}): Promise<T> {
   const r = await fetch(path, { headers: { Accept: 'application/json' }, cache: 'no-store' })
@@ -244,3 +249,47 @@ export const getRunOverview = (session?: string, runId?: string) => {
 }
 export const getReasoning = (runId: string) =>
   workbenchRequest<ReasoningView>(`/api/workbench/agent-runs/${seg(runId)}/reasoning`)
+
+// review cards, my knowledge and plan discussions (v2.7 §12): workbench errors keep the HTTP status
+// (409 / 503 reasons surface verbatim; pages turn them into text with growth.growthError)
+const query = (params: Record<string, string | number | undefined>) => {
+  const q = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== '') q.set(key, String(value))
+  const text = q.toString()
+  return text ? `?${text}` : ''
+}
+const send = <T>(path: string, body?: unknown) =>
+  workbenchRequest<T>(path, { method: 'POST', ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+
+export const getReviewCards = (params: { status?: string; ticker?: string; since?: string } = {}) =>
+  workbenchRequest<ReviewCardsView>(`/api/workbench/review-cards${query(params)}`)
+export const getReviewCard = (id: number) => workbenchRequest<ReviewCardView>(`/api/workbench/review-cards/${id}`)
+export const postCardVerdict = (id: number, body: CardVerdictInput) =>
+  send<{ status: string; record?: unknown; lessons?: { ref: string }[] }>(`/api/workbench/review-cards/${id}/verdict`, body)
+export const redraftCard = (id: number) =>
+  send<{ run_id: string; status: 'pending' }>(`/api/workbench/review-cards/${id}/redraft`)
+
+export const getMyKnowledge = (params: { ticker?: string; concept?: string; status?: string } = {}) =>
+  workbenchRequest<{ items: KnowledgeEntry[] }>(`/api/workbench/my-knowledge${query(params)}`)
+export const postMyKnowledge = (body: Partial<KnowledgeValues> & { request_id: string }) =>
+  send<{ status: string; record: { id: number } }>('/api/workbench/my-knowledge', body)
+export const getKnowledgeItem = (id: number, version?: number) =>
+  workbenchRequest<KnowledgeItemView>(`/api/workbench/my-knowledge/${id}${query({ version })}`)
+export const postKnowledgeVersion = (id: number, body: Partial<KnowledgeValues> & { request_id: string; base_version: number }) =>
+  send<{ status: string }>(`/api/workbench/my-knowledge/${id}/versions`, body)
+export const postKnowledgeStatus = (id: number, body: { request_id: string; status: 'active' | 'archived'; reason: string }) =>
+  send<{ status: string }>(`/api/workbench/my-knowledge/${id}/status`, body)
+export const getKnowledgePerformance = (id: number) =>
+  workbenchRequest<KnowledgePerf>(`/api/workbench/my-knowledge/${id}/performance`)
+export const getKnowledgeDrafts = (status: 'open' | 'all' = 'open') =>
+  workbenchRequest<{ drafts: KnowledgeDraft[] }>(`/api/workbench/my-knowledge-drafts${query({ status })}`)
+export const postDraftVerdict = (id: number, body: KnowledgeDraftInput) =>
+  send<{ status: string }>(`/api/workbench/my-knowledge-drafts/${id}/verdict`, body)
+
+export const postDiscussion = (body: { request_id: string; context: DiscussionContext }) =>
+  send<Discussion | { status: string; record: Discussion }>('/api/workbench/discussions', body)
+export const getDiscussions = (params: { plan_id?: string; card_id?: number }) =>
+  workbenchRequest<{ discussions: DiscussionListItem[] }>(`/api/workbench/discussions${query(params)}`)
+export const getDiscussion = (id: number) => workbenchRequest<Discussion>(`/api/workbench/discussions/${id}`)
+export const postDiscussionTurn = (id: number, body: { request_id: string; body: string; attachment?: DiscussionAttachment }) =>
+  send<{ turn_id: number; run_id: string; status: 'pending' }>(`/api/workbench/discussions/${id}/turns`, body)

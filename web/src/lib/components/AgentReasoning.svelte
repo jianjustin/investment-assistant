@@ -2,9 +2,11 @@
   import { onMount } from 'svelte'
   import AgentReasoning from './AgentReasoning.svelte'
   import ConceptTerm from './ConceptTerm.svelte'
+  import KnowledgeRefs from './KnowledgeRefs.svelte'
   import * as api from '../api'
   import { CONSISTENCY_TEXT } from '../derivation'
   import { fmtBeijing } from '../format'
+  import { isKnowRef, knowHref } from '../growth'
   import { TOOL_TEXT, type ReasoningCall, type ReasoningStep, type ReasoningView } from '../knowledge'
   import * as tl from '../timeline'
 
@@ -26,7 +28,10 @@
     })
   })
 
-  const MODE_TEXT: Record<string, string> = { propose: '提议', revise: '修订', review: '复查', interpret: '解读' }
+  const MODE_TEXT: Record<string, string> = {
+    propose: '提议', revise: '修订', review: '复查', interpret: '解读', retro: '复盘起草', discuss: '讨论',
+  }
+  const KNOWLEDGE_CALL_NOTE = '我的知识按截止时间读取：只含截止时间之前写入的版本'
   const RUN_STATUS_TEXT: Record<string, string> = {
     ok: '成功', pass: '不建议买入', rejected: '已作废', error: '出错', skipped: '跳过',
   }
@@ -78,7 +83,7 @@
   const listKey = (seq: number, key: string) => `${seq}|${key}`
 </script>
 
-{#snippet refList(list: string[] | undefined)}{#if list?.length}（{#each list as ref, i}{#if i}、{/if}{#if tl.isCallRef(ref)}<button type="button" class="underline" onclick={() => jump(ref)}>{ref}</button>{:else}<span>{ref}</span>{/if}{/each}）{/if}{/snippet}
+{#snippet refList(list: string[] | undefined)}{#if list?.length}（{#each list as ref, i}{#if i}、{/if}{#if tl.isCallRef(ref)}<button type="button" class="underline" onclick={() => jump(ref)}>{ref}</button>{:else if isKnowRef(ref)}<a class="text-accent underline" href={knowHref(ref)}>{ref}</a>{:else}<span>{ref}</span>{/if}{/each}）{/if}{/snippet}
 
 {#snippet conditionList(label: string, list: any[] | undefined)}
   {#if list?.length}
@@ -104,6 +109,7 @@
         · <a class="text-accent underline" href={`#plan/${data.version.plan_id}`}>看计划页</a></p>
     {/if}
     {#each data.notes as note}<p class="text-xs text-amber-700">{note}</p>{/each}
+    {#if data.knowledge_refs?.length}<KnowledgeRefs refs={data.knowledge_refs} />{/if}
     {#if !['ok', 'pass'].includes(run.status)}
       <p class="text-xs text-amber-700">本次运行状态：{RUN_STATUS_TEXT[run.status] ?? run.status}（{run.reason_text ?? run.reason ?? '未知原因'}）</p>
     {/if}
@@ -133,6 +139,7 @@
                 {#if call.cutoff_exempt}
                   <p class="text-amber-700">{call.cutoff_note ?? '概念卡随代码版本走，不受截止时间约束'}</p>
                 {/if}
+                {#if call.tool === 'get_knowledge'}<p class="text-amber-700">{KNOWLEDGE_CALL_NOTE}</p>{/if}
                 {#if call.error}<p class="text-red-600">工具返回错误：{text(call.error)}</p>{/if}
                 {#if shownResult[call.seq]}
                   <div class="ml-3 space-y-0.5">
@@ -152,7 +159,7 @@
                         </p>
                         <ul class="ml-3 break-all">
                           {#each shown as item, i}
-                            <li>{text(item)}</li>
+                            <li>{#if call.tool === 'get_knowledge' && isKnowRef(String(item?.ref))}<a class="text-accent underline" href={knowHref(String(item.ref))}>{item.ref}</a> {item.title ?? ''}{:else}{text(item)}{/if}</li>
                             {#if !all && value.length > 4 && i === 1}<li class="text-muted">…</li>{/if}
                           {/each}
                         </ul>
@@ -269,6 +276,7 @@
         {:else if step.kind === 'evidence'}
           <div class="text-xs space-y-0.5">
             {#if step.text}<p>{step.text}</p>{/if}
+            {#if step.fact_keys?.length}<p>冻结事实：{step.fact_keys.map(k => `fact:${k}`).join('、')}</p>{/if}
             {#if step.session}<p>复查交易日 {step.session} · {tl.TRIGGER_TEXT[step.trigger ?? ''] ?? step.trigger ?? ''}</p>{/if}
             {#if step.signals?.length}
               <p>触发的信号：{step.signals.filter(s => s.fired).map(s => `${tl.SIGNAL_TEXT[s.kind] ?? s.kind}${s.detail ? `（${s.detail}）` : ''}`).join('、') || '无'}</p>
@@ -304,6 +312,49 @@
               <ul class="list-disc ml-5 text-xs">{#each list as item}<li>{item.text}{@render refList(item.refs)}</li>{/each}</ul>
             {/if}
           {/each}
+
+        {:else if step.kind === 'draft'}
+          {#if step.available === false}<p class="text-xs">{step.text}</p>{/if}
+          {#if step.summary}<p class="font-medium whitespace-pre-wrap">{step.summary}</p>{/if}
+          {#if step.items?.length}
+            <ol class="list-decimal ml-5 text-xs space-y-0.5">
+              {#each step.items as item}<li><span class="whitespace-pre-wrap">{item.text}</span>{@render refList(item.refs)}</li>{/each}
+            </ol>
+          {/if}
+          {#if step.lessons?.length}
+            <p class="text-xs text-muted">教训草稿</p>
+            <ul class="space-y-1 text-xs">
+              {#each step.lessons as lesson}
+                <li class="border-l border-border pl-2">
+                  <p class="font-medium">{lesson.title}</p>
+                  <p class="whitespace-pre-wrap">{lesson.body}</p>
+                  <p>适用范围：{lesson.scope}</p>
+                  <p>反例：{lesson.counter_examples}</p>
+                  {#if lesson.refs?.length}<p class="text-muted">依据{@render refList(lesson.refs)}</p>{/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+
+        {:else if step.kind === 'question'}
+          {#if step.text}<p class="whitespace-pre-wrap">{step.text}</p>{/if}
+          {#if step.attachment}<p class="text-xs text-muted whitespace-pre-wrap">{step.attachment}</p>{/if}
+          {#if step.context}<p class="text-xs text-muted whitespace-pre-wrap">{step.context}</p>{/if}
+
+        {:else if step.kind === 'answer'}
+          {#if step.available === false}<p class="text-xs">{step.text}</p>
+          {:else if step.text}<p class="whitespace-pre-wrap">{step.text}</p>{/if}
+          {#if step.refs?.length}<p class="text-xs text-muted">引用{@render refList(step.refs)}</p>{/if}
+          {#if step.knowledge_draft}
+            {@const draft = step.knowledge_draft}
+            <div class="text-xs border-l border-border pl-2">
+              <p class="text-muted">经验草稿</p>
+              <p class="font-medium">{draft.title}</p>
+              <p class="whitespace-pre-wrap">{draft.body}</p>
+              <p>适用范围：{draft.scope}</p>
+              <p>反例：{draft.counter_examples}</p>
+            </div>
+          {/if}
         {/if}
       </section>
     {/each}

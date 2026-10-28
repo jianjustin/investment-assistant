@@ -1,6 +1,7 @@
 /** US workbench API client and pure helpers (design 2026-10-23). */
 import type { AgentView, ChainRow, Change, Condition } from './timeline'
 import type { Annotations, FocusItem, InstrumentContext, InstrumentHolding, InstrumentPlan, KeyData } from './knowledge'
+import type { KnowledgeEntry } from './growth'
 
 export type Action = 'buy' | 'sell' | 'watch'
 export type FinalAction = Action | 'ignore'
@@ -203,6 +204,8 @@ export interface InstrumentView {
   focus?: FocusItem[]; key_data?: KeyData; context?: InstrumentContext; plans?: InstrumentPlan[]
   // a new block that failed to read is null and its reason is here, keyed by block name (focus, key_data, ...)
   errors?: Record<string, string>
+  // v2.7 (§5.5): active knowledge entries attached to this ticker (latest version); absent on an older backend
+  knowledge?: KnowledgeEntry[] | null
 }
 export interface Window { status: 'mature' | 'immature'; exit_date?: string; return?: number; spy_return?: number; excess?: number; move?: number }
 export interface ShadowUnit extends Decision {
@@ -341,6 +344,10 @@ export const AGENT_REASON_TEXT: Record<string, string> = {
   thesis_count: '论点数量不符', invalid_condition: '失效或复查条件无效', changes_mismatch: '变化说明与实际差异不符',
   no_change: '修订与上版没有差异', review_malformed: '复查输出格式无效', migration_026_missing: '迁移 026 未执行',
   review_in_progress: '正在复查', plan_invalid: '修订版按规则作废',
+  // v2.7 growth loop (spec §6.4, verbatim)
+  retro_malformed: '复盘卡草稿格式无效', lesson_invalid: '教训草稿缺适用范围、反例或挂靠无效',
+  answer_malformed: '回答格式无效', migration_027_missing: '迁移 027 未执行',
+  discussion_busy: '上一个问题还在回答', draft_exists: '这张卡已有成功的草稿',
 }
 
 export const ruleLabel = (id: string) => RULE_LABELS[id] ?? id

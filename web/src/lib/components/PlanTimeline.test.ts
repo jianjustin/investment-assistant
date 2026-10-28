@@ -232,4 +232,16 @@ describe('PlanTimeline', () => {
     expect(screen.queryByRole('button', { name: '看复查推理' })).toBeNull()
     expect(screen.queryByRole('button', { name: '看修订推理' })).toBeNull()
   })
+
+  it('hands a version\'s knowledge_refs to its plan card', async () => {
+    vi.spyOn(api, 'getConcepts').mockRejectedValue(new Error('offline'))
+    const base = chain()
+    respond = async () => json(chain({ versions: [base.versions[0], { ...base.versions[1],
+      knowledge_refs: [{ ref: 'know:3@1', title: '回踩别追', fields: ['thesis'], current_version: 2 }] }] }))
+    render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
+    await fireEvent.click(await screen.findByRole('button', { name: '第 1 版' }))
+    const refs = await screen.findByRole('region', { name: '引用的知识' })
+    expect(within(refs).getByRole('link', { name: 'know:3@1' })).toHaveAttribute('href', '#knowledge/mine/3@1')
+    expect(refs).toHaveTextContent('当前已是第 2 版')
+  })
 })

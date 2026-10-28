@@ -38,6 +38,8 @@ vi.mock('./lib/api', () => ({
   getRunOverview: vi.fn(async () => ({ session: '2026-10-22', ready: true, note: null, runs: [], selected_run_id: null,
                                        headline: '', stages: [] })),
   getConcepts: vi.fn(async () => ({ knowledge_version: 'knowledge-1', groups: [], concepts: [] })),
+  getReviewCards: vi.fn(async () => ({ cards: [], counts: {} })),
+  getDiscussion: vi.fn(async () => { throw new Error('no such discussion') }),
   get: vi.fn(async () => ({})),
 }))
 vi.mock('./lib/workbench', async (importOriginal) => ({
@@ -82,6 +84,28 @@ describe('app routing', () => {
     expect(getAllByRole('article')).toHaveLength(6)
     expect(getByRole('link', { name: /数据/ })).toHaveAttribute('href', '#data')
     expect(queryByRole('heading', { name: '今日' })).toBeNull()
+  })
+
+  it('side nav 知识 has 概念, 原理, 我的知识', async () => {
+    location.hash = '#knowledge'
+    const { getByRole } = render(App)
+    const group = getByRole('button', { name: /知识/ })
+    const links = [...group.parentElement!.querySelectorAll('a')].map(a => [a.textContent!.trim(), a.getAttribute('href')])
+    expect(links.filter(([text]) => ['概念', '原理', '我的知识'].includes(text as string)))
+      .toEqual([['概念', '#knowledge'], ['原理', '#knowledge/principles'], ['我的知识', '#knowledge/mine']])
+  })
+
+  it('the 我的知识 child is current under #knowledge/mine/…', async () => {
+    location.hash = '#knowledge/mine/3@2'
+    const { getByRole } = render(App)
+    expect(getByRole('link', { name: '我的知识' }).className).toMatch(/text-accent/)
+    expect(getByRole('link', { name: '概念' }).className).not.toMatch(/font-medium/)
+  })
+
+  it('#discuss/5 renders the discussion page rather than falling back to today', async () => {
+    location.hash = '#discuss/5'
+    const { findByText } = render(App)
+    expect(await findByText(/讨论加载失败/)).toBeInTheDocument()
   })
 
   it('side nav shows 知识 with 概念 and 原理', async () => {

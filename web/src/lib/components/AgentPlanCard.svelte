@@ -1,9 +1,12 @@
 <script lang="ts">
   import AgentReasoning from './AgentReasoning.svelte'
   import ConceptTerm from './ConceptTerm.svelte'
+  import DiscussButton from './DiscussButton.svelte'
+  import KnowledgeRefs from './KnowledgeRefs.svelte'
   import PlanDerivation from './PlanDerivation.svelte'
   import { ATTACH } from '../knowledge'
   import { fmtBeijing } from '../format'
+  import { isKnowRef, knowHref } from '../growth'
   import * as tl from '../timeline'
   import * as wb from '../workbench'
 
@@ -57,7 +60,7 @@
   const changeField = (field: string) => tl.CHANGE_FIELD_TEXT[field] ?? field
 </script>
 
-{#snippet refList(list: string[] | undefined)}{#if list?.length}（{#each list as ref, i}{#if i}、{/if}{#if tl.isCallRef(ref)}<button class="underline" onclick={() => onCall(ref)}>{ref}</button>{:else}<span>{ref}</span>{/if}{/each}）{/if}{/snippet}
+{#snippet refList(list: string[] | undefined)}{#if list?.length}（{#each list as ref, i}{#if i}、{/if}{#if tl.isCallRef(ref)}<button class="underline" onclick={() => onCall(ref)}>{ref}</button>{:else if isKnowRef(ref)}<a class="text-accent underline" href={knowHref(ref)}>{ref}</a>{:else}<span>{ref}</span>{/if}{/each}）{/if}{/snippet}
 
 {#snippet derivation()}
   {#if plan}
@@ -192,11 +195,15 @@
     {/if}
     {@render derivation()}
   {/if}
+  <KnowledgeRefs refs={agent.knowledge_refs ?? []} />
   <p class="text-xs text-muted">证据：未验证 <ConceptTerm id={A.evidence}>证据状态</ConceptTerm></p>
   <!-- v2.6 §8.6：看生成这一版的那次运行；展开时才请求 -->
   <div class="space-y-1">
-    <button type="button" class="text-xs text-accent underline" aria-expanded={reasoningOpen}
-            onclick={() => reasoningOpen = !reasoningOpen}>看推理过程</button>
+    <div class="flex flex-wrap items-center gap-3">
+      <button type="button" class="text-xs text-accent underline" aria-expanded={reasoningOpen}
+              onclick={() => reasoningOpen = !reasoningOpen}>看推理过程</button>
+      {#if plan}<DiscussButton context={{ kind: 'plan', plan_id: plan.id }} />{/if}
+    </div>
     {#if reasoningOpen}<AgentReasoning runId={agent.id} />{/if}
   </div>
 </div>

@@ -20,6 +20,7 @@
       id: 'knowledge', label: '知识', icon: '📚', children: [
         { id: 'concepts', label: '概念', href: '#knowledge' },
         { id: 'principles', label: '原理' },
+        { id: 'mine', label: '我的知识' },
       ],
     },
   ]
@@ -76,10 +77,15 @@
     return item.id === current && !!sub
   }
 
-  // 概念页是知识区的默认页：没有子路径（或 concepts / 具体的卡）时都算「概念」。
+  // 概念页是知识区的默认页：没有子路径（或 concepts / 具体的卡）时都算「概念」；mine 与 mine/… 是「我的知识」。
   function isChildCurrent(item: NavItem, child: NavChild): boolean {
     if (item.id !== current) return false
-    if (item.id === 'knowledge') return child.id === 'principles' ? sub === 'principles' : sub !== 'principles'
+    if (item.id === 'knowledge') {
+      const mine = sub === 'mine' || !!sub?.startsWith('mine/')
+      if (child.id === 'principles') return sub === 'principles'
+      if (child.id === 'mine') return mine
+      return sub !== 'principles' && !mine
+    }
     return sub === child.id
   }
 </script>

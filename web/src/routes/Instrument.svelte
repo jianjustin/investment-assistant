@@ -3,6 +3,7 @@
   import { getTickerChains, getWatchlist, pollRun, recheckChain } from '../lib/api'
   import CandleChart from '../lib/charts/CandleChart.svelte'
   import ConceptTerm from '../lib/components/ConceptTerm.svelte'
+  import DiscussButton from '../lib/components/DiscussButton.svelte'
   import Fundamentals from '../lib/components/Fundamentals.svelte'
   import PlanDerivation from '../lib/components/PlanDerivation.svelte'
   import UserInputs from '../lib/components/UserInputs.svelte'
@@ -70,6 +71,8 @@
 
   // v2.6 §9：四段所用的派生数据；旧后端没有这些键时一律按空处理。
   const focus = $derived(view?.focus ?? [])
+  // v2.7 §5.5：挂在该标的上的有效经验；旧后端没有这个键时按空处理
+  const knowledge = $derived(view?.knowledge ?? [])
   const blockError = (name: string) => view?.errors?.[name] ?? null
   const todays = $derived(view ? view.candidates.filter(c => c.signal_date === view!.session) : [])
   const plans = $derived(view?.plans ?? [])
@@ -218,6 +221,7 @@
               <li>{chainLine(c)}{#if head} · {planLine(head)}{/if} · <a class="text-accent underline" href={`#plan/${c.head_plan_id}`}>查看</a>
                 <button type="button" class="text-xs px-2 py-0.5 border border-border rounded hover:bg-surface-2 disabled:opacity-50"
                         disabled={rk?.busy} onclick={() => recheck(c)}>重新复查</button>
+                <DiscussButton context={{ kind: 'plan', plan_id: c.head_plan_id }} />
                 {#if rk?.text}<span class="text-xs">{rk.text}</span>{/if}
                 {#if c.latest_review?.reason}<p class="text-xs text-muted">{c.latest_review.reason}</p>{/if}
               </li>
@@ -286,6 +290,25 @@
         {#key view.ticker}
           <UserInputs ticker={view.ticker} chains={activeChains} />
         {/key}
+      {/if}
+    </section>
+
+    <!-- ①' 我的知识：挂在这个标的上的有效经验（v2.7） -->
+    <section aria-label="我的知识" class="space-y-2">
+      <h2 class="font-semibold">我的知识</h2>
+      <p class="text-xs text-muted"><ConceptTerm id={ATTACH.myKnowledge.item}>说明</ConceptTerm>
+        · <a class="text-accent underline" href={`#knowledge/mine/new?ticker=${encodeURIComponent(view.ticker)}`}>写一条</a></p>
+      {#if blockError('knowledge')}
+        <p class="text-xs text-muted">暂不可用：{blockError('knowledge')}</p>
+      {:else if knowledge.length}
+        <ul aria-label="我的知识条目" class="space-y-1 text-sm">
+          {#each knowledge as e (e.id)}
+            <li><a class="text-accent underline" href={`#knowledge/mine/${e.id}`}>{e.title}</a>
+              <span class="text-xs text-muted"> · 适用范围：{e.scope} · 第 {e.current_version} 版 · 被引用 {e.citation_count} 次</span></li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="text-xs text-muted">还没有挂在 {view.ticker} 上的经验</p>
       {/if}
     </section>
 
@@ -381,7 +404,8 @@
             {#each plans as p (p.id)}
               <li>{wb.KIND_TEXT[p.kind] ?? p.kind}{p.kind === 'agent' && p.version_no != null ? ` · 第 ${p.version_no} 版` : ` · ${p.plan_version}`}
                 · {planLine(p)} · 有效期 {p.valid_from} 至 {p.valid_until}{p.status === 'invalid' ? ' · 已作废' : ''}
-                · <a class="text-accent underline" href={`#plan/${p.id}`}>推导</a></li>
+                · <a class="text-accent underline" href={`#plan/${p.id}`}>推导</a>
+                <DiscussButton context={{ kind: 'plan', plan_id: p.id }} /></li>
             {/each}
           </ul>
         {:else}

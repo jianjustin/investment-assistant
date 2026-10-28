@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/svelte'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import AgentPlanCard from './AgentPlanCard.svelte'
 import * as api from '../api'
 import { ATTACH, resetConceptIndex } from '../knowledge'
@@ -251,5 +251,57 @@ describe('AgentPlanCard', () => {
                               onCall: () => {} })
       expect(screen.getByRole('button', { name: '看推理过程' })).toBeInTheDocument()
     })
+  })
+})
+
+describe('AgentPlanCard · v2.7 growth loop', () => {
+  beforeEach(() => { resetConceptIndex(); vi.spyOn(api, 'getConcepts').mockRejectedValue(new Error('offline')) })
+  afterEach(() => { cleanup(); vi.restoreAllMocks() })
+
+  it('renders KnowledgeRefs when present', () => {
+    render(AgentPlanCard, { agent: agent2({ knowledge_refs: [
+      { ref: 'know:3@1', title: '回踩别追', fields: ['thesis', 'counter'], current_version: 2 },
+      { ref: 'know:4@1', title: '财报前不加仓', fields: ['risks'], current_version: 1 },
+    ] }) as any, onCall: () => {} })
+    const refs = screen.getByRole('region', { name: '引用的知识' })
+    const first = within(refs).getByRole('link', { name: 'know:3@1' })
+    expect(first).toHaveAttribute('href', '#knowledge/mine/3@1')
+    const rows = within(refs).getAllByRole('listitem')
+    expect(rows[0]).toHaveTextContent('回踩别追')
+    expect(rows[0]).toHaveTextContent('论点、反证')
+    expect(rows[0]).toHaveTextContent('当前已是第 2 版')
+    expect(rows[1]).toHaveTextContent('财报前不加仓')
+    expect(rows[1]).not.toHaveTextContent('当前已是')          // cited version is the current one
+  })
+
+  it('shows no 引用的知识 block without knowledge refs', () => {
+    render(AgentPlanCard, { agent: agent2() as any, onCall: () => {} })
+    expect(screen.queryByRole('region', { name: '引用的知识' })).toBeNull()
+    cleanup()
+    render(AgentPlanCard, { agent: agent2({ knowledge_refs: [] }) as any, onCall: () => {} })
+    expect(screen.queryByRole('region', { name: '引用的知识' })).toBeNull()
+  })
+
+  it('a know: ref inside a thesis is a link to that version, not plain text', () => {
+    const a = agent2()
+    render(AgentPlanCard, { agent: agent2({ output: { ...a.output, thesis: [
+      { id: 'T1', text: '回踩后企稳', refs: ['call:1', 'know:3@1'] }] } }) as any, onCall: () => {} })
+    const thesis = screen.getByRole('list', { name: '论点' })
+    expect(within(thesis).getByRole('link', { name: 'know:3@1' })).toHaveAttribute('href', '#knowledge/mine/3@1')
+  })
+
+  it('DiscussButton with plan context', async () => {
+    const post = vi.spyOn(api, 'postDiscussion').mockResolvedValue({ id: 5 } as any)
+    location.hash = ''
+    render(AgentPlanCard, { agent: agent2() as any, onCall: () => {} })
+    await fireEvent.click(screen.getByRole('button', { name: '就此计划讨论' }))
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    expect(post.mock.calls[0][0].context).toEqual({ kind: 'plan', plan_id: 'ap2' })
+    await waitFor(() => expect(location.hash).toBe('#discuss/5'))
+  })
+
+  it('has no discuss button when the run produced no plan', () => {
+    render(AgentPlanCard, { agent: { id: 'r3', status: 'rejected', reason: 'thesis_count', created_at: 'c' } as any, onCall: () => {} })
+    expect(screen.queryByRole('button', { name: '就此计划讨论' })).toBeNull()
   })
 })

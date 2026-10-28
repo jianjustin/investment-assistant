@@ -889,6 +889,19 @@ describe('agent-first layout', () => {
                        version_no: 2, head_plan_id: 'hp-amd', valid_until: '2026-10-27', pool: 'core',
                        latest_review: null, signals_today: [] }
 
+  it('active chain rows have DiscussButton', async () => {
+    respond = async (url, init) => url === '/api/workbench/discussions' && init?.method === 'POST'
+      ? json({ id: 5 }) : await today([], { chains: [activeChain] })()
+    location.hash = ''
+    render(Today)
+    const section = await screen.findByRole('region', { name: '进行中的 Agent 计划' })
+    await fireEvent.click(within(section).getByRole('button', { name: '就此计划讨论' }))
+    await waitFor(() => expect(calls.some(c => c.url === '/api/workbench/discussions' && c.init?.method === 'POST')).toBe(true))
+    const post = calls.find(c => c.url === '/api/workbench/discussions')!
+    expect(JSON.parse(String(post.init!.body))).toMatchObject({ context: { kind: 'plan', plan_id: 'hp-amd' } })
+    await waitFor(() => expect(location.hash).toBe('#discuss/5'))
+  })
+
   it('recheck polls up to 15 minutes and reports a poll timeout as still running', async () => {
     respond = async (url, init) => url.endsWith('/recheck') && init?.method === 'POST'
       ? json({ run_id: 'plan_recheck-1', status: 'pending' }) : await today([], { chains: [activeChain] })()

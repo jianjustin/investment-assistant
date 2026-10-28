@@ -85,6 +85,19 @@ describe('ATTACH', () => {
     expect(ATTACH.overview.status).toBe('system.stage_status')
   })
 
+  it('ATTACH has retroCard, myKnowledge, discussion, weeklyLearning', () => {
+    expect(ATTACH.retroCard).toEqual({
+      card: 'review.retro_card', end: 'review.retro_end', tracks: 'review.tracks',
+      chase: 'review.discipline_chase', earlyTake: 'review.discipline_early_take',
+      heldLoser: 'review.discipline_held_loser', unplanned: 'review.discipline_unplanned',
+    })
+    expect(ATTACH.myKnowledge).toEqual({
+      item: 'system.my_knowledge', performance: 'review.knowledge_performance', citation: 'agent.knowledge_citation',
+    })
+    expect(ATTACH.discussion).toEqual({ about: 'system.discussion' })
+    expect(ATTACH.weeklyLearning).toEqual({ learning: 'review.weekly_learning' })
+  })
+
   it('builds the dynamic family and rule ids', () => {
     expect(familyConcept('sec_filings')).toBe('family.sec_filings')
     expect(ruleConcept('trend_reclaim')).toBe('rule.trend_reclaim')
@@ -92,7 +105,8 @@ describe('ATTACH', () => {
 
   it('has a Chinese name for every tool', () => {
     for (const tool of ['get_trigger', 'get_price_bars', 'get_indicators', 'get_filings', 'get_news',
-                        'get_earnings', 'get_market_context', 'get_position', 'get_concept'])
+                        'get_earnings', 'get_market_context', 'get_position', 'get_concept',
+                        'get_knowledge', 'get_plan_context', 'get_derivation', 'get_agent_run'])
       expect(TOOL_TEXT[tool]).toBeTruthy()
   })
 })

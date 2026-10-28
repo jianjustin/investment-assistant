@@ -479,3 +479,78 @@ it('ended chains keep their latest review reason', async () => {
   const ended = await screen.findByRole('list', { name: '已结束的链', hidden: true })
   expect(ended).toHaveTextContent('失效条件成立：收盘跌破 95.00')
 })
+
+// ---- v2.7: 我的知识 and 就此讨论 ----
+
+const knowledgeRows = [
+  { id: 3, origin: 'manual', title: '回踩别追', scope: '趋势回踩触发后', concepts: ['concept:review.discipline_chase@1'],
+    tickers: ['NVDA'], current_version: 2, status: 'active', written_at: '2026-10-20T10:00:00Z',
+    updated_at: '2026-10-22T10:00:00Z', citation_count: 4, sample_count: 3 },
+]
+const withKnowledge = (knowledge: unknown, chains: unknown = chainsView) => vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  urls.push(String(url))
+  if (String(url) === '/api/workbench/discussions' && init?.method === 'POST') return json({ id: 5 })
+  if (String(url).startsWith('/api/watchlist')) return json({ rows: [{ ticker: 'NVDA' }] })
+  if (String(url).startsWith('/api/us-research/')) return json(fundamentalsView('NVDA'))
+  if (String(url).startsWith('/api/workbench/chains?')) return json(chains)
+  if (String(url).startsWith('/api/workbench/user-inputs')) return json({ inputs: [] })
+  return json({ ...richView('NVDA'), knowledge })
+}))
+
+it('我的知识 section after 信号与计划', async () => {
+  withKnowledge(knowledgeRows)
+  render(Instrument, { sub: 'NVDA' })
+  const section = await screen.findByRole('region', { name: '我的知识' })
+  const before = screen.getByRole('region', { name: '信号与计划' })
+  const after = screen.getByRole('region', { name: '关键数据' })
+  expect(before.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(section.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(within(section).getByRole('heading', { level: 2, name: '我的知识' })).toBeInTheDocument()
+  const link = within(section).getByRole('link', { name: '回踩别追' })
+  expect(link).toHaveAttribute('href', '#knowledge/mine/3')
+  const row = link.closest('li')!
+  expect(row).toHaveTextContent('趋势回踩触发后')
+  expect(row).toHaveTextContent('第 2 版')
+  expect(row).toHaveTextContent('被引用 4 次')
+  expect(within(section).getByRole('link', { name: '写一条' })).toHaveAttribute('href', '#knowledge/mine/new?ticker=NVDA')
+})
+
+it('empty text 还没有挂在 <标的> 上的经验', async () => {
+  withKnowledge([])
+  render(Instrument, { sub: 'NVDA' })
+  const section = await screen.findByRole('region', { name: '我的知识' })
+  expect(section).toHaveTextContent('还没有挂在 NVDA 上的经验')
+  expect(within(section).getByRole('link', { name: '写一条' })).toHaveAttribute('href', '#knowledge/mine/new?ticker=NVDA')
+})
+
+it('an older backend without the knowledge key reads as empty, and a failed block shows its reason', async () => {
+  rich()
+  const first = render(Instrument, { sub: 'NVDA' })
+  expect(await screen.findByRole('region', { name: '我的知识' })).toHaveTextContent('还没有挂在 NVDA 上的经验')
+  first.unmount()
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (String(url).startsWith('/api/watchlist')) return json({ rows: [{ ticker: 'NVDA' }] })
+    if (String(url).startsWith('/api/us-research/')) return json(fundamentalsView('NVDA'))
+    if (String(url).startsWith('/api/workbench/chains?')) return json(chainsView)
+    if (String(url).startsWith('/api/workbench/user-inputs')) return json({ inputs: [] })
+    return json({ ...richView('NVDA'), knowledge: null, errors: { knowledge: '迁移 027 未执行' } })
+  }))
+  render(Instrument, { sub: 'NVDA' })
+  expect(await screen.findByRole('region', { name: '我的知识' })).toHaveTextContent('暂不可用：迁移 027 未执行')
+})
+
+it('plan rows have DiscussButton', async () => {
+  withKnowledge([])
+  location.hash = ''
+  render(Instrument, { sub: 'NVDA' })
+  const agentList = await screen.findByRole('list', { name: 'Agent 计划' })
+  await fireEvent.click(within(agentList).getByRole('button', { name: '就此计划讨论' }))
+  await waitFor(() => expect(urls.filter(u => u === '/api/workbench/discussions')).toHaveLength(1))
+  const call = (fetch as any).mock.calls.find((c: any[]) => c[0] === '/api/workbench/discussions')
+  expect(JSON.parse(call[1].body)).toMatchObject({ context: { kind: 'plan', plan_id: 'hp-1' } })
+  await waitFor(() => expect(location.hash).toBe('#discuss/5'))
+  // the 计划价位 list on the history section carries one per plan as well
+  const plans = await screen.findByRole('list', { name: '计划价位' })
+  expect(within(plans).getAllByRole('button', { name: '就此计划讨论' })).toHaveLength(3)
+})
+

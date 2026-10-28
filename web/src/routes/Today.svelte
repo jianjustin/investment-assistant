@@ -7,6 +7,7 @@
   import RuleBaseline from '../lib/components/RuleBaseline.svelte'
   import RunOverview from '../lib/components/RunOverview.svelte'
   import ConceptTerm from '../lib/components/ConceptTerm.svelte'
+  import DiscussButton from '../lib/components/DiscussButton.svelte'
   import { ATTACH } from '../lib/knowledge'
   import * as api from '../lib/api'
   import { fmtBeijing } from '../lib/format'
@@ -499,6 +500,7 @@
             <a class="text-xs text-accent underline" href={`#plan/${c.head_plan_id}`}>查看</a>
             <button class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50"
                     disabled={rk?.busy} onclick={() => recheck(c)}>重新复查</button>
+            <DiscussButton context={{ kind: 'plan', plan_id: c.head_plan_id }} />
             {#if rk?.text}<span class="text-xs">{rk.text}</span>{/if}
           </li>
         {/each}

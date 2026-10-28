@@ -303,4 +303,96 @@ describe('AgentReasoning', () => {
     render(AgentReasoning, { runId: 'nope' })
     expect(await screen.findByRole('alert')).toHaveTextContent('不存在')
   })
+
+  it('retro steps', async () => {
+    vi.mocked(api.getReasoning).mockResolvedValue(reasoning({
+      run: run({ id: 'rd-1', mode: 'retro', agent_version: 'agent-retro-1' }), version: null,
+      steps: [
+        { kind: 'evidence', title: '冻结的事实', concept: 'review.retro_card',
+          text: '平仓（按止损） · 结束日 2026-10-23', fact_keys: ['subject', 'plans', 'bars_after'] },
+        { kind: 'read', title: '起草者读了什么', concept: 'agent.tool_calls', calls: [call(1, 'get_price_bars')] },
+        { kind: 'draft', title: '起草', concept: 'review.retro_card', summary: '回踩买入后触及止损',
+          items: [{ text: '入场区间当天触及', refs: ['fact:plans', 'call:1'] }, { text: '决定照规则计划', refs: ['fact:decision'] }],
+          lessons: [{ title: '回踩不追高', body: '高于上沿就等', scope: '回踩触发后', counter_examples: '放量突破除外',
+                      refs: ['fact:discipline', 'know:3@1'] }] },
+        { kind: 'check', title: '校验结果', concept: 'agent.reject_reasons', items: [
+          { id: 'retro_shape', text: '草稿格式', result: 'pass' }, { id: 'refs', text: '引用', result: 'pass' },
+          { id: 'lessons', text: '教训', result: 'pass' }] },
+      ] as any }))
+    render(AgentReasoning, { runId: 'rd-1' })
+    await screen.findByRole('region', { name: '起草' })
+    expect(headings()).toEqual(['冻结的事实', '起草者读了什么', '起草', '校验结果'])
+    expect(screen.getByText(/复盘起草/)).toBeInTheDocument()
+    const evidence = screen.getByRole('region', { name: '冻结的事实' })
+    expect(evidence).toHaveTextContent('平仓（按止损）')
+    expect(evidence).toHaveTextContent('fact:subject')
+    expect(evidence).toHaveTextContent('fact:bars_after')
+    const draft = screen.getByRole('region', { name: '起草' })
+    expect(draft).toHaveTextContent('回踩买入后触及止损')
+    expect(draft).toHaveTextContent('入场区间当天触及')
+    expect(draft).toHaveTextContent('回踩不追高')
+    expect(draft).toHaveTextContent('适用范围：回踩触发后')
+    expect(draft).toHaveTextContent('反例：放量突破除外')
+    expect(within(draft).getByRole('link', { name: 'know:3@1' })).toHaveAttribute('href', '#knowledge/mine/3@1')
+    expect(draft).toHaveTextContent('fact:discipline')
+  })
+
+  it('discuss steps', async () => {
+    vi.mocked(api.getReasoning).mockResolvedValue(reasoning({
+      run: run({ id: 'ds-1', mode: 'discuss', agent_version: 'agent-discuss-1' }), version: null,
+      steps: [
+        { kind: 'question', title: '你的问题', concept: 'system.discussion', text: '这个止损怎么来的？',
+          attachment: '附件：回踩别追（第 2 版）（用户提供，非证据，不可引用）', context: '[fact:context] 计划当时的截止时间 X' },
+        { kind: 'read', title: '回答者读了什么', concept: 'agent.tool_calls', calls: [call(1, 'get_derivation')] },
+        { kind: 'answer', title: '回答', concept: 'system.discussion', text: '止损 = 参考价减 2 倍 ATR14。',
+          refs: ['call:1', 'concept:plan.stop@1', 'fact:context'],
+          knowledge_draft: { title: '止损别拖', body: '次日就卖', scope: '持仓期', counter_examples: '财报前后', refs: ['call:1'] } },
+        { kind: 'check', title: '校验结果', concept: 'agent.reject_reasons', items: [
+          { id: 'answer_shape', text: '回答格式', result: 'pass' }] },
+      ] as any }))
+    render(AgentReasoning, { runId: 'ds-1' })
+    await screen.findByRole('region', { name: '回答' })
+    expect(headings()).toEqual(['你的问题', '回答者读了什么', '回答', '校验结果'])
+    expect(screen.getByText(/讨论/)).toBeInTheDocument()
+    const question = screen.getByRole('region', { name: '你的问题' })
+    expect(question).toHaveTextContent('这个止损怎么来的？')
+    expect(question).toHaveTextContent('附件：回踩别追（第 2 版）（用户提供，非证据，不可引用）')
+    expect(question).toHaveTextContent('[fact:context] 计划当时的截止时间 X')
+    const answer = screen.getByRole('region', { name: '回答' })
+    expect(answer).toHaveTextContent('止损 = 参考价减 2 倍 ATR14。')
+    expect(within(answer).getByRole('button', { name: 'call:1' })).toBeInTheDocument()
+    expect(answer).toHaveTextContent('经验草稿')
+    expect(answer).toHaveTextContent('止损别拖')
+  })
+
+  it('get_knowledge call note', async () => {
+    vi.mocked(api.getReasoning).mockResolvedValue(reasoning({ steps: [{
+      kind: 'read', title: '提议者读了什么', concept: 'agent.tool_calls',
+      calls: [call(1, 'get_knowledge', { tool_text: '我的知识', args: { ticker: 'NVDA' }, concept: 'system.my_knowledge',
+        fields: {}, result: { query: { ticker: 'NVDA' }, point_in_time: true, omitted: 0, note: '这是用户审定过的经验',
+          entries: [{ ref: 'know:3@2', id: 3, version: 2, title: '回踩别追' }] } })] }] as any }))
+    render(AgentReasoning, { runId: 'run-1' })
+    const read = await screen.findByRole('region', { name: '提议者读了什么' })
+    expect(read).toHaveTextContent('我的知识按截止时间读取：只含截止时间之前写入的版本')
+    await fireEvent.click(within(read).getByRole('button', { name: '看返回值' }))
+    const link = within(read).getByRole('link', { name: 'know:3@2' })
+    expect(link).toHaveAttribute('href', '#knowledge/mine/3@2')
+    expect(read).toHaveTextContent('回踩别追')
+  })
+
+  it('know: refs inside a proposal link to the version page', async () => {
+    vi.mocked(api.getReasoning).mockResolvedValue(reasoning({ steps: [
+      { ...proposal, thesis: [{ id: 'T1', text: '回踩企稳', refs: ['call:1', 'know:3@2'] }] }] as any }))
+    render(AgentReasoning, { runId: 'run-1' })
+    const prop = await screen.findByRole('region', { name: '提议' })
+    expect(within(prop).getByRole('link', { name: 'know:3@2' })).toHaveAttribute('href', '#knowledge/mine/3@2')
+  })
+
+  it('shows 引用的知识 when the view carries knowledge_refs', async () => {
+    vi.mocked(api.getReasoning).mockResolvedValue(reasoning({
+      knowledge_refs: [{ ref: 'know:3@2', title: '回踩别追', fields: ['thesis'], current_version: 2 }] } as any))
+    render(AgentReasoning, { runId: 'run-1' })
+    const refs = await screen.findByRole('region', { name: '引用的知识' })
+    expect(within(refs).getByRole('link', { name: 'know:3@2' })).toBeInTheDocument()
+  })
 })

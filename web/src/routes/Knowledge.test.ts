@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import Knowledge from './Knowledge.svelte'
 import * as api from '../lib/api'
+import { WorkbenchError } from '../lib/workbench'
+import { entry, itemView, knowledgeDraft, perf } from '../lib/growth-fixtures'
 import { resetConceptIndex } from '../lib/knowledge'
 import type { ConceptCard, ConceptsView, PrinciplesView, RunOverviewView } from '../lib/knowledge'
 
@@ -197,5 +199,121 @@ describe('Knowledge principles', () => {
     render(Knowledge, { sub: 'principles' })
     expect(await screen.findByText('概念卡加载失败')).toBeInTheDocument()
     expect(screen.getByText('concepts/a.md: 坏')).toBeInTheDocument()
+  })
+})
+
+// ---- v2.7: 我的知识 ----
+
+describe('我的知识', () => {
+  beforeEach(() => {
+    vi.spyOn(api, 'getMyKnowledge').mockResolvedValue({ items: [entry()] })
+    vi.spyOn(api, 'getKnowledgeDrafts').mockResolvedValue({ drafts: [] })
+    vi.spyOn(api, 'getKnowledgeItem').mockResolvedValue(itemView())
+    vi.spyOn(api, 'getKnowledgePerformance').mockResolvedValue(perf())
+  })
+
+  it('side entry 我的知识', async () => {
+    render(Knowledge, { sub: undefined })
+    expect(await screen.findByRole('link', { name: '我的知识' })).toHaveAttribute('href', '#knowledge/mine')
+  })
+
+  it('#knowledge/mine lists my knowledge', async () => {
+    render(Knowledge, { sub: 'mine' })
+    expect(await screen.findByRole('heading', { name: '我的知识' })).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: '回踩别追' })).toHaveAttribute('href', '#knowledge/mine/3')
+  })
+
+  it('#knowledge/mine/3@2 opens version 2 of entry 3, and plain /3 the latest', async () => {
+    const first = render(Knowledge, { sub: 'mine/3@2' })
+    await screen.findByRole('heading', { name: /回踩别追/ })
+    expect(api.getKnowledgeItem).toHaveBeenCalledWith(3, 2)
+    first.unmount()
+    render(Knowledge, { sub: 'mine/3' })
+    await waitFor(() => expect(api.getKnowledgeItem).toHaveBeenLastCalledWith(3, undefined))
+  })
+
+  it('#knowledge/mine/new writes a first version, prefilled from the ticker in the hash', async () => {
+    history.replaceState(null, '', '#knowledge/mine/new?ticker=NVDA')
+    const post = vi.spyOn(api, 'postMyKnowledge').mockResolvedValue({ status: 'created', record: { id: 9 } } as any)
+    render(Knowledge, { sub: 'mine/new' })
+    expect(await screen.findByRole('button', { name: '移除标的 NVDA' })).toBeInTheDocument()
+    await fireEvent.input(screen.getByLabelText('标题'), { target: { value: '新经验' } })
+    await fireEvent.input(screen.getByLabelText('正文'), { target: { value: '正文' } })
+    await fireEvent.input(screen.getByLabelText('适用范围'), { target: { value: '范围' } })
+    await fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    expect(post.mock.calls[0][0]).toMatchObject({ title: '新经验', body: '正文', scope: '范围', tickers: ['NVDA'], concepts: [] })
+    expect(post.mock.calls[0][0].request_id).toMatch(/^[0-9a-f-]{36}$/)
+    await waitFor(() => expect(location.hash).toBe('#knowledge/mine/9'))
+  })
+
+  it('drafts page: discussion drafts can be adopted (editable) or dismissed; card drafts only link to the card', async () => {
+    vi.mocked(api.getKnowledgeDrafts).mockResolvedValue({ drafts: [
+      knowledgeDraft(),
+      knowledgeDraft({ id: 202, origin: 'review_card', card_id: 12, discussion_id: null, discussion_turn_id: null, title: '卡上的草稿' }),
+    ] })
+    const verdict = vi.spyOn(api, 'postDraftVerdict').mockResolvedValue({ status: 'created' } as any)
+    render(Knowledge, { sub: 'mine/drafts' })
+    expect(await screen.findByRole('heading', { name: '待审定的草稿' })).toBeInTheDocument()
+    expect(api.getKnowledgeDrafts).toHaveBeenCalledWith('open')
+    const card = (await screen.findByText('卡上的草稿')).closest('li')!
+    expect(within(card).getByRole('link', { name: '到复盘卡审定' })).toHaveAttribute('href', '#review/cards/12')
+    expect(within(card).queryByRole('button', { name: '采纳' })).toBeNull()
+    const draft = screen.getByText('止损别拖').closest('li')!
+    await fireEvent.click(within(draft).getByRole('button', { name: '采纳' }))
+    await fireEvent.input(within(draft).getByLabelText('标题'), { target: { value: '止损别拖延' } })
+    await fireEvent.click(within(draft).getByRole('button', { name: '确认采纳' }))
+    await waitFor(() => expect(verdict).toHaveBeenCalledTimes(1))
+    expect(verdict.mock.calls[0][0]).toBe(201)
+    expect(verdict.mock.calls[0][1]).toMatchObject({ action: 'approve', title: '止损别拖延', concepts: ['plan.stop'], tickers: ['NVDA'] })
+    expect('base_version' in verdict.mock.calls[0][1]).toBe(false)
+    await fireEvent.click(within(draft).getByRole('button', { name: '不采纳' }))
+    await waitFor(() => expect(verdict).toHaveBeenCalledTimes(2))
+    expect(verdict.mock.calls[1][1].action).toBe('dismiss')
+  })
+
+  it('a draft that rewrites an entry sends the base version it was written against', async () => {
+    vi.mocked(api.getKnowledgeDrafts).mockResolvedValue({ drafts: [
+      knowledgeDraft({ target_knowledge_id: 3, target_version: 2 })] })
+    const verdict = vi.spyOn(api, 'postDraftVerdict').mockResolvedValue({ status: 'created' } as any)
+    render(Knowledge, { sub: 'mine/drafts' })
+    const draft = (await screen.findByText('止损别拖')).closest('li')!
+    expect(draft).toHaveTextContent('改写 know:3@2')
+    await fireEvent.click(within(draft).getByRole('button', { name: '采纳' }))
+    await fireEvent.click(within(draft).getByRole('button', { name: '确认采纳' }))
+    await waitFor(() => expect(verdict).toHaveBeenCalledTimes(1))
+    expect(verdict.mock.calls[0][1]).toMatchObject({ action: 'approve', base_version: 2 })
+  })
+
+  it('concept page lists attached knowledge', async () => {
+    render(Knowledge, { sub: 'plan.stop@1' })
+    const section = await screen.findByRole('region', { name: '挂在这张卡上的我的知识' })
+    expect(api.getMyKnowledge).toHaveBeenCalledWith({ concept: 'plan.stop', status: 'active' })
+    const link = await within(section).findByRole('link', { name: '回踩别追' })
+    expect(link).toHaveAttribute('href', '#knowledge/mine/3')
+    expect(link.closest('li')).toHaveTextContent('第 2 版')
+  })
+
+  it('concept page without attached knowledge says so; an unreadable list stays out of the way', async () => {
+    vi.mocked(api.getMyKnowledge).mockResolvedValue({ items: [] })
+    const first = render(Knowledge, { sub: 'plan.stop@1' })
+    expect(await screen.findByRole('region', { name: '挂在这张卡上的我的知识' })).toHaveTextContent('还没有挂在这张卡上的经验')
+    first.unmount()
+    vi.mocked(api.getMyKnowledge).mockRejectedValue(new WorkbenchError('迁移 027 未执行', 503))
+    render(Knowledge, { sub: 'plan.stop@1' })
+    await screen.findByRole('heading', { name: '止损' })
+    expect(await screen.findByRole('region', { name: '挂在这张卡上的我的知识' })).toHaveTextContent('迁移 027 未执行')
+    expect(screen.getByRole('heading', { name: '止损' })).toBeInTheDocument()       // the card itself is unaffected
+  })
+
+  it('migration missing note', async () => {
+    vi.mocked(api.getMyKnowledge).mockRejectedValue(new WorkbenchError('迁移 027 未执行', 503))
+    render(Knowledge, { sub: 'mine' })
+    expect(await screen.findByText('迁移 027 未执行')).toBeInTheDocument()
+  })
+
+  it('keeps unrelated hashes working: a concept id that merely starts with mine', async () => {
+    render(Knowledge, { sub: 'minefield.x@1' })
+    await waitFor(() => expect(api.getConcept).toHaveBeenCalledWith('minefield.x@1'))
   })
 })

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import Review from './Review.svelte'
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -445,3 +445,110 @@ it('expands the second tool call from a track row', async () => {
   await fireEvent.click(screen.getByRole('button', { name: 'call:2' }))
   expect(await screen.findByText(/get_indicators/)).toBeInTheDocument()  // 点击后显示其详情
 })
+
+// ---- v2.7: 复盘卡 tab and 你学到了什么 ----
+
+describe('growth loop', () => {
+  const cardRows = [
+    { id: 12, ticker: 'NVDA', subject: 'unit', signal_date: '2026-10-14', end_kind: 'position_closed', exit_basis: 'stop',
+      end_session: '2026-10-23', decision_text: '采纳（照规则计划）', actual_r: -0.8, rule_r: -1, agent_r: null,
+      flags: ['chase'], immature: [], status: 'to_review', headline: '追高是主因' },
+  ]
+  const learning = {
+    discipline: { cards: 3, chase: 1, early_take: 0, held_loser: 1, unplanned: 0, pending: 2 },
+    cards: [
+      { card_id: 12, ticker: 'NVDA', end_kind: 'position_closed', end_text: '平仓（按止损）', decision_text: '采纳（照规则计划）',
+        actual_r: -0.8, rule_r: -1, agent_r: null, flags: ['chase'], status: 'to_review', headline: '追高是主因' },
+      { card_id: 13, ticker: 'MU', end_kind: 'expired', end_text: '过期未成交', decision_text: '否决',
+        actual_r: null, rule_r: null, agent_r: 0.4, flags: [], status: 'reviewed', headline: null },
+    ],
+    counts: { total: 3, reviewed: 1, to_review: 1, drafting: 1, draft_failed: 0 },
+    knowledge: [
+      { ref: 'know:3@2', title: '回踩别追', new_outcomes: 1, sample: { count: 6, determined: 5, expired: 1, r_mean: 0.42, r_median: 0.3 } },
+      { ref: 'know:4@1', title: '财报前不加仓', new_outcomes: 1, sample: { count: 2, determined: 1, expired: 1, r_mean: null, r_median: null } },
+    ],
+  }
+  const weeklyOf = (calc: string, stats: Record<string, unknown> = {}) => ({ reviews: [
+    { id: 'w1', week_start: '2026-10-19', calc_version: calc, notes: '', supersedes_id: null, created_at: '2026-10-26T01:00:00Z',
+      stats: { units: { decided: 1, undecided: 0 }, by_rule: {}, by_decision: {}, execution: [], unsignaled_trades: [],
+               note: '描述性统计', ...stats } }] })
+
+  beforeEach(() => {
+    const base = respond
+    respond = async (url, init) => {
+      if (url.startsWith('/api/workbench/review-cards/12')) return json({ error: 'x' }, 500)
+      if (url.startsWith('/api/workbench/review-cards')) return json({ cards: cardRows, counts: { to_review: 2, reviewed: 1, drafting: 0, draft_failed: 0 } })
+      return base(url, init)
+    }
+  })
+
+  it('cards tab second', async () => {
+    render(Review, { sub: 'trades' })
+    await screen.findByText(/浮动盈亏/)
+    const tabs = screen.getAllByRole('link').filter(a => a.getAttribute('href')!.startsWith('#review/'))
+    expect(tabs.slice(0, 3).map(a => a.getAttribute('href'))).toEqual(['#review/trades', '#review/cards', '#review/shadow'])
+    expect(tabs[1]).toHaveTextContent('复盘卡')
+    // the badge shows the to_review count on every tab
+    expect(await screen.findByLabelText('待审定 2 张')).toHaveTextContent('2')
+  })
+
+  it('no badge without anything to review, and none when the cards cannot be read', async () => {
+    respond = async (url) => url.startsWith('/api/workbench/review-cards') ? json({ error: '迁移 027 未执行' }, 503)
+      : url.includes('/review/shadow') ? json({ session: '2026-10-22', since: '2026-07-24', calc_version: 'review-1', units: [] })
+      : json({})
+    render(Review, { sub: 'shadow' })
+    await waitFor(() => expect((fetch as any).mock.calls.some((c: any[]) => String(c[0]).startsWith('/api/workbench/review-cards'))).toBe(true))
+    expect(screen.queryByLabelText(/待审定/)).toBeNull()
+  })
+
+  it('the cards tab lists the cards', async () => {
+    render(Review, { sub: 'cards' })
+    expect(await screen.findByRole('link', { name: /NVDA/ })).toHaveAttribute('href', '#review/cards/12')
+    expect(screen.getByRole('link', { name: /^复盘卡/ })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('#review/cards/12 opens that card', async () => {
+    render(Review, { sub: 'cards/12' })
+    expect(await screen.findByText(/加载失败/)).toBeInTheDocument()     // the card page asked for card 12
+    expect(calls.some(c => c.url === '/api/workbench/review-cards/12')).toBe(true)
+  })
+
+  it('weekly card shows 你学到了什么', async () => {
+    respond = async (url) => url.includes('/weekly-reviews') ? json(weeklyOf('review-7', { learning }))
+      : url.startsWith('/api/workbench/review-cards') ? json({ cards: [], counts: {} }) : json({})
+    render(Review, { sub: 'weekly' })
+    const section = await screen.findByRole('region', { name: '你学到了什么' })
+    expect(section).toHaveTextContent('纪律（本周结束的 3 笔）：追高 1 · 过早止盈 0 · 死扛亏损 1 · 计划外 0 · 待定 2')
+    expect(section).toHaveTextContent('复盘卡 3 张（已审定 1 · 待审定 1）')
+    const first = within(section).getByRole('link', { name: /NVDA 平仓（按止损）/ })
+    expect(first).toHaveAttribute('href', '#review/cards/12')
+    expect(first.closest('li')).toHaveTextContent('实际 -0.80R')
+    expect(first.closest('li')).toHaveTextContent('采纳（照规则计划）')
+    expect(within(section).getByRole('link', { name: /MU 过期未成交/ }).closest('li')).toHaveTextContent('实际 未成交')
+    expect(section).toHaveTextContent('被检验的知识 2 条')
+    const know = within(section).getByRole('link', { name: /know:3@2/ })
+    expect(know).toHaveAttribute('href', '#knowledge/mine/3@2')
+    expect(know.closest('li')).toHaveTextContent('回踩别追 · 样本 6（均值 +0.42R）')
+    expect(within(section).getByRole('link', { name: /know:4@1/ }).closest('li')).toHaveTextContent('样本 2（少于 5 个不给均值）')
+  })
+
+  it('weekly learning with nothing in it says so in one line', async () => {
+    const empty = { discipline: { cards: 0, chase: 0, early_take: 0, held_loser: 0, unplanned: 0, pending: 0 }, cards: [],
+                    counts: { total: 0, reviewed: 0, to_review: 0, drafting: 0, draft_failed: 0 }, knowledge: [] }
+    respond = async (url) => url.includes('/weekly-reviews') ? json(weeklyOf('review-7', { learning: empty }))
+      : url.startsWith('/api/workbench/review-cards') ? json({ cards: [], counts: {} }) : json({})
+    render(Review, { sub: 'weekly' })
+    const section = await screen.findByRole('region', { name: '你学到了什么' })
+    expect(section).toHaveTextContent('本周没有结束的交易，也没有被检验的知识')
+    expect(section).not.toHaveTextContent('纪律（本周结束的')
+  })
+
+  it('old snapshot note', async () => {
+    respond = async (url) => url.includes('/weekly-reviews') ? json(weeklyOf('review-6'))
+      : url.startsWith('/api/workbench/review-cards') ? json({ cards: [], counts: {} }) : json({})
+    render(Review, { sub: 'weekly' })
+    expect(await screen.findByText('该快照没有『你学到了什么』（review-6 及更早）')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '你学到了什么' })).toBeNull()
+  })
+})
+

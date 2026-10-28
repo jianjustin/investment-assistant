@@ -10,6 +10,7 @@
   import Data from './routes/Data.svelte'
   import Knowledge from './routes/Knowledge.svelte'
   import Plan from './routes/Plan.svelte'
+  import Discussion from './lib/components/Discussion.svelte'
   import { guardHashNavigation } from './lib/navigation-guard'
   import { parseHash, type Zone } from './lib/router'
 
@@ -47,5 +48,7 @@
     <Settings {sub} />
   {:else if zone === 'plan'}
     <Plan sub={sub!} />
+  {:else if zone === 'discuss'}
+    {#key sub}<Discussion id={Number(sub)} />{/key}
   {/if}
 </AppShell>

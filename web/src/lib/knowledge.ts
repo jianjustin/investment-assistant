@@ -2,6 +2,7 @@
  *  extensions, the cached concept index, and the table that says which concept each page field points at
  *  (spec 2026-10-28 §6.2). Templates never write a concept id themselves: they read `ATTACH` or the helpers below. */
 import * as api from './api'
+import type { KnowledgeRefItem } from './growth'
 
 // ---- concept cards (GET /api/knowledge/*) ----
 
@@ -95,12 +96,20 @@ export interface ReasoningStep {
   // interpretation
   support?: { text: string; refs: string[] }[]; contra?: { text: string; refs: string[] }[]
   conflicts?: { text: string; refs: string[] }[]
+  // v2.7 retro / discuss runs (spec §6.5): evidence lists the frozen fact keys; draft = narrative (summary + items) and
+  // lessons; question = the user's turn with its attachment marker and the context; answer = text + refs + optional draft
+  fact_keys?: string[]
+  lessons?: { title: string; body: string; scope: string; counter_examples: string; refs: string[] }[]
+  attachment?: string | null; context?: string | null
+  knowledge_draft?: { title: string; body: string; scope: string; counter_examples: string; refs?: string[] } | null
 }
 export interface ReasoningView {
   run: ReasoningRun; legacy: boolean
   version: { plan_id: string; version_no: number; origin: string } | null
   review: Record<string, unknown> | null
   steps: ReasoningStep[]; notes: string[]
+  /** knowledge this run's plan version cited (spec §6.2), when the backend sends it */
+  knowledge_refs?: KnowledgeRefItem[]
 }
 
 // ---- instrument page (GET /api/workbench/instruments/{ticker}, spec §9.4) ----
@@ -253,6 +262,30 @@ export const ATTACH = {
     stages: 'system.stages',
     status: 'system.stage_status',
   },
+  // v2.7 复盘卡（结束类型、卡本身、三轨道、纪律四项）
+  retroCard: {
+    card: 'review.retro_card',
+    end: 'review.retro_end',
+    tracks: 'review.tracks',
+    chase: 'review.discipline_chase',
+    earlyTake: 'review.discipline_early_take',
+    heldLoser: 'review.discipline_held_loser',
+    unplanned: 'review.discipline_unplanned',
+  },
+  // v2.7 我的知识（条目、表现回看、计划卡里的「引用的知识」）
+  myKnowledge: {
+    item: 'system.my_knowledge',
+    performance: 'review.knowledge_performance',
+    citation: 'agent.knowledge_citation',
+  },
+  // v2.7 就此计划讨论
+  discussion: {
+    about: 'system.discussion',
+  },
+  // v2.7 周度「你学到了什么」
+  weeklyLearning: {
+    learning: 'review.weekly_learning',
+  },
 } as const
 
 const STEP_CONCEPT: Record<string, string> = {
@@ -277,5 +310,7 @@ export function derivationStepConcept(key: string): string | null {
 export const TOOL_TEXT: Record<string, string> = {
   get_trigger: '触发候选', get_price_bars: '日线', get_indicators: '指标', get_filings: 'SEC 文件',
   get_news: '资讯', get_earnings: '财报日', get_market_context: '市场环境', get_position: '持仓',
-  get_concept: '概念卡',
+  get_concept: '概念卡', get_knowledge: '我的知识',
+  // 讨论专用（只读）
+  get_plan_context: '计划上下文', get_derivation: '推导', get_agent_run: 'Agent 运行',
 }

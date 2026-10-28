@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import Plan from './Plan.svelte'
 import * as api from '../lib/api'
 import type { Derivation } from '../lib/derivation'
@@ -115,5 +115,39 @@ describe('Plan', () => {
     render(Plan, { sub: 'p1' })
     await screen.findByRole('heading', { name: 'NVDA · 2026-10-22' })
     expect(screen.getByRole('link', { name: '标的页' }).getAttribute('href')).toBe('#instrument/NVDA')
+  })
+
+  it('header DiscussButton and discussion list', async () => {
+    vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation())
+    const list = vi.spyOn(api, 'getDiscussions').mockResolvedValue({ discussions: [
+      { id: 5, created_at: '2026-10-28T10:00:00Z', turn_count: 2, first_question: '这个止损怎么来的？' },
+      { id: 6, created_at: '2026-10-28T11:00:00Z', turn_count: 0, first_question: null }] })
+    const post = vi.spyOn(api, 'postDiscussion').mockResolvedValue({ id: 7 } as any)
+    location.hash = ''
+    render(Plan, { sub: 'p1' })
+    const header = (await screen.findByRole('heading', { name: 'NVDA · 2026-10-22' })).closest('header')!
+    await fireEvent.click(await within(header).findByRole('button', { name: '就此计划讨论' }))
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    expect(post.mock.calls[0][0].context).toEqual({ kind: 'plan', plan_id: 'p1' })
+    expect(list).toHaveBeenCalledWith({ plan_id: 'p1' })
+    const section = await screen.findByRole('region', { name: '讨论' })
+    const links = within(section).getAllByRole('link')
+    expect(links[0]).toHaveAttribute('href', '#discuss/5')
+    expect(links[0]).toHaveTextContent('2 轮')
+    expect(links[0]).toHaveTextContent('这个止损怎么来的？')
+    expect(links[1]).toHaveAttribute('href', '#discuss/6')
+    expect(links[1]).toHaveTextContent('0 轮')
+  })
+
+  it('says so when there is no discussion yet, and survives a failing list', async () => {
+    vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation())
+    vi.spyOn(api, 'getDiscussions').mockResolvedValue({ discussions: [] })
+    const first = render(Plan, { sub: 'p1' })
+    expect(await screen.findByText('还没有讨论')).toBeInTheDocument()
+    first.unmount()
+    vi.spyOn(api, 'getDiscussions').mockRejectedValue(new Error('迁移 027 未执行'))
+    render(Plan, { sub: 'p1' })
+    expect(await screen.findByText(/讨论不可用：迁移 027 未执行/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '标的页' })).toBeInTheDocument()
   })
 })

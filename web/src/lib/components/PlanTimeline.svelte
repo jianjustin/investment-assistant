@@ -88,6 +88,7 @@
                              conditions: r.conditions ?? [] } : null,
         cutoff_at: v.cutoff_at, diff: v.diff,
       },
+      knowledge_refs: v.knowledge_refs ?? [],
     } as tl.AgentView
   }
 

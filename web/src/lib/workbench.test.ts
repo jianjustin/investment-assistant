@@ -134,7 +134,19 @@ describe('agent track', () => {
       'quota_exhausted', 'stage_budget', 'token_budget', 'tool_rounds_exceeded',
       // v2.5 §4.4 + D23 (same as backend agent.REASON_TEXT)
       'thesis_count', 'invalid_condition', 'changes_mismatch', 'no_change', 'review_malformed',
-      'migration_026_missing', 'review_in_progress', 'plan_invalid'].sort())
+      'migration_026_missing', 'review_in_progress', 'plan_invalid',
+      // v2.7 §6.4
+      'retro_malformed', 'lesson_invalid', 'answer_malformed', 'migration_027_missing', 'discussion_busy',
+      'draft_exists'].sort())
+  })
+
+  it('AGENT_REASON_TEXT has the six new reasons', async () => {
+    const { AGENT_REASON_TEXT } = await import('./workbench')
+    expect(AGENT_REASON_TEXT).toMatchObject({
+      retro_malformed: '复盘卡草稿格式无效', lesson_invalid: '教训草稿缺适用范围、反例或挂靠无效',
+      answer_malformed: '回答格式无效', migration_027_missing: '迁移 027 未执行',
+      discussion_busy: '上一个问题还在回答', draft_exists: '这张卡已有成功的草稿',
+    })
   })
 
   it('AGENT_REASON_TEXT carries the v2.5 reasons verbatim', async () => {

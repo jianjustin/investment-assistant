@@ -2,12 +2,31 @@
   import { onMount } from 'svelte'
   import { fmtPct } from '../lib/format'
   import * as wb from '../lib/workbench'
+  import * as api from '../lib/api'
   import Drawer from '../lib/components/Drawer.svelte'
+  import ConceptTerm from '../lib/components/ConceptTerm.svelte'
+  import ReviewCard from '../lib/components/ReviewCard.svelte'
+  import ReviewCardList from '../lib/components/ReviewCardList.svelte'
+  import { ATTACH } from '../lib/knowledge'
+  import { knowHref } from '../lib/growth'
+  import type { WeeklyLearning } from '../lib/growth'
 
   let { sub }: { sub?: string } = $props()
-  const TABS = [['trades', '交易与持仓'], ['shadow', '对照组'], ['tracks', '轨道对比'], ['weekly', '周度复盘'],
+  const TABS = [['trades', '交易与持仓'], ['cards', '复盘卡'], ['shadow', '对照组'], ['tracks', '轨道对比'], ['weekly', '周度复盘'],
                  ['monthly', '月度复盘'], ['account', '资金'], ['backchecks', '上线前检查']] as const
-  let tab = $derived(TABS.some(([id]) => id === sub) ? sub! : 'trades')
+  // sub is the path below #review/: `cards`, `cards/12`, `weekly` …
+  const head = $derived(sub?.split('/')[0])
+  let tab = $derived(TABS.some(([id]) => id === head) ? head! : 'trades')
+  const cardId = $derived.by(() => {
+    const m = /^cards\/(\d+)$/.exec(sub ?? '')
+    return m ? Number(m[1]) : null
+  })
+  // 页签上的待审定数（v2.7 §4.7）；读不到（如迁移 027 未执行）就不显示
+  let toReview = $state(0)
+  async function loadCardCounts() {
+    try { toReview = (await api.getReviewCards({}))?.counts?.to_review ?? 0 } catch { toReview = 0 }
+  }
+  $effect(() => { void sub; void loadCardCounts() })
 
   let error = $state('')
   let trades = $state<wb.Trade[]>([])
@@ -91,6 +110,8 @@
         shadow = decided
       } else if (which === 'shadow') {
         shadow = await wb.getShadow()
+      } else if (which === 'cards') {
+        // the cards tab loads itself
       } else if (which === 'tracks') {
         tracks = await wb.getTracks()
       } else if (which === 'monthly') {
@@ -244,13 +265,24 @@
     <h1 class="text-lg font-semibold">复盘</h1>
     <nav class="flex gap-2 text-sm">
       {#each TABS as [id, label]}
-        <a href={`#review/${id}`} class="px-2 py-1 rounded {tab === id ? 'bg-accent/10 text-accent' : 'text-muted hover:text-ink'}">{label}</a>
+        <a href={`#review/${id}`} aria-current={tab === id ? 'page' : undefined}
+           class="px-2 py-1 rounded {tab === id ? 'bg-accent/10 text-accent' : 'text-muted hover:text-ink'}">{label}{#if id === 'cards' && toReview > 0}<span
+             aria-label={`待审定 ${toReview} 张`} title={`待审定 ${toReview} 张`}
+             class="ml-1 px-1.5 text-xs rounded-full bg-accent text-white">{toReview}</span>{/if}</a>
       {/each}
     </nav>
   </header>
   <p class="text-xs text-muted">描述性统计：股票少、样本重叠，不代表任何规则有效。</p>
 
   {#if error}<p role="alert" class="text-sm text-red-600">{error}</p>{/if}
+
+  {#if tab === 'cards'}
+    {#if cardId !== null}
+      <ReviewCard id={cardId} />
+    {:else}
+      <ReviewCardList oncounts={counts => toReview = counts.to_review ?? 0} />
+    {/if}
+  {/if}
 
   {#if tab === 'trades' && !error}
     <form class="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm border border-border rounded p-3" onsubmit={recordTrade}>
@@ -434,6 +466,33 @@
           <p class="text-xs text-muted">纪律</p>
           <p>计划内买入 {d.planned_buys ?? 0} · 遵守率 {d.compliance_rate == null ? '—' : `${Math.round(d.compliance_rate * 100)}%`}</p>
           <p class="text-xs text-muted">追高 {d.counts?.chase ?? 0} · 过早止盈 {d.counts?.early_take ?? 0} · 死扛亏损 {d.counts?.held_loser ?? 0} · 计划外 {d.counts?.unplanned ?? 0}</p>
+        {/if}
+        {#if r.stats.learning}
+          {@const L = r.stats.learning as WeeklyLearning}
+          <section aria-label="你学到了什么" class="space-y-1 border-t border-border pt-2">
+            <h3 class="font-semibold">你学到了什么 <span class="text-xs font-normal"><ConceptTerm id={ATTACH.weeklyLearning.learning}>说明</ConceptTerm></span></h3>
+            {#if L.discipline.cards === 0 && L.cards.length === 0 && L.knowledge.length === 0}
+              <p>本周没有结束的交易，也没有被检验的知识</p>
+            {:else}
+              <p>纪律（本周结束的 {L.discipline.cards} 笔）：追高 {L.discipline.chase} · 过早止盈 {L.discipline.early_take} · 死扛亏损 {L.discipline.held_loser} · 计划外 {L.discipline.unplanned} · 待定 {L.discipline.pending}</p>
+              <p>复盘卡 {L.counts.total} 张（已审定 {L.counts.reviewed} · 待审定 {L.counts.to_review}）</p>
+              <ul class="text-xs space-y-0.5">
+                {#each L.cards as c (c.card_id)}
+                  <li><a class="text-accent underline" href={`#review/cards/${c.card_id}`}>{c.ticker} {c.end_text}</a>
+                    · 实际 {c.actual_r === null ? '未成交' : wb.rText(c.actual_r)} · {c.decision_text}{c.headline ? ` · ${c.headline}` : ''}</li>
+                {/each}
+              </ul>
+              <p>被检验的知识 {L.knowledge.length} 条</p>
+              <ul class="text-xs space-y-0.5">
+                {#each L.knowledge as k (k.ref)}
+                  <li><a class="text-accent underline" href={knowHref(k.ref)}>{k.ref}</a> {k.title}
+                    · 样本 {k.sample.count}（{k.sample.r_mean === null ? '少于 5 个不给均值' : `均值 ${wb.rText(k.sample.r_mean)}`}）</li>
+                {/each}
+              </ul>
+            {/if}
+          </section>
+        {:else}
+          <p class="text-xs text-muted">该快照没有『你学到了什么』（review-6 及更早）</p>
         {/if}
       </article>
     {:else}<p class="text-sm text-muted">尚无周度复盘</p>{/each}
