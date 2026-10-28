@@ -17,6 +17,10 @@ from investment_assistant.workbench import positions, repository
 
 ACTIONS = ('buy', 'sell', 'watch')
 FINAL_ACTIONS = ('buy', 'sell', 'watch', 'ignore')
+REVIEW_LAYOUTS = ('agent_first', 'legacy')
+REVIEW_VIEW_KEYS = ('layout', 'baseline_expanded', 'agent_version_no')
+DECISION_V25_KEYS = ('agent_plan_id', 'review_view')   # v2.5 §9.3, migration 026
+MIGRATION_MISSING = '迁移 026 未执行'
 
 
 class LedgerError(ValueError):
@@ -25,6 +29,19 @@ class LedgerError(ValueError):
 
 class Conflict(Exception):
     """Request clashes with stored state (HTTP 409)."""
+
+
+class AgentPlanStale(Conflict):
+    """v2.5 §9.3: the page showed an older Agent version than the chain's head (HTTP 409).
+
+    ``str()`` is the 409 body's ``error``: the reason code, then the user-facing sentence."""
+
+    reason = 'agent_plan_stale'
+
+    def __init__(self, version_no: int):
+        self.version_no = version_no
+        self.text = f'Agent 计划已更新到第 {version_no} 版，请刷新后再决定'
+        super().__init__(f'{self.reason}: {self.text}')
 
 
 class NotFound(LookupError):
@@ -97,6 +114,31 @@ def _own_plan(value: Any) -> dict[str, Any] | None:
     return {'request_id': _uuid(value.get('request_id'), 'own_plan.request_id'), **levels}
 
 
+def _review_view(value: Any) -> dict[str, Any] | None:
+    """v2.5 §9.3: what the page reports about the layout it showed; for acceptance stats only."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise LedgerError('review_view must be an object')
+    extra = sorted(set(value) - set(REVIEW_VIEW_KEYS))
+    if extra:
+        raise LedgerError(f"review_view 不认识的字段：{', '.join(map(str, extra))}")
+    layout = _choice(value.get('layout'), 'review_view.layout', REVIEW_LAYOUTS)
+    expanded = value.get('baseline_expanded')
+    if not isinstance(expanded, bool):
+        raise LedgerError('review_view.baseline_expanded must be true or false')
+    version_no = value.get('agent_version_no')
+    if version_no is not None and (isinstance(version_no, bool) or not isinstance(version_no, int) or version_no < 0):
+        raise LedgerError('review_view.agent_version_no must be a non-negative integer or null')
+    return {'layout': layout, 'baseline_expanded': expanded, 'agent_version_no': version_no}
+
+
+def decision_hash(rec: dict[str, Any]) -> str:
+    """request_hash of a validated decision. The v2.5 fields enter only when given, so a request
+    recorded before v2.5 still replays to the same hash."""
+    return request_hash({k: v for k, v in rec.items() if k not in DECISION_V25_KEYS or v is not None})
+
+
 def validate_decision(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         signal_date = date.fromisoformat(str(payload.get('signal_date')))
@@ -118,6 +160,8 @@ def validate_decision(payload: dict[str, Any]) -> dict[str, Any]:
         'supersedes_id': _uuid(payload.get('supersedes_id'), 'supersedes_id', optional=True),
         'plan_id': _uuid(payload.get('plan_id'), 'plan_id', optional=True),
         'own_plan': _own_plan(payload.get('own_plan')),
+        'agent_plan_id': _uuid(payload.get('agent_plan_id'), 'agent_plan_id', optional=True),
+        'review_view': _review_view(payload.get('review_view')),
     }
     if rec['plan_id'] is not None and rec['own_plan'] is not None:
         raise LedgerError('plan_id 与 own_plan 只能二选一')
@@ -161,10 +205,18 @@ def _replay(existing: dict[str, Any] | None, digest: str) -> dict[str, Any] | No
 
 
 def record_decision(conn, payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    """v2.5 §9.3: with an agent-2 chain, ``agent_plan_id`` defaults to the head and any other version is
+    AgentPlanStale (409, nothing written). Without migration 026 a request that carries ``agent_plan_id``
+    or ``review_view`` is Unavailable (503「迁移 026 未执行」); a plain rule / agent-1 decision still works."""
     rec = validate_decision(payload)
-    digest = request_hash(rec)
+    digest = decision_hash(rec)
     repository.lock(conn, f"decision:{rec['ticker']}:{rec['signal_date']}")
-    if replay := _replay(repository.decision_by_request(conn, rec['request_id']), digest):
+    ready = repository.timeline_ready(conn)
+    if not ready and any(rec[k] is not None for k in DECISION_V25_KEYS):
+        from investment_assistant.workbench import service as _service
+
+        raise _service.Unavailable(MIGRATION_MISSING)
+    if replay := _replay(repository.decision_by_request(conn, rec['request_id'], timeline=ready), digest):
         return replay
     if repository.count_unit_candidates(conn, rec['ticker'], rec['signal_date'], rec['candidate_ids']) != len(rec['candidate_ids']):
         raise LedgerError('candidate_ids must all belong to this ticker and signal_date')
@@ -175,29 +227,69 @@ def record_decision(conn, payload: dict[str, Any], *, now: datetime) -> dict[str
         raise LedgerError('nothing to supersede in this unit')
     if head is not None and rec['supersedes_id'] != head['id']:
         raise Conflict('this unit already has a newer decision; supersede the latest one')
+    chain_head = repository.chain_head(conn, rec['ticker'], rec['signal_date']) if ready else None
+    rec = {**rec, 'agent_plan_id': _checked_agent_plan_id(conn, rec, chain_head)}
     rule = repository.rule_plan(conn, rec['ticker'], rec['signal_date'])
-    plan_id = _checked_plan_id(conn, rec, rule)
+    plan_id = _checked_plan_id(conn, rec, rule, chain_head)
     if rec['own_plan'] is not None:
         plan_id = _record_own_plan(conn, rec, rule, now=now)['id']
     rec = {**rec, 'plan_id': plan_id}
-    return {'status': 'created', 'record': repository.insert_decision(conn, rec, digest, decided_at=now)}
+    record = repository.insert_decision(conn, rec, digest, decided_at=now)
+    if ready:      # same keys whichever INSERT ran
+        record = {**record, 'agent_plan_id': record.get('agent_plan_id'), 'review_view': record.get('review_view')}
+    return {'status': 'created', 'record': record}
 
 
-def _checked_plan_id(conn, rec: dict[str, Any], rule: dict[str, Any] | None):
+def _stale_version(conn, rec: dict[str, Any], plan_id, chain_head: dict[str, Any]) -> bool:
+    """True when ``plan_id`` is a non-head version of this unit's chain."""
+    if plan_id == chain_head['plan']['id']:
+        return False
+    version = repository.version_by_plan(conn, plan_id)
+    return version is not None and version['ticker'] == rec['ticker'] and version['signal_date'] == rec['signal_date']
+
+
+def _checked_agent_plan_id(conn, rec: dict[str, Any], chain_head: dict[str, Any] | None):
+    """v2.5 §9.3 / D15: the Agent version the page showed. With a chain: default the head; an older
+    version of this chain → AgentPlanStale; anything else → 400. Without a chain only the unit's own
+    (agent-1) agent plan is accepted, and nothing is filled in."""
+    given = rec['agent_plan_id']
+    if chain_head is not None:
+        if given is None or given == chain_head['plan']['id']:
+            return chain_head['plan']['id']
+        if _stale_version(conn, rec, given, chain_head):
+            raise AgentPlanStale(chain_head['version']['version_no'])
+        raise LedgerError('agent_plan_id 不属于该决策单元的 Agent 计划')
+    if given is None:
+        return None
+    plan = repository.plan_by_id(conn, given)
+    if plan is None or plan['kind'] != 'agent' or plan['ticker'] != rec['ticker'] \
+            or plan['signal_date'] != rec['signal_date']:
+        raise LedgerError('agent_plan_id 不属于该决策单元的 Agent 计划')
+    return given
+
+
+def _checked_plan_id(conn, rec: dict[str, Any], rule: dict[str, Any] | None,
+                     chain_head: dict[str, Any] | None = None):
     """spec §5.3 + P3 §9: an accept of a buy unit carries the unit's ok rule plan,
-    its ok agent plan, or own levels — and plan_id may point at nothing else."""
+    its ok agent plan, or own levels — and plan_id may point at nothing else.
+
+    v2.5 §9.3: with an agent-2 chain the agent candidate is the head (and only when ``status = 'ok'``);
+    an older version of the chain as plan_id is AgentPlanStale."""
     needs_plan = rec['decision'] == 'accept' and rec['proposed_action'] == 'buy'
     if needs_plan:
         allowed = []
         if rule is not None and rule['status'] == 'ok':
             allowed.append(rule['id'])
-        agent = repository.agent_plan(conn, rec['ticker'], rec['signal_date'])
+        agent = (chain_head['plan'] if chain_head is not None
+                 else repository.agent_plan(conn, rec['ticker'], rec['signal_date']))
         if agent is not None and agent['status'] == 'ok':
             allowed.append(agent['id'])
         has_any_plan = rule is not None or agent is not None
         if rec['plan_id'] is None and rec['own_plan'] is None and has_any_plan:
             raise LedgerError('采纳买入必须携带规则计划（plan_id）或自定价位（own_plan）')
         if rec['plan_id'] is not None and rec['plan_id'] not in allowed:
+            if chain_head is not None and _stale_version(conn, rec, rec['plan_id'], chain_head):
+                raise AgentPlanStale(chain_head['version']['version_no'])
             raise LedgerError('plan_id 必须指向该单元可用的规则计划或 Agent 计划，或改用自定价位')
     if rec['plan_id'] is not None:
         linked = repository.plan_by_id(conn, rec['plan_id'])

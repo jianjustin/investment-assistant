@@ -366,7 +366,7 @@ def test_pool_and_context_end_to_end(offline, monkeypatch):
 
     week_start = add_trading_days(S1, -1)                               # Monday of the signal week
     weekly = service.generate_weekly(week_start, now=evening(add_trading_days(S1, 2)))
-    assert weekly['calc_version'] == 'review-5'
+    assert weekly['calc_version'] == 'review-6'
     by_pool = weekly['stats']['by_pool']
     assert by_pool['extended']['trend_reclaim']['triggers'] == 25
     assert by_pool['core']['trend_reclaim']['triggers'] == 1            # SYNTH；X01 仍归扩展池
@@ -696,7 +696,7 @@ def test_review_expansion_end_to_end(offline, scripted_model):
     assert tick1['weekly']['action'] == 'generated' and tick1['weekly']['push']['sent'] is True
     week_monday = S1 - timedelta(days=S1.weekday())
     head = repository.weekly_head(offline, week_monday)
-    assert head['calc_version'] == 'review-5'
+    assert head['calc_version'] == 'review-6'
     rows = {row['ticker']: row for row in head['stats']['tracks']['units']}
     alpha, beta = rows['ALPHA'], rows['BETA']
     assert alpha['actual']['r'] == 1.2                            # (131-125)/(125-120)，止损取所选 Agent 计划
@@ -722,7 +722,7 @@ def test_review_expansion_end_to_end(offline, scripted_model):
     sunday = datetime(2026, 9, 6, 0, 0, tzinfo=UTC)
     tick3 = service.review_tick(now=sunday, notify_cfg=notify, trigger_source='scheduled', client=client)
     assert tick3['monthly']['action'] == 'generated' and tick3['monthly']['push']['sent'] is True
-    assert repository.monthly_head(offline, date(2026, 8, 1))['calc_version'] == 'monthly-2'
+    assert repository.monthly_head(offline, date(2026, 8, 1))['calc_version'] == 'monthly-3'
     assert len([s for s in client.sent if '月度复盘 · 2026-08' in str(s[1])]) == 1
 
     live = service.tracks(now=sunday, since=week_monday, until=week_monday + timedelta(days=6))

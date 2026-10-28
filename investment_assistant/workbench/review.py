@@ -16,7 +16,8 @@ from zoneinfo import ZoneInfo
 from investment_assistant.data.calendar import add_trading_days, trading_days_between
 from investment_assistant.workbench import ledger, repository
 
-CALC_VERSION = 'review-5'
+CALC_VERSION = 'review-6'          # v2.5 D17: plans.agent = first versions, plans.agent_latest = heads
+SHADOW_MIN_SAMPLE = 5              # v2.5 §9.1: agent_summary gives no mean / median below this
 WINDOWS = (5, 10, 20)
 NY = ZoneInfo('America/New_York')
 
@@ -111,12 +112,33 @@ def _grouped(groups: dict[str, list[dict[str, Any]]], outcomes) -> dict[str, Any
     return result
 
 
+def is_first_version(entry: dict[str, Any]) -> bool:
+    """v2.5 §9.1 / D17: an agent plan is its chain's first version (agent-1 plans have no chain
+    and count as their own first version)."""
+    chain = entry.get('chain')
+    return chain is None or chain.get('version_no') in (0, None)
+
+
+def is_latest_version(entry: dict[str, Any]) -> bool:
+    """The chain's head when the view was built (agent-1 plans are their own latest version)."""
+    chain = entry.get('chain')
+    return chain is None or bool(chain.get('is_head'))
+
+
 def _plan_summary(plan_outcomes: list[dict[str, Any]], week_start: date, week_end: date) -> dict[str, Any]:
+    """Per plan kind: count, expired, R mean and median. v2.5 D17 (review-6 / monthly-3): ``agent``
+    counts each chain's first version only, ``agent_latest`` each chain's head at generation time."""
     by_kind: dict[str, list[dict[str, Any]]] = {}
     for entry in plan_outcomes:
         if not week_start <= entry['signal_date'] <= week_end:
             continue
-        by_kind.setdefault(entry['kind'], []).append(entry['outcome'])
+        if entry['kind'] != 'agent':
+            by_kind.setdefault(entry['kind'], []).append(entry['outcome'])
+            continue
+        if is_first_version(entry):
+            by_kind.setdefault('agent', []).append(entry['outcome'])
+        if is_latest_version(entry):
+            by_kind.setdefault('agent_latest', []).append(entry['outcome'])
     out = {}
     for kind, outcomes in by_kind.items():
         rs = [o['r'] for o in outcomes if o.get('r') is not None]
@@ -124,6 +146,23 @@ def _plan_summary(plan_outcomes: list[dict[str, Any]], week_start: date, week_en
                      'r_mean': statistics.fmean(rs) if rs else None,
                      'r_median': statistics.median(rs) if rs else None}
     return out
+
+
+def shadow_agent_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """v2.5 §9.1 ``agent_summary`` of the plan-shadow view: ``first`` (each chain's first version) and
+    ``latest`` (each chain's current head) over the agent rows; ``determined`` = rows with an R; mean
+    and median only from ``SHADOW_MIN_SAMPLE`` determined rows on."""
+    def block(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+        rs = [o['r'] for o in outcomes if o.get('r') is not None]
+        enough = len(rs) >= SHADOW_MIN_SAMPLE
+        return {'count': len(outcomes), 'determined': len(rs),
+                'expired': sum(1 for o in outcomes if o.get('status') == 'expired'),
+                'r_mean': statistics.fmean(rs) if enough else None,
+                'r_median': statistics.median(rs) if enough else None}
+
+    agent = [row for row in rows if row.get('kind') == 'agent']
+    return {'first': block([row['outcome'] for row in agent if is_first_version(row)]),
+            'latest': block([row['outcome'] for row in agent if is_latest_version(row)])}
 
 
 def pool_of(context: dict | None, entry: dict | None) -> str:

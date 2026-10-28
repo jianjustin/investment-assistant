@@ -295,3 +295,188 @@ def test_agent_invalid_and_rule_invalid_only_own(workbench_db, cids):
     out = ledger.record_decision(workbench_db, decision_payload(
         cids, own_plan={'request_id': str(uuid.uuid4()), **own_levels()}), now=NOW)
     assert out['record']['plan_id'] != agent['id']
+
+
+# --- v2.5 §9.3: decisions record the Agent version the page showed ---
+
+def agent2_version(conn, version_no=0, supersedes=None, *, status='ok', ticker='NVDA', day=T, **levels):
+    """One agent-2 version the way the service writes it: plan row, run row, version row."""
+    plan = rule_plan_row(conn, ticker=ticker, signal_date=day, kind='agent', plan_version='agent-2', status=status,
+                         invalid_reasons=[] if status == 'ok' else ['no_room'], **levels)
+    run_id = uuid.uuid4()
+    cutoff = NOW + timedelta(days=version_no)
+    repository.insert_agent_run(conn, {
+        'id': run_id, 'ticker': ticker, 'signal_date': day, 'pool': 'main', 'attempt': 1,
+        'mode': 'propose' if version_no == 0 else 'revise', 'agent_version': 'agent-2', 'provider': 'zhipu',
+        'model': 'glm-5.3', 'cutoff_at': cutoff, 'status': 'ok', 'reason': None, 'output': {'action': 'buy'},
+        'counter': None, 'plan_id': plan['id'], 'input_tokens': 0, 'output_tokens': 0,
+        'started_at': cutoff, 'finished_at': cutoff}, [])
+    repository.insert_plan_version(conn, {
+        'plan_id': plan['id'], 'ticker': ticker, 'signal_date': day, 'version_no': version_no,
+        'supersedes_plan_id': supersedes, 'origin': 'signal' if version_no == 0 else 'review',
+        'agent_run_id': run_id, 'cutoff_at': cutoff, 'as_of_session': day + timedelta(days=version_no),
+        'diff': None if version_no == 0 else [{'field': 'stop', 'before': '94', 'after': '95'}],
+        'schema_version': 'agent-2'})
+    return plan
+
+
+def two_versions(conn, **head):
+    v0 = agent2_version(conn)
+    return v0, agent2_version(conn, 1, v0['id'], **head)
+
+
+def _decision_rows(conn):
+    return conn.execute('SELECT count(*) FROM signal_decisions').fetchone()[0]
+
+
+VIEW = {'layout': 'agent_first', 'baseline_expanded': False, 'agent_version_no': 1}
+
+
+def test_decision_defaults_agent_plan_id_to_head(workbench_db, cids):
+    _, v1 = two_versions(workbench_db)
+    out = ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(v1['id'])), now=NOW)
+    assert out['record']['agent_plan_id'] == v1['id']
+    stored = workbench_db.execute('SELECT agent_plan_id FROM signal_decisions').fetchone()[0]
+    assert stored == v1['id']
+
+
+def test_decision_without_chain_keeps_agent_plan_id_empty(workbench_db, cids):
+    rule = rule_plan_row(workbench_db)
+    out = ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(rule['id'])), now=NOW)
+    assert out['record']['agent_plan_id'] is None and out['record']['review_view'] is None
+
+
+def test_decision_with_stale_agent_plan_is_409(workbench_db, cids):
+    v0, _ = two_versions(workbench_db)
+    rule = rule_plan_row(workbench_db)
+    with pytest.raises(ledger.Conflict) as caught:
+        ledger.record_decision(workbench_db, decision_payload(
+            cids, plan_id=str(rule['id']), agent_plan_id=str(v0['id']), review_view=VIEW), now=NOW)
+    assert str(caught.value) == 'agent_plan_stale: Agent 计划已更新到第 1 版，请刷新后再决定'
+    assert caught.value.reason == 'agent_plan_stale' and caught.value.version_no == 1
+    assert _decision_rows(workbench_db) == 0
+    with pytest.raises(ledger.Conflict):           # 否决也要核对：看的是旧版就不能决定
+        ledger.record_decision(workbench_db, decision_payload(
+            cids, decision='reject', final_action='ignore', agent_plan_id=str(v0['id'])), now=NOW)
+    assert _decision_rows(workbench_db) == 0
+
+
+def test_agent_plan_id_must_belong_to_the_unit(workbench_db, cids):
+    two_versions(workbench_db)
+    other = agent2_version(workbench_db, ticker='AMD', day=date(2026, 10, 20))
+    with pytest.raises(ledger.LedgerError):
+        ledger.record_decision(workbench_db, decision_payload(
+            cids, decision='reject', final_action='ignore', agent_plan_id=str(other['id'])), now=NOW)
+    with pytest.raises(ledger.LedgerError):
+        ledger.record_decision(workbench_db, decision_payload(
+            cids, decision='reject', final_action='ignore', agent_plan_id=str(uuid.uuid4())), now=NOW)
+    assert _decision_rows(workbench_db) == 0
+
+
+def test_agent1_unit_accepts_its_own_agent_plan_id(workbench_db, cids):
+    agent = rule_plan_row(workbench_db, kind='agent', plan_version='agent-1')
+    out = ledger.record_decision(workbench_db, decision_payload(
+        cids, plan_id=str(agent['id']), agent_plan_id=str(agent['id'])), now=NOW)
+    assert out['record']['agent_plan_id'] == agent['id']
+
+
+def test_agent_basis_requires_head_plan_id(workbench_db, cids):
+    v0, v1 = two_versions(workbench_db)
+    with pytest.raises(ledger.Conflict) as caught:     # 执行依据是旧版 → 与看旧版同样是过期
+        ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(v0['id'])), now=NOW)
+    assert str(caught.value).startswith('agent_plan_stale: ')
+    assert _decision_rows(workbench_db) == 0
+    out = ledger.record_decision(workbench_db, decision_payload(
+        cids, plan_id=str(v1['id']), agent_plan_id=str(v1['id'])), now=NOW)
+    assert out['record']['plan_id'] == v1['id'] and out['record']['agent_plan_id'] == v1['id']
+
+
+def test_agent_basis_requires_head_status_ok(workbench_db, cids):
+    _, v1 = two_versions(workbench_db, status='invalid')     # 持仓期新版按仓位规则作废，仍是最新版
+    rule = rule_plan_row(workbench_db)
+    with pytest.raises(ledger.LedgerError):
+        ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(v1['id'])), now=NOW)
+    out = ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(rule['id'])), now=NOW)
+    assert out['record']['plan_id'] == rule['id'] and out['record']['agent_plan_id'] == v1['id']
+
+
+@pytest.mark.parametrize('view', [
+    'agent_first',
+    {'layout': 'rule_first', 'baseline_expanded': False, 'agent_version_no': 0},
+    {'layout': 'agent_first', 'baseline_expanded': 'no', 'agent_version_no': 0},
+    {'layout': 'agent_first', 'agent_version_no': 0},
+    {'layout': 'agent_first', 'baseline_expanded': True, 'agent_version_no': -1},
+    {'layout': 'agent_first', 'baseline_expanded': True, 'agent_version_no': True},
+    {'layout': 'agent_first', 'baseline_expanded': True, 'agent_version_no': '1'},
+    {'layout': 'agent_first', 'baseline_expanded': True, 'agent_version_no': 1, 'extra': 1},
+])
+def test_invalid_review_view(view):
+    with pytest.raises(ledger.LedgerError):
+        ledger.validate_decision(decision_payload([uuid.uuid4()], review_view=view))
+
+
+def test_invalid_agent_plan_id():
+    with pytest.raises(ledger.LedgerError):
+        ledger.validate_decision(decision_payload([uuid.uuid4()], agent_plan_id='v1'))
+
+
+def test_review_view_validated_and_stored(workbench_db, cids):
+    rec = ledger.validate_decision(decision_payload(
+        [uuid.uuid4()], review_view={'layout': 'legacy', 'baseline_expanded': True}))
+    assert rec['review_view'] == {'layout': 'legacy', 'baseline_expanded': True, 'agent_version_no': None}
+    _, v1 = two_versions(workbench_db)
+    out = ledger.record_decision(workbench_db, decision_payload(
+        cids, plan_id=str(v1['id']), agent_plan_id=str(v1['id']), review_view=VIEW), now=NOW)
+    assert out['record']['review_view'] == VIEW
+    stored = workbench_db.execute('SELECT review_view FROM signal_decisions').fetchone()[0]
+    assert stored == VIEW
+
+
+def test_new_fields_enter_request_hash_only_when_given():
+    payload = decision_payload([uuid.uuid4()])
+    rec = ledger.validate_decision(payload)
+    old_shape = {k: v for k, v in rec.items() if k not in ('agent_plan_id', 'review_view')}
+    assert ledger.decision_hash(rec) == ledger.request_hash(old_shape)     # v2.5 之前的请求重放仍幂等
+    with_view = ledger.validate_decision({**payload, 'review_view': VIEW})
+    with_agent = ledger.validate_decision({**payload, 'agent_plan_id': str(uuid.uuid4())})
+    assert len({ledger.decision_hash(rec), ledger.decision_hash(with_view), ledger.decision_hash(with_agent)}) == 3
+
+
+def test_replay_with_same_request_id(workbench_db, cids):
+    v0 = agent2_version(workbench_db)
+    payload = decision_payload(cids, plan_id=str(v0['id']), review_view={**VIEW, 'agent_version_no': 0})
+    first = ledger.record_decision(workbench_db, payload, now=NOW)
+    assert first['record']['agent_plan_id'] == v0['id']
+    agent2_version(workbench_db, 1, v0['id'])                    # 之后批处理出了第 1 版
+    again = ledger.record_decision(workbench_db, payload, now=NOW + timedelta(minutes=1))
+    assert again['status'] == 'existing' and again['record']['id'] == first['record']['id']
+    assert again['record']['agent_plan_id'] == v0['id']
+    assert again['record']['review_view'] == {**VIEW, 'agent_version_no': 0}
+    with pytest.raises(ledger.Conflict) as caught:
+        ledger.record_decision(workbench_db, {**payload, 'review_view': VIEW}, now=NOW)
+    assert 'request_id was already used' in str(caught.value)
+    assert _decision_rows(workbench_db) == 1
+
+
+def test_decision_without_migration_026(workbench_db, cids):
+    from investment_assistant.workbench import service
+
+    workbench_db.execute('DROP TABLE plan_reviews, user_inputs, agent_plan_versions CASCADE')
+    rule = rule_plan_row(workbench_db)
+    with pytest.raises(service.Unavailable) as caught:
+        ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(rule['id']), review_view=VIEW),
+                               now=NOW)
+    assert str(caught.value) == '迁移 026 未执行'
+    out = ledger.record_decision(workbench_db, decision_payload(cids, plan_id=str(rule['id'])), now=NOW)
+    assert out['status'] == 'created' and 'agent_plan_id' not in out['record']    # 规则决定照常
+
+
+def test_stale_409_body_reaches_the_page(client, monkeypatch):
+    from investment_assistant.workbench import service
+
+    def stale(*args, **kwargs):
+        raise ledger.AgentPlanStale(2)
+    monkeypatch.setattr(service, 'decide', stale)
+    response = client.post('/api/workbench/decisions', json={})
+    assert response.status_code == 409
+    assert response.json() == {'error': 'agent_plan_stale: Agent 计划已更新到第 2 版，请刷新后再决定'}

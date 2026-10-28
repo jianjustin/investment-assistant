@@ -84,6 +84,15 @@
 - **阶段证据**：`review` 行的输入 = 复查对象数，产出 = 有效复查记录数，`outputs` 列出复查记录、新版计划与复查 / 修订运行的 id，`detail` 有各结论与 `decided_by` 计数、信号触发次数、入场 / 持仓对象数、`ended`、`holdings_without_chain`、token 与新版推导核对；Agent 不可用但有对象时宿主可判定的照写、其余写 `skipped`、阶段 `degraded`（`agent_unavailable`），没有对象时整阶段 `skipped`（`agent_unavailable: <原因>`）。迁移 026 未执行时本阶段不运行，本次按 `stages-1` 记账。
 - **验证一次**：手动运行批处理后，`stage_runs` 该 `run_id` 有 8 行，`review` 行的输出计数等于 `plan_reviews` 里该交易日 `trigger = batch` 的有效记录数；信号日当天的新链只出现在 `review` 行的 `skips`（`fresh_version`）里，次一交易日才有复查记录。
 
+## 决定记录看到的 Agent 版本
+
+决定（`signal_decisions`）另记两项（设计见 [v2.5 §9.3](../specs/2026-10-28-v2.5-plan-timeline-design.md#93-决定)），都进 `request_hash`（只在提交了才进，v2.5 之前的请求重放仍幂等），同一 `request_id` 重放照旧返回原决定：
+
+- `agent_plan_id`：决定时页面显示的 Agent 版本。单元有 `agent-2` 链时不填就由后端填为当时的最新版；填了但不是最新版 → 409，不写决定，返回 `{"error": "agent_plan_stale: Agent 计划已更新到第 n 版，请刷新后再决定"}`（n 为最新版的版本号）；不属于该单元 → 400。没有链的单元（`agent-1` 或只有规则计划）不自动填，填了必须是该单元自己的 Agent 计划。
+- `review_view`：`{layout: agent_first | legacy, baseline_expanded: bool, agent_version_no: int | null}`，页面如实上报，只用于验收统计，不影响校验；多余字段或取值不对 → 400。
+- 执行依据选「Agent 计划」时，`plan_id` 必须是链的最新版且 `status = ok`；指向链上的旧版同样按过期返回 409，最新版已作废（如持仓期 `no_room`）→ 400，改选规则计划或自定价位。
+- 迁移 026 未执行时，带这两个字段的决定返回 503「迁移 026 未执行」；不带的规则 / `agent-1` 决定照常写入（这时还不可能有 `agent-2` 链）。
+
 ## 持仓止损
 
 持仓的计划取「当前未平仓批次中最近一笔、且其决定关联了计划的买入」。有计划的持仓用 `plan_stop`（T 日最低价 ≤ 当前止损）和 `plan_target`（开仓以来首次触及 T1，卖出一半，只触发一次）；触及 T1 之后，当前止损 = max(开仓以来最高收盘 − 3 ATR, 持仓成本)，收盘后更新、次日生效。没有计划的持仓仍按 `position_drawdown` 判断。
@@ -95,7 +104,7 @@
 ## 入口与验证
 
 - 页面：「今日」（决策单元、计划卡片、Agent 建议、持仓止损、市场环境、「重新推送今日计划」）；「标的」（单只股票的 K 线图（MA20/50/200 与成交量，最多 250 根日线）、日线、候选、计划与决定历史）。
-- API：`GET /api/workbench/today`、`POST /api/workbench/decisions`（`plan_id` 与 `own_plan` 二选一）、`GET /api/workbench/instruments/{ticker}`、`GET/POST /api/workbench/trades`、`POST /api/workbench/trades/{id}/void`、`POST /api/workbench/push`。
+- API：`GET /api/workbench/today`、`POST /api/workbench/decisions`（`plan_id` 与 `own_plan` 二选一；可选 `agent_plan_id`、`review_view`，见上文）、`GET /api/workbench/instruments/{ticker}`、`GET/POST /api/workbench/trades`、`POST /api/workbench/trades/{id}/void`、`POST /api/workbench/push`。
 - 运行报告：`job_reports` 中 `workbench` 的 `summary`，包括 `tickers.<T>`（日线、资讯、候选、跳过原因）、`plans`（`inserted` / `existing` / `conflict` / `skip: 原因`）、`earnings`、`push`、`sources`（按数据源列出失败）、`timings`、`pool.chains`（只采集不跑规则的链标的数）、`review`（复查对象数、各结论条数、token）。
 - 验证一次：手动运行批处理后，运行报告里 `plans.<T> == "inserted"`；「今日」显示「入场区间 x–y · 止损 z · T1 w · 建议 N 股」和「证据：未验证」；点「重新推送今日计划」，页面提示「已推送 N 条」，`push.sent == true`。
 

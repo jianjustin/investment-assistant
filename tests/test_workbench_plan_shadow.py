@@ -114,3 +114,95 @@ def test_open_reports_floating_r():
 def test_pending_before_valid_from():
     out = sim(plan(), [bar(D0, 100, 101, 99, 100)])
     assert out['status'] == 'pending' and out['fill_date'] is None and out['r'] is None
+
+
+# --- v2.5 §9.1: one shadow per version, chain info, first / latest summaries ---
+
+import uuid  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
+from datetime import UTC, datetime, timedelta  # noqa: E402
+
+from investment_assistant.workbench import repository, review, service  # noqa: E402
+
+NOW = datetime(2026, 10, 28, 1, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def db(workbench_db, monkeypatch):
+    @contextmanager
+    def connection():
+        yield workbench_db
+    monkeypatch.setattr(service, 'connection', connection)
+    return workbench_db
+
+
+def _plan_row(conn, ticker, *, kind='agent', version='agent-2', **levels):
+    row = {'ticker': ticker, 'signal_date': D2, 'kind': kind, 'based_on_id': None, 'plan_version': version,
+           'ref_price': D('100'), 'atr': D('2'), 'entry_low': D('98'), 'entry_high': D('102'), 'stop': D('94'),
+           'target1': D('112'), 'trail_atr_multiple': D('3'), 'valid_from': D3, 'valid_until': D4,
+           'sizing': {'status': 'no_equity'}, 'status': 'ok', 'invalid_reasons': [], 'warnings': [],
+           'inputs': {'bar_ids': [1]}, 'request_id': None, 'request_hash': None}
+    row.update(levels)
+    return repository.insert_plan(conn, row)
+
+
+def _version(conn, ticker, version_no, supersedes=None):
+    plan = _plan_row(conn, ticker)
+    run_id = uuid.uuid4()
+    repository.insert_agent_run(conn, {
+        'id': run_id, 'ticker': ticker, 'signal_date': D2, 'pool': 'main', 'attempt': 1,
+        'mode': 'propose' if version_no == 0 else 'revise', 'agent_version': 'agent-2', 'provider': 'zhipu',
+        'model': 'glm-5.3', 'cutoff_at': NOW, 'status': 'ok', 'reason': None, 'output': {'action': 'buy'},
+        'counter': None, 'plan_id': plan['id'], 'input_tokens': 0, 'output_tokens': 0,
+        'started_at': NOW, 'finished_at': NOW}, [])
+    repository.insert_plan_version(conn, {
+        'plan_id': plan['id'], 'ticker': ticker, 'signal_date': D2, 'version_no': version_no,
+        'supersedes_plan_id': supersedes, 'origin': 'signal' if version_no == 0 else 'review',
+        'agent_run_id': run_id, 'cutoff_at': NOW, 'as_of_session': D2,
+        'diff': None if version_no == 0 else [{'field': 'stop', 'before': '94', 'after': '95'}],
+        'schema_version': 'agent-2'})
+    return plan
+
+
+def test_shadow_rows_per_version(db):
+    v0 = _version(db, 'NVDA', 0)
+    v1 = _version(db, 'NVDA', 1, v0['id'])
+    rule = _plan_row(db, 'NVDA', kind='rule', version='plan-1')
+    view = service.plan_shadow(now=NOW, since=D0)
+    rows = {str(p['id']): p for p in view['plans']}
+    assert len(rows) == 3
+    assert rows[str(v0['id'])]['chain'] == {'version_no': 0, 'origin': 'signal', 'is_head': False,
+                                            'supersedes_plan_id': None}
+    assert rows[str(v1['id'])]['chain'] == {'version_no': 1, 'origin': 'review', 'is_head': True,
+                                            'supersedes_plan_id': str(v0['id'])}
+    assert rows[str(rule['id'])]['chain'] is None
+    assert rows[str(v1['id'])]['outcome']['status'] in ('pending', 'expired')     # 每版各自模拟
+    summary = view['agent_summary']
+    assert summary['first']['count'] == 1 and summary['latest']['count'] == 1
+    assert summary['first']['r_mean'] is None and summary['first']['r_median'] is None      # 样本 < 5
+
+
+def test_agent1_plan_counts_as_its_own_first_and_latest(db):
+    _plan_row(db, 'MU', version='agent-1')
+    view = service.plan_shadow(now=NOW, since=D0)
+    assert view['plans'][0]['chain'] is None
+    assert view['agent_summary']['first']['count'] == 1 and view['agent_summary']['latest']['count'] == 1
+
+
+def _shadow_row(r, *, version_no=0, is_head=True, kind='agent', status='closed'):
+    return {'kind': kind, 'outcome': {'status': status, 'r': r},
+            'chain': None if version_no is None else {'version_no': version_no, 'is_head': is_head}}
+
+
+def test_agent_summary_needs_five_samples():
+    four = [_shadow_row(r) for r in (1.0, 2.0, -1.0, 0.5)]
+    out = review.shadow_agent_summary(four + [_shadow_row(0.0), _shadow_row(None, status='pending'),
+                                              _shadow_row(None, status='expired'),
+                                              _shadow_row(9.0, kind='rule', version_no=None)])
+    assert out['first'] == {'count': 7, 'determined': 5, 'expired': 1, 'r_mean': 0.5, 'r_median': 0.5}
+    out = review.shadow_agent_summary(four)
+    assert out['first'] == {'count': 4, 'determined': 4, 'expired': 0, 'r_mean': None, 'r_median': None}
+    chain = [_shadow_row(1.0, version_no=0, is_head=False), _shadow_row(2.0, version_no=1, is_head=False),
+             _shadow_row(3.0, version_no=2, is_head=True), _shadow_row(4.0, version_no=None)]
+    out = review.shadow_agent_summary(chain)
+    assert out['first']['count'] == 2 and out['latest']['count'] == 2      # agent-1 两边都算

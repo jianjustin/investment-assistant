@@ -73,14 +73,14 @@ def test_agent_pass_is_zero():
 def test_agent_rejected_is_missing_with_reason():
     out = tracks.agent_track(_run('rejected', 'invalid_citation'), None, None)
     assert out == {'run_id': out['run_id'], 'run_status': 'rejected', 'run_reason': 'invalid_citation',
-                   'plan_id': None, 'status': 'missing', 'r': None}
+                   'plan_id': None, 'status': 'missing', 'r': None, 'version_no': None, 'version_basis': None}
 
 
 def test_agent_ok_uses_agent_plan_outcome():
     plan = {**PLAN, 'kind': 'agent'}
     out = tracks.agent_track(_run('ok', plan_id=plan['id']), plan, _outcome('closed', 2.0))
     assert out == {'run_id': out['run_id'], 'run_status': 'ok', 'run_reason': None,
-                   'plan_id': plan['id'], 'status': 'closed', 'r': 2.0}
+                   'plan_id': plan['id'], 'status': 'closed', 'r': 2.0, 'version_no': None, 'version_basis': None}
 
 
 # --- actual track ---
@@ -189,3 +189,166 @@ def test_status_text_covers_every_status():
     assert set(tracks.TRACK_STATUS_TEXT) == {'missing', 'not_executable', 'pending', 'expired',
                                              'open', 'closed', 'pass', 'not_executed', 'no_plan'}
     assert tracks.TRACKS_VERSION == 'tracks-1'
+
+
+# --- v2.5 §9.2: which Agent version the agent track takes ---
+
+def test_agent_track_carries_version_keys():
+    plan = {**PLAN, 'kind': 'agent'}
+    run = _run('ok', plan_id=plan['id'])
+    base = tracks.agent_track(run, plan, _outcome('closed', 2.0))
+    out = tracks.agent_track(run, plan, _outcome('closed', 2.0), version_no=1, version_basis='decision')
+    assert out == {**base, 'version_no': 1, 'version_basis': 'decision'}
+    assert tracks.TRACKS_VERSION == 'tracks-1'
+
+
+# SQL (disposable schema): service._track_rows over real rows.
+
+import pytest  # noqa: E402
+from datetime import UTC, datetime  # noqa: E402
+
+from investment_assistant.workbench import plan_shadow, repository, service  # noqa: E402
+
+NOW = datetime(2026, 10, 28, 1, 0, tzinfo=UTC)
+SESSION = date(2026, 10, 27)
+NEW_KEYS = {'version_no', 'version_basis'}
+
+
+def _bars(conn, ticker, rows):
+    for day, o, h, l, c in rows:
+        conn.execute('INSERT INTO price_bars (ticker, price_date, open, high, low, close, volume, adj_close, '
+                     'revision, fetched_at) VALUES (%s, %s, %s, %s, %s, %s, 1000, %s, 1, %s)',
+                     [ticker, day, o, h, l, c, c, NOW - timedelta(days=10)])
+
+
+def _market(conn, *tickers):
+    days = [S, date(2026, 10, 23), date(2026, 10, 26), date(2026, 10, 27)]
+    _bars(conn, 'SPY', [(d, 500, 501, 499, 500) for d in days])
+    for ticker in tickers:      # 10-23 opens at 100 inside 99–101, never trades below 99
+        _bars(conn, ticker, [(S, 100, 101, 99.5, 100), (days[1], 100, 103, 99, 102),
+                             (days[2], 102, 104, 101, 103), (days[3], 103, 105, 102, 104)])
+
+
+def _plan(conn, ticker, *, kind='agent', version='agent-1', **levels):
+    plan = {'ticker': ticker, 'signal_date': S, 'kind': kind, 'based_on_id': None, 'plan_version': version,
+            'ref_price': D('100'), 'atr': D('2'), 'entry_low': D('99'), 'entry_high': D('101'), 'stop': D('94'),
+            'target1': D('108'), 'trail_atr_multiple': D('3'), 'valid_from': date(2026, 10, 23),
+            'valid_until': date(2026, 10, 27), 'sizing': {'status': 'no_equity'}, 'status': 'ok',
+            'invalid_reasons': [], 'warnings': [], 'inputs': {'bar_ids': [1]}, 'request_id': None,
+            'request_hash': None}
+    plan.update(levels)
+    return repository.insert_plan(conn, plan)
+
+
+def _run_row(conn, ticker, *, status='ok', plan=None, mode='propose', version='agent-1', reason=None, at=None):
+    at = at or NOW - timedelta(days=5)
+    return repository.insert_agent_run(conn, {
+        'id': uuid.uuid4(), 'ticker': ticker, 'signal_date': S, 'pool': 'main', 'attempt': 1, 'mode': mode,
+        'agent_version': version, 'provider': 'zhipu', 'model': 'glm-5.3', 'cutoff_at': at, 'status': status,
+        'reason': reason, 'output': {'action': 'buy'}, 'counter': None,
+        'plan_id': plan['id'] if plan else None, 'input_tokens': 0, 'output_tokens': 0,
+        'started_at': at, 'finished_at': at}, [])
+
+
+def _version(conn, ticker, version_no, supersedes=None, **levels):
+    plan = _plan(conn, ticker, version='agent-2', **levels)
+    run = _run_row(conn, ticker, plan=plan, mode='propose' if version_no == 0 else 'revise', version='agent-2',
+                   at=NOW - timedelta(days=5 - version_no))
+    repository.insert_plan_version(conn, {
+        'plan_id': plan['id'], 'ticker': ticker, 'signal_date': S, 'version_no': version_no,
+        'supersedes_plan_id': supersedes, 'origin': 'signal' if version_no == 0 else 'review',
+        'agent_run_id': run['id'], 'cutoff_at': run['cutoff_at'], 'as_of_session': S,
+        'diff': None if version_no == 0 else [{'field': 'entry', 'before': '99–101', 'after': '96–98'}],
+        'schema_version': 'agent-2'})
+    return plan, run
+
+
+def _chain(conn, ticker='NVDA'):
+    """v0 fills on 10-23 (zone 99–101); v1 (zone 96–98, never reached) expires."""
+    v0, r0 = _version(conn, ticker, 0)
+    v1, r1 = _version(conn, ticker, 1, v0['id'], entry_low=D('96'), entry_high=D('98'), stop=D('92'),
+                      target1=D('106'))
+    return (v0, r0), (v1, r1)
+
+
+def _decide(conn, ticker, *, plan_id=None, agent_plan_id=None, final='buy'):
+    rec = {'request_id': uuid.uuid4(), 'ticker': ticker, 'signal_date': S, 'candidate_ids': [uuid.uuid4()],
+           'brief_id': None, 'proposed_action': 'buy', 'final_action': final,
+           'decision': 'accept' if final == 'buy' else 'reject', 'reason': '测试', 'supersedes_id': None,
+           'plan_id': plan_id, 'agent_plan_id': agent_plan_id, 'review_view': None}
+    return repository.insert_decision(conn, rec, 'h', decided_at=NOW - timedelta(days=4))
+
+
+def _rows(conn):
+    return {row['ticker']: row for row in service._track_rows(conn, S - timedelta(days=5), SESSION,
+                                                                session=SESSION, now=NOW)}
+
+
+def test_version_basis_decision(workbench_db):
+    _market(workbench_db, 'NVDA')
+    _, (v1, r1) = _chain(workbench_db)
+    _decide(workbench_db, 'NVDA', plan_id=v1['id'], agent_plan_id=v1['id'])
+    agent = _rows(workbench_db)['NVDA']['agent']
+    assert agent['plan_id'] == str(v1['id']) and agent['run_id'] == str(r1['id'])
+    assert agent['version_no'] == 1 and agent['version_basis'] == 'decision'
+    assert agent['status'] == 'expired' and agent['r'] == 0.0
+
+
+def test_version_basis_pre_v25_decision_is_first(workbench_db):
+    _market(workbench_db, 'NVDA')
+    (v0, r0), (v1, _) = _chain(workbench_db)
+    _decide(workbench_db, 'NVDA', plan_id=v1['id'])          # v2.5 之前的写法：没有 agent_plan_id
+    agent = _rows(workbench_db)['NVDA']['agent']
+    assert agent['plan_id'] == str(v0['id']) and agent['run_id'] == str(r0['id'])
+    assert agent['version_no'] == 0 and agent['version_basis'] == 'first'
+    assert agent['status'] == 'open'
+
+
+def test_version_basis_undecided_is_first(workbench_db):
+    _market(workbench_db, 'NVDA')
+    (v0, r0), _ = _chain(workbench_db)
+    row = _rows(workbench_db)['NVDA']
+    assert row['agent']['plan_id'] == str(v0['id']) and row['agent']['run_id'] == str(r0['id'])
+    assert row['agent']['version_no'] == 0 and row['agent']['version_basis'] == 'first'
+    assert row['actual']['status'] == 'pending'      # 最新版有效至 10-27，未过期
+
+
+def _old_agent(conn, ticker):
+    """The pre-v2.5 reading: latest propose run and the unit's agent plan."""
+    spy = repository.read_bars(conn, 'SPY', SESSION, cutoff_at=NOW, limit=400)
+    run = repository.latest_agent_run(conn, ticker, S)
+    plan = repository.agent_plan(conn, ticker, S)
+    outcome = (plan_shadow.simulate(plan, repository.read_bars(conn, ticker, SESSION, cutoff_at=NOW, limit=400),
+                                    spy, splits=[]) if plan is not None and plan['status'] == 'ok' else None)
+    old = {k: v for k, v in tracks.agent_track(run, plan, outcome).items() if k not in NEW_KEYS}
+    return {**old, 'run_id': str(old['run_id']) if old['run_id'] else None,
+            'plan_id': str(old['plan_id']) if old['plan_id'] else None}
+
+
+def test_agent1_units_unchanged(workbench_db):
+    conn = workbench_db
+    _market(conn, 'NVDA', 'MU', 'AMD', 'INTC', 'QCOM')
+    for ticker in ('NVDA', 'MU', 'AMD', 'INTC', 'QCOM'):
+        _plan(conn, ticker, kind='rule', version='plan-1')
+    nvda = _plan(conn, 'NVDA')
+    _run_row(conn, 'NVDA', plan=nvda)
+    _decide(conn, 'NVDA', plan_id=nvda['id'], agent_plan_id=nvda['id'])      # 决定时看到的就是 agent-1 计划
+    mu = _plan(conn, 'MU', stop=D('96'))
+    _run_row(conn, 'MU', plan=mu)                                               # 未决定
+    _run_row(conn, 'AMD', status='pass')
+    _run_row(conn, 'INTC', status='error', reason='model_error')
+    qcom = _plan(conn, 'QCOM')
+    _run_row(conn, 'QCOM', plan=qcom)
+    _decide(conn, 'QCOM', plan_id=qcom['id'])                                   # v2.5 之前的决定
+    rows = _rows(conn)
+    expected_basis = {'NVDA': 'decision', 'MU': 'first', 'AMD': None, 'INTC': None, 'QCOM': 'first'}
+    for ticker, basis in expected_basis.items():
+        agent = rows[ticker]['agent']
+        assert {k: v for k, v in agent.items() if k not in NEW_KEYS} == _old_agent(conn, ticker), ticker
+        assert agent['version_no'] is None and agent['version_basis'] == basis, ticker
+    assert rows['NVDA']['agent']['status'] == 'open' and rows['MU']['agent']['status'] == 'open'
+    assert rows['AMD']['agent']['status'] == 'pass'
+    assert rows['INTC']['agent']['run_status'] == 'error' and rows['INTC']['agent']['status'] == 'missing'
+    assert rows['NVDA']['actual']['plan_kind'] == 'agent' and rows['NVDA']['actual']['plan_id'] == str(nvda['id'])
+    assert rows['MU']['actual']['status'] == 'pending'
+    assert set(rows['NVDA']) == {'ticker', 'signal_date', 'pool', 'rule', 'agent', 'actual'}

@@ -42,9 +42,18 @@ def plan_track(plan: dict[str, Any] | None, outcome: dict[str, Any] | None) -> d
 
 
 def agent_track(run: dict[str, Any] | None, plan: dict[str, Any] | None,
-                outcome: dict[str, Any] | None) -> dict[str, Any]:
-    """The unit's latest propose run: pass scores 0, ok follows its agent plan,
-    everything else is missing with the run status and reason kept."""
+                outcome: dict[str, Any] | None, *, version_no: int | None = None,
+                version_basis: str | None = None) -> dict[str, Any]:
+    """The unit's chosen agent run: pass scores 0, ok follows its agent plan,
+    everything else is missing with the run status and reason kept.
+
+    v2.5 §9.2: the row also says which version was taken (``version_no``, None for agent-1)
+    and why (``version_basis``: 'decision' / 'first', None when no agent plan was taken)."""
+    return {**_agent_track(run, plan, outcome), 'version_no': version_no, 'version_basis': version_basis}
+
+
+def _agent_track(run: dict[str, Any] | None, plan: dict[str, Any] | None,
+                 outcome: dict[str, Any] | None) -> dict[str, Any]:
     if run is None:
         return {'run_id': None, 'run_status': None, 'run_reason': None,
                 'plan_id': None, 'status': 'missing', 'r': None}

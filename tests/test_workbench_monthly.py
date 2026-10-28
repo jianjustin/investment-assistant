@@ -116,3 +116,51 @@ def test_review_detail_missing_month_nulls():
     assert detail['flag'] == 'insufficient'
     assert monthly.month_end_snapshot([{'id': 1, 'as_of': date(2026, 10, 31), 'recorded_at': datetime(2026, 11, 1, tzinfo=UTC),
                                         'supersedes_id': None}], date(2026, 10, 1))['id'] == 1
+
+
+# --- v2.5 D17: monthly-3 counts each chain's first version in plans.agent, its head in agent_latest ---
+
+def test_monthly_version_is_monthly_3():
+    assert monthly.MONTHLY_VERSION == 'monthly-3'
+
+
+def test_generate_monthly_counts_first_and_latest(workbench_db, monkeypatch):
+    from contextlib import contextmanager
+    from datetime import timedelta
+
+    from investment_assistant.workbench import repository, service
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+    monkeypatch.setattr(service, 'connection', connection)
+    now = datetime(2026, 11, 20, 22, 30, tzinfo=UTC)
+    day = date(2026, 10, 21)
+    previous = None
+    for version_no in range(3):
+        plan = repository.insert_plan(workbench_db, {
+            'ticker': 'NVDA', 'signal_date': day, 'kind': 'agent', 'based_on_id': None, 'plan_version': 'agent-2',
+            'ref_price': D('100'), 'atr': D('2'), 'entry_low': D('99'), 'entry_high': D('101'), 'stop': D('94'),
+            'target1': D('108'), 'trail_atr_multiple': D('3'), 'valid_from': date(2026, 10, 22),
+            'valid_until': date(2026, 10, 26), 'sizing': {'status': 'no_equity'}, 'status': 'ok',
+            'invalid_reasons': [], 'warnings': [], 'inputs': {'bar_ids': [1]}, 'request_id': None,
+            'request_hash': None})
+        run_id, at = uuid4(), datetime(2026, 10, 22, 1, tzinfo=UTC) + timedelta(days=version_no)
+        repository.insert_agent_run(workbench_db, {
+            'id': run_id, 'ticker': 'NVDA', 'signal_date': day, 'pool': 'main', 'attempt': 1,
+            'mode': 'propose' if version_no == 0 else 'revise', 'agent_version': 'agent-2', 'provider': 'zhipu',
+            'model': 'glm-5.3', 'cutoff_at': at, 'status': 'ok', 'reason': None, 'output': {'action': 'buy'},
+            'counter': None, 'plan_id': plan['id'], 'input_tokens': 0, 'output_tokens': 0,
+            'started_at': at, 'finished_at': at}, [])
+        repository.insert_plan_version(workbench_db, {
+            'plan_id': plan['id'], 'ticker': 'NVDA', 'signal_date': day, 'version_no': version_no,
+            'supersedes_plan_id': previous, 'origin': 'signal' if version_no == 0 else 'review',
+            'agent_run_id': run_id, 'cutoff_at': at, 'as_of_session': day,
+            'diff': None if version_no == 0 else [{'field': 'stop', 'before': '94', 'after': '95'}],
+            'schema_version': 'agent-2'})
+        previous = plan['id']
+    stats = service.generate_monthly(date(2026, 10, 1), now=now)['stats']
+    assert stats['calc_version'] == 'monthly-3'
+    assert stats['plans']['agent']['count'] == 1
+    assert stats['plans']['agent_latest']['count'] == 1
+    assert stats['tracks']['units'][0]['agent']['version_basis'] == 'first'

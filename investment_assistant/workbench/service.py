@@ -1032,19 +1032,48 @@ def shadow(*, now: datetime, since: date | None = None) -> dict[str, Any]:
             'units': [{**u, 'outcome': outcomes[u['id']]} for u in units]}
 
 
+def _plan_chains(conn, plans: list[dict[str, Any]]) -> dict[Any, dict[str, Any]]:
+    """v2.5 §9.1: ``plan_id → {version_no, origin, is_head, supersedes_plan_id}`` for the agent-2 versions
+    among ``plans``; agent-1, rule and own plans (and everything without migration 026) are absent."""
+    wanted = [p for p in plans if p['kind'] == 'agent' and p['plan_version'] == agent_graph.AGENT_V2]
+    if not wanted or not repository.timeline_ready(conn):
+        return {}
+    versions_by_unit: dict[tuple, list[dict[str, Any]]] = {}
+    out = {}
+    for plan in wanted:
+        key = (plan['ticker'], plan['signal_date'])
+        if key not in versions_by_unit:
+            versions_by_unit[key] = repository.chain_versions(conn, *key)
+        versions = versions_by_unit[key]
+        head_no = max(v['version_no'] for v in versions) if versions else None
+        version = next((v for v in versions if v['plan_id'] == plan['id']), None)
+        if version is not None:
+            out[plan['id']] = {'version_no': version['version_no'], 'origin': version['origin'],
+                               'is_head': version['version_no'] == head_no,
+                               'supersedes_plan_id': (str(version['supersedes_plan_id'])
+                                                      if version['supersedes_plan_id'] else None)}
+    return out
+
+
 def plan_shadow(*, now: datetime, since: date | None = None) -> dict[str, Any]:
-    """Simulated outcomes for rule and own plans of the last 90 days; nothing frozen until a review."""
+    """Simulated outcomes for rule, agent and own plans of the last 90 days; nothing frozen until a review.
+
+    v2.5 §9.1: every agent-2 version is its own row with ``chain`` (None for other plans), and
+    ``agent_summary`` sums each chain's first version and its current head."""
     session = bars.latest_closed_session(now)
     since = since or session - timedelta(days=90)
     with _tx() as conn:
         spy = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now, limit=400)
+        plans = repository.plans_since(conn, since)
+        chains = _plan_chains(conn, plans)
         out = []
-        for plan in repository.plans_since(conn, since):
+        for plan in plans:
             ticker_bars = repository.read_bars(conn, plan['ticker'], session, cutoff_at=now, limit=400)
             outcome = _plan_shadow_module.simulate(plan, ticker_bars, spy,
                                            splits=repository.split_events(conn, plan['ticker']))
-            out.append({**plan, 'outcome': outcome})
-    return {'session': session, 'since': since, 'calc_version': _plan_shadow_module.SHADOW_VERSION, 'plans': out}
+            out.append({**plan, 'chain': chains.get(plan['id']), 'outcome': outcome})
+    return {'session': session, 'since': since, 'calc_version': _plan_shadow_module.SHADOW_VERSION, 'plans': out,
+            'agent_summary': review.shadow_agent_summary(out)}
 
 
 def discipline(*, now: datetime, since: date | None = None) -> dict[str, Any]:
@@ -1123,6 +1152,42 @@ def _week_discipline(conn, session: date, now: datetime) -> dict[str, Any]:
                                stop_events=stop_events, segments=segments, session=session)
 
 
+def _track_agent_pick(conn, ticker: str, signal_date: date, decision: dict[str, Any] | None, *,
+                      ready: bool) -> dict[str, Any]:
+    """v2.5 §9.2: which Agent version the agent track takes — ``{run, plan, version_no, basis, latest}``.
+
+    1. a decision with ``agent_plan_id`` → that version (``'decision'``);
+    2. a decision without it (before v2.5) → the unit's agent-1 plan, else version 0 (``'first'``);
+    3. undecided → version 0 (``'first'``), so a later revision never polishes the result.
+    ``run`` is the run that produced the plan (agent-1: the latest propose run, as before); ``latest`` is the
+    unit's newest agent plan (the chain head, or the agent-1 plan) for the unit's validity and pool. Units
+    without an agent-2 chain read exactly as before v2.5; ``basis`` is None when no agent plan is taken."""
+    versions = repository.chain_versions(conn, ticker, signal_date) if ready else []
+    chosen_id = decision.get('agent_plan_id') if decision is not None else None
+    if not versions:
+        latest = repository.agent_plan(conn, ticker, signal_date)
+        plan = repository.plan_by_id(conn, chosen_id) if chosen_id is not None else latest
+        return {'run': repository.latest_agent_run(conn, ticker, signal_date), 'plan': plan, 'version_no': None,
+                'basis': None if plan is None else ('decision' if chosen_id is not None else 'first'),
+                'latest': latest}
+    latest = repository.plan_by_id(conn, versions[-1]['plan_id'])
+    by_plan = {v['plan_id']: v for v in versions}
+    if chosen_id is not None and chosen_id not in by_plan:        # an agent-1 plan id beside a chain
+        return {'run': repository.latest_agent_run(conn, ticker, signal_date),
+                'plan': repository.plan_by_id(conn, chosen_id), 'version_no': None, 'basis': 'decision',
+                'latest': latest}
+    if chosen_id is None and decision is not None:
+        legacy = next((p for p in repository.plans_for_unit(conn, ticker, signal_date)
+                       if p['kind'] == 'agent' and p['plan_version'] == agent_graph.AGENT_VERSION), None)
+        if legacy is not None:
+            return {'run': repository.latest_agent_run(conn, ticker, signal_date), 'plan': legacy,
+                    'version_no': None, 'basis': 'first', 'latest': latest}
+    version = by_plan[chosen_id] if chosen_id is not None else versions[0]
+    return {'run': repository.agent_run_by_id(conn, version['agent_run_id']),
+            'plan': repository.plan_by_id(conn, version['plan_id']), 'version_no': version['version_no'],
+            'basis': 'decision' if chosen_id is not None else 'first', 'latest': latest}
+
+
 def _track_rows(conn, since: date, until: date, *, session: date, now: datetime) -> list[dict[str, Any]]:
     """§4.4: one row per unit in the window — rule, agent and actual side by side,
     every id traceable. Bars and books are cached per ticker within the transaction;
@@ -1130,6 +1195,7 @@ def _track_rows(conn, since: date, until: date, *, session: date, now: datetime)
     rows: list[dict[str, Any]] = []
     spy = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now, limit=400)
     bars_by_ticker: dict[str, list[dict[str, Any]]] = {}
+    ready = repository.timeline_ready(conn)
     for unit in repository.track_units(conn, since, until):
         ticker, signal_date = unit['ticker'], unit['signal_date']
         if ticker not in bars_by_ticker:
@@ -1137,15 +1203,16 @@ def _track_rows(conn, since: date, until: date, *, session: date, now: datetime)
         ticker_bars = bars_by_ticker[ticker]
         splits = repository.split_events(conn, ticker)
         rule = repository.rule_plan(conn, ticker, signal_date)
-        agent_plan = repository.agent_plan(conn, ticker, signal_date)
-        run = repository.latest_agent_run(conn, ticker, signal_date)
+        decision = repository.decision_head(conn, ticker, signal_date, timeline=ready)
+        pick = _track_agent_pick(conn, ticker, signal_date, decision, ready=ready)
+        agent_plan = pick['latest']
         rule_outcome = (_plan_shadow_module.simulate(rule, ticker_bars, spy, splits=splits)
                         if rule is not None and rule['status'] == 'ok' else None)
-        agent_outcome = (_plan_shadow_module.simulate(agent_plan, ticker_bars, spy, splits=splits)
-                         if agent_plan is not None and agent_plan['status'] == 'ok' else None)
+        agent_outcome = (_plan_shadow_module.simulate(pick['plan'], ticker_bars, spy, splits=splits)
+                         if pick['plan'] is not None and pick['plan']['status'] == 'ok' else None)
         rule_track = _tracks_module.plan_track(rule, rule_outcome)
-        agent_track = _tracks_module.agent_track(run, agent_plan, agent_outcome)
-        decision = repository.decision_head(conn, ticker, signal_date)
+        agent_track = _tracks_module.agent_track(pick['run'], pick['plan'], agent_outcome,
+                                                 version_no=pick['version_no'], version_basis=pick['basis'])
         chosen = (repository.plan_by_id(conn, decision['plan_id'])
                   if decision is not None and decision.get('plan_id') else None)
         book = _book(conn, ticker)
@@ -1214,12 +1281,12 @@ def generate_weekly(week_start: date, *, notes: str = '', supersedes_id=None, no
                          if week_start <= s['closed_at'].astimezone(NY).date() <= week_end]
         spy_bars = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now, limit=400)
         plan_outcomes = []
-        for plan in repository.plans_since(conn, week_start):
-            if plan['signal_date'] > week_end:
-                continue
+        week_plans = [p for p in repository.plans_since(conn, week_start) if p['signal_date'] <= week_end]
+        chains = _plan_chains(conn, week_plans)        # review-6: first versions vs heads at generation
+        for plan in week_plans:
             ticker_bars = repository.read_bars(conn, plan['ticker'], session, cutoff_at=now, limit=400)
             # Pool of a plan: the frozen context first, else the tier recorded on its signal date.
-            plan_outcomes.append({**plan, 'pool': review.pool_of(
+            plan_outcomes.append({**plan, 'chain': chains.get(plan['id']), 'pool': review.pool_of(
                 (plan.get('inputs') or {}).get('context'),
                 repository.pool_entry_at(conn, plan['ticker'], plan['signal_date'], cutoff_at=now)),
                 'rule_ids': [c['rule_id'] for c in repository.unit_candidates(conn, plan['ticker'], plan['signal_date'])
@@ -1320,12 +1387,12 @@ def generate_monthly(month: date, *, notes: str = '', supersedes_id=None, now: d
                     # P4 §5: sensitivity orders by close time, not ticker order
                     rs.append((seg['closed_at'], float((exit_ - entry) / (entry - stop))))
         spy_bars = repository.read_bars(conn, BENCHMARK, bars.latest_closed_session(now), cutoff_at=now, limit=400)
-        for plan in repository.plans_since(conn, month):
-            if plan['signal_date'] > month_end:
-                continue
+        month_plans = [p for p in repository.plans_since(conn, month) if p['signal_date'] <= month_end]
+        chains = _plan_chains(conn, month_plans)       # monthly-3: first versions vs heads at generation
+        for plan in month_plans:
             ticker_bars = repository.read_bars(conn, plan['ticker'], bars.latest_closed_session(now),
                                                cutoff_at=now, limit=400)
-            plan_outcomes.append({**plan, 'outcome': _plan_shadow_module.simulate(
+            plan_outcomes.append({**plan, 'chain': chains.get(plan['id']), 'outcome': _plan_shadow_module.simulate(
                 plan, ticker_bars, spy_bars, splits=repository.split_events(conn, plan['ticker']))})
         decisions_by_id = {}
         for t in trades:
@@ -1814,7 +1881,9 @@ def _agent_view(run: dict[str, Any] | None, plan: dict[str, Any] | None,
 
     For an agent-2 chain ``run`` / ``plan`` are the head version's run and plan (not the latest run) and
     ``chain`` is ``_chain_view``'s dict; an ok/pass view always carries ``chain`` (None without a chain).
-    An agent-1 run is marked ``legacy: True`` (D2: read-only, never reviewed)."""
+    An agent-1 ok / pass run is marked ``legacy: True`` (D2: the unit has an agent-1 suggestion, read-only,
+    never reviewed); an agent-1 run that was skipped / failed left no plan and takes the「Agent 未给出计划」
+    path (§10.1)."""
     if run is None:
         return None
     if run['status'] in ('ok', 'pass'):
@@ -1825,7 +1894,7 @@ def _agent_view(run: dict[str, Any] | None, plan: dict[str, Any] | None,
     else:
         view = {'id': str(run['id']), 'status': run['status'], 'reason': run['reason'],
                 'created_at': run['created_at']}
-    if run.get('agent_version') == agent_graph.AGENT_VERSION:
+    if run.get('agent_version') == agent_graph.AGENT_VERSION and run['status'] in ('ok', 'pass'):
         view['legacy'] = True
     return view
 

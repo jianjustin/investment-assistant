@@ -230,18 +230,24 @@ def _all(conn, sql: str, params) -> list[dict[str, Any]]:
         return cur.fetchall()
 
 
-def decision_by_request(conn, request_id):
-    return _one(conn, f'SELECT {_DECISION_COLUMNS} FROM signal_decisions WHERE request_id = %s', (request_id,))
+def _decision_columns(timeline: bool) -> str:
+    """``timeline=True`` (migration 026 checked by the caller) adds ``agent_plan_id`` and ``review_view``."""
+    return f'{_DECISION_COLUMNS}, agent_plan_id, review_view' if timeline else _DECISION_COLUMNS
+
+
+def decision_by_request(conn, request_id, *, timeline: bool = False):
+    return _one(conn, f'SELECT {_decision_columns(timeline)} FROM signal_decisions WHERE request_id = %s',
+                (request_id,))
 
 
 def decision_by_id(conn, decision_id):
     return _one(conn, f'SELECT {_DECISION_COLUMNS} FROM signal_decisions WHERE id = %s', (decision_id,))
 
 
-def decision_head(conn, ticker: str, signal_date: date) -> dict[str, Any] | None:
+def decision_head(conn, ticker: str, signal_date: date, *, timeline: bool = False) -> dict[str, Any] | None:
     """The unit's current decision: the one no other decision supersedes."""
     return _one(conn,
-                f'SELECT {_DECISION_COLUMNS} FROM signal_decisions d WHERE ticker = %s AND signal_date = %s '
+                f'SELECT {_decision_columns(timeline)} FROM signal_decisions d WHERE ticker = %s AND signal_date = %s '
                 'AND NOT EXISTS (SELECT 1 FROM signal_decisions s WHERE s.supersedes_id = d.id) '
                 'ORDER BY decided_at DESC LIMIT 1', (ticker, signal_date))
 

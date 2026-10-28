@@ -10,7 +10,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
-MONTHLY_VERSION = 'monthly-2'
+MONTHLY_VERSION = 'monthly-3'      # v2.5 D17: plans.agent = first versions, plans.agent_latest = heads
 SENSITIVITY_PCTS = (0.005, 0.01, 0.015, 0.02)
 
 

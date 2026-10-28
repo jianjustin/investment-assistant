@@ -1306,7 +1306,7 @@ def test_weekly_snapshot_has_tracks(db, scripted_model):
     off = agent_deps(scripted_model, [], settings=_agent_settings(provider='off'))
     service.run_batch(tickers=['NVDA', 'MU'], now=NOW, deps=off)
     record = service.generate_weekly(SESSION - timedelta(days=SESSION.weekday()), now=NOW)
-    assert record['calc_version'] == 'review-5'
+    assert record['calc_version'] == 'review-6'
     stats = record['stats']
     assert stats['tracks']['summary']['all']['actual']['units'] == 2
     assert all('ticker' in row and row['rule'] and row['agent'] and row['actual']
@@ -1639,3 +1639,17 @@ def test_today_chains_and_has_chain(db, scripted_model):
         ('holding', 'holding', None, [])
     holdings = {h['ticker']: h for h in view['holdings']}
     assert holdings['NVDA']['has_chain'] is True and holdings['AMD']['has_chain'] is False
+
+
+def test_agent_view_legacy_only_for_agent1_plans():
+    """v2.5 D2 / §10.1: 「agent-1（旧版）」只标在有 agent-1 计划的单元（ok / pass 运行）；之前跳过或出错的
+    agent-1 运行没有计划，走「Agent 未给出计划」。"""
+    def run(status, version='agent-1'):
+        return {'id': uuid.uuid4(), 'status': status, 'reason': None if status in ('ok', 'pass') else 'model_error',
+                'model': 'glm', 'agent_version': version, 'output': {}, 'counter': None, 'input_tokens': 0,
+                'output_tokens': 0, 'created_at': NOW}
+    assert service._agent_view(run('ok'), None)['legacy'] is True
+    assert service._agent_view(run('pass'), None)['legacy'] is True
+    for status in ('skipped', 'error', 'rejected'):
+        assert 'legacy' not in service._agent_view(run(status), None), status
+    assert 'legacy' not in service._agent_view(run('ok', 'agent-2'), None)

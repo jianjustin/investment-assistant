@@ -148,7 +148,7 @@ def test_weekly_review2_has_plans_and_discipline():
             'immature': {'early_take': 0, 'held_loser': 0}, 'planned_buys': 1, 'compliance_rate': 1.0}
     stats = review.weekly_stats(week, [], {}, [], segments=[], undecided=0, entry_opens={},
                                 plan_outcomes=plan_outcomes, discipline=disc)
-    assert stats['calc_version'] == 'review-5'   # P4 起带 tracks 键
+    assert stats['calc_version'] == 'review-6'   # P4 起带 tracks 键；v2.5 起 plans 分首版与最新版
     assert stats['plans']['rule'] == {'count': 2, 'expired': 1, 'r_mean': 2.0, 'r_median': 2.0}
     assert stats['plans']['own'] == {'count': 1, 'expired': 0, 'r_mean': 1.0, 'r_median': 1.0}
     assert stats['discipline'] == disc
@@ -176,8 +176,8 @@ def test_pool_of_three_way():
     assert review.pool_of({'pool_tier': 'core', 'source': 'watchlist'}, None) == 'core'
 
 
-def test_calc_version_is_review_5():
-    assert review.CALC_VERSION == 'review-5'
+def test_calc_version_is_review_6():
+    assert review.CALC_VERSION == 'review-6'
 
 
 def test_pool_summary_groups_three_pools():
@@ -256,6 +256,70 @@ def test_pool_summary_ignores_agent_plans():
 
 def test_weekly_stats_without_tracks_keeps_shape():
     stats = review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], undecided=0, entry_opens={})
-    assert stats['calc_version'] == 'review-5'
+    assert stats['calc_version'] == 'review-6'
     assert stats['tracks'] is None            # 旧调用方仍可用，无对比数据时为空
     assert 'by_rule' in stats and 'plans' in stats and 'note' in stats
+
+
+# --- v2.5 D17: plans.agent counts each chain's first version; agent_latest its head ---
+
+def _agent_entry(r, version_no, is_head, signal_date=date(2026, 9, 30)):
+    chain = None if version_no is None else {'version_no': version_no, 'is_head': is_head}
+    return {'kind': 'agent', 'signal_date': signal_date, 'outcome': {'status': 'closed', 'r': r}, 'chain': chain}
+
+
+def test_three_version_chain_counts_once_in_agent():
+    week = date(2026, 9, 28)
+    entries = [_agent_entry(1.0, 0, False), _agent_entry(2.0, 1, False), _agent_entry(3.0, 2, True),
+               {'kind': 'rule', 'signal_date': date(2026, 9, 29), 'outcome': {'status': 'open', 'r': 0.5}}]
+    out = review._plan_summary(entries, week, week + timedelta(days=6))
+    assert out['agent'] == {'count': 1, 'expired': 0, 'r_mean': 1.0, 'r_median': 1.0}
+    assert out['agent_latest'] == {'count': 1, 'expired': 0, 'r_mean': 3.0, 'r_median': 3.0}
+    assert out['rule']['count'] == 1
+
+
+def test_agent1_plan_is_its_own_first_and_latest():
+    week = date(2026, 9, 28)
+    out = review._plan_summary([_agent_entry(1.5, None, None)], week, week + timedelta(days=6))
+    assert out['agent'] == out['agent_latest'] == {'count': 1, 'expired': 0, 'r_mean': 1.5, 'r_median': 1.5}
+
+
+def test_generate_weekly_counts_first_and_latest(workbench_db, monkeypatch):
+    from contextlib import contextmanager
+
+    from investment_assistant.workbench import repository, service
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+    monkeypatch.setattr(service, 'connection', connection)
+    day = date(2026, 10, 21)
+    previous = None
+    for version_no in range(3):
+        plan = repository.insert_plan(workbench_db, {
+            'ticker': 'NVDA', 'signal_date': day, 'kind': 'agent', 'based_on_id': None, 'plan_version': 'agent-2',
+            'ref_price': D('100'), 'atr': D('2'), 'entry_low': D('99'), 'entry_high': D('101'), 'stop': D('94'),
+            'target1': D('108'), 'trail_atr_multiple': D('3'), 'valid_from': date(2026, 10, 22),
+            'valid_until': date(2026, 10, 26), 'sizing': {'status': 'no_equity'}, 'status': 'ok',
+            'invalid_reasons': [], 'warnings': [], 'inputs': {'bar_ids': [1]}, 'request_id': None,
+            'request_hash': None})
+        run_id, at = uuid.uuid4(), NOW - timedelta(days=30 - version_no)
+        repository.insert_agent_run(workbench_db, {
+            'id': run_id, 'ticker': 'NVDA', 'signal_date': day, 'pool': 'main', 'attempt': 1,
+            'mode': 'propose' if version_no == 0 else 'revise', 'agent_version': 'agent-2', 'provider': 'zhipu',
+            'model': 'glm-5.3', 'cutoff_at': at, 'status': 'ok', 'reason': None, 'output': {'action': 'buy'},
+            'counter': None, 'plan_id': plan['id'], 'input_tokens': 0, 'output_tokens': 0,
+            'started_at': at, 'finished_at': at}, [])
+        repository.insert_plan_version(workbench_db, {
+            'plan_id': plan['id'], 'ticker': 'NVDA', 'signal_date': day, 'version_no': version_no,
+            'supersedes_plan_id': previous, 'origin': 'signal' if version_no == 0 else 'review',
+            'agent_run_id': run_id, 'cutoff_at': at, 'as_of_session': day,
+            'diff': None if version_no == 0 else [{'field': 'stop', 'before': '94', 'after': '95'}],
+            'schema_version': 'agent-2'})
+        previous = plan['id']
+    out = service.generate_weekly(date(2026, 10, 19), now=NOW)
+    assert out['calc_version'] == 'review-6' and out['stats']['calc_version'] == 'review-6'
+    assert out['stats']['plans']['agent']['count'] == 1
+    assert out['stats']['plans']['agent_latest']['count'] == 1
+    agent = out['stats']['tracks']['units'][0]['agent']
+    assert agent['version_no'] == 0 and agent['version_basis'] == 'first'
