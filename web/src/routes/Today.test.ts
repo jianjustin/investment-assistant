@@ -691,6 +691,26 @@ describe('agent-first layout', () => {
     expect(agentBlock()).toHaveTextContent('Agent 计划 · 第 1 版')
   })
 
+  it('agent block shows cutoff, host diff and per-condition judgments from the today view', async () => {
+    const review = { id: 5, session: '2026-10-23', trigger: 'batch', outcome: 'maintain', decided_by: 'host',
+      reason: '无新信号，复查条件未满足（下一交易日）', new_plan_id: null, revision_status: null,
+      created_at: '2026-10-23T22:40:00Z',
+      conditions: [{ list: 'invalidation', index: 0, kind: 'close_below', params: { price: '95.00' },
+                     result: 'not_met', detail: '' }] }
+    respond = today([unit({ plan: plan(), agent: agent2({
+      output: { ...agent2().output, changes: [{ field: 'stop', text: '止损上移到前低', refs: ['call:1'] }] },
+      chain: chain({ cutoff_at: '2026-10-23T14:30:00Z', diff: [{ field: 'stop', before: '95.00', after: '96.00' }],
+                     latest_review: review }) }) })])
+    render(Today)
+    await screen.findByRole('heading', { name: /NVDA/ })
+    expect(agentBlock()).toHaveTextContent('Agent 计划 · 第 1 版 · 生成于 2026-10-23 07:00:00 北京 · 截止 2026-10-23 22:30:00 北京')
+    expect(screen.getByRole('list', { name: '失效条件' })).toHaveTextContent('收盘跌破 95.00 · 最近判定：未成立')
+    const changes = screen.getByRole('region', { name: '相对第 0 版' })
+    expect(changes).toHaveTextContent('止损 95.00 → 96.00')
+    expect(changes).toHaveTextContent('止损上移到前低')
+    expect(changes).not.toHaveTextContent('见计划页版本链')
+  })
+
   it('rule baseline folded to one line and expands', async () => {
     respond = today([unit({ plan: plan(), agent: agent2() })])
     render(Today)
