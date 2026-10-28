@@ -1,7 +1,7 @@
 # Roadmap
 
 > 唯一的路线文档（2026-10-27 合并：原 README、v2-decision-loop、v2-visibility、v2-agent-collab、agent-led-research、backlog 六份已删除，内容按节并入；验收证据仍按版本放在同目录的 `v2.x-acceptance.md`）。
-> **当前状态**：v2.5 计划时间线已于 2026-10-28 发布 `v2.5.0`（`engineering_done`、`user_acceptance_pending`：迁移 026 当日在真实库执行，首版 / 重新复查 / 决定与连续 10 个交易日的定时验收待积累）；v2.4 定时验收积累中；**v2.6 看懂系统于 2026-10-28 发布 `v2.6.0`**（`engineering_done`、`user_acceptance_pending`：无迁移，当日以 v2.6 代码重启服务，§14.2 手动验收第 1–4、6 条通过，第 5 条的 `agent-1` 推理视图缺页面入口、Agent 判定的复查待出现，`get_concept` 调用、运行一览 5 个交易日抽查与你的使用验收待积累）；v2.7–v2.9 为 2026-10-27 重排的路线，待确认，未开工。
+> **当前状态**：v2.5 计划时间线已于 2026-10-28 发布 `v2.5.0`（`engineering_done`、`user_acceptance_pending`：迁移 026 当日在真实库执行，首版 / 重新复查 / 决定与连续 10 个交易日的定时验收待积累）；v2.4 定时验收积累中；**v2.6 看懂系统于 2026-10-28 发布 `v2.6.0`**（`engineering_done`、`user_acceptance_pending`：无迁移，当日以 v2.6 代码重启服务，§14.2 手动验收第 1–4、6 条通过，第 5 条的 Agent 判定的复查待出现（`agent-1` 推理视图的页面入口已于同日补上），`get_concept` 调用、运行一览 5 个交易日抽查与你的使用验收待积累）；v2.7–v2.9 为 2026-10-27 重排的路线，待确认，未开工。
 > 这是方向和排序，不是实施授权。每版开工前另写 spec（`docs/specs/`）和 plan（`docs/plans/`），按 [交付标准（DoD）](#7-交付标准与状态用语) 交付。方向变化时改本文并在 §8 追加决策；版本完成后只追加验收证据。
 
 ---
@@ -99,7 +99,7 @@
 
 | 版本 | 主题 | 内容 | 依赖 | 状态 |
 |---|---|---|---|---|
-| **v2.6** | 看懂系统 | 运行一览、「原理」页、概念卡与就地展开、Agent 推理阅读视图、「标的」页重排与 K 线标注（§4.4；[spec](../specs/2026-10-28-v2.6-understanding-the-system-design.md)、[plan](../plans/2026-10-28-v2.6-understanding-the-system.md)） | v2.5（已完成） | `engineering_done`、`user_acceptance_pending`（2026-10-28 发布 `v2.6.0`；没有迁移，当日重启服务并完成 §14.2 手动验收，`agent-1` 推理视图缺页面入口，复查推理、`get_concept`、成交标注与你的使用验收待积累，见[验收记录](v2.6-acceptance.md)；实现偏差与已知限制见 [CHANGELOG](../../CHANGELOG.md)） |
+| **v2.6** | 看懂系统 | 运行一览、「原理」页、概念卡与就地展开、Agent 推理阅读视图、「标的」页重排与 K 线标注（§4.4；[spec](../specs/2026-10-28-v2.6-understanding-the-system-design.md)、[plan](../plans/2026-10-28-v2.6-understanding-the-system.md)） | v2.5（已完成） | `engineering_done`、`user_acceptance_pending`（2026-10-28 发布 `v2.6.0`；没有迁移，当日重启服务并完成 §14.2 手动验收，`agent-1` 推理视图的页面入口已于同日补上，复查推理、`get_concept`、成交标注与你的使用验收待积累，见[验收记录](v2.6-acceptance.md)；实现偏差与已知限制见 [CHANGELOG](../../CHANGELOG.md)） |
 | **v2.7** | 我的成长闭环 | 复盘卡、「我的知识」、知识表现回看、就此计划讨论、周度「你学到了什么」（§4.5） | v2.5、v2.6 | 待确认，未开工 |
 | **v2.8** | 运行时可切换 | 工具层改本地 MCP；Claude Code / codex / pi 适配器；按用途 × 阶段配置；删除智谱（§4.6） | v2.5（可行性验证已在其间完成） | 待确认，未开工 |
 | **v2.9** | 主动研究 | 无买入信号也能研究；用户指定标的或问题；研究档案（§4.7，大纲） | v2.7、v2.8 | spec 时定 |

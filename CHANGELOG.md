@@ -2,9 +2,15 @@
 
 版本号与 roadmap 版本对应，见 [roadmap](docs/roadmap/roadmap.md)。
 
+## 未发布
+
+### 修正
+
+- **`agent-1` 计划的推理视图入口**：计划页对 `agent-1` 计划另显示一段「Agent 推理」，标「agent-1（旧版，不参与复查）」，「看推理过程」按推导输入里生成它的运行 id 展开推理阅读视图（展开时才请求）。此前 `agent-1` 计划卡只出现在它自己交易日的「今日」页上，历史 `agent-1` 计划的推理视图只能从接口读到（v2.6 验收 §14.2 第 5 条发现）。
+
 ## v2.6.0 — 2026-10-28
 
-看懂系统（[spec](docs/specs/2026-10-28-v2.6-understanding-the-system-design.md)、[实施 plan](docs/plans/2026-10-28-v2.6-understanding-the-system.md)）：在系统里就能看懂系统——「今日」顶部的运行一览、仓库内版本化的 88 张概念卡与「知识」菜单、「原理」页、四处就地展开、Agent 推理阅读视图、「标的」页四段重排与 K 线标注，另给 Agent 加只读工具 `get_concept`。没有迁移、没有新表，不改任何计算口径与 Agent 流程。状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`（代码已合入 `main`，服务尚未重启跑 v2.6 代码；没有真实浏览器验收）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。
+看懂系统（[spec](docs/specs/2026-10-28-v2.6-understanding-the-system-design.md)、[实施 plan](docs/plans/2026-10-28-v2.6-understanding-the-system.md)）：在系统里就能看懂系统——「今日」顶部的运行一览、仓库内版本化的 88 张概念卡与「知识」菜单、「原理」页、四处就地展开、Agent 推理阅读视图、「标的」页四段重排与 K 线标注，另给 Agent 加只读工具 `get_concept`。没有迁移、没有新表，不改任何计算口径与 Agent 流程。状态：`engineering_done`、`user_acceptance_pending`（2026-10-28 以 v2.6 代码重启服务，§14.2 手动验收见 [验收记录](docs/roadmap/v2.6-acceptance.md)；复查推理、`get_concept` 调用、成交标注与你的使用验收待积累）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。
 
 ### 新增
 

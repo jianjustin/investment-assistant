@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen } from '@testing-library/svelte'
 import Plan from './Plan.svelte'
 import * as api from '../lib/api'
 import type { Derivation } from '../lib/derivation'
@@ -66,6 +66,35 @@ describe('Plan', () => {
     expect(screen.queryByRole('region', { name: '我的补充' })).toBeNull()
     expect(getChain).not.toHaveBeenCalled()
     expect(getInputs).not.toHaveBeenCalled()
+  })
+
+  it('agent-1 plan offers 看推理过程 for its generating run', async () => {
+    vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation({
+      plan: { id: 'p1', ticker: 'ROP', signal_date: '2026-10-26', kind: 'agent', plan_version: 'agent-1', status: 'ok' },
+      inputs: { ...derivation().inputs, agent_run: { id: 'run-1', model: 'glm', agent_version: 'agent-1' } },
+    }))
+    const getChain = vi.spyOn(api, 'getChain')
+    const getReasoning = vi.spyOn(api, 'getReasoning').mockResolvedValue({
+      run: { id: 'run-1', ticker: 'ROP', signal_date: '2026-10-26', mode: 'propose', agent_version: 'agent-1',
+             status: 'ok', reason: null, reason_text: null },
+      legacy: true, version: null, review: null, steps: [],
+      notes: ['agent-1（旧版）：没有失效条件、下次复查条件与逐条对应的反证，也不参与复查；以下按原样显示'],
+    } as any)
+    render(Plan, { sub: 'p1' })
+    const region = await screen.findByRole('region', { name: 'Agent 推理' })
+    expect(region).toHaveTextContent('agent-1（旧版，不参与复查）')
+    expect(getReasoning).not.toHaveBeenCalled()                       // 展开时才请求
+    await fireEvent.click(screen.getByRole('button', { name: '看推理过程' }))
+    expect(getReasoning).toHaveBeenCalledWith('run-1')
+    expect(await screen.findByText(/agent-1（旧版）：没有失效条件/)).toBeInTheDocument()
+    expect(getChain).not.toHaveBeenCalled()                           // agent-1 没有版本链
+  })
+
+  it('rule plan and agent-2 plan have no separate reasoning section', async () => {
+    vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation())
+    render(Plan, { sub: 'p1' })
+    expect(await screen.findByText('触发')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Agent 推理' })).toBeNull()
   })
 
   it('shows not-found for unknown plan id', async () => {
