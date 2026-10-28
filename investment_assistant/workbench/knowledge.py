@@ -54,8 +54,13 @@ ID_RE = re.compile(rf'^{ID_BODY}$')
 REF_RE = re.compile(rf'^(?:concept:)?({ID_BODY})(?:@([1-9][0-9]*))?$')
 CARD_LINK_RE = re.compile(rf'^(?:(concepts/))?({ID_BODY})\.md$')
 STAGE_LINK_RE = re.compile(r'^#stage-([a-z0-9_]+)$')
-# For the Agent text: `[文字](<id>.md)` / `[文字](concepts/<id>.md "title")` in the (already validated) source.
-CARD_LINK_SOURCE_RE = re.compile(rf'\[([^\]]*)\]\((?:concepts/)?({ID_BODY})\.md(?:\s+"[^"]*")?\)')
+# For the Agent text: only the inline form `[文字](<id>.md)` (no title, no reference style, no brackets inside the
+# text) is accepted in cards, so this rewrite is exact; code fences and code spans are left alone.
+CODE_OR_CARD_LINK_RE = re.compile(
+    rf'(?P<fence>^(?P<ticks>`{{3,}}|~{{3,}})[^\n]*\n.*?(?:^(?P=ticks)[`~]*[ \t]*$|\Z))'
+    rf'|(?P<code>(?P<run>`+)(?:(?!(?P=run)).)+?(?P=run))'
+    rf'|(?P<link>\[(?P<text>[^\[\]]*)\]\((?P<id>{ID_BODY})\.md\))',
+    re.DOTALL | re.MULTILINE)
 FRONTMATTER_RE = re.compile(r'\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)(.*)\Z', re.DOTALL)
 
 CARD_REQUIRED = ('id', 'title', 'group', 'version', 'applies_to', 'summary', 'related')
@@ -149,16 +154,16 @@ def _split(text: str, label: str, problems: list[str]) -> tuple[dict[str, Any], 
 
 
 def _field_set(meta: dict[str, Any], required: tuple[str, ...], optional: tuple[str, ...], label: str,
-               problems: list[str]) -> bool:
-    ok = True
+               problems: list[str]) -> set[str]:
+    """Report missing and extra fields (one problem each); return the missing ones. Checking continues anyway."""
+    missing = {key for key in required if key not in meta}
     for key in required:
-        if key not in meta:
+        if key in missing:
             problems.append(f'{label}: 缺少字段 {key}')
-            ok = False
     for key in meta:
         if key not in required and key not in optional:
-            problems.append(f'{label}: 多余字段 {key}')          # reported, but the rest is still checked
-    return ok
+            problems.append(f'{label}: 多余字段 {key}')
+    return missing
 
 
 def _is_pos_int(value: Any) -> bool:
@@ -222,55 +227,85 @@ def _rewrite(found: list[tuple[str, str, Any]]) -> None:
             token.attrSet('data-stage', target)
 
 
+def _agent_body(body: str) -> tuple[str, int]:
+    """Agent text of a card body: inline card links become `文字（concept:<id>）`; returns (text, links rewritten)."""
+    count = 0
+
+    def repl(match: re.Match) -> str:
+        nonlocal count
+        if match.group('link') is None:
+            return match.group(0)
+        count += 1
+        return f'{match.group("text")}（concept:{match.group("id")}）'
+
+    return CODE_OR_CARD_LINK_RE.sub(repl, body), count
+
+
 def _render(tokens: list) -> str:
     return _md.renderer.render(tokens, _md.options, {})
 
 
-def _validate_card(parsed: _Parsed, concept_ids: set[str], repo_root: Path, problems: list[str]) -> Concept | None:
+def _validate_card(parsed: _Parsed, concept_ids: set[str], repo_root: Path,
+                   problems: list[str]) -> tuple[Concept, set[str]] | None:
+    """Validate one card; returns (concept, ids it links to in the body) or None when it has problems."""
     label, meta = parsed.label, parsed.meta
     start = len(problems)
-    if not _field_set(meta, CARD_REQUIRED, CARD_OPTIONAL, label, problems):
-        return None
-    card_id, title, group, version = meta['id'], meta['title'], meta['group'], meta['version']
-    summary, applies_to, related = meta['summary'], meta['applies_to'], meta['related']
+    missing = _field_set(meta, CARD_REQUIRED, CARD_OPTIONAL, label, problems)
+    card_id, title, group, version = meta.get('id'), meta.get('title'), meta.get('group'), meta.get('version')
+    summary, applies_to, related = meta.get('summary'), meta.get('applies_to'), meta.get('related')
     sources = meta.get('sources', [])
+    id_ok = isinstance(card_id, str) and bool(ID_RE.match(card_id))
 
-    if not isinstance(card_id, str) or not ID_RE.match(card_id):
-        problems.append(f'{label}: id {card_id!r} 格式不对（分组.名字，小写字母数字下划线）')
-    elif card_id != parsed.stem:
-        problems.append(f'{label}: id {card_id} 与文件名不一致')
-    if not isinstance(title, str) or not 1 <= len(title) <= TITLE_MAX:
-        problems.append(f'{label}: title 须是 1–{TITLE_MAX} 字的文字' + (f'（现 {len(title)} 字）' if isinstance(title, str) else ''))
-    group_ids = [g for g, _ in GROUPS]
-    if group not in group_ids:
-        problems.append(f'{label}: 未知分组 {group!r}')
-    elif isinstance(card_id, str) and ID_RE.match(card_id) and card_id.split('.')[0] != group:
-        problems.append(f'{label}: group {group} 与 id 前缀不符')
-    if not _is_pos_int(version):
+    if 'id' not in missing:
+        if not id_ok:
+            problems.append(f'{label}: id {card_id!r} 格式不对（分组.名字，小写字母数字下划线）')
+        elif card_id != parsed.stem:
+            problems.append(f'{label}: id {card_id} 与文件名不一致')
+    if 'title' not in missing:
+        if not isinstance(title, str) or not 1 <= len(title.strip()) <= TITLE_MAX:
+            problems.append(f'{label}: title 须是 1–{TITLE_MAX} 字的文字' +
+                            (f'（现 {len(title.strip())} 字）' if isinstance(title, str) else ''))
+        else:
+            title = title.strip()
+    if 'group' not in missing:
+        if group not in [g for g, _ in GROUPS]:
+            problems.append(f'{label}: 未知分组 {group!r}')
+        elif id_ok and card_id.split('.')[0] != group:
+            problems.append(f'{label}: group {group} 与 id 前缀不符')
+    if 'version' not in missing and not _is_pos_int(version):
         problems.append(f'{label}: version 必须是正整数，现为 {version!r}')
-    if not _str_list(applies_to):
-        problems.append(f'{label}: applies_to 必须是版本号列表')
-    else:
-        for item in applies_to:
-            if item not in KNOWN_VERSIONS:
-                problems.append(f'{label}: applies_to 含未知版本 {item}')
-    if not isinstance(summary, str) or not 1 <= len(summary) <= SUMMARY_MAX:
-        problems.append(f'{label}: summary 须是 1–{SUMMARY_MAX} 字' + (f'（现 {len(summary)} 字）' if isinstance(summary, str) else ''))
-    elif '\n' in summary or '\r' in summary:
-        problems.append(f'{label}: summary 不能含换行')
-    if not _str_list(related):
-        problems.append(f'{label}: related 必须是概念 id 列表')
-    else:
-        for item in related:
-            if item == card_id:
-                problems.append(f'{label}: related 不能包含自己')
-            elif item not in concept_ids:
-                problems.append(f'{label}: related 里的 {item} 不存在')
+    if 'applies_to' not in missing:
+        if not _str_list(applies_to):
+            problems.append(f'{label}: applies_to 必须是版本号列表')
+        else:
+            for item in applies_to:
+                if item not in KNOWN_VERSIONS:
+                    problems.append(f'{label}: applies_to 含未知版本 {item}')
+    if 'summary' not in missing:
+        if not isinstance(summary, str) or not 1 <= len(summary.strip()) <= SUMMARY_MAX:
+            problems.append(f'{label}: summary 须是 1–{SUMMARY_MAX} 字' +
+                            (f'（现 {len(summary.strip())} 字）' if isinstance(summary, str) else ''))
+        elif '\n' in summary.strip() or '\r' in summary.strip():
+            problems.append(f'{label}: summary 不能含换行')
+        else:
+            summary = summary.strip()
+    if 'related' not in missing:
+        if not _str_list(related):
+            problems.append(f'{label}: related 必须是概念 id 列表')
+        else:
+            for item in related:
+                if item == card_id:
+                    problems.append(f'{label}: related 不能包含自己')
+                elif item not in concept_ids:
+                    problems.append(f'{label}: related 里的 {item} 不存在')
     if not _str_list(sources):
         problems.append(f'{label}: sources 必须是仓库内路径列表')
     else:
+        base = repo_root.resolve()
         for item in sources:
-            if not (repo_root / item).exists():
+            if Path(item).is_absolute() or not (base / item).resolve().is_relative_to(base):
+                problems.append(f'{label}: sources 里的 {item} 必须是仓库内的相对路径')
+            elif not (base / item).exists():
                 problems.append(f'{label}: sources 里的 {item} 不存在')
     body = parsed.body
     if not body:
@@ -280,28 +315,48 @@ def _validate_card(parsed: _Parsed, concept_ids: set[str], repo_root: Path, prob
 
     found = _check_links(parsed.tokens, label, principles=False, concept_ids=concept_ids, stage_ids=(),
                          problems=problems)
+    body_text, rewritten = _agent_body(body)
+    card_links = [target for kind, target, _ in found if kind == 'concept']
+    card_tokens = sum(1 for t in _inline_children(parsed.tokens)           # card-shaped links (valid or not)
+                      if t.type == 'link_open' and (m := CARD_LINK_RE.match(t.attrGet('href') or ''))
+                      and not m.group(1))
+    if rewritten != card_tokens:
+        problems.append(f'{label}: 概念卡链接必须是行内的 [文字](<id>.md)，不能用引用式、带标题或文字里含方括号')
     if len(problems) > start:
         return None
     _rewrite(found)
-    return Concept(
+    concept = Concept(
         id=card_id, title=title, group=group, version=version, applies_to=tuple(applies_to), summary=summary,
-        related=tuple(related), sources=tuple(sources), body_md=body,
-        body_text=CARD_LINK_SOURCE_RE.sub(r'\1（concept:\2）', body), html=_render(parsed.tokens),
-        content_sha256=hashlib.sha256(body.encode('utf-8')).hexdigest())
+        related=tuple(related), sources=tuple(sources), body_md=body, body_text=body_text,
+        html=_render(parsed.tokens), content_sha256=hashlib.sha256(body.encode('utf-8')).hexdigest())
+    return concept, set(card_links)
 
 
-def _split_sections(tokens: list) -> list[tuple[str, list]]:
-    """Split block tokens at top-level `## ` headings; text before the first one gets heading ''."""
-    sections: list[tuple[str, list]] = [('', [])]
+def _plain(inline) -> str:
+    """Plain text of an inline token (code spans without backticks, soft breaks as spaces)."""
+    parts = []
+    for child in inline.children or []:
+        if child.type in ('text', 'code_inline'):
+            parts.append(child.content)
+        elif child.type in ('softbreak', 'hardbreak'):
+            parts.append(' ')
+    return ''.join(parts).strip()
+
+
+def _split_sections(tokens: list) -> list[tuple[str, Any, list]]:
+    """Split block tokens at top-level `## ` headings; text before the first one gets heading ''.
+
+    Returns [(plain heading, the heading's inline token or None, section body tokens)]."""
+    sections: list[tuple[str, Any, list]] = [('', None, [])]
     i = 0
     while i < len(tokens):
         token = tokens[i]
-        if token.type == 'heading_open' and token.tag == 'h2' and token.level == 0:
-            heading = tokens[i + 1].content if i + 1 < len(tokens) else ''
-            sections.append((heading, []))
+        if token.type == 'heading_open' and token.tag == 'h2' and token.level == 0 and i + 2 < len(tokens):
+            inline = tokens[i + 1]
+            sections.append((_plain(inline), inline, []))
             i += 3                                   # heading_open, inline, heading_close
             continue
-        sections[-1][1].append(token)
+        sections[-1][2].append(token)
         i += 1
     return sections
 
@@ -310,7 +365,8 @@ def _validate_principles(parsed: _Parsed, concept_ids: set[str], stage_ids: tupl
                          problems: list[str]) -> Principles | None:
     label, meta = parsed.label, parsed.meta
     start = len(problems)
-    if not _field_set(meta, PRINCIPLES_REQUIRED, (), label, problems):
+    missing = _field_set(meta, PRINCIPLES_REQUIRED, (), label, problems)
+    if missing:
         return None
     if not isinstance(meta['title'], str) or not meta['title'].strip():
         problems.append(f'{label}: title 不能为空')
@@ -318,8 +374,10 @@ def _validate_principles(parsed: _Parsed, concept_ids: set[str], stage_ids: tupl
         problems.append(f'{label}: version 必须是正整数，现为 {meta["version"]!r}')
     sections: list[Section] = []
     seen_stages: dict[str, str] = {}
-    for heading, tokens in _split_sections(parsed.tokens):
+    for heading, heading_inline, tokens in _split_sections(parsed.tokens):
         where = f'{label}（{heading}）' if heading else label
+        if heading_inline is not None and any(c.type in ('link_open', 'image') for c in heading_inline.children or []):
+            problems.append(f'{where}: 标题里不能有链接或图片')
         found = _check_links(tokens, where, principles=True, concept_ids=concept_ids, stage_ids=stage_ids,
                              problems=problems)
         stages_here: list[str] = []
@@ -357,7 +415,8 @@ def load(root: Path, *, stage_ids: tuple[str, ...] = STAGE_IDS, repo_root: Path 
     problems: list[str] = []
     cards: list[_Parsed] = []
     folder = root / 'concepts'
-    for path in sorted(folder.glob('*.md')) if folder.is_dir() else []:
+    card_files = sorted(folder.glob('*.md')) if folder.is_dir() else []
+    for path in card_files:
         label = f'concepts/{path.name}'
         text = _read(path, label, problems)
         split = _split(text, label, problems) if text is not None else None
@@ -373,12 +432,14 @@ def load(root: Path, *, stage_ids: tuple[str, ...] = STAGE_IDS, repo_root: Path 
             meta, body = split
             principles_parsed = _Parsed('principles.md', 'principles', meta, body, _md.parse(body))
 
-    concept_ids = {parsed.stem for parsed in cards}
+    concept_ids = {path.stem for path in card_files}      # every file counts, even one that failed to parse
     concepts: dict[str, Concept] = {}
+    body_links: dict[str, set[str]] = {}
     for parsed in cards:
-        concept = _validate_card(parsed, concept_ids, repo_root, problems)
-        if concept is not None:
-            concepts[concept.id] = concept
+        result = _validate_card(parsed, concept_ids, repo_root, problems)
+        if result is not None:
+            concepts[result[0].id] = result[0]
+            body_links[result[0].id] = result[1]
     principles = (_validate_principles(principles_parsed, concept_ids, stage_ids, problems)
                   if principles_parsed is not None else None)
     if problems:
@@ -386,7 +447,7 @@ def load(root: Path, *, stage_ids: tuple[str, ...] = STAGE_IDS, repo_root: Path 
 
     linked_from: dict[str, set[str]] = {}
     for concept in concepts.values():
-        targets = set(concept.related) | {m[1] for m in CARD_LINK_SOURCE_RE.findall(concept.body_md)}
+        targets = set(concept.related) | body_links[concept.id]    # from validated tokens
         for target in targets - {concept.id}:
             linked_from.setdefault(target, set()).add(concept.id)
     backlinks = {target: tuple(sorted(sources)) for target, sources in linked_from.items()}
@@ -493,8 +554,8 @@ def agent_text(cat: Catalog, concept_id: str | None) -> dict[str, Any]:
                 'concepts': [{'id': c.id, 'title': c.title, 'group': c.group} for c in _ordered(cat)]}
     try:
         concept, _ = lookup(cat, concept_id)
-    except ValueError as exc:
-        raise LookupError(f'未知概念 {concept_id}') from exc
+    except (ValueError, LookupError) as exc:
+        raise LookupError(f'未知概念 {concept_id}，不给 id 可取全部列表') from exc
     return {'concept_ref': concept.ref, 'id': concept.id, 'title': concept.title, 'group': concept.group,
             'version': concept.version, 'applies_to': list(concept.applies_to), 'summary': concept.summary,
             'body': concept.body_text, 'content_sha256': concept.content_sha256,

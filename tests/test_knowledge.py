@@ -122,6 +122,75 @@ def test_link_to_missing_card_rejected(tmp_path):
     assert len(problems) == 1 and 'indicator.nope' in problems[0]
 
 
+def test_missing_field_does_not_stop_other_checks(tmp_path):
+    write_card(tmp_path, 'plan.stop', drop=('summary',), body='见 [x](https://x.com)。', version=0)
+    problems = problems_of(tmp_path)
+    assert len(problems) == 3, problems
+    assert any('缺少字段 summary' in p for p in problems) and any('version' in p for p in problems)
+    assert any('https://x.com' in p for p in problems)
+
+
+def test_missing_summary_plus_external_link_is_two_problems(tmp_path):
+    write_card(tmp_path, 'plan.stop', drop=('summary',), body='见 [x](https://x.com)。')
+    assert len(problems_of(tmp_path)) == 2
+
+
+def test_reference_style_and_titled_card_links_rejected(tmp_path):
+    write_card(tmp_path, 'plan.b', title='B')
+    write_card(tmp_path, 'plan.a', body='见 [B][r]。\n\n[r]: plan.b.md\n')
+    write_card(tmp_path, 'plan.c', body='见 [B](plan.b.md "标题")。')
+    write_card(tmp_path, 'plan.d', body="见 [B](plan.b.md 'x')。")
+    write_card(tmp_path, 'plan.e', body='见 [[B]](plan.b.md)。')
+    problems = problems_of(tmp_path)
+    assert len(problems) == 4
+    for name in ('plan.a.md', 'plan.c.md', 'plan.d.md', 'plan.e.md'):
+        assert sum(name in p for p in problems) == 1
+
+
+def test_inline_code_lookalike_is_not_a_link(tmp_path):
+    write_card(tmp_path, 'plan.b', title='B')
+    write_card(tmp_path, 'plan.a', body='写法是 `[B](plan.b.md)`，真链接 [B](plan.b.md)。\n\n```\n[B](plan.b.md)\n```\n')
+    write_card(tmp_path, 'plan.c', body='只有 `[B](plan.b.md)` 这种写法。')
+    cat = load(tmp_path)
+    assert cat.backlinks['plan.b'] == ('plan.a',)           # plan.c only has a code lookalike
+    text = cat.concepts['plan.a'].body_text
+    assert text.count('（concept:plan.b）') == 1
+    assert text.count('`[B](plan.b.md)`') == 1 and '```\n[B](plan.b.md)\n```' in text
+    assert cat.concepts['plan.c'].body_text == cat.concepts['plan.c'].body_md
+
+
+def test_principles_heading_links_and_plain_text(tmp_path):
+    write_card(tmp_path, 'plan.stop')
+    write_principles(tmp_path, '## 用 `ATR` 的 **粗** 标题\n\n正文\n')
+    assert load(tmp_path).principles.sections[0].heading == '用 ATR 的 粗 标题'
+    write_principles(tmp_path, '## 见 [止损](concepts/plan.stop.md)\n\n## 外 [x](https://x.com)\n')
+    problems = problems_of(tmp_path)
+    assert len(problems) == 2 and all('标题' in p for p in problems)
+
+
+def test_broken_yaml_does_not_cascade_related_errors(tmp_path):
+    (tmp_path / 'concepts').mkdir()
+    (tmp_path / 'concepts' / 'indicator.atr14.md').write_text('---\nid: [unclosed\n---\n\n正文', encoding='utf-8')
+    write_card(tmp_path, 'plan.stop', related=['indicator.atr14'])
+    problems = problems_of(tmp_path)
+    assert len(problems) == 1 and 'indicator.atr14.md' in problems[0]
+
+
+def test_sources_must_stay_inside_repo(tmp_path):
+    for bad in ('../outside.py', '/etc/hosts', 'investment_assistant/../../x'):
+        problems = None
+        write_card(tmp_path, 'plan.stop', sources=[bad])
+        problems = problems_of(tmp_path)
+        assert len(problems) == 1 and '仓库内' in problems[0], (bad, problems)
+
+
+def test_whitespace_only_title_and_summary_rejected(tmp_path):
+    write_card(tmp_path, 'plan.stop', title='   ', summary=' \t ')
+    problems = problems_of(tmp_path)
+    assert len(problems) == 2
+    assert any('title' in p for p in problems) and any('summary' in p for p in problems)
+
+
 def test_concepts_prefix_link_only_allowed_in_principles(tmp_path):
     write_card(tmp_path, 'indicator.atr14', title='ATR14')
     write_card(tmp_path, 'plan.stop', body='见 [x](concepts/indicator.atr14.md)。')
@@ -299,10 +368,13 @@ def test_agent_text(tmp_path):
     assert set(index) == {'knowledge_version', 'point_in_time', 'concepts'} and index['point_in_time'] is False
     assert index['concepts'] == [{'id': 'indicator.atr14', 'title': 'ATR14', 'group': 'indicator'},
                                  {'id': 'plan.stop', 'title': '止损', 'group': 'plan'}]
-    with pytest.raises(LookupError):
-        knowledge.agent_text(cat, 'plan.nope')
-    with pytest.raises(LookupError):
-        knowledge.agent_text(cat, 'Not An Id')
+    for bad in ('plan.nope', 'Not An Id'):
+        with pytest.raises(LookupError) as info:
+            knowledge.agent_text(cat, bad)
+        assert str(info.value) == f'未知概念 {bad}，不给 id 可取全部列表'
+    with pytest.raises(LookupError) as info:                 # card_view / lookup keep the 404 wording
+        knowledge.lookup(cat, 'plan.nope')
+    assert str(info.value) == '没有这张概念卡：plan.nope'
 
 
 def test_views(tmp_path):
