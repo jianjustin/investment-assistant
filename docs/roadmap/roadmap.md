@@ -1,7 +1,7 @@
 # Roadmap
 
 > 唯一的路线文档（2026-10-27 合并：原 README、v2-decision-loop、v2-visibility、v2-agent-collab、agent-led-research、backlog 六份已删除，内容按节并入；验收证据仍按版本放在同目录的 `v2.x-acceptance.md`）。
-> **当前状态**：v2.4 已完成（定时验收积累中）；v2.5 计划时间线工程完成（`engineering_done`、`user_acceptance_pending`、`runtime_unverified`：迁移 026 未在真实库执行，未经用户验收与定时验收；spec 未落地项仅为 CHANGELOG 所列已知限制）；v2.6–v2.9 为 2026-10-27 按用户目标重排的路线，**待确认，未开工**。
+> **当前状态**：v2.4 已完成（定时验收积累中）；v2.5 计划时间线工程完成（`engineering_done`、`user_acceptance_pending`：迁移 026 已于 2026-10-28 在真实库执行，未经用户验收与定时验收；spec 未落地项仅为 CHANGELOG 所列已知限制）；v2.6–v2.9 为 2026-10-27 按用户目标重排的路线，**待确认，未开工**。
 > 这是方向和排序，不是实施授权。每版开工前另写 spec（`docs/specs/`）和 plan（`docs/plans/`），按 [交付标准（DoD）](#7-交付标准与状态用语) 交付。方向变化时改本文并在 §8 追加决策；版本完成后只追加验收证据。
 
 ---
@@ -98,7 +98,7 @@
 
 | 版本 | 主题 | 内容 | 依赖 | 状态 |
 |---|---|---|---|---|
-| **v2.5** | 计划时间线 | Agent 计划结构化为可复查的论点并成为默认复查对象；版本链与批处理每日复查；系统信号与用户输入触发修订；每版独立影子跟踪（§4.3；[spec](../specs/2026-10-28-v2.5-plan-timeline-design.md)、[plan](../plans/2026-10-28-v2.5-plan-timeline.md)） | v2.4 | `engineering_done`、`user_acceptance_pending`、`runtime_unverified`（2026-10-28 工程完成；迁移 026 待授权执行、须先迁移后重启；用户验收与 §14.3 定时验收未开始；实现偏差与已知限制见 [CHANGELOG](../../CHANGELOG.md)） |
+| **v2.5** | 计划时间线 | Agent 计划结构化为可复查的论点并成为默认复查对象；版本链与批处理每日复查；系统信号与用户输入触发修订；每版独立影子跟踪（§4.3；[spec](../specs/2026-10-28-v2.5-plan-timeline-design.md)、[plan](../plans/2026-10-28-v2.5-plan-timeline.md)） | v2.4 | `engineering_done`、`user_acceptance_pending`（2026-10-28 工程完成，同日迁移 026 在真实库执行并重启；手动验收见 [v2.5 验收记录](v2.5-acceptance.md)，用户验收与 §14.3 定时验收未完成；实现偏差与已知限制见 [CHANGELOG](../../CHANGELOG.md)） |
 | **v2.6** | 看懂系统 | 运行一览、「原理」页、概念卡与就地展开、Agent 推理阅读视图、「标的」页重排与 K 线标注（§4.4） | v2.5 | 待确认，未开工 |
 | **v2.7** | 我的成长闭环 | 复盘卡、「我的知识」、知识表现回看、就此计划讨论、周度「你学到了什么」（§4.5） | v2.5、v2.6 | 待确认，未开工 |
 | **v2.8** | 运行时可切换 | 工具层改本地 MCP；Claude Code / codex / pi 适配器；按用途 × 阶段配置；删除智谱（§4.6） | v2.5（可行性验证已在其间完成） | 待确认，未开工 |

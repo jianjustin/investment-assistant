@@ -4,7 +4,7 @@
 
 ## v2.5.0 — 2026-10-28
 
-计划时间线（[spec](docs/specs/2026-10-28-v2.5-plan-timeline-design.md)、[实施 plan](docs/plans/2026-10-28-v2.5-plan-timeline.md)）：Agent 计划结构化为可复查的论点并成为默认复查对象，同一单元的 Agent 计划组成版本链，批处理每日复查，系统信号与你贴入的信息触发修订，每版各自影子跟踪。状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`（迁移 026 尚未在真实库执行、服务未重启跑 v2.5 代码；没有真实浏览器验收与定时运行证据）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。
+计划时间线（[spec](docs/specs/2026-10-28-v2.5-plan-timeline-design.md)、[实施 plan](docs/plans/2026-10-28-v2.5-plan-timeline.md)）：Agent 计划结构化为可复查的论点并成为默认复查对象，同一单元的 Agent 计划组成版本链，批处理每日复查，系统信号与你贴入的信息触发修订，每版各自影子跟踪。状态：`engineering_done`、`user_acceptance_pending`（迁移 026 已于 2026-10-28 在真实库执行、服务已重启跑 v2.5 代码；没有真实浏览器验收与定时运行证据）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。
 
 ### 新增
 
@@ -53,7 +53,7 @@
 
 ### 迁移与验收
 
-- **026 待授权执行**：备份、`psql --single-transaction` 执行、服务重启均需单独授权，**必须先迁移后重启**；结果追加到 [迁移记录](docs/operations/migrations-and-backup.md)。026 未执行时批处理照常（`stages-1`、Agent 提议记 `skipped / migration_026_missing`、不复查、不发「计划更新」），新接口返回 503。
+- **026 已在真实库执行**（2026-10-28，用户授权 Task 14）：备份后 `psql --single-transaction` 执行，再重启服务（**先迁移后重启**）；记录见 [迁移记录](docs/operations/migrations-and-backup.md#026-的真实库执行逐步手动用户-2026-10-28-授权执行-v25-plan-task-14)，手动验收见 [v2.5 验收记录](docs/roadmap/v2.5-acceptance.md)。026 未执行时批处理照常（`stages-1`、Agent 提议记 `skipped / migration_026_missing`、不复查、不发「计划更新」），新接口返回 503。
 - 测试（`41b4738`）：离线 pytest 1347 passed / 480 skipped；一次性库 SQL pytest 1827 passed；前端 `npm test` 322 passed（29 个文件），`npm run build` 通过。全量 code review（`53d9ed5` 以来）无 Critical，Important 1 条（过时前端测试）与 5 条 Minor 已在 `41b4738` 修复。
 - **验收未完成**：本轮只有自动化测试，没有真实浏览器用户验收、没有迁移后的定时运行证据（spec §14.3 连续 10 个交易日等）；不宣称用户验收或定时验收已过。打 tag、推送不在本轮执行，各自先征得用户同意。
 

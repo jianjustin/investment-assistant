@@ -30,7 +30,7 @@
 | 023 | v2.2：`screen_runs`、`screen_results`、`pool_tiers.source`（默认 `watchlist`）；`filings` 任务改为北京 09:30（只改仍是纽约时区的行） | 主线 + 共享 |
 | 024 | v2.3：`data_fetch_runs`：每次某族被拉取一次追加一行记录成败与原因；只建表与索引，不动旧表（2026-10-27 已在真实库执行，见下文） | 主线 |
 | 025 | v2.4：`stage_runs`：每次 `workbench` 任务、每个阶段追加一行证据（计数、原因、产出引用、耗时）；只建表与索引，不动旧表（2026-10-27 已在真实库手动执行，见下文） | 主线 |
-| 026 | v2.5：计划时间线。新建只追加的 `agent_plan_versions`（版本链）、`plan_reviews`（每日复查记录，每条链每个交易日至多一条有效批处理复查）、`user_inputs`（用户输入）；`signal_decisions` 加可空列 `agent_plan_id`、`review_view`；放宽 `agent_runs.mode`（加 `review`、`revise`）及两条相关 CHECK、`agent_tool_calls.phase`（加 `review`）、`stage_runs.stage`（加 `review`）；`idx_trade_plans_agent_unique` 只管 `agent-1`。不改旧行、可重跑；三张新表不进 `WORKBENCH_TABLES`，就绪与否由 `repository.timeline_ready` 判定。对旧代码无害（只新增表 / 列、放宽约束）。**未在真实库执行，待授权；必须先于重启执行**（spec D19） | 主线 |
+| 026 | v2.5：计划时间线。新建只追加的 `agent_plan_versions`（版本链）、`plan_reviews`（每日复查记录，每条链每个交易日至多一条有效批处理复查）、`user_inputs`（用户输入）；`signal_decisions` 加可空列 `agent_plan_id`、`review_view`；放宽 `agent_runs.mode`（加 `review`、`revise`）及两条相关 CHECK、`agent_tool_calls.phase`（加 `review`）、`stage_runs.stage`（加 `review`）；`idx_trade_plans_agent_unique` 只管 `agent-1`。不改旧行、可重跑；三张新表不进 `WORKBENCH_TABLES`，就绪与否由 `repository.timeline_ready` 判定。对旧代码无害（只新增表 / 列、放宽约束）。必须先于重启执行（spec D19）；2026-10-28 已在真实库手动执行，见下文 | 主线 |
 
 另需一次：`python -m investment_assistant.workbench.agent setup` 由 LangGraph `PostgresSaver.setup()` 建检查点表，不进本项目迁移。
 
@@ -144,6 +144,22 @@ psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=
 | 3. 执行 | 17:55:36 +0800，`psql --single-transaction -v ON_ERROR_STOP=1 -f migrations/025_stage_runs.sql`（`CREATE TABLE`、`CREATE INDEX`）；`schema_migrations` 仍只到 `017` |
 | 4. 验证 | `stage_runs` 0 行，索引 `stage_runs_pkey`、`stage_runs_run_id_stage_key`、`idx_stage_runs_session` 在，CHECK 约束 9 条；`public` 表数 35 → 36；`trade_plans` 8、`signal_candidates` 12、`job_reports` 65、`data_fetch_runs` 7、`scheduled_jobs` 3，与预检相同 |
 | 5. 重启服务 | 17:55:42 +0800 `launchctl kickstart -k`，新进程 pid 97239 启动于 17:56:12；`/api/health`：数据库、调度线程（轮询运行中）、SEC、Discord、FRED up，Yahoo 首次探测为代理 SSL 中断、复查 up，3 项 `systemctl` 检查在 macOS 上为 down（与本次无关）；`/api/workbench/today`、`/api/workbench/stage-runs?session=2026-10-26`（`stage_runs_ready: true`）、`/api/data/families`、`/api/jobs/scheduled`、`/api/status` 均 200 |
+
+### 026 的真实库执行（逐步手动，用户 2026-10-28 授权执行 v2.5 plan Task 14）
+
+026 只新增表、列与放宽约束，对旧代码无害；新代码在缺表时降级为 `stages-1`。与 025 不同，**必须先迁移、后重启**（spec D19）。
+
+#### 执行记录（2026-10-28，手动 psql 执行）
+
+| 步骤 | 结果 |
+| --- | --- |
+| 1. 只读预检 | 16:30 +0800：`agent_plan_versions`、`plan_reviews`、`user_inputs` 都不存在，`signal_decisions` 无 `agent_plan_id` / `review_view`；`public` 表数 36；`job_reports` 无 `running` 行；服务进程 pid 97239 启动于 2026-10-27 17:56（v2.4 代码）；行数 `trade_plans` 9、`signal_candidates` 15、`agent_runs` 8、`agent_tool_calls` 72、`signal_decisions` 4、`stage_runs` 14、`job_reports` 69 |
+| 2. 全库备份 | `.local/us-workbench/backups/investment_assistant-before-026-20261028-163044.dump`（5,582,037 字节，sha256 `e555371b5306ceec709b0fbb50920683186be8d1382ddf212ef7356118f3babf`）；`pg_restore --list` 可读，36 张表与线上一致 |
+| 3. 执行 | 16:30:49 +0800，`psql --single-transaction -v ON_ERROR_STOP=1 -f migrations/026_plan_timeline.sql`（3 个 `CREATE TABLE`、4 个 `CREATE INDEX`、12 个 `ALTER TABLE`、3 个 `DO` 块、1 个 `DROP INDEX`）；三条 `NOTICE` 是首次执行时 `DROP CONSTRAINT IF EXISTS` 找不到具名约束，属预期；`schema_migrations` 仍只到 `017` |
+| 4. 验证 | 三张新表各 0 行；`signal_decisions.agent_plan_id`（`uuid`）、`review_view`（`jsonb`）在；`agent_runs_mode_check` 允许 `propose`、`interpret`、`review`、`revise`，`agent_runs_mode_plan_check`、`agent_runs_interpret_no_pass_check` 与 spec §6.4 逐字一致；`agent_tool_calls_phase_check` 允许 `review`；`stage_runs_stage_check` 为 8 个阶段；`idx_trade_plans_agent_unique` 只管 `plan_version = 'agent-1'`；`public` 表数 36 → 39；旧表行数与预检相同 |
+| 5. 重启服务 | 16:31:08 +0800 `launchctl kickstart -k`，新进程 pid 8923 启动于 16:31:38；`/api/health`：数据库、调度线程（轮询运行中）、Filings 存储、Discord、FRED up，SEC 与 Yahoo 经代理时有 SSL 中断（复查时交替 up / down，与 v2.4 验收日相同），3 项 `systemctl` 检查在 macOS 上为 down（与本次无关）；`/api/workbench/today`（`timeline_ready: true`）、`/api/jobs/scheduled`、`/api/status`、`/api/workbench/plan-reviews`、`/api/workbench/chains?ticker=QCOM`、`/api/workbench/user-inputs?ticker=QCOM` 均 200 |
+
+回滚：`pg_restore --clean -d "$INVESTMENT_ASSISTANT_DATABASE_URL" <上面的 dump>`，再重启到 v2.4 代码。
 
 ## 一次性测试库
 
