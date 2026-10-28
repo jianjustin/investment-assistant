@@ -183,7 +183,7 @@
           {#each focus as item, i (i)}
             <li class="border-l-2 border-accent/50 pl-2">{item.text}
               {#if item.link}<a class="text-accent underline" href={item.link}>查看</a>{/if}
-              {#each item.concepts as id (id)}<span class="text-xs"> <ConceptTerm {id} /></span>{/each}
+              {#each item.concepts as id, i (i)}<span class="text-xs"> <ConceptTerm {id} /></span>{/each}
             </li>
           {/each}
         </ul>
@@ -233,7 +233,9 @@
             <summary class="cursor-pointer text-xs"><ConceptTerm id={I.chainState}>已结束的链</ConceptTerm>（{endedChains.length}）</summary>
             <ul aria-label="已结束的链" class="space-y-1">
               {#each endedChains as c (c.signal_date)}
-                <li>{chainLine(c)} · <a class="text-accent underline" href={`#plan/${c.head_plan_id}`}>查看</a></li>
+                <li>{chainLine(c)} · <a class="text-accent underline" href={`#plan/${c.head_plan_id}`}>查看</a>
+                  {#if c.latest_review?.reason}<p class="text-xs text-muted">{c.latest_review.reason}</p>{/if}
+                </li>
               {/each}
             </ul>
           </details>
@@ -254,7 +256,21 @@
 
       {#if view.position}
         <p class="text-sm">持仓 {view.position.quantity} 股 · 成本 {Number(view.position.avg_cost).toFixed(2)} · 开仓 {wb.dateTime(view.position.opened_at)}
-          <span class="text-xs"><ConceptTerm id={I.position}>持仓说明</ConceptTerm> <ConceptTerm id={I.stop}>止损</ConceptTerm> <ConceptTerm id={I.target1}>T1</ConceptTerm> <ConceptTerm id={I.trailing}>移动止损</ConceptTerm></span></p>
+          <span class="text-xs"><ConceptTerm id={I.position}>持仓说明</ConceptTerm></span></p>
+        {#if view.holding}
+          {@const h = view.holding}
+          <p class="text-sm" aria-label="持仓止损">
+            {#if h.stop != null}
+              当前止损 {h.stop}（{h.mode === 'trailing' ? '移动' : '初始'}）<span class="text-xs"><ConceptTerm id={I.stop}>止损</ConceptTerm>{#if h.mode === 'trailing'} <ConceptTerm id={I.trailing}>移动止损</ConceptTerm>{/if}</span>
+              · T1 {h.target1 ?? '—'}（{h.t1_reached ? '已触 T1' : '未触 T1'}）<span class="text-xs"><ConceptTerm id={I.target1}>T1</ConceptTerm></span>
+              · 收盘 {h.last_close ?? '—'} · 距止损 {wb.pct(h.to_stop_pct)} · 距 T1 {wb.pct(h.to_target_pct)}
+            {:else}
+              无计划持仓（回撤规则看护）
+            {/if}
+          </p>
+        {:else if blockError('holding')}
+          <p class="text-xs text-muted">当前止损与 T1 暂不可用：{blockError('holding')}</p>
+        {/if}
       {:else}
         <p class="text-sm text-muted">当前无持仓</p>
       {/if}
@@ -262,9 +278,11 @@
       {#if timelineMissing}
         <section class="border border-border rounded p-3 bg-surface text-sm">
           <h2 class="font-semibold">我的补充</h2>
+          <p class="text-xs text-muted"><ConceptTerm id={I.userInput}>用户输入说明</ConceptTerm></p>
           <p class="text-xs text-muted">暂不可用：{chainsError}</p>
         </section>
       {:else}
+        <p class="text-xs text-muted"><ConceptTerm id={I.userInput}>用户输入说明</ConceptTerm></p>
         {#key view.ticker}
           <UserInputs ticker={view.ticker} chains={activeChains} />
         {/key}
@@ -357,6 +375,7 @@
 
       <div class="text-sm space-y-1">
         <h3 class="font-medium"><ConceptTerm id={I.entryZone}>计划价位</ConceptTerm></h3>
+        <p class="text-xs text-muted">说明：<ConceptTerm id={I.stop}>止损</ConceptTerm> <ConceptTerm id={I.target1}>T1</ConceptTerm> <ConceptTerm id={I.chain}>版本链</ConceptTerm></p>
         {#if plans.length}
           <ul aria-label="计划价位" class="space-y-0.5">
             {#each plans as p (p.id)}
@@ -371,6 +390,7 @@
         {#if annotations?.omitted}<p class="text-xs text-muted">另有 {annotations.omitted} 份未画</p>{/if}
       </div>
 
+      <p class="text-xs text-muted"><ConceptTerm id={I.position}>候选、决定与成交</ConceptTerm></p>
       <ol class="space-y-1 text-sm">
         {#each historyItems as item}
           <li class="flex gap-2">

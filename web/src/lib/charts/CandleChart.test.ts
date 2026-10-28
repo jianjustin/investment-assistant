@@ -58,8 +58,8 @@ it('sets markers sorted', () => {
   render(CandleChart, { data: [], markers: [
     { time: '2026-10-22', position: 'belowBar', shape: 'arrowUp', text: '回踩', kind: 'candidate', refs: ['c2'] },
     { time: '2026-10-20', position: 'aboveBar', shape: 'circle', text: '异常', kind: 'candidate', refs: ['c1'] },
-    { time: '2026-10-22', position: 'belowBar', shape: 'arrowUp', text: 'B 10', kind: 'trade', refs: [] },
-    { time: '2026-10-21', position: 'aboveBar', shape: 'arrowDown', text: 'S 5', kind: 'trade', refs: [] },
+    { time: '2026-10-22', position: 'belowBar', shape: 'square', text: 'B 10', kind: 'trade', refs: [] },
+    { time: '2026-10-21', position: 'aboveBar', shape: 'square', text: 'S 5', kind: 'trade', refs: [] },
   ] as any })
   const set = made.candles[0].setMarkers
   expect(set).toHaveBeenCalledTimes(1)
@@ -67,6 +67,13 @@ it('sets markers sorted', () => {
   expect(marks.map(m => m.time)).toEqual(['2026-10-20', '2026-10-21', '2026-10-22', '2026-10-22'])
   expect(marks.map(m => m.text)).toEqual(['异常', 'S 5', '回踩', 'B 10'])       // stable within one day
   expect(marks[2]).toMatchObject({ position: 'belowBar', shape: 'arrowUp' })
+  // real trade fills are squares: buys and sells get different colours (decided by the B / S text), candidates by shape
+  const [watch, sell, candidate, buy] = marks
+  expect(buy).toMatchObject({ shape: 'square' })
+  expect(sell).toMatchObject({ shape: 'square' })
+  expect(buy.color).not.toBe(sell.color)
+  expect(candidate.color).not.toBe(buy.color)
+  expect(watch.color).toBe('#f59e0b')
   expect(marks.every(m => typeof m.color === 'string' && m.color.length > 0)).toBe(true)
 })
 

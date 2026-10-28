@@ -166,7 +166,7 @@ describe('AgentReasoning', () => {
     render(AgentReasoning, { runId: 'run-1' })
     const prop = await screen.findByRole('region', { name: '提议' })
     const read = screen.getByRole('region', { name: '提议者读了什么' })
-    const row = read.querySelector('[data-call="1"]') as HTMLElement
+    const row = read.querySelector('[data-call="run-1-1"]') as HTMLElement
     expect(row.dataset.highlighted).toBeUndefined()
     const thesis = within(prop).getByRole('list', { name: '论点' })
     await fireEvent.click(within(thesis).getByRole('button', { name: 'call:1' }))
@@ -177,7 +177,7 @@ describe('AgentReasoning', () => {
     expect(thesis).toHaveTextContent('user:7')
     await fireEvent.click(within(prop).getAllByRole('button', { name: 'call:2' })[0])
     expect(row.dataset.highlighted).toBeUndefined()
-    expect((read.querySelector('[data-call="2"]') as HTMLElement).dataset.highlighted).toBe('true')
+    expect((read.querySelector('[data-call="run-1-2"]') as HTMLElement).dataset.highlighted).toBe('true')
   })
 
   it('call results show a count and first/last rows for lists, expandable', async () => {

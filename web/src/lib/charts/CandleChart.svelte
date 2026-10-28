@@ -32,7 +32,11 @@
 
   function markerColor(m: Marker): string {
     if (m.color) return m.color
-    if (m.kind === 'trade') return m.shape === 'arrowDown' ? '#9333ea' : '#2563eb'
+    // fills are squares (B / S in the text, below / above the bar); only the text or position tells buy from sell
+    if (m.kind === 'trade') {
+      const sell = /^\s*S\b/.test(m.text ?? '') || (!m.text && !/below/i.test(m.position ?? ''))
+      return sell ? '#9333ea' : '#2563eb'
+    }
     if (m.shape === 'arrowUp') return '#16a34a'
     if (m.shape === 'arrowDown') return '#dc2626'
     return '#f59e0b'

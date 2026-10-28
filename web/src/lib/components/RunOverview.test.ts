@@ -133,6 +133,23 @@ describe('RunOverview', () => {
     expect(within((await screen.findAllByRole('listitem'))[0]).queryByRole('button', { name: '展开明细' })).toBeNull()
   })
 
+  it('expands repeated degradation kinds, identical failures and skips without key errors', async () => {
+    vi.mocked(api.getRunOverview).mockResolvedValue(overview({ stages: IDS.map(id => id === 'signals'
+      ? line(id, { status: 'degraded', status_text: '降级', sentence: '评估 5 只',
+          skips: [{ reason: 'a', text: '原因 A', count: 1, samples: ['X'] }, { reason: 'a', text: '原因 A', count: 1, samples: ['X'] }],
+          failures: [{ target: 'NVDA', reason: 'boom' }, { target: 'NVDA', reason: 'boom' }],
+          degradations: [{ kind: 'conflict', text: '与已存记录不一致（未覆盖）', detail: 'NVDA' },
+                         { kind: 'conflict', text: '与已存记录不一致（未覆盖）', detail: 'MU' }] })
+      : line(id)) }))
+    render(RunOverview, {})
+    const row = (await screen.findAllByRole('listitem'))[3]
+    await fireEvent.click(within(row).getByRole('button', { name: '展开明细' }))
+    expect(within(row).getAllByText('NVDA：boom')).toHaveLength(2)
+    expect(within(row).getByText('与已存记录不一致（未覆盖）：NVDA')).toBeInTheDocument()
+    expect(within(row).getByText('与已存记录不一致（未覆盖）：MU')).toBeInTheDocument()
+    expect(within(row).getAllByText('原因 A × 1（样本：X）')).toHaveLength(2)
+  })
+
   it('onlyStage renders one line', async () => {
     render(RunOverview, { session: '2026-10-24', compact: true, onlyStage: 'plan' })
     const rows = await screen.findAllByRole('listitem')

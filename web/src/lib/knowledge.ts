@@ -121,6 +121,12 @@ export interface InstrumentPlan {
   entry_low: string | number; entry_high: string | number; stop: string | number; target1: string | number
   valid_from: string; valid_until: string; status: string; version_no: number | null
 }
+/** The instrument's holding as a 「今日」 holdings row (same backend function); stop is null for a holding without a plan. */
+export interface InstrumentHolding {
+  quantity: number; avg_cost: number | string; plan_id: string | null
+  stop: string | number | null; mode: string | null; t1_reached: boolean; target1: string | number | null
+  last_close: number | string | null; to_stop_pct: number | null; to_target_pct: number | null
+}
 export interface Marker {
   time: string; position?: string; shape: string; text?: string; kind?: string; refs?: string[]; color?: string
 }

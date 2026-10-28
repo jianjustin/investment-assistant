@@ -188,6 +188,8 @@ it('keeps the instrument page when fundamentals fail', async () => {
 // ---- v2.6: four sections, focus, key data, annotations ----
 
 const extra = () => ({
+  holding: { quantity: 10, avg_cost: 100.1, plan_id: 'pl-rule', stop: '95.00', mode: 'trailing', t1_reached: false,
+             target1: '112.00', last_close: '102.50', to_stop_pct: -0.073, to_target_pct: 0.093 },
   focus: [
     { kind: 'position', text: '持仓 10 股 · 成本 100.10 · 当前止损 95.00（按你决定的计划）· 距止损 -5.1%', link: '#review/trades',
       concepts: ['review.position', 'plan.stop'] },
@@ -421,4 +423,58 @@ it('a failed new block shows its reason in the matching section', async () => {
   expect(screen.getByRole('region', { name: '历史' })).toHaveTextContent('p 失败')
   expect(screen.getByRole('region', { name: '历史' })).toHaveTextContent('a 失败')
   expect(screen.getByTestId('instrument-chart')).toBeInTheDocument()
+})
+
+it('shows the holding stop and T1 with their concepts, and keeps position facts', async () => {
+  rich()
+  vi.spyOn(api, 'getConcepts').mockResolvedValue(conceptIndexOf(
+    ['plan.stop', 'plan.target1', 'plan.trailing_stop', 'review.position', 'agent.user_input', 'agent.version_chain']))
+  render(Instrument, { sub: 'NVDA' })
+  const holding = await screen.findByLabelText('持仓止损')
+  expect(holding).toHaveTextContent('当前止损 95.00（移动）')
+  expect(holding).toHaveTextContent('T1 112.00（未触 T1）')
+  expect(holding).toHaveTextContent('距止损 -7.30% · 距 T1 +9.30%')
+  const section = screen.getByRole('region', { name: '信号与计划' })
+  expect(section).toHaveTextContent('持仓 10 股 · 成本 100.10')
+  const labels = (await within(holding).findAllByRole('button', { name: /^概念：/ })).map(b => b.getAttribute('aria-label'))
+  expect(labels).toEqual(['概念：T:plan.stop', '概念：T:plan.trailing_stop', '概念：T:plan.target1'])
+  expect((await within(section).findAllByRole('button', { name: '概念：T:review.position' })).length).toBeGreaterThan(0)
+  expect(within(section).getByRole('button', { name: '概念：T:agent.user_input' })).toBeInTheDocument()
+  // 计划价位 and the history timeline carry their concepts too
+  const history = screen.getByRole('region', { name: '历史' })
+  expect(within(history).getByRole('button', { name: '概念：T:agent.version_chain' })).toBeInTheDocument()
+  expect(within(history).getByRole('button', { name: '概念：T:review.position' })).toBeInTheDocument()
+})
+
+it('holding without a plan and a failed holding block', async () => {
+  const respondWith = (extraKeys: Record<string, unknown>) => vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (String(url).startsWith('/api/watchlist')) return json({ rows: [{ ticker: 'NVDA' }] })
+    if (String(url).startsWith('/api/us-research/')) return json(fundamentalsView('NVDA'))
+    if (String(url).startsWith('/api/workbench/chains?')) return json({ ticker: 'NVDA', chains: [] })
+    if (String(url).startsWith('/api/workbench/user-inputs')) return json({ inputs: [] })
+    return json({ ...richView('NVDA'), ...extraKeys })
+  }))
+  respondWith({ holding: { ...extra().holding, stop: null, mode: null, target1: null, plan_id: null } })
+  const first = render(Instrument, { sub: 'NVDA' })
+  expect(await screen.findByLabelText('持仓止损')).toHaveTextContent('无计划持仓（回撤规则看护）')
+  first.unmount()
+  respondWith({ holding: null, errors: { holding: 'h 失败' } })
+  render(Instrument, { sub: 'NVDA' })
+  expect(await screen.findByText(/当前止损与 T1 暂不可用：h 失败/)).toBeInTheDocument()
+  expect(screen.queryByLabelText('持仓止损')).toBeNull()
+})
+
+it('ended chains keep their latest review reason', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (String(url).startsWith('/api/watchlist')) return json({ rows: [{ ticker: 'NVDA' }] })
+    if (String(url).startsWith('/api/us-research/')) return json(fundamentalsView('NVDA'))
+    if (String(url).startsWith('/api/workbench/chains?')) return json({ ticker: 'NVDA', chains: [
+      { signal_date: '2026-10-10', state: 'invalidated', mode: null, version_no: 1, head_plan_id: 'hp-0',
+        latest_review: { outcome: 'invalidate', decided_by: 'agent', created_at: '2026-10-20T22:40:00Z', reason: '失效条件成立：收盘跌破 95.00' } }] })
+    if (String(url).startsWith('/api/workbench/user-inputs')) return json({ inputs: [] })
+    return json(richView('NVDA'))
+  }))
+  render(Instrument, { sub: 'NVDA' })
+  const ended = await screen.findByRole('list', { name: '已结束的链', hidden: true })
+  expect(ended).toHaveTextContent('失效条件成立：收盘跌破 95.00')
 })

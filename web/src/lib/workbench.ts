@@ -1,6 +1,6 @@
 /** US workbench API client and pure helpers (design 2026-10-23). */
 import type { AgentView, ChainRow, Change, Condition } from './timeline'
-import type { Annotations, FocusItem, InstrumentContext, InstrumentPlan, KeyData } from './knowledge'
+import type { Annotations, FocusItem, InstrumentContext, InstrumentHolding, InstrumentPlan, KeyData } from './knowledge'
 
 export type Action = 'buy' | 'sell' | 'watch'
 export type FinalAction = Action | 'ignore'
@@ -199,6 +199,7 @@ export interface InstrumentView {
   decisions: Decision[]; trades: Trade[]; position: Position | null; closed: any[]
   chart: { bars: ChartBar[]; adjustment: string; annotations?: Annotations }
   // v2.6 (§9.4): additive keys; an older backend simply lacks them
+  holding?: InstrumentHolding | null
   focus?: FocusItem[]; key_data?: KeyData; context?: InstrumentContext; plans?: InstrumentPlan[]
   // a new block that failed to read is null and its reason is here, keyed by block name (focus, key_data, ...)
   errors?: Record<string, string>

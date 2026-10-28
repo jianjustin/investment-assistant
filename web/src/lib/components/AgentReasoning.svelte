@@ -59,7 +59,8 @@
     const seq = Number(ref.split(':')[1])
     if (!Number.isFinite(seq)) return
     highlighted = seq
-    const row = root?.querySelector(`[data-call="${seq}"]`)
+    // data-call carries this run's id so a nested AgentReasoning's calls are never matched
+    const row = root?.querySelector(`[data-call="${runId}-${seq}"]`)
     row?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
   }
   const consistencyOf = (value: ReasoningStep['consistency']): string | null =>
@@ -120,7 +121,7 @@
         {#if step.kind === 'read'}
           <ul class="space-y-1">
             {#each step.calls ?? [] as call (call.seq)}
-              <li data-call={call.seq} data-highlighted={highlighted === call.seq ? 'true' : undefined}
+              <li data-call={`${runId}-${call.seq}`} data-highlighted={highlighted === call.seq ? 'true' : undefined}
                   class="text-xs rounded px-1 {highlighted === call.seq ? 'bg-amber-100 ring-1 ring-amber-400' : ''}">
                 <p class="break-all">
                   <span class="font-medium">{call.ref}</span> ·
@@ -136,7 +137,7 @@
                 {#if shownResult[call.seq]}
                   <div class="ml-3 space-y-0.5">
                     {#if extraFields(call).length}
-                      <p class="text-muted">涉及：{#each extraFields(call) as [name, concept], i (name)}{#if i}、{/if}<ConceptTerm id={concept}>{name}</ConceptTerm>{/each}</p>
+                      <p class="text-muted">涉及：{#each extraFields(call) as [name, concept], i (i)}{#if i}、{/if}<ConceptTerm id={concept}>{name}</ConceptTerm>{/each}</p>
                     {/if}
                     {#each resultEntries(call.result) as [key, value] (key)}
                       {#if Array.isArray(value)}
@@ -176,7 +177,7 @@
           {/if}
           {#if step.levels?.length}
             <ul aria-label="价位" class="text-xs">
-              {#each step.levels as level (level.key)}
+              {#each step.levels as level, i (i)}
                 <li>{level.label ?? LEVEL_TEXT[level.key] ?? level.key} {level.value}{@render refList(level.refs)}
                   {#if level.concept}<ConceptTerm id={level.concept} />{/if}</li>
               {/each}
@@ -210,7 +211,7 @@
 
         {:else if step.kind === 'check'}
           <ul class="text-xs space-y-0.5">
-            {#each step.items ?? [] as item, i (item.id ?? i)}
+            {#each step.items ?? [] as item, i (i)}
               <li>{item.text} · <span class={CHECK_CLASS[item.result] ?? 'text-muted'}>{CHECK_TEXT[item.result] ?? item.result}</span></li>
             {/each}
           </ul>

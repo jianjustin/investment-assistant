@@ -117,7 +117,7 @@
               <span class="font-medium"><ConceptTerm id={ATTACH.overview.stages}>{s.title}</ConceptTerm></span>
               <span class="text-xs px-1.5 py-0.5 rounded {STATUS_CLASS[s.status] ?? 'bg-surface-2 text-muted'}"><ConceptTerm id={ATTACH.overview.status}>{s.status_text}</ConceptTerm></span>
               <span>{s.sentence}</span>
-              {#each s.concepts as concept (concept)}<span class="text-xs"><ConceptTerm id={concept} /></span>{/each}
+              {#each s.concepts as concept, i (i)}<span class="text-xs"><ConceptTerm id={concept} /></span>{/each}
               <span class="text-xs text-muted">输入 {count(s.input_count)} · 产出 {count(s.output_count)}</span>
               {#if s.duration_ms != null}<span class="text-xs text-muted">{duration(s.duration_ms)}</span>{/if}
               {#if hasDetail(s)}
@@ -127,13 +127,13 @@
             </div>
             {#if expanded[s.id]}
               <div class="ml-4 text-xs space-y-0.5">
-                {#each s.skips as skip (skip.reason)}
+                {#each s.skips as skip, i (i)}
                   <p>{skip.text} × {skip.count}{skip.samples.length ? `（样本：${skip.samples.join('、')}）` : ''}</p>
                 {/each}
-                {#each s.failures as failure (failure.target + failure.reason)}
+                {#each s.failures as failure, i (i)}
                   <p class="text-red-600">{failure.target}：{failure.reason}</p>
                 {/each}
-                {#each s.degradations as d (d.kind)}
+                {#each s.degradations as d, i (i)}
                   <p class="text-amber-700">{d.text}{d.detail ? `：${d.detail}` : ''}</p>
                 {/each}
               </div>
