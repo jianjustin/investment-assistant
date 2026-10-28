@@ -59,6 +59,20 @@ describe('UserInputs', () => {
     expect(posts()).toHaveLength(0)
   })
 
+  it('counts body length by code point like the backend', async () => {
+    render(UserInputs, { ticker: 'NVDA' })
+    await screen.findByText(/^user:7 · /)
+    await fireEvent.input(screen.getByLabelText('正文'), { target: { value: '😀'.repeat(4000) } })   // 8000 UTF-16 单元
+    await fireEvent.click(screen.getByRole('button', { name: '提交补充' }))
+    await waitFor(() => expect(posts()).toHaveLength(1))
+    await screen.findByText(/已记录 user:8/)
+    await waitFor(() => expect(screen.getByRole('button', { name: '提交补充' })).not.toBeDisabled())
+    await fireEvent.input(screen.getByLabelText('正文'), { target: { value: '😀'.repeat(4001) } })
+    await fireEvent.click(screen.getByRole('button', { name: '提交补充' }))
+    expect(screen.getByText('正文最多 4000 字（现在 4001 字）')).toBeInTheDocument()
+    expect(posts()).toHaveLength(1)
+  })
+
   it('correct and retract post supersedes_id', async () => {
     render(UserInputs, { ticker: 'NVDA' })
     await screen.findByText(/^user:7 · /)

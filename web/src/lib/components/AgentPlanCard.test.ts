@@ -146,4 +146,37 @@ describe('AgentPlanCard', () => {
     expect(screen.getByText('Agent 已作废此计划（第 1 版）：失效条件成立：收盘跌破 95.00')).toBeInTheDocument()
     expect(screen.queryByText(/入场区间/)).toBeNull()
   })
+
+  it('labels condition results only when the review carries them', () => {
+    const a = agent2()
+    const { unmount } = render(AgentPlanCard, { agent: agent2({ chain: { ...a.chain,
+      latest_review: { ...a.chain.latest_review, conditions: undefined } } }) as any, onCall: () => {} })
+    const list = screen.getByRole('list', { name: '失效条件' })
+    expect(list).not.toHaveTextContent('最近判定')
+    expect(list).not.toHaveTextContent('尚未复查')
+    unmount()
+
+    const second = render(AgentPlanCard, { agent: agent2({ chain: { ...a.chain, latest_review: null } }) as any,
+                                           onCall: () => {} })
+    expect(screen.getByRole('list', { name: '失效条件' })).toHaveTextContent('收盘跌破 95.00 · 最近判定：尚未复查')
+    second.unmount()
+
+    // 产生本版的那条复查判定的是上一版：本版仍是「尚未复查」
+    render(AgentPlanCard, { agent: agent2({ chain: { ...a.chain, latest_review: { ...a.chain.latest_review,
+      outcome: 'revise', new_plan_id: 'ap2' } } }) as any, onCall: () => {} })
+    expect(screen.getByRole('list', { name: '失效条件' })).toHaveTextContent('收盘跌破 95.00 · 最近判定：尚未复查')
+  })
+
+  it('holding version blocked by position rules is not called void', () => {
+    const a = agent2()
+    const blocked = agentPlan({ status: 'invalid', invalid_reasons: ['no_room'] })
+    const { unmount } = render(AgentPlanCard, { agent: agent2({ plan: blocked,
+      chain: { ...a.chain, state: 'holding', mode: 'holding' } }) as any, onCall: () => {} })
+    expect(screen.getByText('本版按仓位规则不能加仓（no_room）')).toBeInTheDocument()
+    expect(screen.queryByText(/Agent 计划已作废/)).toBeNull()
+    unmount()
+
+    render(AgentPlanCard, { agent: agent2({ plan: blocked }) as any, onCall: () => {} })
+    expect(screen.getByText('Agent 计划已作废：no_room')).toBeInTheDocument()
+  })
 })

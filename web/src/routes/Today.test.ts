@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import Today from './Today.svelte'
 import { confirmResearchNavigation } from '../lib/navigation-guard'
+import * as api from '../lib/api'
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
@@ -862,6 +863,34 @@ describe('agent-first layout', () => {
     expect(calls.some(c => c.url === '/api/workbench/chains/AMD/2026-10-20/recheck' && c.init?.method === 'POST')).toBe(true)
     await fireEvent.click(screen.getAllByRole('button', { name: '重新复查' })[1])
     expect(await screen.findByText('不能重新复查：正在复查')).toBeInTheDocument()
+  })
+
+  const activeChain = { ticker: 'AMD', signal_date: '2026-10-20', state: 'holding', mode: 'holding', basis: '持仓中',
+                       version_no: 2, head_plan_id: 'hp-amd', valid_until: '2026-10-27', pool: 'core',
+                       latest_review: null, signals_today: [] }
+
+  it('recheck polls up to 15 minutes and reports a poll timeout as still running', async () => {
+    respond = async (url, init) => url.endsWith('/recheck') && init?.method === 'POST'
+      ? json({ run_id: 'plan_recheck-1', status: 'pending' }) : await today([], { chains: [activeChain] })()
+    const poll = vi.spyOn(api, 'pollRun').mockRejectedValue(new Error('run timeout'))
+    render(Today)
+    await fireEvent.click(await screen.findByRole('button', { name: '重新复查' }))
+    expect(await screen.findByText('复查仍在后台进行，稍后刷新查看')).toBeInTheDocument()
+    expect(poll).toHaveBeenCalledWith('plan_recheck-1', { timeoutMs: 900_000 })
+    expect(screen.getByRole('button', { name: '重新复查' })).toBeDisabled()
+    expect(screen.queryByText(/请求失败/)).toBeNull()
+  })
+
+  it('recheck finishing as skipped shows the reason', async () => {
+    respond = async (url, init) => {
+      if (url.endsWith('/recheck') && init?.method === 'POST') return json({ run_id: 'plan_recheck-2', status: 'pending' })
+      if (url.startsWith('/api/runs/')) return json({ run_id: 'plan_recheck-2', status: 'done',
+                                                      result: { outcome: 'skipped', reason: 'token_budget' } })
+      return await today([], { chains: [activeChain] })()
+    }
+    render(Today)
+    await fireEvent.click(await screen.findByRole('button', { name: '重新复查' }))
+    expect(await screen.findByText('复查完成：跳过（超出 token 上限）')).toBeInTheDocument()
   })
 
   it('holding without chain shows note', async () => {

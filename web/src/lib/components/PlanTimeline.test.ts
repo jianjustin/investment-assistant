@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import PlanTimeline from './PlanTimeline.svelte'
+import * as api from '../api'
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
@@ -99,7 +100,9 @@ describe('PlanTimeline', () => {
     expect(rows[0]).toHaveTextContent('T1 已触及，上移止损')
     expect(rows[0]).toHaveTextContent('信号：触及 T1、新的用户输入')
     expect(rows[0]).toHaveTextContent('失效 收盘跌破 94.00：未成立')
-    expect(rows[0]).toHaveTextContent('引用的用户输入：user:7')
+    expect(rows[0]).toHaveTextContent('给模型的新输入：user:7')
+    expect(rows[0]).toHaveTextContent('引用：user:7')
+    expect(rows[1]).not.toHaveTextContent('给模型的新输入')
     expect(rows[1]).toHaveTextContent('重新复查 · 修订 · Agent · 第 1 版')
     expect(rows[1]).toHaveTextContent('修订未通过：变化说明与实际差异不符')
     expect(rows[2]).toHaveTextContent('跳过')
@@ -144,6 +147,24 @@ describe('PlanTimeline', () => {
     respond = async () => json(chain({ state: { state: 'holding', mode: 'holding', basis: '持仓中' } }))
     render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
     expect(await screen.findByRole('button', { name: '重新复查' })).not.toBeDisabled()
+  })
+
+  it('recheck polls up to 15 minutes, a poll timeout is not a failure, and skipped/error carry the reason', async () => {
+    respond = async (url, init) => url.endsWith('/recheck') && init?.method === 'POST'
+      ? json({ run_id: 'plan_recheck-1', status: 'pending' }) : json(chain())
+    const poll = vi.spyOn(api, 'pollRun').mockRejectedValueOnce(new Error('run timeout'))
+    const first = render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
+    await fireEvent.click(await screen.findByRole('button', { name: '重新复查' }))
+    expect(await screen.findByText('复查仍在后台进行，稍后刷新查看')).toBeInTheDocument()
+    expect(poll).toHaveBeenCalledWith('plan_recheck-1', { timeoutMs: 900_000 })
+    expect(screen.getByRole('button', { name: '重新复查' })).toBeDisabled()
+    first.unmount()
+
+    poll.mockResolvedValueOnce({ run_id: 'plan_recheck-1', status: 'done', result: { outcome: 'error', reason: 'review_malformed' } })
+    render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
+    await fireEvent.click(await screen.findByRole('button', { name: '重新复查' }))
+    expect(await screen.findByText('复查完成：出错（复查输出格式无效）')).toBeInTheDocument()
+    poll.mockRestore()
   })
 
   it('409 review_in_progress shows reason', async () => {

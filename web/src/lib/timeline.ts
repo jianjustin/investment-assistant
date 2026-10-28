@@ -208,6 +208,21 @@ export function revisionFailureText(
   return `Agent 建议修订，但修订未通过校验（${revisionReasonText(review.revision_status)}），当前仍为第 ${versionNo} 版`
 }
 
+/** A recheck runs a review and possibly a revision: poll as long as the other long jobs (15 min). */
+export const RECHECK_POLL_MS = 900_000
+export const RECHECK_PENDING_TEXT = '复查仍在后台进行，稍后刷新查看'
+export const isRunTimeout = (error: unknown) => error instanceof Error && error.message === 'run timeout'
+
+/** Page text of a finished recheck run (`/api/runs/<id>`): the outcome, plus the reason when skipped / error. */
+export function recheckDoneText(run: { status: string; result?: unknown; error?: string }): string {
+  if (run.status !== 'done') return `复查失败：${recheckConflictText(run.error ?? '未知原因')}`
+  const row = (run.result ?? {}) as { outcome?: Outcome; reason?: string | null }
+  const outcome = row.outcome ? OUTCOME_TEXT[row.outcome] ?? row.outcome : '已完成'
+  const why = (row.outcome === 'skipped' || row.outcome === 'error') && row.reason
+    ? `（${AGENT_REASON_TEXT[row.reason] ?? row.reason}）` : ''
+  return `复查完成：${outcome}${why}`
+}
+
 /** 409 reasons of POST …/recheck in Chinese. */
 export function recheckConflictText(reason: string): string {
   if (reason === 'chain_not_active') return '这条链不在入场期或持仓期'

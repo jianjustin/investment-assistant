@@ -32,12 +32,14 @@
     ? `${output.action === 'buy' ? '买入' : '不建议买入'} · 入场区间 ${output.levels.entry_low.value}–${output.levels.entry_high.value}`
       + ` · 止损 ${output.levels.stop.value} · T1 ${output.levels.target1.value}`
     : '')
-  // 产生本版的那条复查判定的是上一版的条件，不拿来标本版。
-  const judged = $derived(review && !(review.new_plan_id && plan && review.new_plan_id === plan.id)
-    ? (review.conditions ?? []) : [])
-  const resultOf = (list: 'invalidation' | 'review_when', index: number): string => {
-    const hit = judged.find(c => c.list === list && c.index === index)
-    return hit ? tl.CONDITION_RESULT_TEXT[hit.result] ?? hit.result : '尚未复查'
+  // 没有复查、或最近复查产生的正是本版（它判定的是上一版的条件）→「尚未复查」；
+  // 复查行没带 conditions（今日视图尚未提供）→ 不标；带了 → 按 list/index 取判定。
+  const judgedThisVersion = $derived(!!review && !(review.new_plan_id && plan && review.new_plan_id === plan.id))
+  const resultOf = (list: 'invalidation' | 'review_when', index: number): string | null => {
+    if (!judgedThisVersion) return '尚未复查'
+    if (!review?.conditions) return null
+    const hit = review.conditions.find(c => c.list === list && c.index === index)
+    return hit ? tl.CONDITION_RESULT_TEXT[hit.result] ?? hit.result : null
   }
   const countersOf = (n: number) => (run?.counter?.counter ?? []).filter(c => c.thesis === n)
   const reviewLine = $derived(review
@@ -130,7 +132,8 @@
       <p class="text-xs text-muted">失效条件</p>
       <ul aria-label="失效条件" class="list-disc ml-5 text-xs">
         {#each output.invalidation as cond, i}
-          <li>{tl.conditionText(cond.kind, cond.params)} · 最近判定：{resultOf('invalidation', i)}{@render refList(cond.refs)}</li>
+          {@const result = resultOf('invalidation', i)}
+          <li>{tl.conditionText(cond.kind, cond.params)}{result ? ` · 最近判定：${result}` : ''}{@render refList(cond.refs)}</li>
         {/each}
       </ul>
     {/if}
@@ -174,7 +177,14 @@
 
     {#if reviewLine}<p class="text-xs">{reviewLine}</p>{/if}
     {#if revisionFailure}<p class="text-xs text-amber-700">{revisionFailure}</p>{/if}
-    {#if plan?.status === 'invalid'}<p class="text-red-600">Agent 计划已作废：{plan.invalid_reasons.join('、')}</p>{/if}
+    {#if plan?.status === 'invalid'}
+      {#if chain?.mode === 'holding'}
+        <!-- §5.2：持仓期新版按仓位规则作废（如 no_room）只说明不能再加仓，链照常有效、照常复查。 -->
+        <p class="text-amber-700">本版按仓位规则不能加仓（{plan.invalid_reasons.join('、')}）</p>
+      {:else}
+        <p class="text-red-600">Agent 计划已作废：{plan.invalid_reasons.join('、')}</p>
+      {/if}
+    {/if}
     {@render derivation()}
   {/if}
   <p class="text-xs text-muted">证据：未验证</p>

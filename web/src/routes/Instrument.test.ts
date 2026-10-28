@@ -83,6 +83,11 @@ it('keeps the page when the chains list is unavailable', async () => {
   expect(await screen.findByRole('heading', { name: /NVDA · 截至/ })).toBeInTheDocument()
   expect(await screen.findByText(/Agent 计划列表不可用/)).toBeInTheDocument()
   expect(screen.getByTestId('instrument-chart')).toBeInTheDocument()
+  // 迁移 026 未执行：「我的补充」写不进去，不给表单
+  expect(screen.getByRole('heading', { name: '我的补充' })).toBeInTheDocument()
+  expect(screen.getByText(/暂不可用/)).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: '提交补充' })).toBeNull()
+  expect(screen.queryByLabelText('正文')).toBeNull()
 })
 afterEach(() => vi.unstubAllGlobals())
 

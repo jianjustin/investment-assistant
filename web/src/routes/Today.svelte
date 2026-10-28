@@ -173,17 +173,14 @@
     rechecks[key] = { busy: true, text: '复查中…' }
     try {
       const started = await api.recheckChain(c.ticker, c.signal_date)
-      const done = await api.pollRun(started.run_id)
-      if (done.status === 'done') {
-        const outcome = (done.result as { outcome?: tl.Outcome } | undefined)?.outcome
-        rechecks[key] = { busy: false, text: `复查完成：${outcome ? tl.OUTCOME_TEXT[outcome] ?? outcome : '已完成'}` }
-        await load()
-      } else {
-        rechecks[key] = { busy: false, text: `复查失败：${tl.recheckConflictText(done.error ?? '未知原因')}` }
-      }
+      const done = await api.pollRun(started.run_id, { timeoutMs: tl.RECHECK_POLL_MS })
+      rechecks[key] = { busy: false, text: tl.recheckDoneText(done) }
+      if (done.status === 'done') await load()
     } catch (e) {
-      rechecks[key] = { busy: false, text: e instanceof wb.WorkbenchError && e.status === 409
-        ? `不能重新复查：${tl.recheckConflictText(e.message)}` : wb.describeError(e) }
+      // 轮询超时不是失败：后台仍在复查，按钮保持不可点，提示稍后刷新（再点会 409 review_in_progress）。
+      rechecks[key] = tl.isRunTimeout(e) ? { busy: true, text: tl.RECHECK_PENDING_TEXT }
+        : { busy: false, text: e instanceof wb.WorkbenchError && e.status === 409
+            ? `不能重新复查：${tl.recheckConflictText(e.message)}` : wb.describeError(e) }
     }
   }
 

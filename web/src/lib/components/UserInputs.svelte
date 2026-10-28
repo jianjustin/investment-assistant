@@ -46,9 +46,11 @@
   function validate(): string | null {
     const body = draft.body.trim()
     if (!body) return '正文不能为空'
-    if (body.length > MAX_BODY) return `正文最多 ${MAX_BODY} 字（现在 ${body.length} 字）`
+    // 按码位计数，与后端 char_length 一致（emoji 等补充平面字符算 1 个字）。
+    const chars = [...body].length
+    if (chars > MAX_BODY) return `正文最多 ${MAX_BODY} 字（现在 ${chars} 字）`
     const url = draft.url.trim()
-    if (url && (!/^https?:\/\//i.test(url) || url.length > MAX_URL)) return `链接须以 http:// 或 https:// 开头，最多 ${MAX_URL} 字`
+    if (url && (!/^https?:\/\//i.test(url) || [...url].length > MAX_URL)) return `链接须以 http:// 或 https:// 开头，最多 ${MAX_URL} 字`
     return null
   }
 

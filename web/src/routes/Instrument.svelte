@@ -21,6 +21,8 @@
   // v2.5 §11：页尾「我的补充」与该标的的 Agent 链列表；读不到（如迁移 026 未执行）只影响这一段。
   let chains = $state<tl.TickerChain[]>([])
   let chainsError = $state('')
+  // 503 = 迁移 026 未执行（或数据库不可用）：用户输入也写不进去，隐藏「我的补充」。
+  let timelineMissing = $state(false)
 
   async function loadChains(next: string, token: number) {
     try {
@@ -28,8 +30,13 @@
       if (token !== generation) return
       chains = Array.isArray(res?.chains) ? res.chains : []
       chainsError = ''
+      timelineMissing = false
     } catch (e) {
-      if (token === generation) { chains = []; chainsError = wb.describeError(e) }
+      if (token === generation) {
+        chains = []
+        chainsError = wb.describeError(e)
+        timelineMissing = e instanceof wb.WorkbenchError && e.status === 503
+      }
     }
   }
   const activeChains = $derived(chains.filter(c => tl.ACTIVE_STATES.includes(c.state))
@@ -58,6 +65,7 @@
     view = null
     chains = []
     chainsError = ''
+    timelineMissing = false
     void loadChains(next, token)
     try {
       const loaded = await wb.getInstrument(next)
@@ -165,8 +173,15 @@
       {/if}
     </section>
 
-    {#key view.ticker}
-      <UserInputs ticker={view.ticker} chains={activeChains} />
-    {/key}
+    {#if timelineMissing}
+      <section class="border border-border rounded p-3 bg-surface text-sm">
+        <h2 class="font-semibold">我的补充</h2>
+        <p class="text-xs text-muted">暂不可用：{chainsError}</p>
+      </section>
+    {:else}
+      {#key view.ticker}
+        <UserInputs ticker={view.ticker} chains={activeChains} />
+      {/key}
+    {/if}
   {/if}
 </section>

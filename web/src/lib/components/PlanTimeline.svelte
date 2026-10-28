@@ -43,17 +43,14 @@
     recheck = { busy: true, text: '复查中…' }
     try {
       const started = await api.recheckChain(ticker, signalDate)
-      const done = await api.pollRun(started.run_id)
-      if (done.status === 'done') {
-        const outcome = (done.result as { outcome?: tl.Outcome } | undefined)?.outcome
-        recheck = { busy: false, text: `复查完成：${outcome ? tl.OUTCOME_TEXT[outcome] ?? outcome : '已完成'}` }
-        await load()
-      } else {
-        recheck = { busy: false, text: `复查失败：${tl.recheckConflictText(done.error ?? '未知原因')}` }
-      }
+      const done = await api.pollRun(started.run_id, { timeoutMs: tl.RECHECK_POLL_MS })
+      recheck = { busy: false, text: tl.recheckDoneText(done) }
+      if (done.status === 'done') await load()
     } catch (e) {
-      recheck = { busy: false, text: e instanceof wb.WorkbenchError && e.status === 409
-        ? `不能重新复查：${tl.recheckConflictText(e.message)}` : wb.describeError(e) }
+      // 轮询超时不是失败：后台仍在复查，按钮保持不可点，提示稍后刷新。
+      recheck = tl.isRunTimeout(e) ? { busy: true, text: tl.RECHECK_PENDING_TEXT }
+        : { busy: false, text: e instanceof wb.WorkbenchError && e.status === 409
+            ? `不能重新复查：${tl.recheckConflictText(e.message)}` : wb.describeError(e) }
     }
   }
 
@@ -112,6 +109,7 @@
     (r.signals ?? []).filter(s => s.fired).map(s => tl.SIGNAL_TEXT[s.kind] ?? s.kind).join('、') || '无触发'
   const conditionsText = (r: tl.PlanReview) => (r.conditions ?? []).map(c =>
     `${LIST_TEXT[c.list] ?? c.list} ${tl.conditionText(c.kind, c.params)}：${tl.CONDITION_RESULT_TEXT[c.result] ?? c.result}`).join('；')
+  const userRefs = (r: tl.PlanReview) => (r.refs ?? []).filter(ref => ref.startsWith('user:'))
   const revisionStatus = (r: tl.PlanReview) => (r.detail?.revision_status as string | undefined) ?? null
 </script>
 
@@ -164,8 +162,9 @@
               {#if r.conditions?.length}<p class="text-xs text-muted">条件：{conditionsText(r)}</p>{/if}
             {/if}
             {#if r.user_input_ids?.length}
-              <p class="text-xs text-muted">引用的用户输入：{r.user_input_ids.map(id => `user:${id}`).join('、')}</p>
+              <p class="text-xs text-muted">给模型的新输入：{r.user_input_ids.map(id => `user:${id}`).join('、')}</p>
             {/if}
+            {#if userRefs(r).length}<p class="text-xs text-muted">引用：{userRefs(r).join('、')}</p>{/if}
             {#if revisionStatus(r)}<p class="text-xs text-amber-700">修订未通过：{tl.revisionReasonText(revisionStatus(r)!)}</p>{/if}
           </li>
         {/each}
