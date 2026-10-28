@@ -39,8 +39,50 @@ beforeEach(() => {
     urls.push(String(url))
     if (String(url).startsWith('/api/watchlist')) return json({ rows: [{ ticker: 'NVDA' }, { ticker: 'MU' }] })
     if (String(url).startsWith('/api/us-research/')) return json(fundamentalsView(String(url).split('/')[3].split('?')[0]))
+    if (String(url).startsWith('/api/workbench/chains?')) return json(chainsView)
+    if (String(url).startsWith('/api/workbench/user-inputs')) return json({ inputs: [] })
     return json(view(String(url).split('/').pop()!))
   }))
+})
+
+const chainsView = { ticker: 'NVDA', chains: [
+  { signal_date: '2026-10-22', state: 'holding', mode: 'holding', version_no: 2, head_plan_id: 'hp-1',
+    latest_review: { outcome: 'maintain', decided_by: 'host', created_at: '2026-10-27T22:40:00Z',
+                     reason: '无新信号，复查条件未满足（下一交易日）' } },
+  { signal_date: '2026-10-10', state: 'expired', mode: null, version_no: 0, head_plan_id: 'hp-0', latest_review: null },
+] }
+
+it('shows 我的补充 and agent chains list', async () => {
+  render(Instrument, { sub: 'NVDA' })
+  expect(await screen.findByRole('heading', { name: '我的补充' })).toBeInTheDocument()
+  const list = await screen.findByRole('list', { name: 'Agent 计划' })
+  const rows = list.querySelectorAll(':scope > li')
+  expect(rows[0]).toHaveTextContent('2026-10-22 · 持仓期 · 第 2 版 · 最近复查 维持 · 系统规则')
+  expect(rows[0].querySelector('a')!.getAttribute('href')).toBe('#plan/hp-1')
+  expect(rows[1]).toHaveTextContent('2026-10-10 · 已到期 · 第 0 版 · 尚未复查')
+  expect(urls).toContain('/api/workbench/chains?ticker=NVDA')
+  expect(urls).toContain('/api/workbench/user-inputs?ticker=NVDA')
+  // 只有有效链（入场期 / 持仓期）可以作为补充的作用对象
+  const scope = screen.getByLabelText('作用于') as HTMLSelectElement
+  expect([...scope.options].map(o => o.textContent)).toEqual(['整个标的', '2026-10-22 · 第 2 版'])
+  // 页面其余部分照旧
+  expect(screen.getByTestId('instrument-chart')).toBeInTheDocument()
+  expect(screen.getByText(/趋势回踩修复/)).toBeInTheDocument()
+  expect(await screen.findByText('未接入一致预期')).toBeInTheDocument()
+})
+
+it('keeps the page when the chains list is unavailable', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (String(url).startsWith('/api/watchlist')) return json({ rows: [{ ticker: 'NVDA' }] })
+    if (String(url).startsWith('/api/us-research/')) return json(fundamentalsView('NVDA'))
+    if (String(url).startsWith('/api/workbench/chains?')) return json({ error: '迁移 026 未执行' }, 503)
+    if (String(url).startsWith('/api/workbench/user-inputs')) return json({ error: '迁移 026 未执行' }, 503)
+    return json(view(String(url).split('/').pop()!))
+  }))
+  render(Instrument, { sub: 'NVDA' })
+  expect(await screen.findByRole('heading', { name: /NVDA · 截至/ })).toBeInTheDocument()
+  expect(await screen.findByText(/Agent 计划列表不可用/)).toBeInTheDocument()
+  expect(screen.getByTestId('instrument-chart')).toBeInTheDocument()
 })
 afterEach(() => vi.unstubAllGlobals())
 

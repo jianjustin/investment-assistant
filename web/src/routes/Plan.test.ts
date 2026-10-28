@@ -37,6 +37,37 @@ describe('Plan', () => {
     expect(screen.getByText('输入快照')).toBeInTheDocument()
   })
 
+  it('agent-2 plan shows PlanTimeline and UserInputs', async () => {
+    vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation({
+      plan: { id: 'p1', ticker: 'NVDA', signal_date: '2026-10-22', kind: 'agent', plan_version: 'agent-2', status: 'ok' },
+    }))
+    const getChain = vi.spyOn(api, 'getChain').mockResolvedValue({
+      ticker: 'NVDA', signal_date: '2026-10-22', session: '2026-10-24',
+      state: { state: 'entry', mode: 'entry', basis: '尚未决定' }, head_plan_id: 'p2', version_no: 1,
+      latest_review: null, shadow_version: 'plan-shadow-1', versions: [], reviews: [], inputs: [],
+    } as any)
+    const getInputs = vi.spyOn(api, 'getUserInputs').mockResolvedValue({ inputs: [] })
+    render(Plan, { sub: 'p1' })
+    expect(await screen.findByRole('region', { name: '版本链' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '我的补充' })).toBeInTheDocument()
+    expect(getChain).toHaveBeenCalledWith('NVDA', '2026-10-22')
+    expect(getInputs).toHaveBeenCalledWith('NVDA', '2026-10-22')
+    expect(await screen.findByText('触发')).toBeInTheDocument()      // 推导照旧嵌入
+  })
+
+  it('rule plan page unchanged', async () => {
+    vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation())
+    const getChain = vi.spyOn(api, 'getChain')
+    const getInputs = vi.spyOn(api, 'getUserInputs')
+    render(Plan, { sub: 'p1' })
+    expect(await screen.findByRole('heading', { name: 'NVDA · 2026-10-22' })).toBeInTheDocument()
+    expect(await screen.findByText('触发')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '版本链' })).toBeNull()
+    expect(screen.queryByRole('region', { name: '我的补充' })).toBeNull()
+    expect(getChain).not.toHaveBeenCalled()
+    expect(getInputs).not.toHaveBeenCalled()
+  })
+
   it('shows not-found for unknown plan id', async () => {
     vi.spyOn(api, 'getPlanDerivation').mockRejectedValue(new Error('计划不存在：nope'))
     render(Plan, { sub: 'nope' })

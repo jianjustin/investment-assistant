@@ -1,10 +1,13 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte'
-  import { getWatchlist } from '../lib/api'
+  import { getTickerChains, getWatchlist } from '../lib/api'
   import CandleChart from '../lib/charts/CandleChart.svelte'
   import Fundamentals from '../lib/components/Fundamentals.svelte'
+  import UserInputs from '../lib/components/UserInputs.svelte'
   import VolumeBars from '../lib/components/VolumeBars.svelte'
   import { toLineData } from '../lib/technicals'
+  import { fmtBeijing } from '../lib/format'
+  import * as tl from '../lib/timeline'
   import * as wb from '../lib/workbench'
 
   let { sub }: { sub?: string } = $props()
@@ -15,6 +18,30 @@
   let error = $state('')
   let loading = $state(false)
   let generation = 0
+  // v2.5 §11：页尾「我的补充」与该标的的 Agent 链列表；读不到（如迁移 026 未执行）只影响这一段。
+  let chains = $state<tl.TickerChain[]>([])
+  let chainsError = $state('')
+
+  async function loadChains(next: string, token: number) {
+    try {
+      const res = await getTickerChains(next)
+      if (token !== generation) return
+      chains = Array.isArray(res?.chains) ? res.chains : []
+      chainsError = ''
+    } catch (e) {
+      if (token === generation) { chains = []; chainsError = wb.describeError(e) }
+    }
+  }
+  const activeChains = $derived(chains.filter(c => tl.ACTIVE_STATES.includes(c.state))
+    .map(c => ({ signal_date: c.signal_date, label: `${c.signal_date} · 第 ${c.version_no} 版` })))
+  const chainLine = (c: tl.TickerChain) => [
+    c.signal_date, tl.CHAIN_STATE_TEXT[c.state] ?? c.state, `第 ${c.version_no} 版`,
+    c.latest_review
+      ? `最近复查 ${tl.OUTCOME_TEXT[c.latest_review.outcome] ?? c.latest_review.outcome}`
+        + `${c.latest_review.decided_by ? ` · ${tl.DECIDED_BY_TEXT[c.latest_review.decided_by]}` : ''}`
+        + ` · ${fmtBeijing(c.latest_review.created_at)}`
+      : '尚未复查',
+  ].join(' · ')
 
   const KIND_LABELS: Record<wb.TimelineItem['kind'], string> = {
     filing: '财报', news: '资讯', candidate: '信号', decision: '决定', trade: '成交',
@@ -29,6 +56,9 @@
     loading = true
     error = ''
     view = null
+    chains = []
+    chainsError = ''
+    void loadChains(next, token)
     try {
       const loaded = await wb.getInstrument(next)
       if (token !== generation) return
@@ -117,5 +147,26 @@
         <li class="text-muted">暂无记录</li>
       {/each}
     </ol>
+
+    <section class="border border-border rounded p-3 bg-surface text-sm space-y-1">
+      <h2 class="font-semibold">Agent 计划</h2>
+      {#if chainsError}
+        <p class="text-xs text-muted">Agent 计划列表不可用：{chainsError}</p>
+      {:else if chains.length}
+        <ul aria-label="Agent 计划" class="space-y-1">
+          {#each chains as c (c.signal_date)}
+            <li>{chainLine(c)} · <a class="text-accent underline" href={`#plan/${c.head_plan_id}`}>查看</a>
+              {#if c.latest_review?.reason}<p class="text-xs text-muted">{c.latest_review.reason}</p>{/if}
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="text-xs text-muted">该标的还没有 Agent 版本链</p>
+      {/if}
+    </section>
+
+    {#key view.ticker}
+      <UserInputs ticker={view.ticker} chains={activeChains} />
+    {/key}
   {/if}
 </section>

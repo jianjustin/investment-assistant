@@ -253,6 +253,9 @@ export const runBackcheck = (tickers?: string[]) => post<Backcheck>('/api/workbe
 export function describeError(error: unknown): string {
   if (error instanceof WorkbenchError) {
     if (error.status === 503) return `数据库未就绪：${error.message}`
+    // v2.5 §9.3: 'agent_plan_stale: <sentence>' — the sentence after the code is shown as is.
+    if (error.status === 409 && error.message.startsWith('agent_plan_stale:'))
+      return error.message.slice('agent_plan_stale:'.length).trim()
     if (error.status === 409) return `已有更新的记录，请刷新后基于最新记录操作（${error.message}）`
     if (error.status === 400) return `输入有误：${error.message}`
   }

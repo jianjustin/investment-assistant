@@ -69,6 +69,11 @@ describe('requests', () => {
     expect(describeError(error)).toBe('数据库未就绪：工作台数据表未就绪')
   })
 
+  it('shows only the sentence of a 409 agent_plan_stale', () => {
+    expect(describeError(new WorkbenchError('agent_plan_stale: Agent 计划已更新到第 2 版，请刷新后再决定', 409)))
+      .toBe('Agent 计划已更新到第 2 版，请刷新后再决定')
+  })
+
   it('explains a 409 as a newer record', () => {
     expect(describeError(new WorkbenchError('this unit already has a newer decision', 409)))
       .toContain('已有更新的记录')
