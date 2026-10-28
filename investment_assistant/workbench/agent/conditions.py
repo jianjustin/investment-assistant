@@ -20,7 +20,7 @@ from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
-from investment_assistant.data.calendar import add_trading_days
+from investment_assistant.data.calendar import add_trading_days, trading_days_between
 from investment_assistant.workbench.agent.citations import Rejected
 
 CONDITIONS_VERSION = 'condition-1'
@@ -61,7 +61,18 @@ CONDITIONS: dict[str, ConditionDef] = {d.kind: d for d in (
 
 @dataclass
 class Facts:
-    """What the host knows at review session S, already cut to the judgment window."""
+    """What the host knows at review session S, already cut to the judgment window.
+
+    Missing-data contract (spec §4.2: missing data -> 'unknown', never 'met'):
+    - filings: None means the SEC filing list is unavailable -> new_filing is
+      'unknown'; an empty list means "no filings in the window" -> 'not_met'.
+      The caller must pass a list (possibly empty) whenever the list was read.
+    - as_of_session: the version's generation session. no_entry_by and
+      no_entry_before_earnings can only be 'met' when bars_since_version holds
+      a bar for every trading day from the session after as_of_session through
+      the required end; without as_of_session, or with any gap, they are
+      'unknown' (a bar that entered the zone still makes them 'not_met').
+    """
     session: date
     mode: str                                   # 'entry' | 'holding'
     bars: list[dict]                            # judgment window, old -> new, Decimal prices
@@ -71,8 +82,9 @@ class Facts:
     regime_label: str | None
     sector_state: str | None
     earnings_date: date | None
-    filings: list[dict] | None = field(default_factory=list)   # None = filing list unavailable
+    filings: list[dict] | None = None                           # None = filing list unavailable
     rs: dict[int, float | None] = field(default_factory=dict)  # tools.indicators' rs20 / rs60
+    as_of_session: date | None = None                          # the version's generation session
 
 
 # ---------------------------------------------------------------- params
@@ -211,6 +223,24 @@ def _first_entry(bars: list[dict], low: Decimal, high: Decimal, *, through: date
     return None
 
 
+def _missing_sessions(facts: Facts, end: date) -> list[date] | None:
+    """Trading days in (as_of_session, end] with no bar; None when as_of_session is unknown."""
+    if facts.as_of_session is None:
+        return None
+    have = {bar['price_date'] for bar in facts.bars_since_version}
+    return [d for d in trading_days_between(facts.as_of_session + timedelta(days=1), end) if d not in have]
+
+
+def _coverage_gap(facts: Facts, end: date) -> str | None:
+    """None when bars cover every trading day after the version through end; else the reason."""
+    missing = _missing_sessions(facts, end)
+    if missing is None:
+        return '缺少版本生成交易日'
+    if missing:
+        return f'缺少 {len(missing)} 个交易日的日线（首个 {missing[0].isoformat()}）'
+    return None
+
+
 def _zone(facts: Facts) -> str:
     return f'{facts.entry_low:.2f}–{facts.entry_high:.2f}'
 
@@ -244,11 +274,11 @@ def _eval_no_entry_by(params: dict, facts: Facts) -> tuple[str, str]:
         return 'not_met', f'未到 {deadline.isoformat()}'
     if facts.entry_low is None or facts.entry_high is None:
         return 'unknown', '缺少入场区间'
-    if not facts.bars_since_version:
-        return 'unknown', '版本生成后没有日线'
     hit = _first_entry(facts.bars_since_version, facts.entry_low, facts.entry_high, through=deadline)
     if hit is not None:
         return 'not_met', f'{hit["price_date"].isoformat()} 进入入场区 {_zone(facts)}'
+    if (gap := _coverage_gap(facts, min(deadline, facts.session))) is not None:
+        return 'unknown', gap
     return 'met', f'截至 {deadline.isoformat()} 未进入入场区 {_zone(facts)}'
 
 
@@ -264,11 +294,11 @@ def _eval_no_entry_before_earnings(facts: Facts) -> tuple[str, str]:
         return 'not_met', f'财报日 {facts.earnings_date.isoformat()} 未临近'
     if facts.entry_low is None or facts.entry_high is None:
         return 'unknown', '缺少入场区间'
-    if not facts.bars_since_version:
-        return 'unknown', '版本生成后没有日线'
     hit = _first_entry(facts.bars_since_version, facts.entry_low, facts.entry_high)
     if hit is not None:
         return 'not_met', f'{hit["price_date"].isoformat()} 进入入场区 {_zone(facts)}'
+    if (gap := _coverage_gap(facts, facts.session)) is not None:
+        return 'unknown', gap
     return 'met', f'财报日 {facts.earnings_date.isoformat()} 前未进入入场区 {_zone(facts)}'
 
 

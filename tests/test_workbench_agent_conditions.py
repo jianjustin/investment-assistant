@@ -32,7 +32,8 @@ TOUCHED = [ABOVE[0], _bar(date(2026, 10, 22), 100, 106, 105), *ABOVE[2:]]
 def facts(**overrides) -> Facts:
     base = Facts(session=S, mode='entry', bars=list(ABOVE), bars_since_version=list(ABOVE),
                  entry_low=Decimal('98.00'), entry_high=Decimal('101.00'), regime_label='neutral',
-                 sector_state='neutral', earnings_date=None, filings=[], rs={20: 0.02, 60: -0.01})
+                 sector_state='neutral', earnings_date=None, filings=[], rs={20: 0.02, 60: -0.01},
+                 as_of_session=AS_OF)
     return replace(base, **overrides)
 
 
@@ -78,7 +79,29 @@ CASES = [
     # touch after the deadline date does not count
     ('no_entry_by_late_touch', item('no_entry_by', date=date(2026, 10, 23)),
      {'bars_since_version': [*ABOVE[:3], _bar(date(2026, 10, 26), 99, 104, 103), ABOVE[4]]}, 'met'),
+    # missing / stale bars never make a no-entry condition 'met'
+    ('no_entry_by_gap', item('no_entry_by', date=date(2026, 10, 26)),
+     {'bars_since_version': [ABOVE[0], *ABOVE[2:]]}, 'unknown'),
+    ('no_entry_by_stale', item('no_entry_by', date=date(2026, 10, 26)),
+     {'bars_since_version': ABOVE[:1]}, 'unknown'),
+    ('no_entry_by_last_bar_before_deadline', item('no_entry_by', date=date(2026, 10, 26)),
+     {'bars_since_version': ABOVE[:3]}, 'unknown'),
+    ('no_entry_by_only_after_deadline', item('no_entry_by', date=date(2026, 10, 26)),
+     {'bars_since_version': ABOVE[4:]}, 'unknown'),
+    ('no_entry_by_no_as_of', item('no_entry_by', date=date(2026, 10, 26)), {'as_of_session': None}, 'unknown'),
+    ('no_entry_by_gap_but_touched', item('no_entry_by', date=date(2026, 10, 26)),
+     {'bars_since_version': [TOUCHED[1]]}, 'not_met'),
+    ('no_entry_by_deadline_after_session_bars_to_s', item('no_entry_by', date=date(2026, 10, 26)),
+     {'session': date(2026, 10, 26), 'bars_since_version': ABOVE[:4]}, 'met'),
     # no_entry_before_earnings
+    ('no_entry_before_earnings_gap', item('no_entry_before_earnings'),
+     {'earnings_date': EARNINGS_SOON, 'bars_since_version': [ABOVE[0], *ABOVE[2:]]}, 'unknown'),
+    ('no_entry_before_earnings_stale', item('no_entry_before_earnings'),
+     {'earnings_date': EARNINGS_SOON, 'bars_since_version': ABOVE[:1]}, 'unknown'),
+    ('no_entry_before_earnings_last_bar_before_s', item('no_entry_before_earnings'),
+     {'earnings_date': EARNINGS_SOON, 'bars_since_version': ABOVE[:4]}, 'unknown'),
+    ('no_entry_before_earnings_no_as_of', item('no_entry_before_earnings'),
+     {'earnings_date': EARNINGS_SOON, 'as_of_session': None}, 'unknown'),
     ('no_entry_before_earnings_met', item('no_entry_before_earnings'), {'earnings_date': EARNINGS_SOON}, 'met'),
     ('no_entry_before_earnings_touched', item('no_entry_before_earnings'),
      {'earnings_date': EARNINGS_SOON, 'bars_since_version': TOUCHED}, 'not_met'),
@@ -145,6 +168,15 @@ def test_evaluate_accepts_stored_json_params():
     assert evaluate(stored, facts(bars=[_bar(S, 94, 96, 94.5)]))[0] == 'met'
     stored = {'kind': 'no_entry_by', 'params': {'date': '2026-10-26'}}
     assert evaluate(stored, facts())[0] == 'met'
+
+
+def test_facts_missing_data_defaults():
+    """filings defaults to None (unavailable -> unknown); an empty list means no filings."""
+    bare = Facts(session=S, mode='entry', bars=[], bars_since_version=[], entry_low=None, entry_high=None,
+                 regime_label=None, sector_state=None, earnings_date=None)
+    assert bare.filings is None and bare.as_of_session is None and bare.rs == {}
+    assert evaluate(item('new_filing', form='8-K'), bare)[0] == 'unknown'
+    assert evaluate(item('new_filing', form='8-K'), replace(bare, filings=[]))[0] == 'not_met'
 
 
 def test_evaluate_unknown_kind_is_unknown():
