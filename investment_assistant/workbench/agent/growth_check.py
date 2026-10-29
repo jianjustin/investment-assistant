@@ -15,7 +15,7 @@ import json
 from typing import Any
 
 from investment_assistant.data.identity import stock_id
-from investment_assistant.workbench.agent.citations import Rejected, _loads
+from investment_assistant.workbench.agent.citations import _FENCE, Rejected, _loads
 from investment_assistant.workbench.retro import FACT_KEYS, LESSONS_MAX
 
 HEADLINE_MAX = 60
@@ -49,11 +49,27 @@ def _ref_list(value: Any) -> list[str]:
 def _loads_object(text: str) -> dict:
     try:
         payload = _loads(text)
-    except (json.JSONDecodeError, ValueError, TypeError):
+    except json.JSONDecodeError:
+        # narratives and answers run to several paragraphs and the model writes literal line breaks inside the
+        # JSON strings; read those leniently (control characters allowed in strings), anything else stays strict
+        try:
+            payload = _loads_lenient(text)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            raise Rejected('retro_malformed') from None
+    except (ValueError, TypeError):
         raise Rejected('retro_malformed') from None
     if not isinstance(payload, dict):
         raise Rejected('retro_malformed')
     return payload
+
+
+def _loads_lenient(text: str) -> Any:
+    """``citations._loads`` (one code-fence layer stripped) with ``strict=False``."""
+    stripped = text.strip()
+    fence = _FENCE.match(stripped)
+    if fence:
+        stripped = fence.group(1)
+    return json.loads(stripped, strict=False)
 
 
 def _check_refs(item_refs: list[str], allowed: set[str]) -> None:

@@ -2,6 +2,12 @@
 
 版本号与 roadmap 版本对应，见 [roadmap](docs/roadmap/roadmap.md)。
 
+## 未发布
+
+### 修正
+
+- **讨论回答与复盘卡草稿被误判为格式错误**（v2.7 验收发现）：真实模型的多段回答在 JSON 字符串里直接写换行，严格的 `json.loads` 拒绝字符串内的控制字符，回答被记为 `answer_malformed`（复盘卡草稿同理会记为 `retro_malformed`）。`growth_check` 在严格解析失败时改用 `strict=False` 再读一次（仍只剥一层代码围栏），不是 JSON 的输出照旧作废；`agent/citations.py` 不动，提议 / 复查的解析不变。
+
 ## v2.7.0 — 2026-10-29
 
 我的成长闭环（[spec](docs/specs/2026-10-28-v2.7-growth-loop-design.md)、[实施 plan](docs/plans/2026-10-28-v2.7-growth-loop.md)）：每笔结束的交易有一张复盘卡（事实冻结、Agent 只讲不算、你审定后教训才进「我的知识」）；「我的知识」只追加、带版本，Agent 用 `get_knowledge` 按截止时间读、用 `know:<id>@<版本>` 引用，引用记入 `knowledge_citations`；每条知识有表现回看；计划卡与「标的」页有「就此计划讨论」；周度复盘多一段「你学到了什么」。**有迁移 027**（十一张新表、放宽三处约束），规则、`plans.py`、`tracks.py`、`discipline.py` 等口径一字未动。状态：`engineering_done`、`user_acceptance_pending`（迁移 027 已于 2026-10-29 在真实库执行、服务已以 v2.7 代码重启；手动验收与定时验收进度见 [v2.7 验收记录](docs/roadmap/v2.7-acceptance.md)）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。

@@ -366,3 +366,20 @@ def test_concept_refs():
              other_call(5)]
     assert growth_check.concept_refs(calls) == {'concept:plan.stop@1', 'concept:plan.target1@2'}
     assert growth_check.concept_refs(calls, 'retro') == {'concept:plan.stop@1'}
+
+
+def test_raw_newlines_inside_strings_are_accepted():
+    # the model writes multi-paragraph answers with literal line breaks inside JSON strings (seen in the v2.7
+    # acceptance on the real model); strict json.loads rejects them, so both checks read the text leniently
+    multi = '第一段。\n\n第二段：\t缩进。'
+    text = json.dumps(answer(answer=multi), ensure_ascii=False).replace('\\n', '\n').replace('\\t', '\t')
+    assert '\n' in text
+    out, dropped = check_a(text)
+    assert out['answer'] == multi and dropped is None
+    fenced = '```json\n' + text + '\n```'
+    assert check_a(fenced)[0]['answer'] == multi
+    sentence = '计划止损 96。\n次日触及。'
+    raw = json.dumps(draft(expected_vs_actual=[{'text': sentence, 'refs': ['fact:plans']}]),
+                     ensure_ascii=False).replace('\\n', '\n')
+    assert check(raw)['expected_vs_actual'][0]['text'] == sentence
+    assert reason_a('{"answer": "x" "refs": []}') == 'answer_malformed'     # still not JSON → still rejected
