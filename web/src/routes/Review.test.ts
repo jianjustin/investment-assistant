@@ -460,7 +460,9 @@ describe('growth loop', () => {
       { card_id: 12, ticker: 'NVDA', end_kind: 'position_closed', end_text: '平仓（按止损）', decision_text: '采纳（照规则计划）',
         actual_r: -0.8, rule_r: -1, agent_r: null, flags: ['chase'], status: 'to_review', headline: '追高是主因' },
       { card_id: 13, ticker: 'MU', end_kind: 'expired', end_text: '过期未成交', decision_text: '否决',
-        actual_r: null, rule_r: null, agent_r: 0.4, flags: [], status: 'reviewed', headline: null },
+        actual_r: null, filled: false, rule_r: null, agent_r: 0.4, flags: [], status: 'reviewed', headline: null },
+      { card_id: 14, ticker: 'AMD', end_kind: 'position_closed', end_text: '平仓（其他）', decision_text: '否决',
+        actual_r: null, filled: true, rule_r: null, agent_r: null, flags: ['unplanned'], status: 'to_review', headline: null },
     ],
     counts: { total: 3, reviewed: 1, to_review: 1, drafting: 1, draft_failed: 0 },
     knowledge: [
@@ -525,6 +527,9 @@ describe('growth loop', () => {
     expect(first.closest('li')).toHaveTextContent('实际 -0.80R')
     expect(first.closest('li')).toHaveTextContent('采纳（照规则计划）')
     expect(within(section).getByRole('link', { name: /MU 过期未成交/ }).closest('li')).toHaveTextContent('实际 未成交')
+    const unplanned = within(section).getByRole('link', { name: /AMD 平仓/ }).closest('li')!
+    expect(unplanned).toHaveTextContent('实际 无 R（计划外）')
+    expect(unplanned).not.toHaveTextContent('未成交')
     expect(section).toHaveTextContent('被检验的知识 2 条')
     const know = within(section).getByRole('link', { name: /know:3@2/ })
     expect(know).toHaveAttribute('href', '#knowledge/mine/3@2')

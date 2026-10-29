@@ -8,7 +8,7 @@
   import { fmtBeijing } from '../format'
   import { ATTACH } from '../knowledge'
   import {
-    CARD_STATUS_TEXT, DISCIPLINE_FLAGS, DISCIPLINE_TEXT, endText, growthError, knowHref, PENDING_TEXT, REDRAFT_PENDING_TEXT,
+    actualRText, CARD_STATUS_TEXT, DISCIPLINE_FLAGS, DISCIPLINE_TEXT, endText, growthError, knowHref, PENDING_TEXT, REDRAFT_PENDING_TEXT,
     REDRAFT_POLL_MS, ROLE_TEXT, truncate, VERSION_BASIS_TEXT,
   } from '../growth'
   import type { CardDraftRow, FactDiscipline, FactTrack, ReviewCardView } from '../growth'
@@ -83,6 +83,8 @@
   }
   const trackLine = (label: string, t: FactTrack) =>
     `${label} · ${t.status_text} ${rText(t.r)}`
+  const actualLine = (t: FactTrack) =>
+    t.r === null && bought ? `实际 · ${t.status_text} ${actualRText({ actual_r: null, filled: true })}` : trackLine('实际', t)
 
   // 纪律：每个标记在一次判定里是「成立 / 待定 / 未触发」
   function cell(d: FactDiscipline, flag: string): string {
@@ -93,7 +95,8 @@
   const signature = (d: FactDiscipline) =>
     JSON.stringify(DISCIPLINE_FLAGS.map(f => cell(d, f)))
   const disciplineChanged = $derived(!!view && signature(view.facts.discipline) !== signature(view.discipline_now))
-  const bought = $derived(!!facts && facts.trades.trades.some(t => t.side === 'buy'))
+  // the backend's `filled` (any live buy) decides; an older payload without it falls back to the trade list
+  const bought = $derived(view?.card.filled ?? (!!facts && facts.trades.trades.some(t => t.side === 'buy')))
   const FLAG_CONCEPT: Record<string, string> = {
     chase: D.chase, early_take: D.earlyTake, held_loser: D.heldLoser, unplanned: D.unplanned,
   }
@@ -185,7 +188,7 @@
         {#if facts.tracks.agent}
           <li>{trackLine(`Agent${facts.tracks.agent.version_no != null ? ` 第 ${facts.tracks.agent.version_no} 版` : ''}`, facts.tracks.agent)}{#if facts.tracks.agent.version_basis}（{VERSION_BASIS_TEXT[facts.tracks.agent.version_basis] ?? facts.tracks.agent.version_basis}）{/if}{#if facts.tracks.agent.plan_id} · <a class="text-accent underline" href={`#plan/${facts.tracks.agent.plan_id}`}>看计划</a>{/if}</li>
         {/if}
-        <li>{trackLine('实际', facts.tracks.actual)}{#if facts.tracks.actual.plan_kind} · 照{KIND_TEXT[facts.tracks.actual.plan_kind] ?? facts.tracks.actual.plan_kind}计划{/if}</li>
+        <li>{actualLine(facts.tracks.actual)}{#if facts.tracks.actual.plan_kind} · 照{KIND_TEXT[facts.tracks.actual.plan_kind] ?? facts.tracks.actual.plan_kind}计划{/if}</li>
       </ul>
     </section>
 

@@ -8,7 +8,7 @@
   import ReviewCard from '../lib/components/ReviewCard.svelte'
   import ReviewCardList from '../lib/components/ReviewCardList.svelte'
   import { ATTACH } from '../lib/knowledge'
-  import { knowHref } from '../lib/growth'
+  import { actualRText, knowHref } from '../lib/growth'
   import type { WeeklyLearning } from '../lib/growth'
 
   let { sub }: { sub?: string } = $props()
@@ -479,7 +479,7 @@
               <ul class="text-xs space-y-0.5">
                 {#each L.cards as c (c.card_id)}
                   <li><a class="text-accent underline" href={`#review/cards/${c.card_id}`}>{c.ticker} {c.end_text}</a>
-                    · 实际 {c.actual_r === null ? '未成交' : wb.rText(c.actual_r)} · {c.decision_text}{c.headline ? ` · ${c.headline}` : ''}</li>
+                    · 实际 {actualRText(c)} · {c.decision_text}{c.headline ? ` · ${c.headline}` : ''}</li>
                 {/each}
               </ul>
               <p>被检验的知识 {L.knowledge.length} 条</p>

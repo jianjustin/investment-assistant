@@ -1,4 +1,4 @@
-import { AGENT_REASON_TEXT, newRequestId, WorkbenchError } from './workbench'
+import { AGENT_REASON_TEXT, newRequestId, rText, WorkbenchError } from './workbench'
 
 /** v2.7 growth loop on the front end (spec docs/specs/2026-10-28-v2.7-growth-loop-design.md §4–§8, §13):
  *  shapes of review cards, my knowledge and plan discussions, plus the texts that must match the backend verbatim. */
@@ -14,7 +14,7 @@ export type DisciplineFlag = 'chase' | 'early_take' | 'held_loser' | 'unplanned'
 export interface ReviewCardRow {
   id: number; ticker: string; subject: 'unit' | 'trade'; signal_date: string | null
   end_kind: EndKind; exit_basis: ExitBasis | null; end_session: string
-  decision_text: string; actual_r: number | null; rule_r: number | null; agent_r: number | null
+  decision_text: string; actual_r: number | null; filled?: boolean; rule_r: number | null; agent_r: number | null
   flags: string[]; immature: string[]; status: CardStatus; headline: string | null
 }
 export interface ReviewCardsView { cards: ReviewCardRow[]; counts: Partial<Record<CardStatus, number>> }
@@ -100,6 +100,8 @@ export interface ReviewCardView {
   card: {
     id: number; event_key: string; subject: 'unit' | 'trade'; ticker: string; signal_date: string | null
     end_kind: EndKind; end_session: string; created_at: string
+    /** any live buy on the subject (older payloads omit it) */
+    filled?: boolean
   }
   facts: Facts; status: CardStatus; drafts: CardDraftRow[]; lesson_drafts: LessonDraftRow[]
   verdict: CardVerdict | null; discipline_now: FactDiscipline; discussions: DiscussionListItem[]
@@ -189,7 +191,7 @@ export interface WeeklyLearning {
   discipline: { cards: number; chase: number; early_take: number; held_loser: number; unplanned: number; pending: number }
   cards: {
     card_id: number; ticker: string; end_kind: EndKind; end_text: string; decision_text: string
-    actual_r: number | null; rule_r: number | null; agent_r: number | null; flags: string[]
+    actual_r: number | null; filled?: boolean; rule_r: number | null; agent_r: number | null; flags: string[]
     status: CardStatus; headline: string | null
   }[]
   counts: { total: number; reviewed: number; to_review: number; drafting: number; draft_failed: number }
@@ -382,6 +384,12 @@ export function idempotentRequests() {
   }
 }
 
+/** Actual R of a card row: a number; a fill without an R is an unplanned trade; no fill at all is 未成交. */
+export function actualRText(row: { actual_r: number | null; filled?: boolean }): string {
+  if (row.actual_r !== null) return rText(row.actual_r)
+  return row.filled ? '无 R（计划外）' : '未成交'
+}
+
 const CONFLICT_TEXT: Record<string, string> = {
   card_reviewed: '这张卡已经审定过了，要改经验请到「我的知识」改版本',
   knowledge_stale: '这条知识已更新，请刷新后再改',
@@ -389,6 +397,7 @@ const CONFLICT_TEXT: Record<string, string> = {
   status_unchanged: '状态没有变化',
   review_on_card: '这是复盘卡的草稿，请到复盘卡上审定',
   request_id_conflict: '同一个提交编号对应了不同内容，请刷新后重试',
+  draft_decided: '这条草稿已经审定过了',
 }
 /** 409 bodies are 「code」 or 「code: sentence」; a sentence from the backend is shown as is. */
 export function conflictText(message: string): string {

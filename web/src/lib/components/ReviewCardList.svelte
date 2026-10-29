@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import * as api from '../api'
-  import { CARD_STATUS_TEXT, DISCIPLINE_TEXT, endText, growthError, normalizeTicker } from '../growth'
+  import { actualRText, CARD_STATUS_TEXT, DISCIPLINE_TEXT, endText, growthError, normalizeTicker } from '../growth'
   import type { CardStatus, ReviewCardRow } from '../growth'
   import { rText } from '../workbench'
 
@@ -77,7 +77,7 @@
               {#if row.signal_date}<span class="block text-xs text-muted">{row.signal_date}</span>{/if}</td>
             <td class="text-xs">{endText(row.end_kind, row.exit_basis)}<span class="block text-muted">{row.end_session}</span></td>
             <td class="text-xs">{row.decision_text}</td>
-            <td class="text-xs">{row.actual_r === null ? '未成交' : rText(row.actual_r)}</td>
+            <td class="text-xs">{actualRText(row)}</td>
             <td class="text-xs">规则 {rText(row.rule_r)}<span class="block">Agent {rText(row.agent_r)}</span></td>
             <td class="text-xs">
               {#each settled(row) as flag (flag)}<span class="mr-1 px-1 rounded bg-amber-100 text-amber-800">{DISCIPLINE_TEXT[flag] ?? flag}</span>{/each}

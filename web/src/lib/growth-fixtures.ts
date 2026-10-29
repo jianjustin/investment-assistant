@@ -88,14 +88,14 @@ export const draftRow = (over: Partial<CardDraftRow> = {}): CardDraftRow => ({
 
 export const cardView = (over: Partial<ReviewCardView> = {}): ReviewCardView => ({
   card: { id: 12, event_key: 'unit:NVDA:2026-10-23:closed:t2', subject: 'unit', ticker: 'NVDA', signal_date: '2026-10-14',
-          end_kind: 'position_closed', end_session: '2026-10-23', created_at: '2026-10-23T22:30:00Z' },
+          end_kind: 'position_closed', end_session: '2026-10-23', created_at: '2026-10-23T22:30:00Z', filled: true },
   facts: facts(), status: 'to_review', drafts: [draftRow()], lesson_drafts: lessonRows(), verdict: null,
   discipline_now: discipline(), discussions: [], ...over,
 })
 
 export const cardRow = (over: Partial<ReviewCardRow> = {}): ReviewCardRow => ({
   id: 12, ticker: 'NVDA', subject: 'unit', signal_date: '2026-10-14', end_kind: 'position_closed', exit_basis: 'stop',
-  end_session: '2026-10-23', decision_text: '采纳（照规则计划）', actual_r: -0.8, rule_r: -1, agent_r: null,
+  end_session: '2026-10-23', decision_text: '采纳（照规则计划）', actual_r: -0.8, filled: true, rule_r: -1, agent_r: null,
   flags: ['chase'], immature: ['early_take'], status: 'to_review', headline: '回踩买入后触及止损，追高是主因', ...over,
 })
 

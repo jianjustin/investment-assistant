@@ -292,4 +292,4 @@ export const getDiscussions = (params: { plan_id?: string; card_id?: number }) =
   workbenchRequest<{ discussions: DiscussionListItem[] }>(`/api/workbench/discussions${query(params)}`)
 export const getDiscussion = (id: number) => workbenchRequest<Discussion>(`/api/workbench/discussions/${id}`)
 export const postDiscussionTurn = (id: number, body: { request_id: string; body: string; attachment?: DiscussionAttachment }) =>
-  send<{ turn_id: number; run_id: string; status: 'pending' }>(`/api/workbench/discussions/${id}/turns`, body)
+  send<{ turn_id: number; run_id: string; status: 'pending' | 'replayed' }>(`/api/workbench/discussions/${id}/turns`, body)

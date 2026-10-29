@@ -150,9 +150,34 @@ describe('ReviewCard', () => {
     expect(within(table).getByRole('columnheader', { name: '检测时' })).toBeInTheDocument()
   })
 
+  it('a filled unplanned trade (no R) still gets the discipline table and 无 R（计划外）', async () => {
+    load(cardView({
+      card: { ...cardView().card, filled: true },
+      facts: facts({
+        trades: { trades: facts().trades.trades, segments: [], actual_r: null },
+        tracks: { actual: { status: 'closed', status_text: '已平仓', r: null, plan_id: null } },
+      }),
+    }))
+    render(ReviewCard, { id: 12 })
+    const section = await screen.findByRole('region', { name: '你的决定与纪律' })
+    expect(within(section).getByRole('table', { name: '纪律判定' })).toBeInTheDocument()
+    expect(section).not.toHaveTextContent('未成交，纪律四项不适用')
+    expect(await screen.findByText(/实际 · 已平仓 无 R（计划外）/)).toBeInTheDocument()
+  })
+
+  it('filled flag decides over the trade list when the backend sends it', async () => {
+    load(cardView({
+      card: { ...cardView().card, filled: false },
+      facts: facts({ trades: { trades: [], segments: [], actual_r: null } }),
+    }))
+    render(ReviewCard, { id: 12 })
+    const section = await screen.findByRole('region', { name: '你的决定与纪律' })
+    expect(section).toHaveTextContent('未成交，纪律四项不适用')
+  })
+
   it('not filled shows 未成交，纪律四项不适用', async () => {
     load(cardView({
-      card: { ...cardView().card, end_kind: 'expired' },
+      card: { ...cardView().card, end_kind: 'expired', filled: false },
       facts: facts({
         subject: { ...facts().subject, end_kind: 'expired', end_text: '过期未成交', exit_basis: null },
         trades: { trades: [], segments: [], actual_r: null },

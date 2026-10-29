@@ -10,8 +10,11 @@ const COUNTS = { to_review: 2, reviewed: 1, drafting: 1, draft_failed: 0 }
 const rows = () => [
   cardRow(),
   cardRow({ id: 13, ticker: 'MU', end_kind: 'expired', exit_basis: null, end_session: '2026-10-22',
-            decision_text: '否决', actual_r: null, rule_r: null, agent_r: 0.4, flags: [], immature: [],
+            decision_text: '否决', actual_r: null, filled: false, rule_r: null, agent_r: 0.4, flags: [], immature: [],
             status: 'drafting', headline: null }),
+  cardRow({ id: 14, ticker: 'AMD', end_kind: 'position_closed', exit_basis: 'other', end_session: '2026-10-21',
+            decision_text: '否决', actual_r: null, filled: true, rule_r: null, agent_r: null, flags: ['unplanned'],
+            immature: [], status: 'to_review', headline: null }),
 ]
 
 beforeEach(() => {
@@ -37,6 +40,11 @@ describe('ReviewCardList', () => {
     const second = screen.getByRole('link', { name: /MU/ }).closest('tr')!
     expect(second).toHaveTextContent('过期未成交')
     expect(second).toHaveTextContent('未成交')          // no fill: not a number
+    expect(second).not.toHaveTextContent('无 R')
+    // a live buy without an R (unplanned trade) is not 未成交
+    const third = screen.getByRole('link', { name: /AMD/ }).closest('tr')!
+    expect(third).toHaveTextContent('无 R（计划外）')
+    expect(third).not.toHaveTextContent('未成交')
     expect(second).toHaveTextContent('+0.40R')          // agent track
     // a card without a draft shows its status text where the headline would be
     expect(second.querySelector('[data-headline]')).toHaveTextContent('起草中')

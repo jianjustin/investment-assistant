@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   CARD_STATUS_TEXT, DECISION_TEXT, DISCIPLINE_TEXT, DISCUSS_POLL_MS, END_TEXT, EXIT_BASIS_TEXT,
-  changedFields, conflictText, endText, growthError, idempotentRequests, isKnowRef, knowHref, knowledgeProblem, parseKnowRef,
+  actualRText, changedFields, conflictText, endText, growthError, idempotentRequests, isKnowRef, knowHref, knowledgeProblem, parseKnowRef,
   refKind, sampleLine, userInputRequestId, VERSION_BASIS_TEXT,
 } from './growth'
 import { WorkbenchError } from './workbench'
@@ -116,7 +116,15 @@ describe('error texts', () => {
     expect(conflictText('agent_unavailable: quota_exhausted')).toBe('Agent 不可用：额度用尽')
     expect(conflictText('agent_unavailable')).toBe('Agent 不可用')
     expect(conflictText('knowledge_stale: 这条知识已更新到第 3 版，请刷新后再改')).toBe('这条知识已更新到第 3 版，请刷新后再改')
+    expect(conflictText('draft_decided')).toBe('这条草稿已经审定过了')
     expect(conflictText('something_new')).toBe('something_new')
+  })
+  it('actualRText: a number, else 无 R（计划外） for a fill without R, else 未成交', () => {
+    expect(actualRText({ actual_r: -0.8, filled: true })).toBe('-0.80R')
+    expect(actualRText({ actual_r: 0, filled: false })).toBe('+0.00R')
+    expect(actualRText({ actual_r: null, filled: true })).toBe('无 R（计划外）')
+    expect(actualRText({ actual_r: null, filled: false })).toBe('未成交')
+    expect(actualRText({ actual_r: null })).toBe('未成交')             // older payload without the flag
   })
   it('growthError reads migration 027 as exactly that sentence', () => {
     expect(growthError(new WorkbenchError('迁移 027 未执行', 503))).toBe('迁移 027 未执行')

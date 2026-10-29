@@ -235,6 +235,22 @@ describe('Discussion · asking and polling', () => {
     expect(screen.getByRole('button', { name: '提问' })).toBeInTheDocument()
   })
 
+  it('a replayed answer (202 status replayed) is handled like a fresh submit: reload and poll', async () => {
+    vi.useFakeTimers()
+    const post = vi.spyOn(api, 'postDiscussionTurn').mockResolvedValue({ turn_id: 9, run_id: 'r1', status: 'replayed' })
+    vi.mocked(api.getDiscussion).mockResolvedValueOnce(discussion([]))
+      .mockResolvedValueOnce(discussion([userTurn({ state: 'pending' })]))
+      .mockResolvedValue(discussion())
+    render(Discussion, { id: 5 })
+    await vi.advanceTimersByTimeAsync(0)
+    await ask('这个止损怎么来的？')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(calls()).toBe(2)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(screen.getByText(/止损 = 参考价减 2 倍 ATR14/)).toBeInTheDocument()
+  })
+
   it('asking posts request_id and body, then reloads and polls', async () => {
     vi.useFakeTimers()
     const post = vi.spyOn(api, 'postDiscussionTurn').mockResolvedValue({ turn_id: 9, run_id: 'r1', status: 'pending' })
