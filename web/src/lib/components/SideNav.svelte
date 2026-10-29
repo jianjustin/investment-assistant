@@ -86,6 +86,7 @@
       if (child.id === 'mine') return mine
       return sub !== 'principles' && !mine
     }
+    if (item.id === 'tools' && child.id === 'runs') return sub === 'runs' || !!sub?.startsWith('runs/')   // 运行详情 #tools/runs/<id>
     return sub === child.id
   }
 </script>

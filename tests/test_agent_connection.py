@@ -1,7 +1,7 @@
 """The ChatGPT connection use cases (v2.8 spec §8, §10.2): login, refresh, disconnect, models, status.
 
-SQL tests: a throwaway schema of the disposable test database with migration 028 applied on top of the
-``workbench_db`` migrations (``conftest.WORKBENCH_MIGRATIONS`` stops at 027), plus the fake authorization server of
+SQL tests: a throwaway schema of the disposable test database with the ``workbench_db`` migrations
+(``conftest.WORKBENCH_MIGRATIONS`` ends with 028), plus the fake authorization server of
 ``test_agent_chatgpt_oauth``. Every token is a ``test-…`` placeholder; the tests assert none of them ever reaches a log,
 an exception text, an event, ``last_error`` or the status view."""
 import contextlib
@@ -12,7 +12,6 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import timedelta
-from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -28,7 +27,6 @@ from test_agent_chatgpt_oauth import NOW, _get, auth, id_token, token_body  # no
 from test_agent_responses_model import _sse, failed_events
 
 REAL_READ = agent_connection.read_for_settings        # conftest replaces it for every test; the SQL tests want the real one
-MIGRATION = Path('migrations/028_daily_workflow.sql')
 HOST_ID = 'urn:uuid:123e4567-e89b-12d3-a456-426614174000'
 OLD_ACCESS, OLD_REFRESH = 'test-access-old11111', 'test-refresh-old11111'
 NEW_ACCESS, NEW_REFRESH = 'test-access-aaaa1111', 'test-refresh-bbbb2222'      # what token_body() issues
@@ -41,8 +39,6 @@ TOKENS = (OLD_ACCESS, OLD_REFRESH, NEW_ACCESS, NEW_REFRESH, 'test-code-1', 'test
 def db(workbench_db, monkeypatch):
     import psycopg
 
-    workbench_db.execute(MIGRATION.read_text(encoding='utf-8'))
-    workbench_db.commit()
     schema = workbench_db.execute('SELECT current_schema()').fetchone()[0]
     url = os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']
 
@@ -900,6 +896,8 @@ def test_read_for_settings_and_settings_from_env(db, auth):
 def test_migration_028_missing_is_reported(workbench_db, monkeypatch):
     import psycopg
 
+    workbench_db.execute('DROP TABLE agent_attempt_resets, agent_connection_events, agent_connections')   # 028 "not run"
+    workbench_db.commit()
     schema = workbench_db.execute('SELECT current_schema()').fetchone()[0]
     url = os.environ['INVESTMENT_ASSISTANT_TEST_DATABASE_URL']
 

@@ -14,7 +14,7 @@ beforeEach(() => {
   vi.spyOn(api, 'getConcepts').mockRejectedValue(new Error('offline'))
   vi.spyOn(api, 'getReviewCard').mockResolvedValue(cardView())
   vi.spyOn(api, 'getReasoning').mockResolvedValue({ run: { id: 'run-draft', ticker: 'NVDA', signal_date: '2026-10-14',
-    mode: 'retro', agent_version: 'agent-retro-1', status: 'ok', reason: null, reason_text: null, model: 'glm',
+    mode: 'retro', agent_version: 'agent-retro-1', status: 'ok', reason: null, reason_text: null, model: 'gpt-test',
     cutoff_at: null, started_at: null, finished_at: null, input_tokens: 1, output_tokens: 1 },
     legacy: false, version: null, review: null, steps: [], notes: [] } as any)
   vi.spyOn(wb, 'getAgentRun').mockResolvedValue({ tool_calls: [

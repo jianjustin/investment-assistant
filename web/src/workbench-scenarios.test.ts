@@ -110,7 +110,7 @@ it('shows the market context card and the collapsed extended pool', async () => 
 
 it('shows an agent suggestion and accepts against the agent plan', async () => {
   const agentPlan = { ...plan, id: 'ap1', kind: 'agent', plan_version: 'agent-1' }
-  const agentRun = { id: 'r1', status: 'ok' as const, model: 'glm-5.3', agent_version: 'agent-1',
+  const agentRun = { id: 'r1', status: 'ok' as const, model: 'gpt-test', agent_version: 'agent-1',
     output: { action: 'buy' as const, summary: '回踩修复放量',
       levels: { entry_low: { value: '123.20', refs: ['call:1'] },
                 entry_high: { value: '126.30', refs: ['call:1'] },
@@ -134,7 +134,7 @@ it('shows an agent suggestion and accepts against the agent plan', async () => {
   }))
   history.replaceState(null, '', '#today')
   render(App)
-  expect(await screen.findByText('Agent 建议（glm-5.3 · agent-1）买入')).toBeInTheDocument()
+  expect(await screen.findByText('Agent 建议（gpt-test · agent-1）买入')).toBeInTheDocument()
   expect(screen.getByText(/反方：/)).toBeInTheDocument()
   expect((screen.getByRole('radio', { name: 'Agent 计划' }) as HTMLInputElement).checked).toBe(true)   // 规则作废 → 默认 Agent
   await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '按 Agent 建议执行' } })

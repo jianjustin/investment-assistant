@@ -285,10 +285,7 @@ def _insert_run(conn, run_id, *, resumed=False):
 
 
 @pytest.fixture
-def db28(db):
-    from _daily_db import apply_028
-
-    apply_028(db)
+def db28(db):          # ``conftest.WORKBENCH_MIGRATIONS`` ends with 028 since v2.8
     return db
 
 

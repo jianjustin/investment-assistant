@@ -92,8 +92,8 @@ def test_filings_columns_and_scheduled_job(workbench_db):
         "accepted_at, items) VALUES ('NVDA', '8-K', '2026-08-27', '0001045810-26-000001', 'a.htm', 'x', %s, %s)",
         [NOW, ['2.02', '9.01']])
     row = workbench_db.execute("SELECT time_local, weekday_mask, timezone FROM scheduled_jobs "
-                               "WHERE name = 'workbench'").fetchone()
-    assert row == ('06:30', '2-6', 'Asia/Shanghai')
+                               "WHERE name = 'daily'").fetchone()           # 028 replaces the ``workbench`` row
+    assert row == ('11:30', '2-6', 'Asia/Shanghai')
 
 
 def test_upsert_filing_keeps_first_known_acceptance(workbench_db):
@@ -646,7 +646,7 @@ def test_backcheck_makes_no_network_calls(workbench_db, monkeypatch):
 def _agent_run(conn, plan_id=None, **overrides):
     import json
     values = {'id': uuid.uuid4(), 'ticker': 'NVDA', 'signal_date': date(2026, 10, 21), 'pool': 'main',
-              'attempt': 1, 'agent_version': 'agent-1', 'provider': 'zhipu', 'model': 'glm-5.3',
+              'attempt': 1, 'agent_version': 'agent-1', 'provider': 'chatgpt', 'model': 'gpt-test',
               'cutoff_at': NOW, 'status': 'rejected', 'reason': 'malformed', 'output': None, 'counter': None,
               'plan_id': plan_id, 'input_tokens': 0, 'output_tokens': 0,
               'started_at': NOW, 'finished_at': NOW}
@@ -777,7 +777,7 @@ def test_brief_agent_run_fk(workbench_db):
         workbench_db.execute(
             'INSERT INTO signal_briefs (ticker, signal_date, model, prompt_version, cutoff_at, '
             'input_refs, output, status, agent_run_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)',
-            ['NVDA', date(2026, 10, 21), 'glm-5.3', 'agent-brief-1', NOW, '[]', '{}', 'ok', uuid.uuid4()])
+            ['NVDA', date(2026, 10, 21), 'gpt-test', 'agent-brief-1', NOW, '[]', '{}', 'ok', uuid.uuid4()])
     workbench_db.rollback()
 
 
@@ -793,10 +793,13 @@ def test_review_push_reason_required(workbench_db):
     workbench_db.rollback()
 
 
-def test_review_job_inserted_disabled(workbench_db):
-    row = workbench_db.execute('SELECT time_local, weekday_mask, timezone, enabled '
-                               "FROM scheduled_jobs WHERE name = 'workbench_review'").fetchone()
-    assert row == ('08:00', '1-7', 'Asia/Shanghai', False)
+def test_review_job_merged_into_daily(workbench_db):
+    # 020 inserted ``workbench_review`` (08:00, disabled); 028 merges the three tasks into ``daily``
+    names = {r[0] for r in workbench_db.execute('SELECT name FROM scheduled_jobs')}
+    assert 'workbench_review' not in names and 'workbench' not in names and 'filings' not in names
+    row = workbench_db.execute('SELECT time_local, weekday_mask, timezone FROM scheduled_jobs '
+                               "WHERE name = 'daily'").fetchone()
+    assert row == ('11:30', '2-6', 'Asia/Shanghai')
 
 
 def test_missing_tables_lists_review_pushes(workbench_db):
@@ -833,7 +836,7 @@ def test_agent_runs_for_counts_per_mode(workbench_db):
 def test_brief_round_trips_agent_run_id(workbench_db):
     from investment_assistant.workbench import repository
     run_id = _agent_run(workbench_db, mode='interpret', status='ok', reason=None, output={'summary': 's'})
-    brief = {'ticker': 'NVDA', 'signal_date': date(2026, 10, 21), 'model': 'glm-5.3',
+    brief = {'ticker': 'NVDA', 'signal_date': date(2026, 10, 21), 'model': 'gpt-test',
              'prompt_version': 'agent-brief-1', 'cutoff_at': NOW, 'input_refs': ['call:1'],
              'output': {'summary': 's'}, 'status': 'ok', 'error': None, 'agent_run_id': run_id}
     repository.store_brief(workbench_db, brief)
@@ -1158,8 +1161,8 @@ def _tl_version(conn, version_no=0, supersedes=None, *, ticker='NVDA', day=date(
     cutoff = NOW + timedelta(days=version_no)
     repository.insert_agent_run(conn, {
         'id': run_id, 'ticker': ticker, 'signal_date': day, 'pool': pool, 'attempt': 1,
-        'mode': 'propose' if version_no == 0 else 'revise', 'agent_version': 'agent-2', 'provider': 'zhipu',
-        'model': 'glm-5.3', 'cutoff_at': cutoff, 'status': 'ok', 'reason': None, 'output': {'action': 'buy'},
+        'mode': 'propose' if version_no == 0 else 'revise', 'agent_version': 'agent-2', 'provider': 'chatgpt',
+        'model': 'gpt-test', 'cutoff_at': cutoff, 'status': 'ok', 'reason': None, 'output': {'action': 'buy'},
         'counter': None, 'plan_id': plan['id'], 'input_tokens': 0, 'output_tokens': 0,
         'started_at': cutoff, 'finished_at': cutoff}, [])
     return repository.insert_plan_version(conn, {

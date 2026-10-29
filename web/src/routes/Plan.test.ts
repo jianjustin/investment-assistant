@@ -71,7 +71,7 @@ describe('Plan', () => {
   it('agent-1 plan offers 看推理过程 for its generating run', async () => {
     vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation({
       plan: { id: 'p1', ticker: 'ROP', signal_date: '2026-10-26', kind: 'agent', plan_version: 'agent-1', status: 'ok' },
-      inputs: { ...derivation().inputs, agent_run: { id: 'run-1', model: 'glm', agent_version: 'agent-1' } },
+      inputs: { ...derivation().inputs, agent_run: { id: 'run-1', model: 'gpt-test', agent_version: 'agent-1' } },
     }))
     const getChain = vi.spyOn(api, 'getChain')
     const getReasoning = vi.spyOn(api, 'getReasoning').mockResolvedValue({
@@ -177,7 +177,7 @@ describe('Plan', () => {
         ticker: 'NVDA', signal_date: '2026-10-22', mode: 'propose',
         request_id: expect.stringMatching(/^[0-9a-f-]{36}$/), origin: 'plan_page',
       })
-      expect(await screen.findByText('已重置尝试次数，并已在后台重新运行')).toBeInTheDocument()
+      expect(await screen.findByText('已重置尝试次数，并已重新运行')).toBeInTheDocument()
       // 成功后这一行的按钮不再出现：不会再点出第二次重置
       expect(within(section).queryByRole('button', { name: '重新运行 Agent' })).toBeNull()
       expect(rerun).toHaveBeenCalledTimes(1)

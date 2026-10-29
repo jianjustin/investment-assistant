@@ -6,7 +6,8 @@
   import * as api from '../api'
   import { fmtBeijing } from '../format'
   import {
-    NODE_STATUS_TEXT, RESUME_POLL_MAX_MS, RESUME_POLL_MS, RESUME_STILL_RUNNING_TEXT, RUN_STATUS_TEXT, TRIGGER_TEXT,
+    NODE_STATUS_TEXT, RESUME_POLL_MAX_MS, RESUME_POLL_MS, RESUME_STILL_RUNNING_TEXT, RETRO_PUSH_TEXT, RETRO_STATUS_TEXT,
+    RUN_STATUS_TEXT, TRIGGER_TEXT,
     durationText, nyDay, resumeErrorText,
   } from '../runs'
   import type { RunDetail, RunNode } from '../runs'
@@ -180,7 +181,7 @@
       })
       if (destroyed) return
       delete rerunIds[key]
-      rerunText[key] = res.run_id ? '已重置尝试次数，并已在后台重新运行' : '已重置尝试次数，下一次运行或续跑时执行'
+      rerunText[key] = res.run_id ? '已重置尝试次数，并已重新运行' : '已重置尝试次数，下一次运行或续跑时执行'
       rerunDone[key] = true
       void load(generation)
     } catch (e) {
@@ -372,7 +373,7 @@
                           {:else}
                             <a class="text-accent underline" href={`#review/${item.kind}`}>{RETRO_KIND_TEXT[item.kind] ?? item.kind}</a>
                           {/if}
-                          {item.status ? ` · ${item.status}` : ''}{item.push ? ` · ${typeof item.push === 'string' ? item.push : JSON.stringify(item.push)}` : ''}
+                          {item.status ? ` · ${RETRO_STATUS_TEXT[item.status] ?? item.status}` : ''}{item.push ? ` · ${typeof item.push === 'string' ? (RETRO_PUSH_TEXT[item.push] ?? item.push) : JSON.stringify(item.push)}` : ''}
                         </span>
                       {:else}
                         <span>{JSON.stringify(item)}</span>

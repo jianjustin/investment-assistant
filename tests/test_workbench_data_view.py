@@ -54,11 +54,9 @@ def _run(db, **overrides):
 
 
 def test_overview_has_six_cards_and_evidence(db):
-    from _daily_db import apply_028
-
     _bar(db)
     _run(db, run_id='r-ov', finished_at=NOW + timedelta(hours=1))
-    apply_028(db)   # v2.8: the workbench / filings rows are replaced by one ``daily`` row; every family card shows it
+    # v2.8: the workbench / filings rows are replaced by one ``daily`` row (028); every family card shows it
 
     out = data_view.overview(now=NOW)
     cards = {card['id']: card for card in out['families']}

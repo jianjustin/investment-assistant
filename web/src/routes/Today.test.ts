@@ -307,7 +307,7 @@ describe('agent track', () => {
   })
 
   const agentOk = (overrides: Record<string, unknown> = {}) => ({
-    id: 'r1', status: 'ok', model: 'glm-5.3', agent_version: 'agent-1',
+    id: 'r1', status: 'ok', model: 'gpt-test', agent_version: 'agent-1',
     output: { action: 'buy', summary: '回踩修复放量',
               levels: { entry_low: { value: '98.50', refs: ['call:1'] },
                         entry_high: { value: '101.50', refs: ['call:1'] },
@@ -337,7 +337,7 @@ describe('agent track', () => {
   it('agent block shows action, levels, thesis refs and counter', async () => {
     respond = todayWith([unit({ agent: agentOk() })])
     render(Today)
-    expect(await screen.findByText('Agent 建议（glm-5.3 · agent-1）买入')).toBeInTheDocument()
+    expect(await screen.findByText('Agent 建议（gpt-test · agent-1）买入')).toBeInTheDocument()
     expect(screen.getByText('入场区间 98.50–101.50 · 止损 96.00 · T1 108.00')).toBeInTheDocument()
     expect(screen.getByText('建议 166 股')).toBeInTheDocument()
     expect(screen.getByText('回踩修复放量')).toBeInTheDocument()
@@ -380,7 +380,7 @@ describe('agent track', () => {
   })
 
   it('agent basis enabled only when agent plan ok', async () => {
-    respond = todayWith([unit({ plan: plan(), agent: { id: 'r', status: 'pass', model: 'glm-5.3',
+    respond = todayWith([unit({ plan: plan(), agent: { id: 'r', status: 'pass', model: 'gpt-test',
       output: { summary: '趋势不明' }, counter: null, plan: null, input_tokens: 5, output_tokens: 5,
       created_at: 'c' } })])
     const { unmount } = render(Today)
@@ -460,7 +460,7 @@ describe('agent track', () => {
 
 it('collapses an agent-1 brief to a pointer line', async () => {
   respond = async () => json({ session: '2026-10-22', units: [unit({
-    brief: { id: 'b1', status: 'ok', prompt_version: 'agent-1', model: 'glm-5.3',
+    brief: { id: 'b1', status: 'ok', prompt_version: 'agent-1', model: 'gpt-test',
              output: { summary: '回踩修复后放量上行', support: [], contra: [], conflicts: [] } } })], holdings: [] })
   render(Today)
   expect(await screen.findByText('解读见 Agent 建议')).toBeInTheDocument()
@@ -469,11 +469,11 @@ it('collapses an agent-1 brief to a pointer line', async () => {
 
 it('shows the model name on an interpret brief', async () => {
   respond = async () => json({ session: '2026-10-22', units: [unit({
-    brief: { id: 'b1', status: 'ok', prompt_version: 'agent-brief-1', model: 'glm-5.3',
+    brief: { id: 'b1', status: 'ok', prompt_version: 'agent-brief-1', model: 'gpt-test',
              output: { summary: '持仓回撤，趋势未坏', support: [], contra: [], conflicts: [] } } })], holdings: [] })
   render(Today)
   expect(await screen.findByText('持仓回撤，趋势未坏')).toBeInTheDocument()
-  expect(screen.getByText(/glm-5.3/)).toBeInTheDocument()
+  expect(screen.getByText(/gpt-test/)).toBeInTheDocument()
 })
 
 
@@ -491,7 +491,7 @@ describe('derivation expansion', () => {
   })
 
   const agentWithPlan = () => ({
-    id: 'r1', status: 'ok', model: 'glm-5.3', agent_version: 'agent-1',
+    id: 'r1', status: 'ok', model: 'gpt-test', agent_version: 'agent-1',
     output: { action: 'buy', summary: '回踩修复放量',
               levels: { entry_low: { value: '98.50', refs: ['call:1'] },
                         entry_high: { value: '101.50', refs: ['call:1'] },
@@ -642,7 +642,7 @@ describe('今日 · 筛选卡片', () => {
 
 it('collapses an agent-2 brief to a pointer line too', async () => {
   respond = async () => json({ session: '2026-10-22', units: [unit({
-    brief: { id: 'b1', status: 'ok', prompt_version: 'agent-2', model: 'glm-5.3',
+    brief: { id: 'b1', status: 'ok', prompt_version: 'agent-2', model: 'gpt-test',
              output: { summary: '回踩修复后放量上行', support: [], contra: [{ text: '量能来自指数调仓', refs: ['call:5'] }],
                        conflicts: [] } } })], holdings: [] })
   render(Today)
@@ -664,7 +664,7 @@ describe('agent-first layout', () => {
     latest_review: null, ...overrides,
   })
   const agent2 = (overrides: Record<string, unknown> = {}) => ({
-    id: 'r2', status: 'ok', model: 'glm-5.3', agent_version: 'agent-2',
+    id: 'r2', status: 'ok', model: 'gpt-test', agent_version: 'agent-2',
     output: { action: 'buy', summary: '回踩修复放量',
               levels: { entry_low: { value: '98.50', refs: ['call:1'] }, entry_high: { value: '101.50', refs: ['call:1'] },
                         stop: { value: '96.00', refs: ['call:1'] }, target1: { value: '108.00', refs: ['call:1'] } },

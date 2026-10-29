@@ -149,7 +149,7 @@ def test_agent_connections_constraints(migrated_db):
     for bad in ('not-a-urn', 'urn:uuid:123E4567-e89b-12d3-a456-426614174000', HOST_ID + 'x', ''):
         _reject(conn, 'CheckViolation', _connection, host_id=bad)             # lower-case urn:uuid only
     _reject(conn, 'CheckViolation', _connection, client_id='has space')
-    _reject(conn, 'CheckViolation', _connection, provider='zhipu')
+    _reject(conn, 'CheckViolation', _connection, provider='openai')
     _reject(conn, 'CheckViolation', _connection, status='bogus')
     _reject(conn, 'CheckViolation', _connection, model='')
     _reject(conn, 'CheckViolation', _connection, last_error='x' * 301)

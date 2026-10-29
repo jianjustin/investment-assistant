@@ -161,7 +161,7 @@ def test_ask_preconditions(db, monkeypatch):
     started = datetime.now(UTC)
     repository.insert_agent_run(db, {
         'id': uuid.uuid4(), 'ticker': 'AAA', 'signal_date': SESSION, 'pool': 'main', 'attempt': 1, 'mode': 'propose',
-        'agent_version': 'agent-2', 'provider': 'zhipu', 'model': 'glm', 'cutoff_at': NOW, 'status': 'error',
+        'agent_version': 'agent-2', 'provider': 'chatgpt', 'model': 'gpt-test', 'cutoff_at': NOW, 'status': 'error',
         'reason': 'model_error', 'output': None, 'counter': None, 'plan_id': None, 'input_tokens': 150,
         'output_tokens': 0, 'started_at': started, 'finished_at': started}, [])
     db.commit()

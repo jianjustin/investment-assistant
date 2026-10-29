@@ -212,7 +212,9 @@ describe('RunDetail · page', () => {
     vi.mocked(api.getRunDetail).mockResolvedValue(successRun({
       nodes: IDS.map(id => {
         if (id === 'retro') return node(id, { results: { kind: 'retro', total: 2, truncated: false, items: [
-          { kind: 'card', id: 12, ticker: 'NVDA', status: 'ok', push: null }, { kind: 'weekly', id: 3, ticker: null, status: 'ok', push: '已推送' }] } })
+          { kind: 'card', id: 12, ticker: 'NVDA', status: 'to_review', push: null },
+          { kind: 'weekly', id: 3, ticker: null, status: 'generated', push: 'manual_run' },
+          { kind: 'monthly', id: 4, ticker: null, status: 'reminded', push: 'sent' }] } })
         if (id === 'regime') return node(id, { results: { kind: 'regime', total: 1, truncated: false, items: [{ label: 'risk_on', regime_id: 'reg-1' }] } })
         if (id === 'sec_monitor') return node(id, { results: { kind: 'sec_monitor', total: 300, truncated: true, items: [
           { ticker: 'AAPL', form: '8-K', filing_date: '2026-10-29', accession: '0000320193-26-000001', notified: true }] } })
@@ -223,6 +225,9 @@ describe('RunDetail · page', () => {
     await click('复盘：成功')
     expect(screen.getByRole('link', { name: '复盘卡 NVDA' })).toHaveAttribute('href', '#review/cards/12')
     expect(screen.getByRole('link', { name: '周度复盘' })).toHaveAttribute('href', '#review/weekly')
+    expect(screen.getByText(/待审定/)).toBeInTheDocument()
+    expect(screen.getByText(/已生成 · 手动运行不推送/)).toBeInTheDocument()
+    expect(screen.getByText(/已提醒 · 已推送/)).toBeInTheDocument()
     await click('市场环境：成功')
     expect(screen.getByText('进攻 · reg-1')).toBeInTheDocument()
     await click('SEC 监控：成功')
@@ -276,6 +281,19 @@ describe('RunDetail · resume', () => {
     await screen.findByRole('region', { name: '数据采集 详情' })
     expect(screen.queryByRole('button', { name: '从此节点继续' })).toBeNull()
     expect(screen.getByText('已过 2026-10-30 纽约 17:00，只能整次重新运行')).toBeInTheDocument()
+  })
+
+  it('interrupted and checkpoint_unavailable reasons have their own text', async () => {
+    for (const [reason, text] of [['interrupted', '这次运行中途中断，只能整次重新运行'], ['checkpoint_unavailable', '状态库未就绪，暂时无法续跑']]) {
+      vi.mocked(api.getRunDetail).mockResolvedValue(failedRun({
+        resume: { allowed: false, node: null, deadline_at: null, reason },
+        nodes: failedRun().nodes.map(n => ({ ...n, actions: { resume: false, rerun_agent: [] } })),
+      }))
+      render(RunDetail, { runId: RID })
+      await screen.findByRole('region', { name: '数据采集 详情' })
+      expect(screen.getByText(text)).toBeInTheDocument()
+      cleanup()
+    }
   })
 
   it('resume confirm text (spec §7.3, verbatim)', async () => {
@@ -341,7 +359,7 @@ describe('RunDetail · resume', () => {
     second.unmount()
     await act(() => vi.advanceTimersByTimeAsync(30_000))
     expect(get).toHaveBeenCalledTimes(1)
-  })
+  }, 30_000)              // 721 polls of fake time: takes 3–6 s depending on the machine
 
   it.each([
     ['not_failed', '这次运行没有失败的节点'],
@@ -442,7 +460,7 @@ describe('RunDetail · rerun agent', () => {
     expect(rerun).toHaveBeenCalledWith({
       ticker: 'NVDA', signal_date: '2026-10-29', mode: 'propose', request_id: expect.stringMatching(/^[0-9a-f-]{36}$/), origin: 'run_detail',
     })
-    expect(await screen.findByText('已重置尝试次数，并已在后台重新运行')).toBeInTheDocument()
+    expect(await screen.findByText('已重置尝试次数，并已重新运行')).toBeInTheDocument()
     await waitFor(() => expect(api.getRunDetail).toHaveBeenCalledTimes(2))     // 重新读取详情
   })
 

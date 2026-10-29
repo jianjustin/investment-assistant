@@ -345,7 +345,7 @@ it('links the plan id to the standalone plan page, not the instrument page', asy
 it('expands an agent run tool calls from a track row', async () => {
   respond = async (url) => {
     if (url.includes('/review/tracks')) return json(trackView)
-    if (url.includes('/agent-runs/r1')) return json({ id: 'r1', status: 'ok', model: 'glm-5.3', agent_version: 'agent-1',
+    if (url.includes('/agent-runs/r1')) return json({ id: 'r1', status: 'ok', model: 'gpt-test', agent_version: 'agent-1',
       output: null, counter: null, plan: null, input_tokens: 10, output_tokens: 5, created_at: '2026-10-21T22:00:00Z',
       tool_calls: [{ seq: 1, phase: 'propose', tool: 'get_trigger', args: {}, result: { ref: 'call:1', data: {} },
                      result_sha256: 'a'.repeat(64), called_at: '2026-10-21T22:00:01Z' }] })
@@ -428,7 +428,7 @@ it('shows the latest recorded push beside each card', async () => {
 it('expands the second tool call from a track row', async () => {
   respond = async (url) => {
     if (url.includes('/review/tracks')) return json(trackView)
-    if (url.includes('/agent-runs/r1')) return json({ id: 'r1', status: 'ok', model: 'glm-5.3', agent_version: 'agent-1',
+    if (url.includes('/agent-runs/r1')) return json({ id: 'r1', status: 'ok', model: 'gpt-test', agent_version: 'agent-1',
       output: null, counter: null, plan: null, input_tokens: 10, output_tokens: 5, created_at: '2026-10-21T22:00:00Z',
       tool_calls: [
         { seq: 1, phase: 'propose', tool: 'get_trigger', args: {}, result: { ref: 'call:1', data: {} },

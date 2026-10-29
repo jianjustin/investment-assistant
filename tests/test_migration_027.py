@@ -67,7 +67,7 @@ def _insert(conn, table, values, returning='id'):
 
 def _run(conn, **overrides):
     values = {'id': uuid.uuid4(), 'ticker': 'NVDA', 'signal_date': DAY, 'pool': 'main', 'attempt': 1,
-              'mode': 'retro', 'agent_version': 'agent-retro-1', 'provider': 'zhipu', 'model': 'glm-5.3',
+              'mode': 'retro', 'agent_version': 'agent-retro-1', 'provider': 'legacy', 'model': 'gpt-test',
               'cutoff_at': NOW, 'status': 'rejected', 'reason': 'malformed', 'plan_id': None,
               'started_at': NOW, 'finished_at': NOW}
     values.update(overrides)

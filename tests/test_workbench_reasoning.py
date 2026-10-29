@@ -38,7 +38,7 @@ LEGACY_OUTPUT = {'action': 'buy', 'summary': '回踩修复放量',
 def run_row(*, mode='propose', status='ok', reason=None, agent_version='agent-2', output=OUTPUT, counter=COUNTER,
             plan_id=PLAN_ID, **extra):
     return {'id': RUN_ID, 'ticker': 'AMD', 'signal_date': date(2026, 10, 22), 'pool': 'main', 'attempt': 1,
-            'mode': mode, 'agent_version': agent_version, 'provider': 'zhipu', 'model': 'glm-x', 'cutoff_at': T,
+            'mode': mode, 'agent_version': agent_version, 'provider': 'chatgpt', 'model': 'gpt-test', 'cutoff_at': T,
             'status': status, 'reason': reason, 'detail': None, 'output': output, 'counter': counter,
             'plan_id': plan_id, 'input_tokens': 10, 'output_tokens': 5, 'started_at': T, 'finished_at': T, **extra}
 
@@ -527,7 +527,7 @@ def _insert_revision_chain(db, scripted_model):
     plan_a = repository.plan_by_id(db, first['plan_id'])
     plan_b = repository.insert_plan(db, {k: v for k, v in plan_a.items() if k not in ('id', 'created_at')})
     review_run, revise_run = str(uuid.uuid4()), str(uuid.uuid4())
-    base = {'ticker': 'AAA', 'signal_date': SESSION, 'pool': 'main', 'attempt': 1, 'provider': 'zhipu', 'model': 'm',
+    base = {'ticker': 'AAA', 'signal_date': SESSION, 'pool': 'main', 'attempt': 1, 'provider': 'chatgpt', 'model': 'm',
             'cutoff_at': NOW, 'reason': None, 'detail': None, 'counter': None, 'input_tokens': 0, 'output_tokens': 0,
             'started_at': NOW, 'finished_at': NOW}
     call = {'seq': 1, 'tool': 'get_news', 'args': {}, 'result': {'ref': 'call:1', 'data': []},
@@ -658,7 +658,7 @@ def test_reasoning_reads_retro_and_discuss_context(db, scripted_model):
     db.commit()
     first = repository.latest_agent_run(db, 'AAA', SESSION)
     plan = repository.plan_by_id(db, first['plan_id'])
-    base = {'ticker': 'AAA', 'signal_date': SESSION, 'pool': 'main', 'attempt': 1, 'provider': 'zhipu', 'model': 'm',
+    base = {'ticker': 'AAA', 'signal_date': SESSION, 'pool': 'main', 'attempt': 1, 'provider': 'chatgpt', 'model': 'm',
             'cutoff_at': NOW, 'reason': None, 'detail': None, 'counter': None, 'input_tokens': 0, 'output_tokens': 0,
             'started_at': NOW, 'finished_at': NOW, 'plan_id': None, 'status': 'ok'}
     know_call = {'seq': 1, 'tool': 'get_knowledge', 'args': {}, 'result': {'ref': 'call:1', 'data': KNOW_DATA},

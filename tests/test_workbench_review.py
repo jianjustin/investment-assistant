@@ -307,8 +307,8 @@ def test_generate_weekly_counts_first_and_latest(workbench_db, monkeypatch):
         run_id, at = uuid.uuid4(), NOW - timedelta(days=30 - version_no)
         repository.insert_agent_run(workbench_db, {
             'id': run_id, 'ticker': 'NVDA', 'signal_date': day, 'pool': 'main', 'attempt': 1,
-            'mode': 'propose' if version_no == 0 else 'revise', 'agent_version': 'agent-2', 'provider': 'zhipu',
-            'model': 'glm-5.3', 'cutoff_at': at, 'status': 'ok', 'reason': None, 'output': {'action': 'buy'},
+            'mode': 'propose' if version_no == 0 else 'revise', 'agent_version': 'agent-2', 'provider': 'chatgpt',
+            'model': 'gpt-test', 'cutoff_at': at, 'status': 'ok', 'reason': None, 'output': {'action': 'buy'},
             'counter': None, 'plan_id': plan['id'], 'input_tokens': 0, 'output_tokens': 0,
             'started_at': at, 'finished_at': at}, [])
         repository.insert_plan_version(workbench_db, {

@@ -22,7 +22,7 @@ const planRow = (id: string, over: Record<string, unknown> = {}) => ({
   invalid_reasons: [], warnings: [], ...over,
 })
 const runRow = (id: string, over: Record<string, unknown> = {}) => ({
-  id, mode: 'propose', agent_version: 'agent-2', model: 'glm-5.3', status: 'ok', reason: null,
+  id, mode: 'propose', agent_version: 'agent-2', model: 'gpt-test', status: 'ok', reason: null,
   cutoff_at: '2026-10-22T22:30:00Z', input_tokens: 10, output_tokens: 5, created_at: '2026-10-22T22:31:00Z',
   output: { action: 'buy', summary: '回踩修复放量',
             levels: { entry_low: { value: '98.50', refs: ['call:1'] }, entry_high: { value: '101.50', refs: ['call:1'] },

@@ -244,7 +244,7 @@ def _run_row(conn, ticker, *, status='ok', plan=None, mode='propose', version='a
     at = at or NOW - timedelta(days=5)
     return repository.insert_agent_run(conn, {
         'id': uuid.uuid4(), 'ticker': ticker, 'signal_date': S, 'pool': 'main', 'attempt': 1, 'mode': mode,
-        'agent_version': version, 'provider': 'zhipu', 'model': 'glm-5.3', 'cutoff_at': at, 'status': status,
+        'agent_version': version, 'provider': 'chatgpt', 'model': 'gpt-test', 'cutoff_at': at, 'status': status,
         'reason': reason, 'output': {'action': 'buy'}, 'counter': None,
         'plan_id': plan['id'] if plan else None, 'input_tokens': 0, 'output_tokens': 0,
         'started_at': at, 'finished_at': at}, [])

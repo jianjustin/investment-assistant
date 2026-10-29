@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  LOGIN_POLL_MS, NODE_STATUS_TEXT, RESUME_ERROR_TEXT, RESUME_POLL_MAX_MS, RESUME_POLL_MS, RUN_ID_RE,
+  LOGIN_POLL_MS, NODE_STATUS_TEXT, RESUME_ERROR_TEXT, RESUME_POLL_MAX_MS, RESUME_POLL_MS, RETRO_PUSH_TEXT, RETRO_STATUS_TEXT, RUN_ID_RE,
   durationText, failedTargetsFirst, maskEmail, nyDay, resumeErrorText, runHref,
 } from './runs'
 
@@ -35,7 +35,11 @@ describe('runs helpers', () => {
       node_mismatch: '只能从失败的节点 <next> 继续',
       resume_window_closed: '已过 <下一交易日> 纽约 17:00，只能整次重新运行',
       daily_running: '每日工作流正在运行',
+      interrupted: '这次运行中途中断，只能整次重新运行',
+      checkpoint_unavailable: '状态库未就绪，暂时无法续跑',
     })
+    expect(RETRO_STATUS_TEXT.to_review).toBe('待审定')
+    expect(RETRO_PUSH_TEXT.manual_run).toBe('手动运行不推送')
   })
 
   it('resumeErrorText fills the placeholders', () => {

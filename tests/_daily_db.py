@@ -1,8 +1,7 @@
 """Shared fixtures and fakes for the v2.8 daily-workflow tests (and Task 4's run-detail / API tests).
 
-``daily_db`` is the v2.7 ``db`` fixture of ``test_workbench_service`` (``service.connection`` pointing at a throwaway
-schema) with migration 028 applied on top: ``tests/conftest.WORKBENCH_MIGRATIONS`` stops at 027 while the parallel
-Tasks run, so the schema gets 028 here. Everything else — fetchers, the scripted model, the checkpointer, ``sleep``,
+``daily_db`` is the ``workbench_db`` schema (``tests/conftest.WORKBENCH_MIGRATIONS`` ends with 028 since v2.8) with
+``service.connection`` pointing at it. Everything else — fetchers, the scripted model, the checkpointer, ``sleep``,
 the clocks, the notifier and ``job_reports`` — is a fake: nothing touches the network or a real database.
 """
 from __future__ import annotations
@@ -10,15 +9,12 @@ from __future__ import annotations
 import os
 from contextlib import nullcontext
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from investment_assistant.config import AssistantConfig
 from investment_assistant.workbench import collect
-
-MIGRATION_028 = Path('migrations/028_daily_workflow.sql')
 
 
 class FakeClock:
@@ -78,11 +74,6 @@ def shared_saver():
 
 def daily_config() -> AssistantConfig:
     return AssistantConfig()
-
-
-def apply_028(conn) -> None:
-    conn.execute(MIGRATION_028.read_text(encoding='utf-8'))
-    conn.commit()
 
 
 def lock_connection_factory():
@@ -157,12 +148,14 @@ def _wire(workbench_db, monkeypatch, job_reports):
 
 @pytest.fixture
 def daily_db(workbench_db, monkeypatch, job_reports):
-    """The workbench schema with 028, ``service.connection`` on it and the run locks on connections of their own."""
-    apply_028(workbench_db)
+    """The workbench schema (``conftest.WORKBENCH_MIGRATIONS`` ends with 028), ``service.connection`` on it and the run
+    locks on connections of their own."""
     return _wire(workbench_db, monkeypatch, job_reports)
 
 
 @pytest.fixture
 def plain_db(workbench_db, monkeypatch, job_reports):
-    """The same wiring on a schema that stops at 027: 028 has not run."""
+    """The same wiring on a schema where 028 looks as if it had not run: its tables are dropped again."""
+    workbench_db.execute('DROP TABLE agent_attempt_resets, agent_connection_events, agent_connections')
+    workbench_db.commit()
     return _wire(workbench_db, monkeypatch, job_reports)

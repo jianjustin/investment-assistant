@@ -174,7 +174,7 @@ def test_version_validity():
 # ---------------------------------------------------------------- version plan rows
 
 def _build(**overrides):
-    kwargs = dict(output=_output(), agent_run_id='run-1', model='glm-test', ticker='NVDA', signal_date=SD,
+    kwargs = dict(output=_output(), agent_run_id='run-1', model='gpt-test', ticker='NVDA', signal_date=SD,
                   as_of_session=SD, version_no=0, supersedes_plan_id=None, mode='entry', bars=_bars(SD),
                   earnings_row=None, snapshot=_snapshot(), exposure=_exposure(), params=PARAMS,
                   context={'regime': {'label': 'neutral'}})
@@ -186,7 +186,7 @@ def test_build_version_plan_first_version_mirrors_agent1():
     snapshot = _snapshot()
     row = _build(snapshot=snapshot)
     levels = {key: Decimal(item['value']) for key, item in _output()['levels'].items()}
-    legacy = plans.build_agent_plan(levels=levels, agent_run_id='run-1', model='glm-test', ticker='NVDA',
+    legacy = plans.build_agent_plan(levels=levels, agent_run_id='run-1', model='gpt-test', ticker='NVDA',
                                     signal_date=SD, bars=_bars(SD), earnings_row=None, snapshot=snapshot,
                                     exposure=_exposure(), params=PARAMS, context={'regime': {'label': 'neutral'}})
     extra = {'as_of_session': SD.isoformat(), 'version_no': 0, 'supersedes_plan_id': None,
@@ -196,7 +196,7 @@ def test_build_version_plan_first_version_mirrors_agent1():
     for key in legacy:
         if key not in ('plan_version', 'inputs'):
             assert row[key] == legacy[key], key
-    assert row['inputs']['agent_run_id'] == 'run-1' and row['inputs']['model'] == 'glm-test'
+    assert row['inputs']['agent_run_id'] == 'run-1' and row['inputs']['model'] == 'gpt-test'
 
 
 def test_build_version_plan_revision_uses_as_of_session():

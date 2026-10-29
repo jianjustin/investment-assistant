@@ -485,7 +485,7 @@ def test_get_knowledge_never_reads_drafts(workbench_db):
     conn.execute(
         "INSERT INTO agent_runs (id, ticker, signal_date, pool, attempt, mode, agent_version, provider, model, "
         "cutoff_at, status, reason, started_at, finished_at) VALUES (%s, 'AMD', %s, 'main', 1, 'retro', "
-        "'agent-retro-1', 'zhipu', 'glm', %s, 'ok', NULL, %s, %s)", (run, S, CUTOFF, CUTOFF, CUTOFF))
+        "'agent-retro-1', 'chatgpt', 'gpt-test', %s, 'ok', NULL, %s, %s)", (run, S, CUTOFF, CUTOFF, CUTOFF))
     draft = repository.insert_card_draft(conn, {'card_id': cid, 'attempt': 1, 'trigger': 'batch', 'agent_run_id': run,
                                                 'status': 'ok', 'reason': None, 'output': {'headline': '草稿'}})
     base = {'origin': 'review_card', 'card_draft_id': draft, 'discussion_turn_id': None, 'target_knowledge_id': None,

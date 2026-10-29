@@ -106,7 +106,7 @@ def insert_run(db, *, mode='propose', status='rejected', reason='malformed', out
     run_id = str(uuid.uuid4())
     repository.insert_agent_run(db, {
         'id': run_id, 'ticker': ticker, 'signal_date': SESSION, 'pool': 'main', 'attempt': 1, 'mode': mode,
-        'agent_version': 'agent-2', 'provider': 'zhipu', 'model': 'm', 'cutoff_at': NOW, 'status': status,
+        'agent_version': 'agent-2', 'provider': 'chatgpt', 'model': 'm', 'cutoff_at': NOW, 'status': status,
         'reason': reason, 'detail': None, 'output': output, 'counter': None, 'plan_id': None, 'input_tokens': 0,
         'output_tokens': 0, 'started_at': NOW, 'finished_at': NOW}, list(calls))
     return run_id

@@ -280,7 +280,7 @@ def _agent_levels(**overrides):
 
 
 def _agent_plan(**overrides):
-    args = {'levels': _agent_levels(), 'agent_run_id': 'run-1', 'model': 'glm-5.3', 'ticker': 'NVDA',
+    args = {'levels': _agent_levels(), 'agent_run_id': 'run-1', 'model': 'gpt-test', 'ticker': 'NVDA',
             'signal_date': date(2026, 10, 21), 'bars': _bars(15), 'earnings_row': None,
             'snapshot': _snapshot(), 'exposure': _exposure(), 'params': PARAMS}
     args.update(overrides)
@@ -291,7 +291,7 @@ def test_agent_plan_fields():
     plan = _agent_plan()
     assert plan['kind'] == 'agent' and plan['plan_version'] == 'agent-1' and plan['based_on_id'] is None
     assert (plan['valid_from'], plan['valid_until']) == plans.validity(date(2026, 10, 21))
-    assert plan['inputs']['agent_run_id'] == 'run-1' and plan['inputs']['model'] == 'glm-5.3'
+    assert plan['inputs']['agent_run_id'] == 'run-1' and plan['inputs']['model'] == 'gpt-test'
     assert plan['status'] == 'ok' and plan['invalid_reasons'] == []
     assert plan['ref_price'] == Decimal('100.000000') and plan['atr'] == Decimal('2.000000')
     assert plan['entry_low'] == Decimal('98')   # levels land flat, like rule plans

@@ -1610,7 +1610,7 @@ def _insert_run(db, *, ticker='NVDA', mode, status, at, agent_version='agent-2',
                 output=None, counter=None):
     return repository.insert_agent_run(db, {
         'id': str(uuid.uuid4()), 'ticker': ticker, 'signal_date': SESSION, 'pool': 'main', 'attempt': 1,
-        'mode': mode, 'agent_version': agent_version, 'provider': 'zhipu', 'model': 'glm-5.3', 'cutoff_at': at,
+        'mode': mode, 'agent_version': agent_version, 'provider': 'chatgpt', 'model': 'gpt-test', 'cutoff_at': at,
         'status': status, 'reason': reason, 'detail': None, 'output': output, 'counter': counter,
         'plan_id': plan_id, 'input_tokens': 1, 'output_tokens': 1, 'started_at': at, 'finished_at': at}, [])
 
@@ -1640,7 +1640,7 @@ def test_today_marks_agent1_legacy(db, scripted_model):
     run_id = str(uuid.uuid4())
     levels = {'entry_low': Decimal('98.50'), 'entry_high': Decimal('101.50'), 'stop': Decimal('96.00'),
               'target1': Decimal('108.00')}
-    old = plans.build_agent_plan(levels=levels, agent_run_id=run_id, model='glm-5.3', ticker='NVDA',
+    old = plans.build_agent_plan(levels=levels, agent_run_id=run_id, model='gpt-test', ticker='NVDA',
                                  signal_date=SESSION, bars=repository.read_bars(db, 'NVDA', SESSION, cutoff_at=NOW),
                                  earnings_row=None, snapshot=None,
                                  exposure={'ticker_value': Decimal(0), 'total_value': Decimal(0)},
@@ -1651,7 +1651,7 @@ def test_today_marks_agent1_legacy(db, scripted_model):
               'thesis': [{'text': '旧论点', 'refs': ['call:1']}]}
     repository.insert_agent_run(db, {
         'id': run_id, 'ticker': 'NVDA', 'signal_date': SESSION, 'pool': 'main', 'attempt': 2, 'mode': 'propose',
-        'agent_version': 'agent-1', 'provider': 'zhipu', 'model': 'glm-5.3', 'cutoff_at': later, 'status': 'ok',
+        'agent_version': 'agent-1', 'provider': 'chatgpt', 'model': 'gpt-test', 'cutoff_at': later, 'status': 'ok',
         'reason': None, 'detail': None, 'output': output, 'counter': {'status': 'ok', 'risks': [], 'dropped': 0},
         'plan_id': plan['id'], 'input_tokens': 1, 'output_tokens': 1, 'started_at': later, 'finished_at': later}, [])
     db.commit()
@@ -1718,7 +1718,7 @@ def test_agent_view_legacy_only_for_agent1_plans():
     agent-1 运行没有计划，走「Agent 未给出计划」。"""
     def run(status, version='agent-1'):
         return {'id': uuid.uuid4(), 'status': status, 'reason': None if status in ('ok', 'pass') else 'model_error',
-                'model': 'glm', 'agent_version': version, 'output': {}, 'counter': None, 'input_tokens': 0,
+                'model': 'gpt-test', 'agent_version': version, 'output': {}, 'counter': None, 'input_tokens': 0,
                 'output_tokens': 0, 'created_at': NOW}
     assert service._agent_view(run('ok'), None)['legacy'] is True
     assert service._agent_view(run('pass'), None)['legacy'] is True
@@ -1872,9 +1872,7 @@ def test_today_chain_carries_head_cutoff_diff_and_review_conditions(db, scripted
 # ------------------------------------------------- max_attempts reset and rerun (v2.8 D26, migration 028)
 
 @pytest.fixture
-def db28(db):
-    from _daily_db import apply_028
-    apply_028(db)
+def db28(db):          # ``conftest.WORKBENCH_MIGRATIONS`` ends with 028 since v2.8
     return db
 
 

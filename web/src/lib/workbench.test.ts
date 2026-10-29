@@ -181,7 +181,7 @@ describe('agent track', () => {
     const { decisionPayload } = await import('./workbench')
     const agentPlan: Plan = { ...basePlan, id: 'ap1', kind: 'agent' }
     const withBoth = { ...unit, plan: { ...basePlan, kind: 'rule' as const },
-                       agent: { id: 'r1', status: 'ok' as const, model: 'glm-5.3', agent_version: 'agent-1',
+                       agent: { id: 'r1', status: 'ok' as const, model: 'gpt-test', agent_version: 'agent-1',
                                 output: null, counter: null, plan: agentPlan, input_tokens: 0,
                                 output_tokens: 0, created_at: '2026-10-22T23:00:00Z' } }
     expect(decisionPayload(withBoth, 'accept', 'r', 'req', null, 'agent')).toMatchObject({ plan_id: 'ap1' })

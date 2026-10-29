@@ -93,7 +93,7 @@ def test_card_drafts_and_verdict(workbench_db):
     conn.execute(
         "INSERT INTO agent_runs (id, ticker, signal_date, pool, attempt, mode, agent_version, provider, model, "
         "cutoff_at, status, reason, started_at, finished_at) VALUES (%s, 'NVDA', %s, 'main', 1, 'retro', "
-        "'agent-retro-1', 'zhipu', 'glm', %s, 'ok', NULL, %s, %s)", (run, DAY, NOW, NOW, NOW))
+        "'agent-retro-1', 'chatgpt', 'gpt-test', %s, 'ok', NULL, %s, %s)", (run, DAY, NOW, NOW, NOW))
     d1 = repository.insert_card_draft(conn, {'card_id': cid, 'attempt': 1, 'trigger': 'batch', 'agent_run_id': None,
                                               'status': 'skipped', 'reason': 'stage_budget', 'output': None})
     d2 = repository.insert_card_draft(conn, {'card_id': cid, 'attempt': 2, 'trigger': 'manual', 'agent_run_id': run,
@@ -310,7 +310,7 @@ def test_knowledge_drafts_citations_discussions(workbench_db):
     conn.execute(
         "INSERT INTO agent_runs (id, ticker, signal_date, pool, attempt, mode, agent_version, provider, model, "
         "cutoff_at, status, reason, started_at, finished_at) VALUES (%s, 'NVDA', %s, 'main', 1, 'retro', "
-        "'agent-retro-1', 'zhipu', 'glm', %s, 'ok', NULL, %s, %s)", (run, DAY, NOW, NOW, NOW))
+        "'agent-retro-1', 'chatgpt', 'gpt-test', %s, 'ok', NULL, %s, %s)", (run, DAY, NOW, NOW, NOW))
     draft = repository.insert_card_draft(conn, {'card_id': cid, 'attempt': 1, 'trigger': 'batch',
                                                 'agent_run_id': run, 'status': 'ok', 'reason': None,
                                                 'output': {'headline': 'x'}})

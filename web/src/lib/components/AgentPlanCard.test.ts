@@ -21,7 +21,7 @@ const agentPlan = (overrides: Record<string, unknown> = {}) => ({
 })
 
 const agent2 = (overrides: Record<string, any> = {}) => ({
-  id: 'r2', status: 'ok', model: 'glm-5.3', agent_version: 'agent-2',
+  id: 'r2', status: 'ok', model: 'gpt-test', agent_version: 'agent-2',
   output: {
     action: 'buy', summary: '回踩修复放量',
     levels: { entry_low: { value: '98.50', refs: ['call:1'] }, entry_high: { value: '101.50', refs: ['call:1'] },
@@ -116,13 +116,13 @@ describe('AgentPlanCard', () => {
 
   it('legacy agent-1 shows the legacy label', () => {
     render(AgentPlanCard, { agent: {
-      id: 'r1', status: 'ok', model: 'glm-5.3', agent_version: 'agent-1', legacy: true,
+      id: 'r1', status: 'ok', model: 'gpt-test', agent_version: 'agent-1', legacy: true,
       output: { action: 'buy', summary: '回踩', levels: agent2().output.levels, thesis: [{ text: '放量', refs: ['call:1'] }] },
       counter: { status: 'ok', risks: [{ text: '财报临近', refs: ['call:1'] }], dropped: 0 },
       plan: agentPlan({ plan_version: 'agent-1' }), input_tokens: 1, output_tokens: 1,
       created_at: '2026-10-22T23:00:00Z', chain: null } as any, onCall: () => {} })
     expect(screen.getByText('agent-1（旧版，不参与复查）')).toBeInTheDocument()
-    expect(screen.getByText('Agent 建议（glm-5.3 · agent-1）买入')).toBeInTheDocument()
+    expect(screen.getByText('Agent 建议（gpt-test · agent-1）买入')).toBeInTheDocument()
     expect(screen.getByText(/反方：/)).toHaveTextContent('财报临近')
     expect(screen.queryByText(/^Agent 计划 · 第/)).toBeNull()
     expect(screen.getByText('证据：未验证')).toBeInTheDocument()
@@ -202,7 +202,7 @@ describe('AgentPlanCard', () => {
       const blocked = agentPlan({ status: 'invalid', invalid_reasons: ['no_room'] })
       const cases = [
         agent2(),                                                                     // version, cutoff, levels, citation, thesis, counter, conditions, changes, review
-        { id: 'r1', status: 'ok', model: 'glm-5.3', agent_version: 'agent-1', legacy: true, output: agent2().output,
+        { id: 'r1', status: 'ok', model: 'gpt-test', agent_version: 'agent-1', legacy: true, output: agent2().output,
           counter: { status: 'ok', risks: [], dropped: 0 }, plan: agentPlan({ plan_version: 'agent-1' }),
           input_tokens: 1, output_tokens: 1, created_at: '2026-10-22T23:00:00Z', chain: null },   // legacy
         agent2({ chain: { ...a.chain, latest_review: { ...a.chain.latest_review, outcome: 'revise', decided_by: 'agent',
@@ -229,7 +229,7 @@ describe('AgentPlanCard', () => {
       vi.spyOn(api, 'getConcepts').mockRejectedValue(new Error('offline'))
       const getReasoning = vi.spyOn(api, 'getReasoning').mockResolvedValue({
         run: { id: 'r2', ticker: 'NVDA', signal_date: '2026-10-22', mode: 'propose', agent_version: 'agent-2', status: 'ok',
-               reason: null, reason_text: null, model: 'glm-5.3', cutoff_at: '', started_at: '', finished_at: '',
+               reason: null, reason_text: null, model: 'gpt-test', cutoff_at: '', started_at: '', finished_at: '',
                input_tokens: 0, output_tokens: 0 },
         legacy: false, version: null, review: null, steps: [
           { kind: 'read', title: '提议者读了什么', concept: null, calls: [] }], notes: [] } as any)

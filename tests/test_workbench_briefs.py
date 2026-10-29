@@ -20,7 +20,7 @@ from investment_assistant.workbench.agent import REASON_TEXT
 
 def _run(**overrides):
     values = {'id': uuid.uuid4(), 'ticker': 'NVDA', 'signal_date': T, 'mode': 'propose', 'status': 'ok',
-              'reason': None, 'agent_version': 'agent-1', 'model': 'glm-5.3', 'cutoff_at': CUTOFF,
+              'reason': None, 'agent_version': 'agent-1', 'model': 'gpt-test', 'cutoff_at': CUTOFF,
               'output': {'action': 'buy', 'summary': '回踩修复后放量上行',
                          'thesis': [{'text': '放量突破 20 日线', 'refs': ['call:1']}]},
               'counter': {'status': 'ok', 'risks': [{'text': '财报临近', 'refs': ['call:2']}], 'dropped': 0}}
@@ -36,7 +36,7 @@ def _calls(*seqs):
 def test_proposal_ok_brief_from_thesis_and_counter():
     brief = briefs.for_run(_run(), _calls(1, 2), unit=UNIT, candidates=CANDS)
     assert brief['status'] == 'ok' and brief['error'] is None
-    assert brief['prompt_version'] == 'agent-1' and brief['model'] == 'glm-5.3'
+    assert brief['prompt_version'] == 'agent-1' and brief['model'] == 'gpt-test'
     assert brief['agent_run_id'] == brief['agent_run_id']
     assert brief['cutoff_at'] == CUTOFF
     assert brief['output'] == {'summary': '回踩修复后放量上行',

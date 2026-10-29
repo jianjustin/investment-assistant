@@ -50,7 +50,7 @@ def build(units=(), holdings=(), summary=None, last_push_failed=False, extended_
 
 def agent_ok(ticker='NVDA', summary='回踩修复放量', first_risk='财报临近'):
     plan = plan_row(ticker=ticker, kind='agent', plan_version='agent-1')
-    return {'id': 'r1', 'status': 'ok', 'model': 'glm-5.3', 'agent_version': 'agent-1',
+    return {'id': 'r1', 'status': 'ok', 'model': 'gpt-test', 'agent_version': 'agent-1',
             'output': {'action': 'buy', 'summary': summary,
                        'levels': {k: {'value': str(plan[k]), 'refs': ['call:1']}
                                   for k in ('entry_low', 'entry_high', 'stop', 'target1')},
@@ -275,16 +275,16 @@ def test_digest_limits_with_100_ticker_summary():
 def test_agent_line_ok():
     u = unit(plan=plan_row(), agent=agent_ok())
     text = all_text(templates.workbench_digest(build(units=[u])))
-    assert 'Agent（glm-5.3）买入 · 区间 98.5–101.5 · 止损 94 · T1 112 · 166 股；回踩修复放量' in text
+    assert 'Agent（gpt-test）买入 · 区间 98.5–101.5 · 止损 94 · T1 112 · 166 股；回踩修复放量' in text
     assert '反方：财报临近' in text
 
 
 def test_agent_line_pass():
-    agent = {'id': 'r2', 'status': 'pass', 'model': 'glm-5.3', 'agent_version': 'agent-1',
+    agent = {'id': 'r2', 'status': 'pass', 'model': 'gpt-test', 'agent_version': 'agent-1',
              'output': {'action': 'pass', 'summary': '趋势不明'}, 'counter': None, 'plan': None,
              'input_tokens': 5, 'output_tokens': 5, 'created_at': '2026-10-22T23:00:00+00:00'}
     text = all_text(templates.workbench_digest(build(units=[unit(plan=plan_row(), agent=agent)])))
-    assert 'Agent（glm-5.3）不建议买入；趋势不明' in text
+    assert 'Agent（gpt-test）不建议买入；趋势不明' in text
 
 
 def test_agent_line_missing_reason():
@@ -301,14 +301,14 @@ def test_agent_only_unit_listed():
     item = dg['plans'][0]
     assert item['kind'] == 'agent' and item['entry_low'] is None and item['shares'] is None
     text = all_text(templates.workbench_digest(dg))
-    assert 'Agent（glm-5.3）买入 · 区间 98.5–101.5' in text
+    assert 'Agent（gpt-test）买入 · 区间 98.5–101.5' in text
     assert text.count('区间') == 1          # 规则区间行不写，只有 Agent 行里的区间
 
 
 def test_overview_agent_counts_and_quota_warning():
     units = [unit(plan=plan_row(), agent=agent_ok()),
              unit(ticker='MU', plan=plan_row(ticker='MU'),
-                  agent={'id': 'r', 'status': 'pass', 'model': 'glm-5.3', 'output': {'summary': 's'},
+                  agent={'id': 'r', 'status': 'pass', 'model': 'gpt-test', 'output': {'summary': 's'},
                          'counter': None, 'plan': None, 'input_tokens': 0, 'output_tokens': 0,
                          'created_at': 'c'}),
              unit(ticker='AMD', plan=plan_row(ticker='AMD'), agent=None)]
@@ -474,7 +474,7 @@ def test_numeric_padding_is_trimmed_in_every_message():
     text = all_text(msgs)
     assert '区间 250.77–264.37 · 止损 230.38 · T1 311.94' in text                  # rule plan line
     assert '规则基线：区间 250.77–264.37 · 止损 230.38 · T1 311.94 · 10 股；' in text   # §10.3: no risk amount
-    assert 'Agent（glm-5.3）买入 · 区间 250.77–264.37 · 止损 230.38 · T1 311.94' in text
+    assert 'Agent（gpt-test）买入 · 区间 250.77–264.37 · 止损 230.38 · T1 311.94' in text
     assert '入场 250.77–264.37 · 止损 230.38 · T1 311.94 · 建议 166 股' in text      # screen trigger
     assert 'U00 · trend_reclaim · RS 0.217 ·' in text
     assert 'S00 · RS 0.334 · ATR 4.56%' in text
@@ -487,7 +487,7 @@ def test_numeric_padding_is_trimmed_in_every_message():
 def agent2_ok(ticker='NVDA', version_no=0, summary='回踩修复放量', counter_text='量能未放大'):
     plan = plan_row(ticker=ticker, kind='agent', plan_version='agent-2', entry_low=D('99'), entry_high=D('102'),
                     stop=D('95'), target1=D('115'))
-    return {'id': 'r9', 'status': 'ok', 'model': 'glm-5.3', 'agent_version': 'agent-2',
+    return {'id': 'r9', 'status': 'ok', 'model': 'gpt-test', 'agent_version': 'agent-2',
             'output': {'action': 'buy', 'summary': summary,
                        'thesis': [{'text': '放量突破', 'refs': ['call:1']}]},
             'counter': {'status': 'ok', 'counter': [{'thesis': 1, 'text': counter_text, 'refs': ['call:1']}],
@@ -525,7 +525,7 @@ def test_agent_missing_writes_reason_then_baseline():
 
 def test_legacy_agent1_line_marked_and_first():
     value = plan_field(build(units=[unit(plan=plan_row(), agent={**agent_ok(), 'legacy': True})]))
-    assert value.startswith('Agent（glm-5.3）买入 · 区间 98.5–101.5')
+    assert value.startswith('Agent（gpt-test）买入 · 区间 98.5–101.5')
     assert 'agent-1（旧版，不参与复查）' in value
     assert value.index('agent-1（旧版') < value.index('规则基线')
 

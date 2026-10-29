@@ -307,8 +307,8 @@ def agent2_version(conn, version_no=0, supersedes=None, *, status='ok', ticker='
     cutoff = NOW + timedelta(days=version_no)
     repository.insert_agent_run(conn, {
         'id': run_id, 'ticker': ticker, 'signal_date': day, 'pool': 'main', 'attempt': 1,
-        'mode': 'propose' if version_no == 0 else 'revise', 'agent_version': 'agent-2', 'provider': 'zhipu',
-        'model': 'glm-5.3', 'cutoff_at': cutoff, 'status': 'ok', 'reason': None, 'output': {'action': 'buy'},
+        'mode': 'propose' if version_no == 0 else 'revise', 'agent_version': 'agent-2', 'provider': 'chatgpt',
+        'model': 'gpt-test', 'cutoff_at': cutoff, 'status': 'ok', 'reason': None, 'output': {'action': 'buy'},
         'counter': None, 'plan_id': plan['id'], 'input_tokens': 0, 'output_tokens': 0,
         'started_at': cutoff, 'finished_at': cutoff}, [])
     repository.insert_plan_version(conn, {

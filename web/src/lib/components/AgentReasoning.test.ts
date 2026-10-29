@@ -16,7 +16,7 @@ const call = (seq: number, tool: string, over: Record<string, unknown> = {}) => 
 
 const run = (over: Record<string, unknown> = {}) => ({
   id: 'run-1', ticker: 'NVDA', signal_date: '2026-10-22', mode: 'propose', agent_version: 'agent-2', status: 'ok',
-  reason: null, reason_text: null, model: 'glm-5.3', cutoff_at: '2026-10-27T22:00:00Z',
+  reason: null, reason_text: null, model: 'gpt-test', cutoff_at: '2026-10-27T22:00:00Z',
   started_at: '2026-10-27T22:30:00Z', finished_at: '2026-10-27T22:31:00Z', input_tokens: 10, output_tokens: 5, ...over,
 })
 

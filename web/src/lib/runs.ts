@@ -32,6 +32,20 @@ export const RESUME_ERROR_TEXT: Record<string, string> = {
   node_mismatch: '只能从失败的节点 <next> 继续',
   resume_window_closed: '已过 <下一交易日> 纽约 17:00，只能整次重新运行',
   daily_running: '每日工作流正在运行',
+  // GET /api/runs/{id}/detail 的 resume.reason 另有两个（不是 409 码）
+  interrupted: '这次运行中途中断，只能整次重新运行',
+  checkpoint_unavailable: '状态库未就绪，暂时无法续跑',
+}
+
+/** `retro` 节点结果行的状态（复盘卡的状态与周 / 月复盘的动作，后端发的是代码）。 */
+export const RETRO_STATUS_TEXT: Record<string, string> = {
+  to_review: '待审定', drafting: '起草中', draft_failed: '起草失败', reviewed: '已审定',
+  generated: '已生成', reused: '沿用已冻结快照', already_sent: '已推送过', reminded: '已提醒', error: '出错',
+}
+
+/** 周 / 月复盘的推送结果；其余（未发送的原因）原样显示。 */
+export const RETRO_PUSH_TEXT: Record<string, string> = {
+  sent: '已推送', manual_run: '手动运行不推送', not_sent: '未发送',
 }
 
 export const RESUME_STILL_RUNNING_TEXT = '还在运行，稍后刷新'

@@ -21,7 +21,7 @@ beforeEach(() => {
   vi.spyOn(api, 'getConcepts').mockRejectedValue(new Error('offline'))
   vi.spyOn(api, 'getDiscussion').mockResolvedValue(discussion())
   vi.spyOn(api, 'getReasoning').mockResolvedValue({ run: { id: 'run-answer', ticker: 'NVDA', signal_date: '2026-10-22',
-    mode: 'discuss', agent_version: 'agent-discuss-1', status: 'ok', reason: null, reason_text: null, model: 'glm',
+    mode: 'discuss', agent_version: 'agent-discuss-1', status: 'ok', reason: null, reason_text: null, model: 'gpt-test',
     cutoff_at: null, started_at: null, finished_at: null, input_tokens: 1, output_tokens: 1 },
     legacy: false, version: null, review: null, steps: [], notes: [] } as any)
 })

@@ -245,8 +245,8 @@ def agent_plan(db, ticker, signal_date, version_no, previous=None, *, stop=94):
     started = NOW - timedelta(days=3 - version_no)
     repository.insert_agent_run(db, {
         'id': run_id, 'ticker': ticker, 'signal_date': signal_date, 'pool': 'main', 'attempt': 1,
-        'mode': 'propose' if version_no == 0 else 'revise', 'agent_version': 'agent-2', 'provider': 'zhipu',
-        'model': 'glm', 'cutoff_at': started, 'status': 'ok', 'reason': None, 'output': {'action': 'buy'},
+        'mode': 'propose' if version_no == 0 else 'revise', 'agent_version': 'agent-2', 'provider': 'chatgpt',
+        'model': 'gpt-test', 'cutoff_at': started, 'status': 'ok', 'reason': None, 'output': {'action': 'buy'},
         'counter': None, 'plan_id': plan['id'], 'input_tokens': 0, 'output_tokens': 0, 'started_at': started,
         'finished_at': started}, [])
     repository.insert_plan_version(db, {
@@ -466,7 +466,7 @@ def run_with_call(db, cutoff, entries, *, args=None, error=None):
     envelope = {'ref': 'call:1', **({'error': error} if error else {'data': {'entries': entries}})}
     repository.insert_agent_run(db, {
         'id': run_id, 'ticker': 'NVDA', 'signal_date': D(-3), 'pool': 'main', 'attempt': 1, 'mode': 'review',
-        'agent_version': 'agent-review-1', 'provider': 'zhipu', 'model': 'glm', 'cutoff_at': cutoff, 'status': 'error',
+        'agent_version': 'agent-review-1', 'provider': 'chatgpt', 'model': 'gpt-test', 'cutoff_at': cutoff, 'status': 'error',
         'reason': 'model_error', 'output': None, 'counter': None, 'plan_id': None, 'input_tokens': 0,
         'output_tokens': 0, 'started_at': cutoff, 'finished_at': cutoff},
         [{'seq': 1, 'phase': 'review', 'tool': 'get_knowledge', 'args': args if args is not None else {'ticker': 'NVDA'},

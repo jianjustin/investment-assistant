@@ -432,7 +432,7 @@ def test_draft_cap_and_gates(db, scripted_model):
     # token_budget: today's tokens are already at the limit
     repository.insert_agent_run(db, {
         'id': uuid.uuid4(), 'ticker': 'AAA', 'signal_date': SESSION, 'pool': 'main', 'attempt': 1, 'mode': 'propose',
-        'agent_version': 'agent-2', 'provider': 'zhipu', 'model': 'glm', 'cutoff_at': NOW, 'status': 'error',
+        'agent_version': 'agent-2', 'provider': 'chatgpt', 'model': 'gpt-test', 'cutoff_at': NOW, 'status': 'error',
         'reason': 'model_error', 'output': None, 'counter': None, 'plan_id': None, 'input_tokens': 900,
         'output_tokens': 200, 'started_at': NOW, 'finished_at': NOW}, [])
     out, summary, acc = run_stage(db, stage_deps(scripted_model, [], daily_tokens=1000))
@@ -795,7 +795,7 @@ def test_redraft_conflicts(db, scripted_model, monkeypatch):
     monkeypatch.setenv('WORKBENCH_AGENT_DAILY_TOKENS', '100')
     repository.insert_agent_run(db, {
         'id': uuid.uuid4(), 'ticker': 'AAA', 'signal_date': SESSION, 'pool': 'main', 'attempt': 1, 'mode': 'propose',
-        'agent_version': 'agent-2', 'provider': 'zhipu', 'model': 'glm', 'cutoff_at': NOW, 'status': 'error',
+        'agent_version': 'agent-2', 'provider': 'chatgpt', 'model': 'gpt-test', 'cutoff_at': NOW, 'status': 'error',
         'reason': 'model_error', 'output': None, 'counter': None, 'plan_id': None, 'input_tokens': 150,
         'output_tokens': 0, 'started_at': datetime.now(UTC), 'finished_at': datetime.now(UTC)}, [])
     with pytest.raises(ledger.Conflict, match='^token_budget$'):
