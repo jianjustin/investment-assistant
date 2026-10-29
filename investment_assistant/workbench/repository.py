@@ -1024,9 +1024,11 @@ def attempt_resets_for(conn, ticker: str, signal_date: date, mode: str) -> list[
 
 def latest_daily_push_finished_at(conn, *, before: datetime) -> datetime | None:
     """When the latest `daily` push that actually pushed finished before `before` (the base of the review-card
-    count in the plan summary, D3); None when there was none. Skipped and failed pushes do not count."""
+    count in the plan summary, D3); None when there was none. Skipped and failed pushes do not count, nor does the
+    holiday line of a closed market (`detail.closed`): it would move the base past the cards of the last trading day."""
     return conn.execute("SELECT max(finished_at) FROM stage_runs WHERE job = 'daily' AND stage = 'push' "
-                        "AND status IN ('success', 'partial', 'degraded') AND finished_at < %s",
+                        "AND status IN ('success', 'partial', 'degraded') AND finished_at < %s "
+                        "AND NOT coalesce((detail->>'closed')::boolean, false)",
                         (before,)).fetchone()[0]
 
 

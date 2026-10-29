@@ -2625,7 +2625,7 @@ def rerun_agent(ticker: str, signal_date: date, mode: str, *, request_id: str, o
         reset = repository.insert_attempt_reset(conn, {'ticker': ticker, 'signal_date': signal_date, 'mode': mode,
                                                        'request_id': request_uuid, 'origin': origin})
     run_id = None
-    if mode == 'propose':
+    if mode == 'propose' and not reset['replayed']:      # a request id already used (by another unit): nothing runs
         run_id = str(run_agent(ticker, signal_date, now=now, deps=deps)['id'])
     return {'reset_id': reset['id'], 'run_id': run_id, 'replayed': bool(reset['replayed'])}
 

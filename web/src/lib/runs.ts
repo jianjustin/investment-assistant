@@ -32,8 +32,9 @@ export const RESUME_ERROR_TEXT: Record<string, string> = {
   node_mismatch: '只能从失败的节点 <next> 继续',
   resume_window_closed: '已过 <下一交易日> 纽约 17:00，只能整次重新运行',
   daily_running: '每日工作流正在运行',
-  // GET /api/runs/{id}/detail 的 resume.reason 另有两个（不是 409 码）
+  // GET /api/runs/{id}/detail 的 resume.reason 另有三个（不是 409 码）
   interrupted: '这次运行中途中断，只能整次重新运行',
+  stage_failed: '这一步记了失败但链已跑完，不能续跑；需要时整次重新运行',
   checkpoint_unavailable: '状态库未就绪，暂时无法续跑',
 }
 

@@ -151,6 +151,25 @@ def test_node_failed_twice_stops_chain(daily_db, clock, notices, monkeypatch):
     assert daily_db.execute('SELECT count(*) FROM signal_candidates').fetchone()[0] == 0   # nothing after the stop
 
 
+def test_a_state_read_failing_after_a_node_failure_keeps_that_failure(daily_db, clock, notices, monkeypatch):
+    """The checkpoint read after ``NodeFailed`` raises: the failed node stays the failure and the rest are
+    ``upstream_failed`` — no second ``failed`` row on the first node after it."""
+    from langgraph.graph.state import CompiledStateGraph
+
+    flaky('regime', monkeypatch, fail_times=2)
+
+    def broken(self, *args, **kwargs):
+        raise RuntimeError('state read failed')
+
+    monkeypatch.setattr(CompiledStateGraph, 'get_state', broken)
+    result = go(daily_db, clock)
+    assert result['status'] == 'failed' and result['failed_node'] == 'regime'
+    eff = effective(daily_db)
+    assert [eff[s]['status'] for s in workflow.NODES if eff[s]['status'] == 'failed'] == ['failed']
+    assert eff['regime']['reason'] == 'aborted: flaky regime'
+    assert [eff[s]['reason'] for s in workflow.NODES[4:]] == ['upstream_failed'] * 6
+
+
 def test_unavailable_not_retried(daily_db, clock, notices, monkeypatch):
     def down(state, ctx, acc):
         raise service.Unavailable('数据库不可达')
@@ -198,6 +217,13 @@ def test_holiday_skips_before_push_and_retro_judges_due(daily_db, clock, notices
     assert retro['status'] in ('success', 'partial') and retro['detail']['cards'] is False
     assert retro['detail']['weekly']['action'] in ('generated', 'reused')
     assert result['status'] in ('success', 'degraded')
+
+
+def test_every_execution_summary_carries_cutoff_and_session(daily_db, clock, notices):
+    """The detail page reads ``cutoff_at`` from the summary; a holiday run (``collect`` is skipped) has it too."""
+    result = go(daily_db, clock, trigger='scheduled', now=HOLIDAY, no_seed=True)
+    assert result['summary']['cutoff_at'] == HOLIDAY.isoformat()
+    assert result['summary']['session'] == result['session'] == '2026-10-23'      # the Friday before the Saturday
 
 
 def test_retro_not_due_on_non_trading_day(daily_db, clock, notices):

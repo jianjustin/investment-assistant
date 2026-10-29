@@ -238,12 +238,14 @@ def _results(conn, stage_id: str, row: dict, *, rerun: bool = False, resets_read
 
 # ---------------------------------------------------------------- resume
 
-def _checkpoint_next(run_id: str, checkpointer_factory) -> tuple[str, ...]:
-    """The node the checkpoint stopped before (``get_state(config).next``), a read of the saver."""
+def _checkpoint_next(run_id: str, checkpointer_factory) -> tuple[tuple[str, ...], bool]:
+    """``(next, known)``: the node the checkpoint stopped before (``get_state(config).next``) and whether the saver
+    holds a checkpoint of this run at all — a read of the saver."""
     config = {'configurable': {'thread_id': run_id}}
     with (checkpointer_factory or workflow._default_checkpointer)() as saver:
         graph = workflow.build_graph(checkpointer=saver, ctx_factory=lambda: None)
-        return tuple(graph.get_state(config).next)
+        snapshot = graph.get_state(config)
+        return tuple(snapshot.next), bool(snapshot.values)
 
 
 def _resume(run_id: str, *, status: str, effective: dict[str, dict], session: date | None, now: datetime,
@@ -251,8 +253,9 @@ def _resume(run_id: str, *, status: str, effective: dict[str, dict], session: da
     """``{'allowed', 'node', 'deadline_at', 'reason'}`` — the same conditions as ``workflow.resume_check`` (the failed
     node is the checkpoint's ``next[0]`` and its effective row is ``failed`` or ``skipped / upstream_failed``; the
     window closes at the next session's New York 17:00), without raising, plus ``daily_running`` while the lock is held.
-    ``reason`` is one of ``not_failed``, ``interrupted`` (the run stopped without a failed node to resume from: the
-    rows are incomplete or stale, only a rerun in full helps), ``resume_window_closed``, ``daily_running``,
+    ``reason`` is one of ``not_failed``, ``stage_failed`` (a stage booked its own ``failed`` row and the chain ran to the
+    end: no next node, only a rerun in full helps), ``interrupted`` (the run stopped without a failed node to resume
+    from: the rows are incomplete or stale, only a rerun in full helps), ``resume_window_closed``, ``daily_running``,
     ``checkpoint_unavailable``."""
     nothing_to_resume = 'interrupted' if interrupted else 'not_failed'
     block: dict[str, Any] = {'allowed': False, 'node': None, 'deadline_at': None, 'reason': None}
@@ -263,7 +266,7 @@ def _resume(run_id: str, *, status: str, effective: dict[str, dict], session: da
         block['reason'] = 'not_failed'
         return block
     try:
-        pending = _checkpoint_next(run_id, checkpointer_factory)
+        pending, known = _checkpoint_next(run_id, checkpointer_factory)
     except Exception as exc:     # noqa: BLE001 - missing tables, no checkpoint, unreachable: nothing to resume from
         logger.info('run detail: checkpoint not readable (%s)', type(exc).__name__)
         block['reason'] = 'checkpoint_unavailable'
@@ -271,7 +274,9 @@ def _resume(run_id: str, *, status: str, effective: dict[str, dict], session: da
     last = effective.get(pending[0]) if pending else None
     if last is None or not (last['status'] == 'failed' or (last['status'] == 'skipped'
                                                           and last.get('reason') == 'upstream_failed')):
-        block['reason'] = nothing_to_resume
+        # a failed run whose checkpoint (it exists) has no next node and whose ten rows are all there: a stage booked its own
+        # ``failed`` row and the chain ran to the end — nothing to continue from
+        block['reason'] = 'stage_failed' if known and not pending and not interrupted else nothing_to_resume
         return block
     deadline = workflow.resume_deadline(session)
     block.update(node=pending[0], deadline_at=deadline.astimezone(UTC).isoformat())

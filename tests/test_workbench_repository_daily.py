@@ -145,10 +145,10 @@ def test_insert_attempt_reset_replayed(db):
 
 
 def test_latest_daily_push_finished_at(db):
-    def push(minutes, status, *, job='daily', stage='push', reason=None, run='r'):
+    def push(minutes, status, *, job='daily', stage='push', reason=None, run='r', detail=None):
         at = T0 + timedelta(minutes=minutes)
         repository.insert_stage_run(db, _row(run_id=f'{run}{minutes}', job=job, stage=stage, status=status,
-                                             reason=reason, started_at=at, finished_at=at,
+                                             reason=reason, started_at=at, finished_at=at, detail=detail or {},
                                              stages_version='stages-4' if job == 'daily' else 'stages-3'))
         return at
 
@@ -164,3 +164,5 @@ def test_latest_daily_push_finished_at(db):
     degraded = push(60, 'degraded')
     assert repository.latest_daily_push_finished_at(db, before=T0 + far) == degraded
     assert repository.latest_daily_push_finished_at(db, before=T0 + timedelta(minutes=30)) == pushed
+    closed = push(70, 'success', detail={'closed': True})                        # the one holiday line is no digest
+    assert repository.latest_daily_push_finished_at(db, before=T0 + far) == degraded != closed

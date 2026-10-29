@@ -181,7 +181,7 @@
       })
       if (destroyed) return
       delete rerunIds[key]
-      rerunText[key] = res.run_id ? '已重置尝试次数，并已重新运行' : '已重置尝试次数，下一次运行或续跑时执行'
+      rerunText[key] = res.run_id ? '已重置尝试次数，并已重新运行' : '已重置尝试次数，同一交易日的续跑或手动运行时执行'
       rerunDone[key] = true
       void load(generation)
     } catch (e) {

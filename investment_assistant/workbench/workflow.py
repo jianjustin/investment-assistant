@@ -357,9 +357,12 @@ def _execute(state: dict, graph_input: dict | None, *, deps: service.Deps, attem
                 failure = exc
                 final = graph.get_state(graph_config).values
     except Exception as exc:
-        if service._checkpoint_missing(exc):
-            raise CheckpointUnavailable('checkpoint_unavailable') from exc
-        failure = _book_abort(ctx, resume_node, exc)
+        # A node already stopped the chain (only reading the state afterwards failed): its failure stands, the nodes
+        # after it are booked below. Otherwise the exception itself is the failure.
+        if failure is None:
+            if service._checkpoint_missing(exc):
+                raise CheckpointUnavailable('checkpoint_unavailable') from exc
+            failure = _book_abort(ctx, resume_node, exc)
     if failure is not None:
         after = NODES.index(failure.node) + 1
         for stage_id in NODES[after:]:
@@ -383,8 +386,9 @@ def _execute(state: dict, graph_input: dict | None, *, deps: service.Deps, attem
         row = effective.get(node) or {}
         info = {'node': node, 'reason': failure.reason if failure is not None else row.get('reason'),
                 'retried': bool((row.get('detail') or {}).get('retry')), 'at': _wall().isoformat(),
-                'skipped': sum(1 for r in effective.values() if r.get('reason') == 'upstream_failed')}
-    summary.update(graph_version=DAILY_GRAPH_VERSION, run_status=status, failed_node=node, resumed=attempt - 1,
+                'skipped': sum(1 for r in effective.values() if r.get('reason') == 'upstream_failed'),
+                'resumable': failure is not None}      # a stage's own ``failed`` row leaves no next node to resume
+    summary.update(cutoff_at=state['cutoff_at'], session=state['session'], graph_version=DAILY_GRAPH_VERSION, run_status=status, failed_node=node, resumed=attempt - 1,
                    stage_status={'written': ctx.recorder.written, 'error': ctx.recorder.error})
     if resume_node is not None:
         summary['resume_node'] = resume_node
@@ -414,8 +418,13 @@ def _checked(run_id: str, node_id: str, *, now: datetime, checkpointer_factory) 
         rows = repository.stage_rows_for_run(conn, run_id)
         attempt = repository.max_stage_attempt(conn, run_id) + 1
     graph_config = {'configurable': {'thread_id': run_id}}
-    with (checkpointer_factory or _default_checkpointer)() as saver:
-        snapshot = build_graph(checkpointer=saver, ctx_factory=lambda: None).get_state(graph_config)
+    try:
+        with (checkpointer_factory or _default_checkpointer)() as saver:
+            snapshot = build_graph(checkpointer=saver, ctx_factory=lambda: None).get_state(graph_config)
+    except Exception as exc:
+        if service._checkpoint_missing(exc):
+            raise service.Unavailable('checkpoint_unavailable') from exc       # 503, like the other pre-checks
+        raise
     values = dict(snapshot.values or {})
     if not rows or not values:
         raise LookupError(f'没有这次运行：{run_id}')
@@ -443,7 +452,7 @@ def _checked(run_id: str, node_id: str, *, now: datetime, checkpointer_factory) 
 def resume_check(run_id: str, node: str, *, now: datetime, checkpointer_factory=None) -> dict:
     """The resume pre-checks, writing nothing (spec §5.4): ``LookupError`` (no such run), ``ResumeRejected(code,
     message)`` (``not_failed`` / ``node_mismatch`` / ``resume_window_closed``), ``service.Unavailable`` (migration 028
-    missing / database unreachable), ``ValueError`` (node not of ``stages-4``). Returns ``{'run_id', 'node', 'attempt',
+    missing / checkpoint tables missing / database unreachable), ``ValueError`` (node not of ``stages-4``). Returns ``{'run_id', 'node', 'attempt',
     'session', 'cutoff_at', 'trigger', 'deadline_at'}``."""
     return _checked(run_id, node, now=now, checkpointer_factory=checkpointer_factory)[0]
 

@@ -199,6 +199,7 @@ def run_now():
         busy = False
     if busy:
         raise HTTPException(status_code=409, detail='daily_running')
+    _call(daily.ensure_ready)
     rid = daily.new_run_id()
     run_id = runner.submit('daily', lambda: daily.run(trigger_source='manual', run_id=rid))
     return {'run_id': run_id, 'status': 'pending', 'daily_run_id': rid}

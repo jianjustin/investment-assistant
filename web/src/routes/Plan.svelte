@@ -98,7 +98,7 @@
       })
       delete rerunIds[row.mode]
       rerunDone[row.mode] = true
-      rerunText[row.mode] = res.run_id ? '已重置尝试次数，并已重新运行' : '已重置尝试次数，下一次运行或续跑时执行'
+      rerunText[row.mode] = res.run_id ? '已重置尝试次数，并已重新运行' : '已重置尝试次数，同一交易日的续跑或手动运行时执行'
     } catch (e) {
       rerunText[row.mode] = e instanceof api.ApiError && e.status === 409
         ? (e.code === 'not_needed' ? '这个单元不需要重跑' : e.message) : describeError(e)

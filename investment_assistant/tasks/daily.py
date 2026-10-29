@@ -121,13 +121,28 @@ def is_running() -> bool:
         conn.close()
 
 
+def ensure_ready() -> None:
+    """The pre-check of the manual run entries: ``service.Unavailable('migration_028_missing')`` (HTTP 503) when the
+    database answers and migration 028 has not run, so the caller is told instead of getting a 200 and a run that only
+    records ``migration_028_missing``. Without a database to ask (not configured, unreachable, tables missing) it
+    passes: the run itself reports what is wrong."""
+    try:
+        with service.read_only_tx() as conn:
+            ready = repository.daily_ready(conn)
+    except Exception:   # noqa: BLE001 - nothing to ask
+        return
+    if not ready:
+        raise service.Unavailable('migration_028_missing')
+
+
 def _trigger(trigger_source: str) -> str:
     return 'scheduled' if trigger_source == 'scheduled' else 'manual_batch'
 
 
 def _failure_payload(config: AssistantConfig, result: dict[str, Any]) -> dict[str, Any]:
     """The inputs of ``templates.daily_failed`` from an execution result: the node that stopped the chain, else the first
-    node a stage booked as ``failed`` (``result['failure']``); a run that never started a graph has neither."""
+    node a stage booked as ``failed`` (``result['failure']``, ``resumable`` false: the chain ran to the end, so the
+    notice has no resume line); a run that never started a graph has neither."""
     summary = result.get('summary') or {}
     failure = result.get('failure')
     titles = {stage.id: stage.title for stage in stages_module.STAGES}
@@ -139,7 +154,7 @@ def _failure_payload(config: AssistantConfig, result: dict[str, Any]) -> dict[st
         node = failure['node']
         payload.update(node_title=titles.get(node, node), retried=bool(failure.get('retried')),
                        skipped=int(failure.get('skipped') or 0))
-        if session:
+        if session and failure.get('resumable', True):          # only a stopped chain has a next node to resume from
             deadline = workflow.resume_deadline(date.fromisoformat(session)).astimezone(SH)
             payload['deadline_text'] = deadline.strftime('%Y-%m-%d %H:%M') + '（北京时间）'
     else:

@@ -283,8 +283,9 @@ describe('RunDetail · resume', () => {
     expect(screen.getByText('已过 2026-10-30 纽约 17:00，只能整次重新运行')).toBeInTheDocument()
   })
 
-  it('interrupted and checkpoint_unavailable reasons have their own text', async () => {
-    for (const [reason, text] of [['interrupted', '这次运行中途中断，只能整次重新运行'], ['checkpoint_unavailable', '状态库未就绪，暂时无法续跑']]) {
+  it('interrupted, stage_failed and checkpoint_unavailable reasons have their own text', async () => {
+    for (const [reason, text] of [['interrupted', '这次运行中途中断，只能整次重新运行'], ['stage_failed', '这一步记了失败但链已跑完，不能续跑；需要时整次重新运行'],
+      ['checkpoint_unavailable', '状态库未就绪，暂时无法续跑']]) {
       vi.mocked(api.getRunDetail).mockResolvedValue(failedRun({
         resume: { allowed: false, node: null, deadline_at: null, reason },
         nodes: failedRun().nodes.map(n => ({ ...n, actions: { resume: false, rerun_agent: [] } })),
@@ -484,7 +485,7 @@ describe('RunDetail · rerun agent', () => {
     render(RunDetail, { runId: RID })
     await click('Agent：部分成功')
     await click('重新运行 Agent')
-    expect(await screen.findByText('已重置尝试次数，下一次运行或续跑时执行')).toBeInTheDocument()
+    expect(await screen.findByText('已重置尝试次数，同一交易日的续跑或手动运行时执行')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '重新运行 Agent' })).toBeNull()
   })
 

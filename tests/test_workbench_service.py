@@ -1934,6 +1934,20 @@ def test_reset_request_id_idempotent(db28, scripted_model):
     assert len(repository.agent_runs_for(db28, 'NVDA', SESSION)) == len(runs)         # nothing ran twice
 
 
+def test_a_request_id_already_used_by_another_unit_runs_nothing(db28, scripted_model):
+    """``insert_attempt_reset`` answers with the stored row (another unit's) as ``replayed``: no ``run_agent``."""
+    _exhaust_attempts(db28, scripted_model)
+    request_id = str(uuid.uuid4())
+    other = repository.insert_attempt_reset(db28, {'ticker': 'MU', 'signal_date': SESSION, 'mode': 'propose',
+                                                   'request_id': request_id, 'origin': 'api'})
+    db28.commit()
+    runs = len(repository.agent_runs_for(db28, 'NVDA', SESSION))
+    out = service.rerun_agent('NVDA', SESSION, 'propose', request_id=request_id, origin='api',
+                              now=NOW + timedelta(hours=1), deps=agent_deps(scripted_model, _ok_responses()))
+    assert out == {'reset_id': other['id'], 'run_id': None, 'replayed': True}
+    assert len(repository.agent_runs_for(db28, 'NVDA', SESSION)) == runs
+
+
 def test_rerun_propose_is_refused_while_a_daily_execution_runs(db28, scripted_model, monkeypatch):
     from investment_assistant.tasks import daily
 

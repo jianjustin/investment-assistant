@@ -54,7 +54,7 @@
 - API：`GET/POST /api/watchlist`、`DELETE /api/watchlist/{ticker}`、`GET /api/watchlist/resolve?symbol=`；`GET/POST /api/workbench/backchecks`（body 可以带 `tickers`）；`GET /api/workbench/screen?session=&full=1`（缺省最近一次，`full=1` 附全部结果行；无记录返回 `report: null`）；`POST /api/workbench/screen/replay`（body `{"sessions": N}`，1 ≤ N ≤ 20 缺省 5，越界 400）。
 - 命令行：`python -m investment_assistant.workbench.backcheck [--tickers A,B]`；`python -m investment_assistant.workbench.screen replay [--sessions N]`（打印 JSON）。
 - **回放（只读）**：对最近 N 个已收盘交易日逐日重跑 `screen-1`，每日只用当日及以前的 K 线，不写任何表、不推送；已知局限：财报日用当前已知值而非当时时点值，报告里逐份标注。
-- 运行报告：`summary.pool`（`core` / `extended` / `holdings` / `screen` / `changes`）、`summary.screen`（`status`、`selected`、`counts`、`skips`、`evicted`、`removed`、`flags`、`timing`）、`summary.regime`、`summary.etfs`、`summary.macro`（未配置 FRED 时记 `not_configured`）、`summary.timings`（总耗时 > 1800 秒时记 `batch_over_budget`）。
+- 运行报告：`summary.pool`（`core` / `extended` / `holdings` / `screen` / `changes`）、`summary.screen`（`status`、`selected`、`counts`、`skips`、`evicted`、`removed`、`flags`、`timing`）、`summary.regime`、`summary.etfs`、`summary.macro`（未配置 FRED 时记 `not_configured`）、`summary.timings`（v2.8 起没有整批预算，不再记 `batch_over_budget`）。
 - 验证一次：给某只股票勾选「核心」，下一次批处理的 `pool.changes` 里应出现一条 `tier: core`；运行报告里有 `regime: {status: inserted, label: …}`，配置了 FRED 时还有 `macro.BAMLH0A0HYM2.inserted > 0`。
 
 ## 已知限制

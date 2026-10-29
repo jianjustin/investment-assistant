@@ -36,6 +36,7 @@ describe('runs helpers', () => {
       resume_window_closed: '已过 <下一交易日> 纽约 17:00，只能整次重新运行',
       daily_running: '每日工作流正在运行',
       interrupted: '这次运行中途中断，只能整次重新运行',
+      stage_failed: '这一步记了失败但链已跑完，不能续跑；需要时整次重新运行',
       checkpoint_unavailable: '状态库未就绪，暂时无法续跑',
     })
     expect(RETRO_STATUS_TEXT.to_review).toBe('待审定')

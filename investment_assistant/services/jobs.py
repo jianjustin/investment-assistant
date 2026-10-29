@@ -96,6 +96,7 @@ def trigger_job(name: str, payload: dict[str, Any] | None = None) -> dict[str, A
         if busy:
             raise daily.DailyBusy()
     if name == "daily":
+        daily.ensure_ready()        # 503 migration_028_missing instead of a 200 and a run that only records it
         rid = daily.new_run_id()    # the date arguments do not apply: it always targets the latest settled session
         run_id = runner.submit(name, lambda: REGISTRY[name](config, trigger_source="manual", run_id=rid))
         return {"run_id": run_id, "status": "pending", "daily_run_id": rid}

@@ -109,14 +109,16 @@
 - **SEC 监控**的逐只错误记进 `summary` 并让覆盖状态为 `partial`，通知标题为「SEC 采集部分失败」。
 - **下载器模式忽略续跑截止**：`sec_downloader` 没有可比较的接受时间，续跑时不按 `cutoff_at` 过滤（已写入 `sec-filings.md`）。
 - **`push` 在已发出消息之后抛异常**时，续跑会重发（极小概率；不做幂等去重）。
+- **`daily_ready` 检查的是 `agent_attempt_resets`，不是 `agent_connections`**（spec §10.4 写后者）：spec §10.2 不许 `repository` 出现 `agent_connections` 这个表名（连接表只由 `agent_connection` 模块访问），而三张表在同一个迁移里一起建，检查任何一张都等价。
+- **`detail.abandoned_threads`**（spec §18 风险表的应对：检查点线程超过续跑窗口后可清理）本版没有实现，旧线程留在检查点表里。
 
 **接口与前端**
 
 - **API 错误体**沿用现有契约 `{"error": "<代码>"}`（字符串 `detail`），不是 plan 写的 `detail = {code, message}`——全局异常处理器会把非字符串 `detail` 压成字面 `"error"`；中文文案在前端（`RESUME_ERROR_TEXT` 等）。
 - **ChatGPT 相关错误只带安全码**：`not_connected` 409、`model_not_listed` 400、`migration_028_missing` 503、其余（`discovery_failed`、`callback_port_unavailable`、`network_error` …）502；`psycopg.OperationalError` / `service.Unavailable` → 503。
-- **`POST /api/workbench/agent-runs/rerun` 对 `propose` 是同步的**（和现有 `POST /api/workbench/agent-runs` 一致，请求在 Agent 运行结束后才返回，`run_id` 是新的 `agent_runs` id；spec §5.7 写“后台”）。`origin` 只接受 `run_detail`、`plan_page`、`api`（缺省 `api`，其它值 400）；成功文案「已重置尝试次数，并已重新运行」（`interpret` 只重置、下一次运行或续跑时执行）。重跑在任何 `daily` 执行持有锁期间被拒（409 `daily_running`）。
+- **`POST /api/workbench/agent-runs/rerun` 对 `propose` 是同步的**（和现有 `POST /api/workbench/agent-runs` 一致，请求在 Agent 运行结束后才返回，`run_id` 是新的 `agent_runs` id；spec §5.7 写“后台”）。`origin` 只接受 `run_detail`、`plan_page`、`api`（缺省 `api`，其它值 400）；成功文案「已重置尝试次数，并已重新运行」（`interpret` 只重置，由同一交易日的续跑或手动运行执行——下一次定时运行已是新的交易日，`_session_units` 只收 `signal_date == session` 的单元，所以不会用到；文案「已重置尝试次数，同一交易日的续跑或手动运行时执行」）。只有 `propose` 在任何 `daily` 执行持有锁期间被拒（409 `daily_running`），`interpret` 照常重置；同一个 `request_id` 已被另一个单元用过时，回的是那次的重置（`replayed: true`），不运行。
 - **`running` 状态的判定多一条**：spec 写“有行但本次执行没有报告、且锁被持有”；实现里本进程正在执行的运行（`daily.executing`）也算 `running`，否则续跑后第一行写入之前页面会写 `failed`。仅有 `daily-…` id 而没有行的运行，在本进程正执行、或锁被持有且 id 时间戳在 [−6 小时, +5 分钟] 内时给一个十个节点全是 `pending` 的骨架，否则 404。
-- **崩溃中断的运行不可续跑**：进程在节点中途被杀、没有失败行时 `resume.reason = 'interrupted'`（“这次运行中途中断，只能整次重新运行”）；续跑自己中途死掉而留下的陈旧 `upstream_failed` 行同样按 `failed` 显示。`resume.reason` 取值：`not_failed`、`interrupted`、`resume_window_closed`、`daily_running`、`checkpoint_unavailable`。
+- **崩溃中断的运行不可续跑**：进程在节点中途被杀、没有失败行时 `resume.reason = 'interrupted'`（“这次运行中途中断，只能整次重新运行”）；续跑自己中途死掉而留下的陈旧 `upstream_failed` 行同样按 `failed` 显示。`resume.reason` 取值：`not_failed`、`stage_failed`、`interrupted`、`resume_window_closed`、`daily_running`、`checkpoint_unavailable`。
 - **`resume.deadline_at`** 在详情接口里是 UTC ISO（spec 示例），`resume_check` 内部是纽约 ISO。
 - **`can_rerun`**：该单元同模式的最新一次运行以 `error` 或 `skipped / max_attempts` 结束、其后没有重置记录、是 `daily` 运行且没有在运行、没有任何 `daily` 执行持有锁。
 - **详情接口的结果细节**：`sec_monitor.total` 是该行的 `output_count`（存储的列表截到 50 项）；`push.channel` 取自最新报告的 `summary.push.channel`；`retro` 的周 / 月复盘行 `status` 是该次 tick 的 `action`（`generated`、`reused`、`already_sent`、`reminded`、`error`，`before_start` / `waiting` 不列），`push` 为 `sent` / `manual_run` / 未发送的原因；被跳过的节点（`push` 除外）不列结果。接口返回的是代码，中文由前端翻译（`RETRO_STATUS_TEXT`、`RETRO_PUSH_TEXT`）。
@@ -142,6 +144,10 @@
 - **`read_for_settings()`（即每次 `settings_from_env()`）有写库副作用**：会顺带收尾过期的登录与残留的待定状态。
 - **`INVESTMENT_ASSISTANT_FAULT_ONCE=<节点>`**（造一次节点失败的演练开关）只用于 Task 7 的手动验收，用后要从 `.env` 里删掉。
 - **`service.agent_window` 的 25 分钟预算**只用假时钟测过，真实 25 分钟的运行没有观察过。
+
+- **节点自己记了 `failed`、链却跑完的运行不能续跑**（终审 I1，按 spec §5.2 / Q5：只有 `regime` 从“记失败继续”改成“停链”）：Discord 推送没发出去（推送策略不重试，例如 502）、整段 `review` 失败、复盘卡或筛选整段失败时，运行状态是失败，但检查点没有下一个节点，所以没有“从此节点继续”：失败通知里没有「续跑」一行（「未执行」也只在其后有节点时写），运行详情的 `resume.reason = 'stage_failed'`（「这一步记了失败但链已跑完，不能续跑；需要时整次重新运行」）。只有停链的失败可以续跑。推送失败是其中最常见的一种；若以后要让它可续跑，做法是在推送未发出时抛出、交给节点重试与续跑（改变 v2.7 的阶段语义，未做）。
+- **没连过的 ChatGPT 不通知**：从未连接或已断开（`disconnected`）时每天的 `agent` / `review` 静默跳过（摘要里只记 `not_failed`），只有连接丢失（`needs_login`）才发「ChatGPT 连接已失效」，设置页显示当前状态（spec §15 写“通知一次”，这里只覆盖失效）。
+- **上游节点停链而且没有续跑时，当天的周 / 月复盘不会生成或推送**（`retro` 在链尾），顺延到下一次运行（v2.7 的 `workbench_review` 是独立任务，不受上游影响）。
 
 ### 待你核查后确认的模型层行为
 

@@ -185,7 +185,8 @@ def test_failure_notice_names_the_booked_failed_stage(daily_db, clock, notices, 
     assert out['status'] == 'error' and out['summary']['failed_node'] == 'retro'
     [notice] = [n for t, items in notices.calls if t == 'workbench' for n in items if '每日工作流失败' in n.title]
     fields = {f.name: f.value for f in notice.fields}
-    assert fields['失败节点'] == '复盘' and 'retro exploded' in fields['原因'] and fields['未执行'] == '其后 0 个节点'
+    assert fields['失败节点'] == '复盘' and 'retro exploded' in fields['原因']
+    assert '未执行' not in fields and '续跑' not in fields          # nothing after retro, and a finished chain: no resume
 
 
 def test_is_running_only_looks_at_the_lock(daily_db):
@@ -350,3 +351,39 @@ def test_a_resume_that_does_not_rerun_the_agent_does_not_notify(daily_db, clock,
                        sleep=clock.sleep, notify_cfg=NotifyCfg())
     assert out['run_status'] != 'failed' and episode.calls == [] and 'connection_notice' not in out['summary']
     assert len(lost_titles(notices)) == 1
+
+
+def failure_notice_fields(notices):
+    calls = [items for task, items in notices.calls if any('每日工作流失败' in n.title for n in items)]
+    assert len(calls) == 1
+    return {field.name: field.value for field in calls[0][0].fields}
+
+
+def test_a_stage_failed_run_says_it_cannot_be_resumed(daily_db, clock, notices, job_reports):
+    """A push the notifier could not send (a 502, no retry) is booked ``failed`` by the stage while the chain runs on to
+    the end: the run is failed, but the checkpoint has no next node — the notice carries no 续跑 field and the detail
+    says ``stage_failed`` (v2.8 final review I1)."""
+    from investment_assistant.workbench import run_detail
+
+    seed_watchlist(daily_db, [('NVDA', ['core'])])
+    notices.result = {'sent': False, 'reason': 'http_502'}
+    saver, factory = shared_saver()
+    out = run_daily(clock, factory, trigger_source='scheduled')
+    assert out['status'] == 'error' and out['summary']['failed_node'] == 'push'
+    assert job_reports.rows()[0]['status'] == 'error'
+    fields = failure_notice_fields(notices)
+    assert '推送' in fields['失败节点'] and 'http_502' in fields['原因']
+    assert '续跑' not in fields and '未执行' not in fields          # nothing after push was left undone
+    daily_db.commit()
+    detail = run_detail.detail(RUN_ID, now=NOW + timedelta(hours=1), checkpointer_factory=factory)
+    assert detail['status'] == 'failed'
+    assert detail['resume'] == {'allowed': False, 'node': None, 'deadline_at': None, 'reason': 'stage_failed'}
+
+
+def test_a_chain_stopping_failure_still_tells_when_to_resume(daily_db, clock, notices, job_reports, monkeypatch):
+    from test_daily_workflow import flaky
+
+    seed_watchlist(daily_db, [('NVDA', ['core'])])
+    flaky('regime', monkeypatch, fail_times=2)
+    run_daily(clock)
+    assert '续跑' in failure_notice_fields(notices)

@@ -129,6 +129,22 @@ def test_resume_not_failed(daily_db, clock, notices):
     assert caught.value.code == 'not_failed'
 
 
+def test_resume_check_with_the_checkpoint_tables_missing_is_unavailable(daily_db, clock, notices):
+    import psycopg.errors
+    from contextlib import contextmanager
+
+    saver, factory = shared_saver()
+    go(daily_db, clock, factory=factory)                                  # the run itself has rows
+
+    @contextmanager
+    def no_tables():
+        raise psycopg.errors.UndefinedTable('relation "checkpoints" does not exist')
+        yield
+
+    with pytest.raises(service.Unavailable, match='checkpoint_unavailable'):
+        workflow.resume_check(RUN_ID, 'collect', now=LATER, checkpointer_factory=no_tables)
+
+
 def test_resume_unknown_run(daily_db, clock, notices):
     saver, factory = shared_saver()
     with pytest.raises(LookupError):

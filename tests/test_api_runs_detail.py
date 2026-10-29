@@ -147,6 +147,24 @@ def test_both_manual_entries_return_daily_run_id(client, idle, monkeypatch, path
     assert seen['trigger_source'] == 'manual' and seen['run_id'] == body['daily_run_id']
 
 
+@pytest.mark.parametrize('path', ['/api/jobs/daily/run', '/api/workbench/run'])
+def test_manual_run_entries_are_503_without_migration_028(client, idle, monkeypatch, path):
+    from contextlib import contextmanager
+
+    from investment_assistant.workbench import repository
+
+    @contextmanager
+    def tx():
+        yield object()
+
+    monkeypatch.setattr(service, 'read_only_tx', tx)
+    monkeypatch.setattr(repository, 'daily_ready', lambda conn: False)
+    resp = client.post(path, json={})
+    assert resp.status_code == 503 and resp.json() == {'error': 'migration_028_missing'} and idle == []
+    monkeypatch.setattr(repository, 'daily_ready', lambda conn: True)
+    assert client.post(path, json={}).status_code == 200 and len(idle) == 1
+
+
 @pytest.mark.parametrize('path', ['/api/jobs/daily/run', '/api/jobs/sec_backfill/run', '/api/workbench/run'])
 def test_manual_entries_are_409_while_the_lock_is_held(client, monkeypatch, path):
     monkeypatch.setattr(daily, 'is_running', lambda: True)

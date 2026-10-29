@@ -310,11 +310,12 @@ def daily_failed(payload: dict) -> list[Notification]:
 
     ``payload``: ``session``, ``node_title``, ``reason``, ``skipped`` (nodes after the failed one), ``deadline_text``
     (Beijing time), ``run_id``, ``public_url`` (may be empty); ``retried`` (default True) says whether the node was retried.
-    ``skipped`` / ``deadline_text`` are left out of the notice when absent (a run that never started a graph)."""
+    ``skipped`` is left out when absent or 0; ``deadline_text`` when absent — a run that never started a graph, or one
+    whose chain ran to the end with a stage's own ``failed`` row, cannot be resumed."""
     retried = '（已自动重试 1 次）' if payload.get('retried', True) else ''
     fields = [NotifyField('失败节点', f"{payload.get('node_title')}{retried}"),
               NotifyField('原因', str(payload.get('reason') or '—')[:300])]
-    if payload.get('skipped') is not None:
+    if payload.get('skipped'):
         fields.append(NotifyField('未执行', f"其后 {payload['skipped']} 个节点"))
     if payload.get('deadline_text'):
         fields.append(NotifyField('续跑', f"{payload['deadline_text']} 之前可在运行详情「从此节点继续」"))

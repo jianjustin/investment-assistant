@@ -342,6 +342,8 @@ def test_daily_failed_template():
     assert linked.fields[-1].value == 'https://wb.example.com/#tools/runs/daily-20261030033000-1a2b3c4d'
     [long] = templates.daily_failed({**payload, 'reason': 'x' * 500})
     assert len(long.fields[1].value) == 300                                    # ≤ 300 characters
+    [stage_failed] = templates.daily_failed({**payload, 'skipped': 0, 'deadline_text': ''})
+    assert [f.name for f in stage_failed.fields] == ['失败节点', '原因']        # 未执行 only for n > 0, 续跑 only if resumable
     [never_ran] = templates.daily_failed({'session': None, 'node_title': '每日工作流', 'retried': False,
                                           'reason': 'migration_028_missing', 'run_id': 'daily-x', 'public_url': ''})
     assert [(f.name, f.value) for f in never_ran.fields] == [('失败节点', '每日工作流'),
