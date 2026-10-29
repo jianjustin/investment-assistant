@@ -2,11 +2,165 @@
 
 版本号与 roadmap 版本对应，见 [roadmap](docs/roadmap/roadmap.md)。
 
-## 未发布
+## v2.8.0 — 2026-10-29
+
+每日工作流（[spec](docs/specs/2026-10-29-v2.8-daily-workflow-design.md)、[实施 plan](docs/plans/2026-10-29-v2.8-daily-workflow.md)）：三个定时任务（`filings`、`workbench`、`workbench_review`）合成一个任务 `daily`，北京 11:30（周二至周六）跑一次，十个节点串成一张 LangGraph 图；每个节点把检查点写进库，失败的运行能从失败节点续跑而不重跑已完成的部分；外部请求统一套紧超时与有限重试；新增运行详情页（节点状态图、逐目标拉取明细、结果明细）；Agent 改走你自己的 ChatGPT 订阅（Sign in with ChatGPT），删除智谱。**有迁移 028**（一张表加列改约束、三张新表、调度行合并），规则 v1、`screen-1`、`regime-2`、`plan-1`、`agent-2` 的结构与校验、四张子图的提示词与判定一字未动。状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`——**迁移 028 尚未在真实库执行、服务尚未以 v2.8 代码重启、尚未登录 ChatGPT；你的核查脚本 `scripts/siwc_precheck.py` 尚未运行，模型层按 spec §8.7 先走路径 A，其请求形状全部未对真实 ChatGPT 端点验证**（见「待你核查后确认」）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。
+
+### 新增
+
+- **每日工作流图 `daily-1`**（`workbench/workflow.py`、`tasks/daily.py`）：十个节点 `sec_monitor → collect → screen → regime → signals → plan → agent → review → push → retro`，`DailyState` 只放可序列化的值；`service.run_batch` 按阶段边界逐行搬移成九个阶段函数（`stage_collect` …），`run_batch` 保留为依次调用它们的薄壳。节点出错 60 秒后自动重试 1 次（一个节点无论重试几次只写一行证据，第一次的异常记在 `detail.retry`），再失败停在该节点，其后未执行的节点各记 `skipped: upstream_failed`，运行状态 `failed`。
+- **检查点与续跑**：每个节点结束时整条链的状态写入检查点（`thread_id = run_id`，与 Agent 子图共用同一组检查点表）；`POST /api/jobs/daily/resume`（`{run_id, node}`）前置检查同步做、不写任何行，通过后后台从检查点续跑。拒绝条件：`not_failed`、`node_mismatch`（只能从检查点的下一个节点续）、`resume_window_closed`（已过下一交易日纽约 17:00）、`daily_running`。续跑沿用原运行的 `session` 与 `cutoff_at`；`collect` / `sec_monitor` 续跑时丢掉来源时间晚于 `cutoff_at` 的资讯与 SEC 申报，日线只写到 `session`。续跑只给重新执行的节点追加 `attempt = n + 1` 的行，已完成节点不重跑、不追加。
+- **外部请求策略 `fetch-1`**（`data/fetch_policy.py`）：连接 10 秒、总 30 秒（每次尝试是硬截止，含读响应体），网络错误 / 5xx / 429 按目标重试 2 次（退避 2 秒、8 秒），4xx 不重试；yfinance 走 `curl_cffi` 会话并外加 35 秒线程硬截止；`data/http.get_json`、`bars`、`news`、`earnings`、`macro`、`collect`、SEC 监控与下载器、Discord 推送都经它。推送只在请求未发出（连接失败）与 429 时重试，5xx 与读超时不重试（避免重复消息）。`data_fetch_runs.detail.targets` 新增逐目标明细（`target`、`ok`、`attempts`、`error_kind`、`http_status`、`reason`、`rows`、`latest`、`elapsed_ms`；每族至多 600 项，超出的只记数量）。SEC 监控的列表改为逐只查询，一只失败不再拖垮整族。
+- **运行详情页** `#tools/runs/<run_id>`（`GET /api/runs/{run_id}/detail`，`workbench/run_detail.py`，全程只读）：顶部一句话与元信息、同一次运行的多次执行、十个节点的状态图；选中节点后分「做了什么 / 拉取详情 / 结果详情」三块（结果每类至多 200 项并给真实总数），底部折叠原始摘要；失败节点上有「从此节点继续」，`agent` 节点被 `max_attempts` 或出错挡住的单元有「重新运行 Agent」；`stages-1/2/3` 的旧运行也能打开（只读，标明没有拉取明细）。运行记录的「详情」改为链接，旧 JSON 弹窗删除；「今日」顶部的运行一览多一个「运行详情」链接。
+- **Agent 连接**（设置页，`workbench/agent/chatgpt.py`、`workbench/agent_connection.py`，协议 `siwc-1`）：OAuth 动态注册 + PKCE + 本机回环回调（每次登录在 `127.0.0.1` 起一个独立的短期监听，10 分钟过期），之后服务自己刷新（构造模型前取令牌，剩余不足 300 秒且已过 `earliest_refresh_at` 就在行锁内刷新、先写库再使用）；设置页可选模型（清单来自 `GET /models` 里 `visibility == "list"` 的项，不写死模型名）、断开（远端撤销 + 本地清空令牌）。接口：`GET|DELETE /api/settings/agent-connection`、`POST .../login`、`POST .../cancel`、`GET .../models`、`PUT .../model`。令牌不进日志、不经任何接口回显（`authorize_url` 本身带 `client_id`、`ext_agent_host_id` 与重连时的 `login_hint`，这是授权协议的一部分）。
+- **模型层路径 A**（`workbench/agent/model.py` 的 `SiwcChatOpenAI`）：`ChatOpenAI` Responses 模式的子类，`_get_request_payload` 里把 system 消息搬进 `instructions`、删去被禁字段（`agent/chatgpt.py` 的 `FORBIDDEN_FIELDS`，16 项，逐字按 spec §8.5）、按 `TOOL_SHAPE` 改写工具形状，`output_version='v0'` 让 `content` 保持字符串；四张子图与 `ToolNode` 循环不改。被禁字段、工具形状、请求覆盖、是否从 system 取 `instructions` 都是常量，且可用 `WORKBENCH_CHATGPT_EXTRA_FORBIDDEN`、`WORKBENCH_CHATGPT_TOOL_SHAPE`、`WORKBENCH_CHATGPT_OVERRIDES`、`WORKBENCH_CHATGPT_INSTRUCTIONS_FROM_SYSTEM` 在核查期覆盖（调用时读取，不在设置页环境变量列表里）。错误分类（spec §8.8）：额度用尽 → `quota_exhausted`（立即停止本次其余单元）；未连接 / 令牌失效 / 资格类错误 → `not_connected`；所选模型不可用 → `model_unavailable`；连接丢失发生在节点中途时，本节点其余单元记 `skipped`（`agent` 与 `review` 都适用）。
+- **迁移 028**（`migrations/028_daily_workflow.sql`，DDL 逐字按 spec §10）：`stage_runs` 加 `attempt` 列、`job` 增加 `daily`、`stage` 增加 `sec_monitor`、唯一键改为 `(run_id, stage, attempt)`；新表 `agent_connections`（单行、**可改**，存令牌）、`agent_connection_events`（只追加，不含令牌）、`agent_attempt_resets`（只追加）；`scheduled_jobs` 删 `workbench`、`workbench_review`、`filings` 三行、插入 `daily`（`11:30`、`2-6`、`Asia/Shanghai`，`enabled` 取原 `workbench` 行的值）。新表不进 `WORKBENCH_TABLES`；`agent_connections` 只由 `agent_connection.py` 读写，`repository.py` 里没有这个表名；`agent_attempt_resets` 在 `repository.py` 里只有 `INSERT` / `SELECT`。迁移 028 未执行时 `daily` 拒绝运行（`job_reports` 记一行 `error / migration_028_missing`，失败通知一次），不做半新半旧的降级。
+- **接口**：`GET /api/runs/{run_id}/detail`；`POST /api/jobs/daily/run`、`POST /api/jobs/sec_backfill/run`（`POST /api/workbench/run` 等价于手动 `daily`）；`POST /api/jobs/daily/resume`；`POST /api/workbench/agent-runs/rerun`（`{ticker, signal_date, mode, request_id, origin}`）；上面的 Agent 连接六个接口。`GET /api/jobs/reports` 不变，`task` 筛选多了 `daily`、`sec_backfill`。
+- **CLI**：`python -m investment_assistant.tasks.daily run [--manual] | resume --run-id R --node N | show --run-id R`；`python -m investment_assistant.workbench.agent_connection status`；`derivation stages` 认 `stages-4` 与 `attempt`；`python -m investment_assistant.tasks.filings --from D --to D` 仍是 SEC 回补入口（任务名 `sec_backfill`）。
+- **一次性核查脚本** `scripts/siwc_precheck.py`（说明见 [scripts/README.md](scripts/README.md)）：由你在运行服务的这台 Mac 上执行，把末尾的「核查摘要」追加到 spec §17；脚本不打印令牌，邮箱脱敏。
+- **3 张概念卡与原理页新一节**：概念卡共 98 张（新增 `system.fetch_policy`、`system.daily_workflow`、`system.agent_connection`；`system.stages`、`system.stage_status`、`system.versions`、`system.push`、`agent.reject_reasons` 随改），原理页 14 节（十个节点各一节，新增 `#stage-sec_monitor`）。
+- **新增版本号**：`stages-4`、`daily-1`、`fetch-1`、`siwc-1`；不变：`stages-1/2/3`（历史）、`agent-2`、`agent-review-1`、`agent-brief-1`、`agent-retro-1`、`agent-discuss-1`、`retro-1`、`review-7`、`monthly-3`、`screen-1`、`regime-2`、`plan-1`。
+- **前端**：运行详情页（`RunDetail`、`NodeGraph`、`FetchTable`）、「设置 → 系统」下的 Agent 连接（`AgentConnection`）、计划页的「重新运行 Agent」、任务中心对 `daily` / `sec_backfill` 的处理；详见 [architecture](docs/architecture.md)。
+
+### 变更
+
+- **批处理 `stages-3` → `stages-4`**：十个节点，`sec_monitor` 排在最前、`retro` 挪到 `push` 之后（复盘出错不再耽误当天的计划推送）；每次运行每个节点有一条**有效行**（最大 `attempt`），共 10 条；`derivation.RUN_STAGE_COUNT` 为 `{stages-1: 7, stages-2: 8, stages-3: 9, stages-4: 10}`，`derivation stages` 与运行一览按有效行判断。纽约休市日 `push` 之前的八个节点记 `skipped: not_trading_day`，`push` 只发休市一行，`retro` 仍判断周 / 月复盘是否到期；`retro` 在周 / 月复盘到期与交易日的复盘卡两件都不做时才记 `skipped: not_due`。
+- **`retro` 节点合并两件事**：复盘卡（v2.7 的检测、冻结、起草，交易日照做）和周 / 月复盘与复盘推送（原 `workbench_review`，到期才做；手动运行只生成不推送）。
+- **每日推送**：复盘卡行改为「复盘卡 上次推送后新增 a · 待审定 b」（a、b 都为 0 时不出）；有族 `partial` / `failed` 时多一行「数据：<族名> <ok>/<target>（<n> 个目标没拿到，见运行详情）」，至多 3 个族。手动运行不推送。
+- **`duration_ms`** 改为节点真实起止之差（含重试等待与外部请求的全部等待）；v2.7 及以前的 `duration_ms` 只累计部分子步骤，旧行不改。
+- **运行状态口径**：由节点有效行推出——有 `failed` 为失败（`job_reports.status = 'error'`），否则有 `partial` / `degraded` 为降级，否则成功。不再用「`summary.errors` 非空即 error」，所以单个标的取数失败是降级而不是失败。
+- **Agent 预算**：`agent` 与 `review` 共用一个 1500 秒窗口，起点改为 `agent` 节点开始（采集节点的重试不再挤占 Agent）；`retro` 在推送之后，复盘卡起草用自己的 1500 秒窗口；续跑时窗口从续跑的那一次执行重新计。`BATCH_BUDGET_S` 与整批预算降级删除。
+- **`max_attempts` 可重跑**：手动重跑先在 `agent_attempt_resets` 追加一行重置记录，之后计数只数重置之后的运行；旧的 `agent_runs` 行不改不删。
+- **区制异常改为停链**：`regime` 失败 → 重试 → 仍失败则停在 `regime`，可续跑（v2.7 是记失败后继续出计划）。
+- **`signals` 与 `plan`**：同一循环在 `signals` 节点里跑完，`plan` 节点只做校验与记行；循环里计划部分的耗时记在 `detail.timings.in_signals_ms`。
+- **新增失败通知**：运行状态 `failed` 时向「每日计划」频道发「⚠️ 每日工作流失败」，每次执行至多一条，降级不发；ChatGPT 连接失效时另发「⚠️ ChatGPT 连接已失效」（一次失效只发一次，重新连接后再失效才再发）。推送类别键 `workbench`、`workbench_review`、`filings` 保留（每日计划 / 复盘 / SEC 披露），已保存的通知设置原样可用。
+- **`filings` 并入 `daily`**：SEC 监控是第一个节点（`sec_monitor`）；回补改为只手动的任务 `sec_backfill`（不进 `scheduled_jobs`，必须带日期，范围 ≤ 92 天）。Data 菜单各族的 `job` 一律为 `daily`。
+- **`data/http.get_json`** 的 `timeout` / `max_retries` / `backoff_seconds` 参数删除，改为 `policy` / `target` / `sleep` / `redact`（返回形状不变）；`PriceConfig.max_retries` / `backoff_seconds` 删除（旧配置文件里的这两个键被忽略）。`EdgarSource.discover` 返回 `(metas, errors)`。
+- **`AgentSettings`**：`base_url` 字段删除，`api_key` 变成脱敏用的当前 access token，新增 `connection`；`WORKBENCH_AGENT_PROVIDER` 只认 `chatgpt` / `off`（缺省 `chatgpt`）；`WORKBENCH_AGENT_DAILY_TOKENS` 保留。
+- **新增 Agent 原因文案**（前后端逐字对齐）：`not_connected`「ChatGPT 未连接」、`model_unavailable`「所选模型不可用」。
+
+### 删除
+
+- **三个定时任务** `workbench`、`workbench_review`、`filings`：代码（`tasks/workbench.py`、`tasks/workbench_review.py` 与 `filings` 的任务外壳）和 `scheduled_jobs` 行都删除；`job_reports.task` 里它们的历史值保留只读，任务筛选里带「（v2.7 及以前）」。
+- **智谱**：`DEFAULT_MODEL`、`DEFAULT_BASE_URL`、`TEMPERATURE`、`REQUEST_TIMEOUT_S`、`CLIENT_RETRIES`、`_body_code` 的智谱分支、`provider` 缺省 `'zhipu'`，以及对 `ZHIPU_API_KEY`、`WORKBENCH_AGENT_BASE_URL`、`WORKBENCH_AGENT_MODEL` 的读取全部删除；文档与概念卡（`agent.reject_reasons` 的额度错误码段）改写为 ChatGPT；全部测试夹具里的 `provider: zhipu` / `glm-*` 换成 `chatgpt` / `legacy` / `gpt-test`（`tests/test_no_zhipu_residue.py` 固定残留只剩 spec §9 的允许清单）。已有 `agent_runs` / 计划 / 简报里的 `provider = 'zhipu'`、`model = 'glm-5.3'` 保留只读，页面照常显示当时的模型名。**真实 `.env` 里的几行（三个旧变量、`WORKBENCH_AGENT_PROVIDER`）由 Task 7 经你授权后编辑，尚未改。**
 
 ### 修正
 
-- **讨论回答与复盘卡草稿被误判为格式错误**（v2.7 验收发现）：真实模型的多段回答在 JSON 字符串里直接写换行，严格的 `json.loads` 拒绝字符串内的控制字符，回答被记为 `answer_malformed`（复盘卡草稿同理会记为 `retro_malformed`）。`growth_check` 在严格解析失败时改用 `strict=False` 再读一次（仍只剥一层代码围栏），不是 JSON 的输出照旧作废；`agent/citations.py` 不动，提议 / 复查的解析不变。
+- **讨论回答与复盘卡草稿被误判为格式错误**（v2.7 验收发现，原「未发布」条目）：真实模型的多段回答在 JSON 字符串里直接写换行，严格的 `json.loads` 拒绝字符串内的控制字符，回答被记为 `answer_malformed`（复盘卡草稿同理会记为 `retro_malformed`）。`growth_check` 在严格解析失败时改用 `strict=False` 再读一次（仍只剥一层代码围栏），不是 JSON 的输出照旧作废；`agent/citations.py` 不动，提议 / 复查的解析不变。
+- **Discord 网络错误文本不再含 webhook 令牌**（本版实现中发现并修）：网络类错误只保留异常类型名，`/api/webhooks/<id>/<token>` 无论出现在哪都被改写。
+- **一个旧测试曾向真实 FRED 主机发过请求**（用的是假密钥，已改为离线）。
+
+### 与 roadmap 文字的差异（spec §21）
+
+- 新版本 `stages-4`（roadmap §4.6 写的是 `stages-3`、每次恰好 10 行）：`stages-3` 在真实库里已是「九行、`retro` 在 `push` 之前」，同一个版本两种形态无法守护。
+- `retro` 同时做复盘卡与周 / 月复盘，只有两者都不做才 `not_due`（roadmap 只提到原 `workbench_review`）。
+- 续跑追加 `attempt` 行，「10 行」= 10 条有效行（只追加：失败行与 `upstream_failed` 行不能改写或删除）。
+- 纳指 100 成分的日线与财报日也在 `collect` 采，`screen` 为新入池成员补采资讯与 SEC。
+- v2.7 的 `workbench` 任务其实不发失败通知（`notify=False`），本版新增「每日工作流失败」通知。
+- 路径 A 是 `ChatOpenAI` 的**子类**改写请求体（`disabled_params` 关不掉 `_default_params`，也不会生成 `instructions`），另需 `output_version='v0'`；工具形状按官方限制页要求用 namespace 或 `additional_tools`。
+- 被禁字段按官方限制页补全为 16 个；错误分类另加 `invalid_refresh_token`、`token_expired`、`invalid_id_token`、`account_mismatch` 与资格 / 授权类错误码。
+- 只有一个 LaunchAgent（服务本身），三个任务是 `scheduled_jobs` 行，由进程内调度线程执行，plist 不需要改。
+- `GET /models` 的返回形状是 `models[]` 的 `slug` / `display_name` / `visibility`（不是 OpenAI 平台的 `data[].id`）。
+
+### spec §22 各项实际按什么实现
+
+- **Q1 十个节点的版本号**：`stages-4`（D1），未沿用 `stages-3`。
+- **Q2 复盘卡移到推送之后，推送行怎么报**：改报「上次推送后新增 a · 待审定 b」（D3）。
+- **Q3 续跑后的「10 行」**：追加 `attempt` 行，10 条有效行（D9）。
+- **Q4 `signals` 与 `plan` 的拆分**：同一循环在 `signals` 里跑完，`plan` 只做校验与记行。
+- **Q5 区制计算异常**：停链，可续跑。
+- **Q6 SEC 回补**：保留为只手动的 `sec_backfill`。
+- **Q7 失败通知**：只在运行失败时发、每次执行一条，降级不发。
+- **Q8 ChatGPT 令牌的存放**：本机数据库明文（与 `.env` 同级，备份文件同样含令牌，`pg_dump` 的备份放 `.local/`）。
+- **spec §17 的核查路径**：核查结果仍为空，模型层按 §8.7 第 4 条走**路径 A**（`SiwcChatOpenAI`），未经核查，可经 `WORKBENCH_CHATGPT_*` 覆盖；若核查表明 A 不可行，退到路径 B（`openai` SDK 薄客户端）是另一次改动。
+
+### 实现偏差（相对 spec）
+
+**图与任务外壳**
+
+- **概念卡编号 `system.fetch_policy`**（spec 写 `data.fetch_policy`）：卡 id 必须以已有分组开头（`family` / `indicator` / `rule` / `plan` / `agent` / `review` / `system`），新增 `data` 组要改 `knowledge.py` 与前端知识页，超出本版范围。张数（98）与节数（14）不变。
+- **原理页编号**写成「⓪ SEC 监控 … ⑧ 复核与推送、⑨ 复盘」（spec 文字写「⑩ 复盘」，会留下一个空的 ⑧）。
+- **`headline`** 写「10 月 29 日的运行在「…」失败…」，“日”与“的”之间没有空格（照 spec §7.1 的示例，不是模板字面）；“（已自动重试 1 次）”只在该行有 `detail.retry` 时出现（`Unavailable` 类失败不重试）。
+- **`workflow.node`** 返回的是 `run(state, ctx)`（spec 写 `Callable[[DailyState], dict]`），`ctx` 由 `build_graph` 绑定；`NodeContext` 多出几个可选字段，`workflow.run` / `resume` 多一个 `config=`。
+- **SEC 列表**逐只查询（D21）；所有股票都失败或 `company_tickers.json` 都拿不到时，`summary` 沿用 v2.7 的整次调用形状（`filings = {'error'}`、`sources.sec = ['all']`），部分失败给 `<T> sec: …` 行。
+- **`screen` 的补采也补财报日**（spec 只写资讯与 SEC）：v2.7 的逐只循环就补，`test_invalid_screen_plan_stays_read_only` 依赖计划读到刷新后的财报日；本轮范围步骤没拉到的成员（保留 / 锁定、不在今日范围内）也在这里补日线。
+- **`collect` 的 `outputs.data_fetch_runs`** 列出五个族行（v2.7 为四个）；`detail.earnings` 多 `items`，续跑时多 `after_cutoff_dropped = {news, sec}`；检查点状态多一个 `refs['collect']['families']`（推送数据行用）。
+- **复盘卡行**：此前没有任何 `daily` 推送时 `a` 记 0；`service.push` 在 `retro_counts` 为 None 时退回 `summary['retro']`，所以 v2.7 的外壳与手动推送不变。
+- **运行一览的“续跑”计数**按每个阶段的行数推出（`stage_runs_for_session` 不读 `attempt`，`repository.py` 超出该 Task 的边界）。
+- **`run_now`** 先预检 `daily.is_running()` 再回 409 `daily_running`；预检本身连不上库时退回直接提交。
+- **v2.7 的任务层**留在 `tests/_v27_task.py`（`stages-3` 记录器 + `run_batch` 外的推送），让 v2.7 阶段证据测试保持价值；产品代码里已没有它。
+- **没有进图的失败**（`migration_028_missing`、`checkpoint_unavailable`）的失败通知不带「未执行」「续跑」字段，失败节点写“每日工作流”；定时运行撞上 `daily_running` 只写一行 `error`，不发通知。
+- **失败节点信息**（`failed_node` / `failure`）放在 `summary` 里，不进检查点状态（spec 写在检查点状态里）。
+- **spec §15 的笔误**：休市时“`push` 之前九个节点 `skipped: not_trading_day`”，十个节点的图里 `push` 之前只有八个（九是 `stages-3` 的数法），实现为八个。
+- **`first_failure_since_ok` 与连接通知**：“一次失效只通知一次”的基线是“最近一次真正发出的连接通知的 `checked_at`”（`summary.connection_notice.checked_at`），不是上一次执行的起止时间；通知发送失败会在下一次执行重试。
+- **`AgentSettings.model`** 在没选模型时是 `''`（不是 `None`），因为 `agent_runs.model` 是 `NOT NULL`；`unavailable_reason` 把 `None` 与 `''` 同样当作 `model_unavailable`。
+- **`QUOTA_CODES`** 没有删，留作只含 `subscription_sharing_usage_limit_exceeded` 一个码的集合（spec §9 说删）。
+- **`usage {cached_input_tokens, reasoning_tokens}` 没有写进 `agent_runs.detail`**（spec §8.7 最后一段）：字段名要等 §17 C3 核查确认，写错代价比晚写大；每日 token 上限仍只按 input + output 计。`usage_metadata` 里已有这两个数。
+- **`model_unavailable` “只通知一次”没有实现**（§13.2 没有对应模板）：`not_connected` 通知一次；`model_unavailable` 只体现为该节点其余单元 `skipped` 与运行详情里的原因。
+- **登录与断开的前置判断在路由里**：`login_pending`（已有未完成的登录）与断开时的 `not_connected` 由路由按 `status_view()` 判断，因为 `agent_connection.start_login` 会取消进行中的登录并重开，自己不会抛 `login_pending`。
+- **断开会清空 `subject` 与 `email`**（保留 `host_id`、`client_id`、所选模型）：spec §19“换账号要断开再连”优先于 devkit 的“断开保留 subject”；代价是 `account_mismatch` 只对 `needs_login` 状态下的重新登录生效。
+- **刷新的瞬时失败**（网络、5xx、响应无效）只写 `last_error`，不写 `refresh_failed` 事件（事件只给需要重新登录的失败）。
+- **授权码换令牌与刷新**的 POST 用 `FetchPolicy(retry_post=False)`（只在请求没发出或 429 时重试）：刷新令牌被消耗后重放会得到 `refresh_token_reused`。
+- **只覆盖同步路径**：`SiwcChatOpenAI` 只改了 `_get_request_payload` 与 `_stream`；`_astream` / `ainvoke` 本版不用，没有改写。
+- **请求改写多出几步**（`agent-track.md` 已写）：回放的 `function_call` 输入项去掉 `id`（`store=False` 时 `fc_…` id 无处可查），在 `namespace` 形状下加 `namespace: 'workbench'`。
+- **`insert_stage_run` 在迁移 028 之前也能写第一次尝试**：第一次尝试不写 `attempt` 列（v2.7 的 `workbench` 行），`daily` 行与 `attempt > 1` 的行总是写。
+- **`Tally.targets_truncated`** 是被省略的目标**个数**（整数），不是布尔；旧的 `Tally.ok / fail`（没有尝试记录）在 `detail.targets` 里 `attempts = null`、失败行 `elapsed_ms = null`、`error_kind = 'other'`；成功项 `http_status` 记 200。
+- **Discord 推送**通过 `fetch_policy.policy_session` 发送（重试规则同上）。
+- **SEC 监控**的逐只错误记进 `summary` 并让覆盖状态为 `partial`，通知标题为「SEC 采集部分失败」。
+- **下载器模式忽略续跑截止**：`sec_downloader` 没有可比较的接受时间，续跑时不按 `cutoff_at` 过滤（已写入 `sec-filings.md`）。
+- **`push` 在已发出消息之后抛异常**时，续跑会重发（极小概率；不做幂等去重）。
+
+**接口与前端**
+
+- **API 错误体**沿用现有契约 `{"error": "<代码>"}`（字符串 `detail`），不是 plan 写的 `detail = {code, message}`——全局异常处理器会把非字符串 `detail` 压成字面 `"error"`；中文文案在前端（`RESUME_ERROR_TEXT` 等）。
+- **ChatGPT 相关错误只带安全码**：`not_connected` 409、`model_not_listed` 400、`migration_028_missing` 503、其余（`discovery_failed`、`callback_port_unavailable`、`network_error` …）502；`psycopg.OperationalError` / `service.Unavailable` → 503。
+- **`POST /api/workbench/agent-runs/rerun` 对 `propose` 是同步的**（和现有 `POST /api/workbench/agent-runs` 一致，请求在 Agent 运行结束后才返回，`run_id` 是新的 `agent_runs` id；spec §5.7 写“后台”）。`origin` 只接受 `run_detail`、`plan_page`、`api`（缺省 `api`，其它值 400）；成功文案「已重置尝试次数，并已重新运行」（`interpret` 只重置、下一次运行或续跑时执行）。重跑在任何 `daily` 执行持有锁期间被拒（409 `daily_running`）。
+- **`running` 状态的判定多一条**：spec 写“有行但本次执行没有报告、且锁被持有”；实现里本进程正在执行的运行（`daily.executing`）也算 `running`，否则续跑后第一行写入之前页面会写 `failed`。仅有 `daily-…` id 而没有行的运行，在本进程正执行、或锁被持有且 id 时间戳在 [−6 小时, +5 分钟] 内时给一个十个节点全是 `pending` 的骨架，否则 404。
+- **崩溃中断的运行不可续跑**：进程在节点中途被杀、没有失败行时 `resume.reason = 'interrupted'`（“这次运行中途中断，只能整次重新运行”）；续跑自己中途死掉而留下的陈旧 `upstream_failed` 行同样按 `failed` 显示。`resume.reason` 取值：`not_failed`、`interrupted`、`resume_window_closed`、`daily_running`、`checkpoint_unavailable`。
+- **`resume.deadline_at`** 在详情接口里是 UTC ISO（spec 示例），`resume_check` 内部是纽约 ISO。
+- **`can_rerun`**：该单元同模式的最新一次运行以 `error` 或 `skipped / max_attempts` 结束、其后没有重置记录、是 `daily` 运行且没有在运行、没有任何 `daily` 执行持有锁。
+- **详情接口的结果细节**：`sec_monitor.total` 是该行的 `output_count`（存储的列表截到 50 项）；`push.channel` 取自最新报告的 `summary.push.channel`；`retro` 的周 / 月复盘行 `status` 是该次 tick 的 `action`（`generated`、`reused`、`already_sent`、`reminded`、`error`，`before_start` / `waiting` 不列），`push` 为 `sent` / `manual_run` / 未发送的原因；被跳过的节点（`push` 除外）不列结果。接口返回的是代码，中文由前端翻译（`RETRO_STATUS_TEXT`、`RETRO_PUSH_TEXT`）。
+- **没有迁移 028 的旧库**：详情页读 `stage_runs_for_run`（没有 `attempt`），不查检查点，旧运行照常显示。
+- **「Agent 连接」放在 `#settings/system` 页**「系统」之下，侧栏没有新增设置子页（spec §8.9 写“「系统」之后”）。
+- **计划页的重跑入口复用现有 `GET /api/workbench/agent-runs?since=`**（新增前端函数 `getAgentRuns`）：接口没有标的筛选，所以会取回自信号日以来的全部运行，计划越老越多；取回失败时入口静默隐藏。
+- **`sec_backfill` 在任务中心只有“按日期运行”**，没有“立即运行”（它必须带日期）；弹窗默认选项发 `{date: <本地昨天>}`。`scheduled_jobs` 里没有 `sec_backfill` 行，所以 `services/jobs.scheduled_jobs()` 为 `REGISTRY` 里这类只手动任务补一行 `{name, manual_only: true, enabled: false, next_run_at: null, time_local / weekday_mask / timezone: null, description}`——**`/api/jobs` 多了一个键 `manual_only`**，前端据此渲染“只手动”。
+- **续跑与运行的请求体带 `request_id`**（项目规则：写操作带 `request_id`；spec §5.4 只列 `{run_id, node}`）；登录与选模型同样。
+- **`RUN_ID_RE` 不含 `us-research-…` 的运行 id**（`^[a-z_]+-\d{14}-[0-9a-f]{8}$`，spec §7.1 自己的两处描述互相矛盾）：这类运行在运行记录里没有“详情”链接（显示“—”）。
+- **前端文案**：409 `node_mismatch` 显示失败节点的中文标题；运行记录的状态用本地映射（`error` → 失败），不认识的状态原样显示；“拉取详情已列全”“没有失败的目标”“已有未完成的登录，可先取消再重新连接”等不在 spec 里的短句是实现者所写。
+- **`window.open(…, 'noopener')`** 按规范返回 `null`，所以没有“弹窗被拦截”的回退链接；被拦截时再点“连接 ChatGPT”，后端回 409 `login_pending`，页面刷新状态并给出“取消”。
+
+### 已知限制
+
+- spec §19 逐条沿用：整链没有硬上限（每个外部请求 ≤ 2 分钟、Agent + 复查 ≤ 25 分钟、复盘起草 ≤ 25 分钟，但目标数 × 最坏耗时理论上仍可很长，例如 Yahoo 全面超时时 230 个目标 × 100 秒；v2.9 的备源解决“整族不可用”）；续跑只能从失败节点开始；财报日续跑时取到的是当时的值；检查点不清理；`attempt` 之前的旧运行（`stages-1/2/3`）没有续跑、详情页只读；单账号（换账号要断开再连，断开时远端撤销可能无法确认）；ID token 不验签名（只从令牌端点经 TLS 取得）；**令牌明文存于本机数据库，数据库备份文件同样含令牌**；周日、周一不运行，这两天到期的复盘推送顺延到周二 11:30；推送前的复盘卡改到推送后，当天新建的卡在下一次推送里报数；链内拆股换算、`get_trigger` / `get_position` 不按截止时间过滤等沿用 v2.5–v2.7 的已知限制。
+- **模型层未经真实端点验证**：路径 A 的请求形状（被禁字段、`TOOL_SHAPE` 缺省 `namespace`、回放 `function_call` 去 `id`、`Accept: text/event-stream`）全部是读文档与源码后的推断，在你运行核查脚本、第一次真实登录前，Agent 单元可能因请求被拒而记 `model_error`。
+- **近过期的令牌仍会交出去**：`earliest_refresh_at` 未到而令牌只剩几秒时，仍把这个令牌交给模型调用（与 spec 字面一致）；一次模型调用最长 180 秒，可能中途 401、被分类为 `not_connected`，让本节点其余单元被跳过。
+- **崩溃中断的运行不可续跑**，只能整次重新运行；CLI 续跑（另一个进程）和“上一次续跑被拒、留下 `job_reports` 行”的运行，在第一条新行写入前显示 `failed`；进程被杀的运行在另一次执行持有锁时显示 `running`。
+- **yfinance 共享 `curl_cffi` 会话下的 cookie / crumb 行为未在真实 Yahoo 上验证**（评审者按源码推断：不重复取 crumb、财报日历不爆 401 / 429、`hard_deadline` 放弃线程后会话仍可用）——真实验收时观察。
+- **`model_unavailable` 不单独通知**（见上）；**重跑 `propose` 同步执行**，请求会等到 Agent 运行结束。
+- **`usage` 两个数字没有落库**（见上）。
+- **`GET /api/runs/{id}/detail`** 对每个 `stages-4` 运行都会开一个短连接查 `daily.is_running()`，每 5 秒轮询没问题，列表里批量调用则不行；它读检查点用第二个数据库连接（读，但不在只读事务里）。
+- **`read_for_settings()`（即每次 `settings_from_env()`）有写库副作用**：会顺带收尾过期的登录与残留的待定状态。
+- **`INVESTMENT_ASSISTANT_FAULT_ONCE=<节点>`**（造一次节点失败的演练开关）只用于 Task 7 的手动验收，用后要从 `.env` 里删掉。
+- **`service.agent_window` 的 25 分钟预算**只用假时钟测过，真实 25 分钟的运行没有观察过。
+
+### 待你核查后确认的模型层行为
+
+下列全部是假设，没有一条对真实主机观察过；在 `scripts/siwc_precheck.py` 的“核查摘要”追加到 spec §17 之后，逐项对照，不符的改对应常量或环境变量（C 编号是 spec §17 的行）。
+
+- **C1 登录与令牌**：发现文档的 `issuer == https://auth.openai.com`，`authorization_endpoint`、`token_endpoint`、`jwks_uri` 在该源下；第一次登录的回调里带 `client_id`（动态注册），没有也没有已存的 `client_id` 时登录以 `registration_incomplete` 失败；换码返回 bearer、数字 `expires_in > 0`、`access_token`、`refresh_token`、字符串 `scope`、`id_token`（换码时必须有）；**刷新必须返回新的 `refresh_token`**（缺了按 `invalid_token_response` 处理、保留连接——若发行方不滚动刷新令牌，这条要放宽）；刷新的 `scope` 可省（沿用旧的）、`id_token` 可省（有则 `sub` 必须与已存一致）；`earliest_refresh_at`：数字按 epoch 秒、字符串按 ISO-8601，缺失或无法解析视为无限制；ID token 的 `iss` 完全等于发行方、`aud` 含 `client_id`（列表有多项时要 `azp == client_id`）、`exp` 为数字（容差 5 秒）、登录时 `nonce` 与我们发出的相同、有 `sub`、可选 `email`；`scope` 含 `chatgpt.tokens.use.direct` 且刷新后仍保留；撤销接口接受表单 `token`、`token_type_hint=refresh_token`、`client_id` 并以 HTTP 200 应答；`refresh_expires_at` 每次刷新记为“现在 + 30 天”（实际期限并未从响应里读）；浏览器回调的 `Host` 是 `127.0.0.1:<端口>`（`localhost:<端口>` 会被拒）。
+- **C2 模型清单**：`GET {资源}/models` 返回 `{"models": [{slug, display_name, visibility}]}`，可选项 = `visibility == "list"`；只要有一项缺 `slug` / `display_name` 就整表按 `invalid_model_catalog` 失败（同 devkit）；设置页默认不预选任何模型（没选时 Agent 记 `model_unavailable`），该预选哪个 slug 由你定。
+- **C3 最小原生调用**：SSE 序列以 `response.completed` 结束，其中 `response.status == "completed"`，`usage` 含 `input_tokens`、`input_tokens_details.cached_tokens`、`output_tokens`、`output_tokens_details.reasoning_tokens`、`total_tokens`；失败以 `response.failed`（`response.error.code`）或 `error` 事件（`code`、`message`）到达——langchain 把两者都变成一个文本以 `code='…'` / `<code>: ` 开头的 `ValueError`，`_failure_from` 据此还原错误码（langchain 改了这段文本，流内的额度识别会悄悄退化成 `model_error`；经 openai 异常的 HTTP 状态错误不受影响）；流在没有 completed 事件时结束记 `stream_interrupted`，`response.incomplete` 记 `response_incomplete`。
+- **C4 被禁字段**：16 个 `FORBIDDEN_FIELDS` 正是路由会拒绝的全部，且我们发出的其它字段都不被拒；缺省只发 `model`、`input`、`instructions`、`store: false`、`stream: true`、`tools`。待确认：是否必须显式发 `parallel_tool_calls`（若是则 `REQUEST_OVERRIDES = {"parallel_tool_calls": false}`），`include` / `reasoning` 以后能不能加，`max_retries=0` 加 `Accept: text/event-stream` 在 SDK 上是否没问题。
+- **C5 工具形状**：缺省 `namespace`。要确认 `top_level` / `namespace` / `additional_tools` 里哪一种能让模型调用工具；`namespace` 项里的工具名是否以 `function_call.name`（加 `namespace`）返回；第二轮回放 `function_call`**不带 `id`**、`namespace` 形状下**带 `namespace: "workbench"`**，再加 `function_call_output` 是否被接受（这是核查脚本 `_tool_request` 没覆盖到的一处假设——脚本回放的是模型原样返回的内容，含 `id`）；`additional_tools` 下回放的调用是否不需要 namespace。
+- **C6 请求体与输出形状**：LangChain 发出的输入项形如 `{"role": "...", "content": "<str>", "type": "message"}`（devkit 不带 `type`）；`role: developer` 被接受；system 文本必须放进 `instructions` 且 `instructions` 被接受；改写不动其它输入项（`function_call`、`function_call_output`、带 `output_text` 内容且无 `id` 的 assistant `message`）；`output_version='v0'` 时消息内容是 `[{'type': 'text', 'text': …, 'index': 0}]` 块（我们拼成一个字符串，只含工具调用的轮次得 `''`）；`tool_calls[].id` 是响应里的 `call_id`；若有 reasoning 项，因 `store=False` 又没有 `encrypted_content`，回放时被丢掉。
+- **C7 额度用尽**：目前只匹配错误码 `subscription_sharing_usage_limit_exceeded`，真实的 HTTP 状态与响应体形状没观察过；第一次真实出现时按 `agent_runs.detail` 追加到 spec §17 C7。
+- **401 的处理**：模型调用上的 401 记为 `not_connected`；令牌签发（登录或刷新）后 600 秒内的 401 直接标 `needs_login`，更老的令牌 401 先把 `access_expires_at` 置为现在、让下一次取令牌时强制刷新——这套“新令牌才算失效”的阈值（`FRESH_TOKEN_S = 600`）也是推断。
+- **HTTP 客户端**：一个共享的 `httpx.Client`（环境里的代理变量生效；LaunchAgent 不继承 shell 的代理，要在 `.env` 里写），剥掉 `OpenAI-Organization` / `OpenAI-Project` 头，`httpx.Timeout(180, connect=10)`。
+
+### 验收
+
+- 测试：离线 pytest 2246 passed / 821 skipped；一次性库 pytest 3067 passed；前端 `npm test` 672 passed（51 个文件），`npm run build` 通过；`knowledge check` 通过（98 张卡、原理页 14 节）。
+- **验收未开始**：迁移 028、`pg_dump` 备份、`.env` 改动、重启、ChatGPT 登录、tag 与推送都需要你逐项单独授权，均未执行（计划的 Task 7）；退出条件（连续 10 个交易日 `daily` 定时运行无需人工介入、手动造一次节点失败并续跑成功、没有外部请求超过 2 分钟、你任选 3 天打开运行详情都能回答“哪个数据源对哪个目标没拿到、为什么、卡在哪个节点”、Agent 单元在 ChatGPT 上完成且通过同一套引用校验、智谱引用已删）逐条待积累，验收记录 `docs/roadmap/v2.8-acceptance.md` 在真实验收开始时新建；不宣称用户验收已过。
 
 ## v2.7.0 — 2026-10-29
 

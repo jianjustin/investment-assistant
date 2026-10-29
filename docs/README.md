@@ -15,8 +15,8 @@
 
 | 文档 | 功能 |
 | --- | --- |
-| [daily-plan.md](features/daily-plan.md) | 每日流程、规则 v1、交易计划、持仓止损、每日推送 |
-| [agent-track.md](features/agent-track.md) | Agent 轨道：工具层、提议与反方、引用校验、预算、解读 |
+| [daily-plan.md](features/daily-plan.md) | 每日工作流（十个节点、检查点与续跑、运行详情页）、规则 v1、交易计划、持仓止损、每日推送 |
+| [agent-track.md](features/agent-track.md) | Agent 轨道：ChatGPT 订阅模型层与连接、工具层、提议与反方、引用校验、预算、解读 |
 | [review.md](features/review.md) | 影子跟踪、纪律、三方对比、周/月复盘、资金与月度收益、复盘推送 |
 | [pool-and-context.md](features/pool-and-context.md) | 观察池分层、每日筛选（纳指 100 `screen-1`、成员轮换、报告与只读回放）、市场环境（广度、区制、行业、FRED）、上线前检查 |
 | [data-menu.md](features/data-menu.md) | 「数据」菜单：数据族覆盖与最新时点、拉取记录、单族手动拉取、原始值浏览 |
@@ -32,12 +32,13 @@
 | [local-service.md](operations/local-service.md) | LaunchAgent、启动链路、重启、日志与路径、认证 |
 | [scheduling-and-notifications.md](operations/scheduling-and-notifications.md) | 调度线程、任务注册表、运行报告、通知配置 |
 | [migrations-and-backup.md](operations/migrations-and-backup.md) | 迁移清单 001–028、真实库备份与执行、一次性测试库 |
+| [../scripts/README.md](../scripts/README.md) | 一次性核查脚本：`scripts/siwc_precheck.py`（v2.8 开工前 ChatGPT 核查，由你在运行服务的这台 Mac 上执行，结果追加到 v2.8 spec §17） |
 
 ## 方向与历史
 
 | 位置 | 内容 |
 | --- | --- |
-| [roadmap/roadmap.md](roadmap/roadmap.md) | 唯一的路线文档：最终目标与成功标准、原则与边界、版本总览、当前路线 v2.5–v2.10（v2.8 于 2026-10-28 重定义为每日工作流）、远期方向、backlog、DoD 与状态用语、决策记录；同目录 `v2.x-acceptance.md` 是各版验收证据 |
+| [roadmap/roadmap.md](roadmap/roadmap.md) | 唯一的路线文档：最终目标与成功标准、原则与边界、版本总览、当前路线 v2.5–v2.10（v2.8 于 2026-10-28 重定义为每日工作流，2026-10-29 发布 `v2.8.0`）、远期方向、backlog、DoD 与状态用语、决策记录；同目录 `v2.x-acceptance.md` 是各版验收证据 |
 | [roadmap/v2.8-runtime-feasibility.md](roadmap/v2.8-runtime-feasibility.md) | 本地 CLI 运行时可行性报告（2026-10-28）：`claude-code`、`codex`、`pi` 在无人值守、禁用自带工具、接本地 MCP、token 用量、批处理时限五项上的实测。**同日被 roadmap 决策 #63 取代**（v2.8 不再做运行时切换），保留为历史依据 |
 | [specs/](specs/) | 各阶段的设计 spec |
 | [plans/](plans/) | 各阶段的实施 plan |

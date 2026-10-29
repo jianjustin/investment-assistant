@@ -4,7 +4,9 @@
 
 不接券商，不自动下单。所有规则都**未经验证**（Phase 0 Gate HOLD），系统输出的价位和仓位只是你所设规则的算术结果，不构成投资建议。
 
-当前版本：**v2.7.0**（2026-10-29），见 [CHANGELOG](CHANGELOG.md)。
+当前版本：**v2.8.0**（2026-10-29），见 [CHANGELOG](CHANGELOG.md)。
+
+v2.8 状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`（代码已合入 `main`；迁移 028 尚未在真实库执行，服务尚未以 v2.8 代码重启，ChatGPT 连接尚未登录，核查脚本 `scripts/siwc_precheck.py` 尚未由你运行，模型层选路按 spec §8.7 先走路径 A、未经核查；连续 10 个交易日定时验收未开始）。实现偏差与已知限制见 [CHANGELOG](CHANGELOG.md)。
 
 v2.7 状态：`engineering_done`、`user_acceptance_pending`（迁移 027 已于 2026-10-29 在真实库执行，服务已以 v2.7 代码重启；手动验收与定时验收进度见 [v2.7 验收记录](docs/roadmap/v2.7-acceptance.md)）。实现偏差与已知限制见 [CHANGELOG](CHANGELOG.md)。
 
@@ -18,7 +20,7 @@ v2.4 状态：`engineering_done`、`user_acceptance_pending`（迁移 025 已于
 
 - **后端**：FastAPI + uvicorn 单进程，内置调度线程；PostgreSQL 是唯一的状态存储。
 - **前端**：Svelte 5，主线入口是「今日」「标的」「复盘」「数据」。
-- **外部数据**：yfinance、SEC EDGAR、FRED；Agent 用 LangGraph + 智谱；通知走 Discord。
+- **外部数据**：yfinance、SEC EDGAR、FRED；Agent 用 LangGraph + 你的 ChatGPT 订阅（设置里一次性登录）；通知走 Discord。
 - **运行**：本机 macOS LaunchAgent，只监听 `127.0.0.1:8787`。
 
 详见 [架构](docs/architecture.md)。
