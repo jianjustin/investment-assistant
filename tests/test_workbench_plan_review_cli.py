@@ -115,14 +115,14 @@ def test_check_complete_exits_zero(db, capsys):
 def test_check_missing_review_lists_chain_and_skipped_reason(db, capsys):
     market = Market()
     signal_day(db, market, ['SYNQ', 'SYNTH'], review_when={'SYNQ': QUIET})
-    run(db, market, 1, tickers=['SYNQ', 'SYNTH'], agent=settings(api_key=None))      # SYNTH 记 skipped
+    run(db, market, 1, tickers=['SYNQ', 'SYNTH'], agent=settings(connection='disconnected'))      # SYNTH 记 skipped
     assert [r['outcome'] for r in reviews(db, 'SYNTH')] == ['skipped']
     db.commit()
     before = _counts(db)
     code, out = _run(capsys, 'check', '--session', day(1).isoformat())
     assert code == 1 and _counts(db) == before
     [missing] = _lines(out, '缺有效复查')
-    assert 'SYNTH' in missing and 'skipped（not_configured）' in missing
+    assert 'SYNTH' in missing and 'skipped（not_connected）' in missing
     assert not _lines(out, '缺有效复查  SYNQ')
     assert '不通过' in _lines(out, '汇总')[0]
 
@@ -199,9 +199,9 @@ def test_recheck_command_writes_one_review(db, capsys, monkeypatch):
     assert _lines(out, f"复查记录 {row['id']}") and _lines(out, '新版：无')
 
     monkeypatch.setattr(plan_review, '_cli_deps',
-                        lambda: service.Deps(agent_model=make_model(), agent_settings=settings(api_key=None)))
+                        lambda: service.Deps(agent_model=make_model(), agent_settings=settings(connection='disconnected')))
     code, out = _run(capsys, 'recheck', '--ticker', 'SYNTH', '--date', S1.isoformat())
-    assert code == 1 and 'agent_unavailable: not_configured' in out
+    assert code == 1 and 'agent_unavailable: not_connected' in out
 
 
 def _store_stage_rows(db, rows):

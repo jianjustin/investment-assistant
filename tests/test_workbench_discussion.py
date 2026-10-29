@@ -21,7 +21,17 @@ from investment_assistant.workbench.agent import discuss_tools
 
 @pytest.fixture(autouse=True)
 def agent_on(monkeypatch):
-    monkeypatch.setenv('ZHIPU_API_KEY', 'sk-test')
+    connection_is(monkeypatch)
+
+
+
+def connection_is(monkeypatch, status='connected'):
+    """The agent connection as ``settings_from_env`` reads it (v2.8: the ChatGPT connection, not an API key)."""
+    from investment_assistant.workbench import agent_connection
+
+    info = {'status': status, 'scopes_ok': status == 'connected', 'model': 'gpt-test' if status == 'connected' else None,
+            'secret': 'test-access-token' if status == 'connected' else None}
+    monkeypatch.setattr(agent_connection, 'read_for_settings', lambda: info)
 
 
 def tool_call(name, args=None, call_id=None):
@@ -137,11 +147,11 @@ def test_ask_preconditions(db, monkeypatch):
     with pytest.raises(LookupError):
         ask(999999)
 
-    monkeypatch.delenv('ZHIPU_API_KEY')
-    with pytest.raises(ledger.Conflict, match='^agent_unavailable: not_configured$'):
+    connection_is(monkeypatch, 'disconnected')
+    with pytest.raises(ledger.Conflict, match='^agent_unavailable: not_connected$'):
         ask(record['id'])
     monkeypatch.setenv('WORKBENCH_AGENT_PROVIDER', 'off')
-    monkeypatch.setenv('ZHIPU_API_KEY', 'sk-test')
+    connection_is(monkeypatch)
     with pytest.raises(ledger.Conflict, match='^agent_unavailable: disabled$'):
         ask(record['id'])
     monkeypatch.delenv('WORKBENCH_AGENT_PROVIDER')

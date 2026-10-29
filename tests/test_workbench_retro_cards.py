@@ -134,6 +134,15 @@ def draft_reply(*, lessons: int = 1, refs=('fact:plans', 'fact:bars_after')) -> 
         'lessons': [{**lesson, 'title': f"{lesson['title']}{n}"} for n in range(lessons)]}, ensure_ascii=False))
 
 
+def connection_is(monkeypatch, status='connected'):
+    """The agent connection as ``settings_from_env`` reads it (v2.8: the ChatGPT connection, not an API key)."""
+    from investment_assistant.workbench import agent_connection
+
+    info = {'status': status, 'scopes_ok': status == 'connected', 'model': 'gpt-test' if status == 'connected' else None,
+            'secret': 'test-access-token' if status == 'connected' else None}
+    monkeypatch.setattr(agent_connection, 'read_for_settings', lambda: info)
+
+
 def stage_deps(make, replies, **settings):
     return agent_deps(make, replies, settings=_agent_settings(**settings))
 
@@ -385,7 +394,7 @@ def _copies(db, card, n):
 def _seed_cards(db, scripted_model, n=3):
     """One real card detected with an unavailable agent, plus copies of it: no drafts yet, ``n`` cards in all."""
     scenario(db, 'ZZZA')
-    off = stage_deps(scripted_model, [], api_key=None)
+    off = stage_deps(scripted_model, [], connection='disconnected')
     run_stage(db, off)
     _copies(db, only_card(db), n - 1)
     db.execute('DELETE FROM review_card_drafts')             # forget the skip row, so each gate shows by itself
@@ -479,7 +488,7 @@ def test_max_attempts_is_reported_once_and_draft_failed_is_not_needing(db, scrip
     rows = []
     recorder = stages_module.StageRecorder('run-4', 'manual_batch', SESSION, writer=rows.append, wall_now=lambda: NOW)
     with recorder.stage('retro') as acc:
-        retro_cards.run_stage(SESSION, now=NOW, deps=stage_deps(scripted_model, [], api_key=None),
+        retro_cards.run_stage(SESSION, now=NOW, deps=stage_deps(scripted_model, [], connection='disconnected'),
                               summary={'errors': []}, started=0.0, clock=lambda: 0.0, run_id='run-4', acc=acc)
     [row] = [r for r in rows if r['stage'] == 'retro']
     assert (row['status'], row['input_count'], row['skips'], row['degradations']) == ('success', 0, [], [])
@@ -490,7 +499,7 @@ def test_verdict_landing_while_the_model_runs_leaves_no_orphan_lessons(db, scrip
     """The verdict may land between the model call and the write: the run is kept, the draft row is a rejected
     `card_reviewed`, and no lesson drafts are written (they could never be decided)."""
     scenario(db, 'ZZZA')
-    run_stage(db, stage_deps(scripted_model, [], api_key=None))
+    run_stage(db, stage_deps(scripted_model, [], connection='disconnected'))
     card = only_card(db)
     d = stage_deps(scripted_model, [draft_reply(lessons=2)])
     real = d.agent_model.invoke
@@ -527,7 +536,7 @@ class _Wrapped:
 
 def test_two_drafts_in_a_row_get_distinct_attempts_and_the_second_is_draft_exists(db, scripted_model):
     scenario(db, 'ZZZA')
-    run_stage(db, stage_deps(scripted_model, [], api_key=None))
+    run_stage(db, stage_deps(scripted_model, [], connection='disconnected'))
     card = only_card(db)
     first_deps = stage_deps(scripted_model, [draft_reply()])
     second_deps = stage_deps(scripted_model, [draft_reply()])
@@ -551,19 +560,19 @@ def test_two_drafts_in_a_row_get_distinct_attempts_and_the_second_is_draft_exist
 
 def test_skip_rows_take_the_card_lock(db, scripted_model):
     scenario(db, 'ZZZA')
-    run_stage(db, stage_deps(scripted_model, [], api_key=None))
+    run_stage(db, stage_deps(scripted_model, [], connection='disconnected'))
     card = only_card(db)
     retro_cards._record_skip(card['id'], 'stage_budget', 'batch')
     retro_cards._record_skip(card['id'], 'stage_budget', 'batch')
     assert [(d['attempt'], d['reason']) for d in repository.card_drafts(db, card['id'])] == [
-        (1, 'agent_unavailable: not_configured'), (2, 'stage_budget')]
+        (1, 'agent_unavailable: not_connected'), (2, 'stage_budget')]
 
 
 def test_list_rows_and_card_view_say_whether_the_subject_was_filled(db, scripted_model):
     scenario(db, 'ZZZU', 'unplanned')
     scenario(db, 'ZZZB', 'stop')
     scenario(db, 'ZZZA')
-    run_stage(db, stage_deps(scripted_model, [], api_key=None))
+    run_stage(db, stage_deps(scripted_model, [], connection='disconnected'))
     rows = {r['ticker']: r for r in retro_cards.list_view(status=None, ticker=None, since=None)['cards']}
     assert (rows['ZZZU']['filled'], rows['ZZZU']['actual_r']) == (True, None)          # bought and sold, no R
     assert (rows['ZZZB']['filled'], rows['ZZZB']['actual_r']) == (False, None)         # never bought: 未成交
@@ -596,14 +605,14 @@ def test_agent_unavailable_still_creates_cards(db, scripted_model):
                                            wall_now=lambda: NOW)
     summary = {'errors': [], 'agent': None}
     with recorder.stage('retro') as acc:
-        retro_cards.run_stage(SESSION, now=NOW, deps=stage_deps(scripted_model, [], api_key=None), summary=summary,
+        retro_cards.run_stage(SESSION, now=NOW, deps=stage_deps(scripted_model, [], connection='disconnected'), summary=summary,
                               started=0.0, clock=lambda: 0.0, run_id='run-off', acc=acc)
     db.commit()
     assert len(cards(db)) == 2
     [row] = [r for r in rows if r['stage'] == 'retro']
     assert row['status'] == 'degraded' and row['input_count'] == 2 and row['output_count'] == 0
     assert [d['kind'] for d in row['degradations']] == ['agent_unavailable']
-    assert [(s['reason'], s['count']) for s in row['skips']] == [('agent_unavailable: not_configured', 2)]
+    assert [(s['reason'], s['count']) for s in row['skips']] == [('agent_unavailable: not_connected', 2)]
     assert row['detail']['drafts'] == {'ok': 0, 'rejected': 0, 'error': 0, 'skipped': 2}
     assert row['detail']['new_cards'] == 2 and row['detail']['to_review'] == 0
 
@@ -614,7 +623,7 @@ def test_nothing_to_draft_is_a_plain_success_even_without_an_agent(db, scripted_
     recorder = stages_module.StageRecorder('run-quiet', 'manual_batch', SESSION, writer=rows.append,
                                            wall_now=lambda: NOW)
     with recorder.stage('retro') as acc:
-        retro_cards.run_stage(SESSION, now=NOW, deps=stage_deps(scripted_model, [], api_key=None),
+        retro_cards.run_stage(SESSION, now=NOW, deps=stage_deps(scripted_model, [], connection='disconnected'),
                               summary={'errors': []}, started=0.0, clock=lambda: 0.0, run_id='run-q', acc=acc)
     [row] = [r for r in rows if r['stage'] == 'retro']
     assert (row['status'], row['input_count'], row['output_count'], row['degradations']) == ('success', 0, 0, [])
@@ -755,7 +764,7 @@ def test_second_verdict_409(db, scripted_model):
 
 def test_verdict_without_draft_note_only(db, scripted_model):
     scenario(db, 'ZZZA')
-    run_stage(db, stage_deps(scripted_model, [], api_key=None))          # drafts skipped: the card has no ok draft
+    run_stage(db, stage_deps(scripted_model, [], connection='disconnected'))          # drafts skipped: the card has no ok draft
     card = only_card(db)
     result = retro_cards.verdict(card['id'], {'request_id': str(uuid.uuid4()), 'note': '只写复盘',
                                              'lessons': []}, now=NOW)
@@ -770,7 +779,7 @@ def test_redraft_conflicts(db, scripted_model, monkeypatch):
     scenario(db, 'ZZZA')
     run_stage(db, stage_deps(scripted_model, [draft_reply()]))
     card = only_card(db)
-    monkeypatch.setenv('ZHIPU_API_KEY', 'sk-test')
+    connection_is(monkeypatch)
     with pytest.raises(ledger.Conflict, match='^draft_exists$'):
         retro_cards.redraft_check(card['id'])
     with pytest.raises(LookupError):
@@ -779,10 +788,10 @@ def test_redraft_conflicts(db, scripted_model, monkeypatch):
     db.execute('DELETE FROM review_card_drafts')
     db.commit()
     retro_cards.redraft_check(card['id'])                                 # no ok draft, agent configured: allowed
-    monkeypatch.delenv('ZHIPU_API_KEY')
-    with pytest.raises(ledger.Conflict, match='^agent_unavailable: not_configured$'):
+    connection_is(monkeypatch, 'disconnected')
+    with pytest.raises(ledger.Conflict, match='^agent_unavailable: not_connected$'):
         retro_cards.redraft_check(card['id'])
-    monkeypatch.setenv('ZHIPU_API_KEY', 'sk-test')
+    connection_is(monkeypatch)
     monkeypatch.setenv('WORKBENCH_AGENT_DAILY_TOKENS', '100')
     repository.insert_agent_run(db, {
         'id': uuid.uuid4(), 'ticker': 'AAA', 'signal_date': SESSION, 'pool': 'main', 'attempt': 1, 'mode': 'propose',

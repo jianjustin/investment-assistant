@@ -29,7 +29,7 @@ v2.8（迁移 028）把原来的 `workbench`（06:30）、`workbench_review`（0
 - 「工具 → 任务中心」的「立即运行」（`daily`）与 `sec_backfill` 的「按日期运行」（`{"date"}` 或 `{"from","to"}`，上限 92 天；未来日期、倒序、超限或缺日期返回 400）。
 - API：`POST /api/jobs/{name}/run`，返回 `run_id`，用 `GET /api/runs/{run_id}` 轮询。
 - 每日工作流手动运行**不推送**（`push` 记 `skipped: manual_run`，`retro` 的周 / 月复盘只生成不推送）；手动运行总是针对最近一个已收盘的交易日（纽约 17:00 后算当天收盘）。
-- 手动运行（`POST /api/workbench/run` 或任务中心的「立即运行」）有两个 id：API 返回的 `run_id`（runner 的后台任务 id，页面轮询 `GET /api/runs/{run_id}`）与 `daily_run_id`（`daily-<UTC 时间戳>-<8 位 hex>`，路由先生成再传给 `tasks/daily.run`，它是检查点线程号、`job_reports.run_id`、`stage_runs.run_id` 和运行详情页的 id）。数据库记录一律用 `daily_run_id`。另一次执行正在进行（持有 `daily:run` 锁）时，手动运行返回 409 `daily_running`。
+- 手动运行（`POST /api/workbench/run` 或任务中心的「立即运行」）有两个 id：API 返回的 `run_id`（runner 的后台任务 id，页面轮询 `GET /api/runs/{run_id}`）与 `daily_run_id`（`daily-<UTC 时间戳>-<8 位 hex>`，路由先生成再传给 `tasks/daily.run`，它是检查点线程号、`job_reports.run_id`、`stage_runs.run_id` 和运行详情页的 id）。数据库记录一律用 `daily_run_id`。另一次执行正在进行（持有 `daily:run` 锁）时，手动运行（`daily` 与 `sec_backfill`，经 `services/jobs.trigger_job`）抛 `daily.DailyBusy`，接口返回 409 `daily_running`；探测只看锁（`pg_locks`）、不取锁，不会让 11:30 的定时执行撞上。`POST /api/jobs/daily/run` 同样返回 `daily_run_id`。
 - 命令行：`python -m investment_assistant.tasks.daily run [--manual]`、`resume --run-id … --node …`、`show --run-id …`（节点表，不打印原始摘要）；`python -m investment_assistant.tasks.filings --date …` 或 `--from … --to …` 是 SEC 回补。
 
 ## 任务外壳与运行报告
@@ -41,6 +41,7 @@ v2.8（迁移 028）把原来的 `workbench`（06:30）、`workbench_review`（0
 - **每次执行一行**：首次运行一行（`trigger_source` 为 `scheduled` / `manual`），每次续跑再追加一行（`trigger_source = resume`），同一个 `run_id`；`target_start_date = target_end_date =` 该次运行的 session。
 - **状态映射**：由节点的有效行推出（见下节）：失败 → `error`，降级 → `degraded`，否则 `success`；`summary` 增加 `graph_version`、`run_status`、`failed_node`、`resumed`、`stage_status`，续跑行另有 `resume_node`。
 - **锁**：每次执行（定时、手动、续跑、`sec_backfill`）在专用连接上取会话级 advisory lock `hashtext('daily:run')`，`finally` 释放；拿不到时手动与续跑返回 `daily_running`，定时运行记一行 `error`、`summary.error = daily_running`（下一个 tick 不补跑）。`daily:run` 永远最先取（再取族锁与 SEC 监控文件锁），不死锁。
+- **其它异常**：执行中出现节点之外的异常（检查点写入时数据库断开等）时，`daily.run` / `resume` 仍写一行 `job_reports`（`error`，`summary.error = aborted: <脱敏原因>`），尽量把本次执行没写行的节点补成 `failed`（第一个）与 `skipped / upstream_failed`，并发一次失败通知。
 - **拒绝运行**：迁移 028 未执行 → 记一行 `error`、`summary.error = migration_028_missing`；检查点表缺失 → `checkpoint_unavailable`；两者都发一次失败通知。
 - **失败通知**：运行状态为失败时经 `notifier.send_notifications('workbench', templates.daily_failed(…))` 发一条「⚠️ 每日工作流失败 · <session>」（失败节点、脱敏原因、未执行的节点数、续跑截止的北京时间，配置了 `workbench.public_url` 时附 `<public_url>/#tools/runs/<run_id>`），**每次执行至多一条**；降级不发。通知失败只记在 `summary.failure_notice`，不改变运行结果。推送类别键 `workbench`、`workbench_review`、`filings` 保留（D15）：`workbench` 是每日计划 + 失败通知，`workbench_review` 是周 / 月复盘，`filings` 是 SEC 披露。
 
@@ -69,7 +70,7 @@ v2.8（迁移 028）把原来的 `workbench`（06:30）、`workbench_review`（0
 ### 检查点、续跑与重跑 Agent
 
 - **检查点**：`PostgresSaver`（与 Agent 子图共用 `checkpoints` / `checkpoint_writes` / `checkpoint_blobs` 三张表），`thread_id = run_id`，`graph.invoke(…, durability='sync')`，每个节点结束同步落检查点；不清理。表缺失时 `daily` 拒绝运行（`checkpoint_unavailable`）。
-- **续跑**：`workflow.resume_check`（不写任何行）通过后 `tasks.daily.resume` 取锁、从检查点接着跑，续跑的 `attempt = 该运行已有的最大 attempt + 1`。拒绝条件：没有这次运行（404）、运行没有失败的节点（`not_failed`）、节点不是失败的那个（`node_mismatch`）、现在已过下一个交易日的纽约 17:00（`resume_window_closed`）、另一次执行正在进行（`daily_running`），迁移 028 未执行 → 503。续跑沿用原运行的 `session`、`cutoff_at`、`trigger`：采集类节点丢掉来源时间晚于截止时间的资讯和申报（数量记 `detail.after_cutoff_dropped`），日线只写到 session，财报日取当时的值（已知限制）。
+- **续跑**：`workflow.resume_check`（不写任何行）通过后 `tasks.daily.resume` 取锁、从检查点接着跑，续跑的 `attempt = 该运行已有的最大 attempt + 1`。拒绝条件：没有这次运行（404）、运行没有失败的节点（`not_failed`；检查点停在一个**没有任何行**的节点——进程在节点中途被杀——也按此拒绝，这样的运行只能整次重新运行，已知限制）、节点不是失败的那个（`node_mismatch`）、现在已过下一个交易日的纽约 17:00（`resume_window_closed`）、另一次执行正在进行（`daily_running`），迁移 028 未执行 → 503。续跑沿用原运行的 `session`、`cutoff_at`、`trigger`：采集类节点丢掉来源时间晚于截止时间的资讯和申报（数量记 `detail.after_cutoff_dropped`），日线只写到 session，财报日取当时的值（已知限制）。
 - **Agent 预算窗口**：`agent` 与 `review` 共用一个窗口，从 `agent` 节点开始起 1500 秒（状态里存墙钟 `agent_started_at`，节点内换算成单调时钟）；`retro` 的复盘卡起草有自己的 1500 秒；续跑时从续跑的那个节点重新起算。`BATCH_BUDGET_S` 与 `batch_over_budget` 已删除。
 - **重跑 Agent（`max_attempts`）**：单元的 Agent 尝试闸只数最近一次**重置**之后的运行；重置是追加一行 `agent_attempt_resets`（`request_id` 幂等），不删旧运行，`attempt` 字段仍按全部历史运行数递增。入口是运行详情页与计划页（`service.rerun_agent`）。
 - **一次性故障注入（只用于 Task 7 的续跑演练）**：环境变量 `INVESTMENT_ASSISTANT_FAULT_ONCE=<节点 id>` 存在、且本 `run_id` 的该节点还没有任何行时，`workflow.node` 对该节点的两次尝试都抛 `RuntimeError('fault injection')`（续跑时不再注入）。演练用完立即从 `.env` 删掉这个变量并重启，不要让它留在服务环境里。

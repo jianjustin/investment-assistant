@@ -792,7 +792,7 @@ class _QuotaError(Exception):
 
     def __init__(self):
         super().__init__('Error code: 429 - quota')
-        self.body = {'error': {'code': '1308', 'message': '已达到 5 小时的使用上限'}}
+        self.body = {'error': {'code': 'subscription_sharing_usage_limit_exceeded', 'message': '已达到 5 小时的使用上限'}}
 
 
 class QuotaModel(BaseChatModel):
@@ -819,7 +819,7 @@ def test_quota_exhausted_skips_rest(db, scripted_model):
 
 def test_not_configured_makes_no_model_call(db, scripted_model):
     d = agent_deps(scripted_model, [])                     # 若被调用即抛错
-    d.agent_settings = _agent_settings(api_key=None)
+    d.agent_settings = _agent_settings(connection='no_sharing')     # signed in, but the account shares no plan usage
     service.run_batch(tickers=['NVDA'], now=NOW, deps=d)
     run = repository.latest_agent_run(db, 'NVDA', SESSION)
     assert (run['status'], run['reason']) == ('skipped', 'not_configured')
@@ -973,7 +973,7 @@ def test_today_unit_has_agent_ok_view(db, scripted_model):
     assert set(unit['agent']) == {'id', 'status', 'model', 'agent_version', 'output', 'counter', 'plan',
                                   'input_tokens', 'output_tokens', 'created_at', 'chain', 'knowledge_refs'}
     assert unit['agent']['knowledge_refs'] == []                       # v2.7 §6.2: nothing cited by this plan
-    assert unit['agent']['status'] == 'ok' and unit['agent']['model'] == 'glm-5.3'
+    assert unit['agent']['status'] == 'ok' and unit['agent']['model'] == 'gpt-test'
     assert unit['agent']['plan']['kind'] == 'agent' and unit['agent']['agent_version'] == 'agent-2'
     assert unit['agent']['output']['levels']['entry_low']['value'] == '98.50'
     chain = unit['agent']['chain']

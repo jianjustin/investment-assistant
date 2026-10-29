@@ -38,10 +38,19 @@ def backdate(db, input_id, when):
     db.commit()
 
 
+def connection_is(monkeypatch, status='connected'):
+    """The agent connection as ``settings_from_env`` reads it (v2.8: the ChatGPT connection, not an API key)."""
+    from investment_assistant.workbench import agent_connection
+
+    info = {'status': status, 'scopes_ok': status == 'connected', 'model': 'gpt-test' if status == 'connected' else None,
+            'secret': 'test-access-token' if status == 'connected' else None}
+    monkeypatch.setattr(agent_connection, 'read_for_settings', lambda: info)
+
+
 @pytest.fixture
 def agent_env(monkeypatch):
-    monkeypatch.setenv('WORKBENCH_AGENT_PROVIDER', 'zhipu')
-    monkeypatch.setenv('ZHIPU_API_KEY', 'sk-test')
+    monkeypatch.setenv('WORKBENCH_AGENT_PROVIDER', 'chatgpt')
+    connection_is(monkeypatch)
     monkeypatch.delenv('WORKBENCH_AGENT_DAILY_TOKENS', raising=False)
 
 
@@ -200,8 +209,8 @@ def test_recheck_preconditions(db, monkeypatch):
     market = Market()
     heads = signal_day(db, market, ['SYNA', 'SYNTH'])[0]
     now = evening(day(1))
-    monkeypatch.setenv('WORKBENCH_AGENT_PROVIDER', 'zhipu')
-    monkeypatch.setenv('ZHIPU_API_KEY', 'sk-test')
+    monkeypatch.setenv('WORKBENCH_AGENT_PROVIDER', 'chatgpt')
+    connection_is(monkeypatch)
     monkeypatch.delenv('WORKBENCH_AGENT_DAILY_TOKENS', raising=False)
     plan_review.recheck_check('SYNTH', S1, now=now)                     # 通过：不抛
     with pytest.raises(LookupError):
@@ -221,15 +230,15 @@ def test_recheck_preconditions(db, monkeypatch):
     with pytest.raises(plan_review.RecheckConflict, match='chain_not_active'):
         plan_review.recheck('SYNA', S1, now=now, deps=deps_for(make_model()))
 
-    monkeypatch.delenv('ZHIPU_API_KEY')
+    connection_is(monkeypatch, 'disconnected')
     with pytest.raises(plan_review.RecheckConflict) as raised:
         plan_review.recheck_check('SYNTH', S1, now=now)
-    assert raised.value.reason == 'agent_unavailable: not_configured'
+    assert raised.value.reason == 'agent_unavailable: not_connected'
     monkeypatch.setenv('WORKBENCH_AGENT_PROVIDER', 'off')
     with pytest.raises(plan_review.RecheckConflict, match='agent_unavailable: disabled'):
         plan_review.recheck_check('SYNTH', S1, now=now)
-    with pytest.raises(plan_review.RecheckConflict, match='agent_unavailable: not_configured'):
-        plan_review.recheck('SYNTH', S1, now=now, deps=deps_for(make_model(), agent=settings(api_key=None)))
+    with pytest.raises(plan_review.RecheckConflict, match='agent_unavailable: not_connected'):
+        plan_review.recheck('SYNTH', S1, now=now, deps=deps_for(make_model(), agent=settings(connection='disconnected')))
 
     monkeypatch.setattr(repository, 'timeline_ready', lambda conn: False)
     with pytest.raises(service.Unavailable, match='迁移 026 未执行'):

@@ -229,6 +229,7 @@ def test_retro_after_push_failure_does_not_block_push(daily_db, clock, notices, 
     assert eff['push']['status'] in ('success', 'partial', 'degraded')              # the plan was pushed first
     assert any('工作台' in title for title in notices.titles('workbench'))
     assert eff['retro']['status'] == 'failed' and result['status'] == 'failed'
+    assert eff['retro']['detail']['weekly']['action'] in ('generated', 'reused', 'already_sent')   # the review part is on the row
 
 
 def test_manual_run_no_push(daily_db, clock, notices):
@@ -519,3 +520,25 @@ def test_signals_plan_same_transaction(plain_db, monkeypatch):
     assert 'MU rules: plan exploded' in summary['errors']
     assert plain_db.execute("SELECT count(*) FROM signal_candidates WHERE ticker = 'MU'").fetchone()[0] == 0
     assert plain_db.execute("SELECT count(*) FROM signal_candidates WHERE ticker = 'NVDA'").fetchone()[0] > 0
+
+
+def test_run_batch_shell_non_explicit_literals(plain_db):
+    """The non-explicit v2.7 batch (range + screen + a new member), key by key against what v2.7 produced: the order of
+    the tickers, the pool and source blocks, the SEC listing keys and the earnings statuses."""
+    seed_watchlist(plain_db, [('NVDA', ['core'])])
+    summary = service.run_batch(now=NOW, deps=_universe_deps(_member_sources(), ['MU']))
+    assert list(summary['tickers']) == ['NVDA', 'MU']                  # pool order: core, then the screen member
+    assert summary['pool'] == {'core': 1, 'extended': 1, 'holdings': 0, 'screen': 1, 'chains': 0,
+                               'changes': summary['pool']['changes']}
+    assert [c['ticker'] for c in summary['pool']['changes']] == ['NVDA', 'MU']
+    assert summary['screen']['status'] == 'success' and summary['screen']['members'] == ['MU']
+    assert summary['tickers']['MU']['bars'] == 'collected_in_screen' and summary['tickers']['NVDA']['bars']['inserted'] > 0
+    assert summary['tickers']['MU']['error'] is None and summary['tickers']['NVDA']['error'] is None
+    assert summary['tickers']['MU']['news']['inserted'] == 1
+    # MU's date was stored by the range step and fetched once more for the member, as v2.7's per-ticker loop did
+    assert summary['earnings'] == {'NVDA': 'inserted', 'MU': 'unchanged'}
+    assert set(summary['filings']) == {'inserted', 'existing', 'acceptance_filled', 'by_ticker', 'errors'}
+    assert summary['sources'] == {'bars': [], 'news': [], 'earnings': [], 'sec': [], 'etf_bars': [], 'fred': [],
+                                  'regime': [], 'agent': []}
+    assert summary['errors'] == [] and 'data_status' not in summary
+    assert set(summary['timings']) == {'collect', 'regime', 'rules', 'agent', 'total'}

@@ -73,6 +73,7 @@ class NodeContext:
     job: str = 'workbench'
     window_start: float | None = None
     breadth_tickers: list[str] | None = None
+    execution_started: datetime | None = None   # wall time this execution began (a resume restarts the agent window)
     legacy: bool = False               # the v2.7 ``run_batch`` shell: no agent wall stamp, no screen back-fill rows
     config: Any = None                 # the AssistantConfig (``sec_monitor`` reads it); load_config() when None
 
@@ -318,7 +319,23 @@ def _make_context(state: dict, deps: service.Deps, *, attempt: int, resumed: boo
         clock=clock, version=stages_module.STAGES_VERSION, attempt=attempt, job='daily')
     return NodeContext(recorder=recorder, deps=deps, clock=clock, wall_now=_wall, notify_cfg=_notify_cfg(notify_cfg),
                        resumed=resumed, sleep=sleep, record_trigger=state['trigger'], job='daily',
-                       config=config)
+                       config=config, execution_started=_wall())
+
+
+def _book_abort(ctx: NodeContext, resume_node: str | None, exc: BaseException) -> NodeFailed:
+    """An exception outside any node (checkpoint write, state read, the graph itself): book what this execution
+    leaves undone so the run still has its ten effective rows — the first node without a row of this execution as
+    ``failed / aborted``, the ones after it as ``skipped / upstream_failed`` (writes may themselves fail; the
+    recorder swallows that)."""
+    reason = f'aborted: {families.sanitize_reason(exc) or type(exc).__name__}'
+    start = NODES.index(resume_node) if resume_node in NODES else 0
+    pending = [node_id for node_id in NODES[start:] if not ctx.recorder.has_row(node_id)]
+    if not pending:
+        return NodeFailed(NODES[-1], reason)
+    ctx.recorder.finish(pending[0], failed=reason)
+    for node_id in pending[1:]:
+        ctx.recorder.skip(node_id, 'upstream_failed')
+    return NodeFailed(pending[0], reason)
 
 
 def _execute(state: dict, graph_input: dict | None, *, deps: service.Deps, attempt: int, resumed: bool, sleep,
@@ -327,23 +344,22 @@ def _execute(state: dict, graph_input: dict | None, *, deps: service.Deps, attem
     seen: list[dict] = []
     ctx = _make_context(state, deps, attempt=attempt, resumed=resumed, sleep=sleep, notify_cfg=notify_cfg, seen=seen,
                         config=config)
-    config = {'configurable': {'thread_id': run_id}}
+    graph_config = {'configurable': {'thread_id': run_id}}
     failure: NodeFailed | None = None
+    final: dict = state
     started_at = _wall()
     try:
         with (checkpointer_factory or _default_checkpointer)() as saver:
             graph = build_graph(checkpointer=saver, ctx_factory=lambda: ctx)
             try:
-                final = graph.invoke(graph_input, config, durability='sync')
+                final = graph.invoke(graph_input, graph_config, durability='sync')
             except NodeFailed as exc:
                 failure = exc
-                final = graph.get_state(config).values
-    except NodeFailed:
-        raise
+                final = graph.get_state(graph_config).values
     except Exception as exc:
         if service._checkpoint_missing(exc):
             raise CheckpointUnavailable('checkpoint_unavailable') from exc
-        raise
+        failure = _book_abort(ctx, resume_node, exc)
     if failure is not None:
         after = NODES.index(failure.node) + 1
         for stage_id in NODES[after:]:
@@ -357,19 +373,26 @@ def _execute(state: dict, graph_input: dict | None, *, deps: service.Deps, attem
     status = run_status(rows)
     if failure is not None:
         status = 'failed'
-    summary.update(graph_version=DAILY_GRAPH_VERSION, run_status=status, failed_node=failure.node if failure else None,
-                   resumed=attempt - 1, stage_status={'written': ctx.recorder.written, 'error': ctx.recorder.error})
+    # The failed node: the one that stopped the chain, else the first node a stage booked as ``failed`` (a whole-stage
+    # failure such as ``review`` / ``retro`` carries on without stopping the chain, D13).
+    effective = effective_rows(rows)
+    node = failure.node if failure is not None else next(
+        (n for n in NODES if effective.get(n, {}).get('status') == 'failed'), None)
+    info = None
+    if node is not None:
+        row = effective.get(node) or {}
+        info = {'node': node, 'reason': failure.reason if failure is not None else row.get('reason'),
+                'retried': bool((row.get('detail') or {}).get('retry')), 'at': _wall().isoformat(),
+                'skipped': sum(1 for r in effective.values() if r.get('reason') == 'upstream_failed')}
+    summary.update(graph_version=DAILY_GRAPH_VERSION, run_status=status, failed_node=node, resumed=attempt - 1,
+                   stage_status={'written': ctx.recorder.written, 'error': ctx.recorder.error})
     if resume_node is not None:
         summary['resume_node'] = resume_node
-    if failure is not None:
-        summary['error'] = f'{failure.node}: {failure.reason}'
+    if info is not None:
+        summary['error'] = f"{info['node']}: {info['reason']}"
     return {'run_id': run_id, 'status': status, 'summary': summary, 'attempt': attempt,
             'trigger': state['trigger'], 'session': state['session'], 'started_at': started_at,
-            'failed_node': failure.node if failure else None,
-            'failure': ({'node': failure.node, 'reason': failure.reason, 'at': _wall().isoformat(),
-                         'retried': failure.node in BODIES and any(
-                             r['stage'] == failure.node and (r.get('detail') or {}).get('retry') for r in seen)}
-                        if failure else None)}
+            'failed_node': node, 'failure': info}
 
 
 def run(*, run_id: str, trigger: str, now: datetime, deps: service.Deps | None = None, explicit_pool=None,
@@ -390,9 +413,9 @@ def _checked(run_id: str, node_id: str, *, now: datetime, checkpointer_factory) 
             raise service.Unavailable('migration_028_missing')
         rows = repository.stage_rows_for_run(conn, run_id)
         attempt = repository.max_stage_attempt(conn, run_id) + 1
-    config = {'configurable': {'thread_id': run_id}}
+    graph_config = {'configurable': {'thread_id': run_id}}
     with (checkpointer_factory or _default_checkpointer)() as saver:
-        snapshot = build_graph(checkpointer=saver, ctx_factory=lambda: None).get_state(config)
+        snapshot = build_graph(checkpointer=saver, ctx_factory=lambda: None).get_state(graph_config)
     values = dict(snapshot.values or {})
     if not rows or not values:
         raise LookupError(f'没有这次运行：{run_id}')
@@ -402,6 +425,12 @@ def _checked(run_id: str, node_id: str, *, now: datetime, checkpointer_factory) 
     if node_id != pending[0]:
         title = next(stage.title for stage in stages_module.STAGES if stage.id == pending[0])
         raise ResumeRejected('node_mismatch', f'只能从失败的节点 {title}（{pending[0]}）继续')
+    # A node the process died in (killed mid-node, no row) is not a failure to resume from: its next row would leave a
+    # gap in the attempts. Such a run is rerun in full (known limitation).
+    last = effective_rows(rows).get(pending[0])
+    if last is None or not (last['status'] == 'failed' or (last['status'] == 'skipped'
+                                                          and last.get('reason') == 'upstream_failed')):
+        raise ResumeRejected('not_failed', '这次运行没有失败的节点')
     session = date.fromisoformat(values['session'])
     deadline = resume_deadline(session)
     if now >= deadline:
@@ -425,9 +454,9 @@ def resume(run_id: str, node: str, *, now: datetime, deps: service.Deps | None =
     (the completed nodes do not run again). The new rows carry ``attempt = max + 1``; ``cutoff_at`` and ``session``
     stay the original run's. The caller holds the ``daily:run`` lock."""
     info, attempt = _checked(run_id, node, now=now, checkpointer_factory=checkpointer_factory)
-    config = {'configurable': {'thread_id': run_id}}
+    graph_config = {'configurable': {'thread_id': run_id}}
     with (checkpointer_factory or _default_checkpointer)() as saver:
-        values = dict(build_graph(checkpointer=saver, ctx_factory=lambda: None).get_state(config).values)
+        values = dict(build_graph(checkpointer=saver, ctx_factory=lambda: None).get_state(graph_config).values)
     return _execute(values, None, deps=deps or service.Deps(), attempt=attempt, resumed=True, sleep=sleep,
                     notify_cfg=notify_cfg, checkpointer_factory=checkpointer_factory, resume_node=info['node'],
                     config=config)

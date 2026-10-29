@@ -111,3 +111,88 @@ def test_sec_backfill_job_report_task(daily_db, clock, notices, job_reports, fak
     with daily.exclusive():                                                                  # and under the daily lock
         with pytest.raises(daily.DailyBusy):
             filings.backfill(daily_config(), start_date=date(2026, 10, 1))
+
+
+from langgraph.checkpoint.memory import InMemorySaver
+
+
+class _BrokenSaver(InMemorySaver):
+    """An in-memory saver whose Nth checkpoint write fails like a dropped database connection."""
+
+    def __init__(self, fail_on):
+        super().__init__()
+        self.fail_on, self.puts = fail_on, 0
+
+    def put(self, *args, **kwargs):
+        import psycopg
+
+        self.puts += 1
+        if self.puts == self.fail_on:
+            raise psycopg.OperationalError('server closed the connection unexpectedly')
+        return super().put(*args, **kwargs)
+
+
+def test_other_exceptions_still_get_a_report_rows_and_one_notice(daily_db, clock, notices, job_reports):
+    from contextlib import nullcontext
+
+    seed_watchlist(daily_db, [('NVDA', ['core'])])
+    saver = _BrokenSaver(fail_on=4)                                   # after a few nodes the connection drops
+    out = run_daily(clock, lambda: nullcontext(saver))
+    assert out['status'] == 'error' and 'aborted' in out['summary']['error'] and 'closed the connection' in out['summary']['error']
+    assert [r['status'] for r in job_reports.rows()] == ['error']                       # the execution has its row
+    eff = workflow.effective_rows(rows(daily_db))
+    assert list(eff) == list(workflow.NODES)                                              # still ten effective rows
+    assert [n for n in workflow.NODES if eff[n]['status'] == 'failed'] and eff['retro']['reason'] == 'upstream_failed'
+    assert len([t for t in notices.titles('workbench') if '每日工作流失败' in t]) == 1
+
+
+def test_a_failure_before_the_graph_starts_is_reported_too(daily_db, clock, notices, job_reports, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError('config unreadable')
+
+    monkeypatch.setattr(workflow, '_make_context', boom)
+    out = run_daily(clock)
+    assert out['status'] == 'error' and out['summary']['error'] == 'aborted: config unreadable'
+    assert [r['status'] for r in job_reports.rows()] == ['error']
+    assert len(notices.titles('workbench')) == 1 and daily_db.execute('SELECT count(*) FROM stage_runs').fetchone()[0] == 0
+
+
+def test_resume_aborting_outside_a_node_is_reported(daily_db, clock, notices, job_reports, monkeypatch):
+    from contextlib import nullcontext
+
+    seed_watchlist(daily_db, [('NVDA', ['core'])])
+    flaky('regime', monkeypatch, fail_times=2)
+    saver = _BrokenSaver(fail_on=10 ** 9)
+    run_daily(clock, lambda: nullcontext(saver))
+    saver.fail_on = saver.puts + 2
+    out = daily.resume(RUN_ID, 'regime', now=NOW, deps=world(clk=clock), config=daily_config(),
+                       checkpointer_factory=lambda: nullcontext(saver), sleep=clock.sleep, notify_cfg=NotifyCfg())
+    assert out['status'] == 'error' and 'aborted' in out['summary']['error']
+    assert [r['trigger_source'] for r in job_reports.rows()] == ['manual', 'resume']
+    assert len([t for t in notices.titles('workbench') if '每日工作流失败' in t]) == 2     # one per failed execution
+
+
+def test_failure_notice_names_the_booked_failed_stage(daily_db, clock, notices, job_reports, monkeypatch):
+    """M1: a stage that books ``failed`` without stopping the chain (retro cards) still names itself in the notice."""
+    from investment_assistant.workbench import retro_cards
+
+    def boom(*args, **kwargs):
+        raise RuntimeError('retro exploded')
+
+    monkeypatch.setattr(retro_cards, 'run_stage', boom)
+    seed_watchlist(daily_db, [('NVDA', ['core'])])
+    out = run_daily(clock, trigger_source='scheduled')
+    assert out['status'] == 'error' and out['summary']['failed_node'] == 'retro'
+    [notice] = [n for t, items in notices.calls if t == 'workbench' for n in items if '每日工作流失败' in n.title]
+    fields = {f.name: f.value for f in notice.fields}
+    assert fields['失败节点'] == '复盘' and 'retro exploded' in fields['原因'] and fields['未执行'] == '其后 0 个节点'
+
+
+def test_is_running_only_looks_at_the_lock(daily_db):
+    assert daily.is_running() is False
+    with daily.exclusive():
+        assert daily.is_running() is True
+        assert daily.is_running() is True                         # probing never takes or releases it
+    assert daily.is_running() is False
+    with daily.exclusive():                                       # and a probe leaves nothing behind
+        pass

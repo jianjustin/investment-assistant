@@ -362,7 +362,10 @@ def agent_window(state: dict[str, Any], ctx) -> tuple[float, Callable[[], float]
     opened = state.get('agent_started_at')
     if not opened:
         return clock(), clock
-    elapsed = (ctx.wall_now() - datetime.fromisoformat(opened)).total_seconds()
+    opened_at = datetime.fromisoformat(opened)
+    if ctx.resumed and ctx.execution_started is not None:
+        opened_at = max(opened_at, ctx.execution_started)     # D24: a resume counts from the resumed execution
+    elapsed = (_wall(ctx)() - opened_at).total_seconds()
     return clock() - max(0.0, elapsed), clock
 
 
@@ -1076,6 +1079,7 @@ def stage_retro(state: dict[str, Any], ctx, acc: stages_module.StageAcc | None, 
         summary['errors'].append('growth: migration_027_missing')
         _stage_skip(ctx, 'retro', 'migration_027_missing')
         return {'summary': summary}
+    card_failure: str | None = None
     if cards:
         try:
             retro_cards.run_stage(session, now=now, deps=ctx.deps, summary=summary, started=window,
@@ -1085,8 +1089,10 @@ def stage_retro(state: dict[str, Any], ctx, acc: stages_module.StageAcc | None, 
         except Exception as exc:
             reason = families.sanitize_reason(exc)
             summary['errors'].append(f'retro: {reason}')
-            _stage_finish(ctx, 'retro', failed=reason or type(exc).__name__)
+            card_failure = reason or type(exc).__name__
     if not ticks:
+        if card_failure is not None:
+            _stage_finish(ctx, 'retro', failed=card_failure)
         return {'summary': summary}
     acted = False
     manual = state.get('trigger') == 'manual_batch'
@@ -1111,7 +1117,9 @@ def stage_retro(state: dict[str, Any], ctx, acc: stages_module.StageAcc | None, 
         acc.detail['cards'] = cards
         acc.detail['weekly'] = summary['review_tick']['weekly']
         acc.detail['monthly'] = summary['review_tick']['monthly']
-    if not cards and not acted and not out['errors']:
+    if card_failure is not None:        # the row is written once, after the weekly / monthly part has set its detail
+        _stage_finish(ctx, 'retro', failed=card_failure)
+    elif not cards and not acted and not out['errors']:
         _stage_skip(ctx, 'retro', 'not_due')
     return {'summary': summary}
 

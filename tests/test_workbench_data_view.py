@@ -54,9 +54,11 @@ def _run(db, **overrides):
 
 
 def test_overview_has_six_cards_and_evidence(db):
-    _bar(db)   # scheduled_jobs 里 workbench/filings 两行来自迁移 016/007
+    from _daily_db import apply_028
+
+    _bar(db)
     _run(db, run_id='r-ov', finished_at=NOW + timedelta(hours=1))
-    db.commit()
+    apply_028(db)   # v2.8: the workbench / filings rows are replaced by one ``daily`` row; every family card shows it
 
     out = data_view.overview(now=NOW)
     cards = {card['id']: card for card in out['families']}
@@ -69,7 +71,9 @@ def test_overview_has_six_cards_and_evidence(db):
     assert set(bars_card) == CARD_KEYS
     assert bars_card['coverage']['targets'] == len(families.targets(db, 'bars')[0])
     assert bars_card['coverage']['covered'] == 1 and 'NVDA' not in bars_card['coverage']['lagging']
-    assert bars_card['job'] == {'name': 'workbench', 'enabled': True, 'next_run_at': None}
+    assert set(bars_card['job']) == {'name', 'enabled', 'next_run_at'}
+    assert bars_card['job']['name'] == 'daily' and bars_card['job']['enabled'] is True
+    assert bars_card['job']['next_run_at'] is not None
     assert bars_card['last_run'] == {'status': 'success', 'trigger': 'manual_family', 'scope': 'family',
                                      'ticker': None, 'job': 'workbench', 'reason': None,
                                      'finished_at': NOW + timedelta(hours=1),
@@ -78,7 +82,8 @@ def test_overview_has_six_cards_and_evidence(db):
     assert bars_card['fetch_runs_ready'] is True and bars_card['current_error'] is None
     assert bars_card['coverage_note'] == families.COVERAGE_NOTES['bars']
 
-    assert cards['sec_filings']['job']['name'] == 'filings'
+    assert {card['job']['name'] for card in cards.values()} == {'daily'}
+    assert {family.job for family in families.FAMILIES} == {'daily'}
     assert 'no_filing_is_not_missing' in cards['sec_filings']['notes']
     assert 'pool_empty' in cards['news']['notes']
 
@@ -189,6 +194,17 @@ def test_detail_rows_and_last_failure(db):
     atr = data_view.family_detail('atr', now=NOW)          # ATR 详情取 bars 的记录
     assert atr['card']['id'] == 'atr' and [run['family'] for run in atr['runs']] == ['bars']
     assert data_view.family_detail('universe', now=NOW)['rows'] == []
+
+
+@pytest.mark.parametrize('job, spreads', [('workbench', True), ('daily', True), ('sec_backfill', False), ('filings', False)])
+def test_family_wildcard_failure_spreads_only_for_the_batch_jobs(db, job, spreads):
+    """A family-scoped '*' without ``failed_targets`` covers the current targets for the batch jobs (the v2.7
+    ``workbench`` and the v2.8 ``daily``), never another job's list (the SEC backfill, the old filings task)."""
+    _bar(db)
+    _run(db, job=job, status='failed', ok_count=0, failures=[{'target': '*', 'reason': 'whole family down'}])
+    db.commit()
+    detail = data_view.family_detail('bars', now=NOW)
+    assert any(row['last_failure'] == 'whole family down' for row in detail['rows']) is spreads
 
 
 def test_ticker_scoped_wildcard_failure_stays_on_its_ticker(db):

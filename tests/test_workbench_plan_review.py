@@ -147,7 +147,7 @@ class QuotaError(Exception):
 
     def __init__(self):
         super().__init__('Error code: 429 - quota')
-        self.body = {'error': {'code': '1308', 'message': '已达到 5 小时的使用上限'}}
+        self.body = {'error': {'code': 'subscription_sharing_usage_limit_exceeded', 'message': '已达到 5 小时的使用上限'}}
 
 
 class LateClock:
@@ -613,7 +613,7 @@ def test_budget_skips(db, monkeypatch, gate):
         kwargs['agent'] = settings(daily_tokens=1000)
         monkeypatch.setattr(repository, 'agent_tokens_on', lambda conn, ny_date: 10 ** 6)
     else:
-        kwargs['agent'] = settings(api_key=None)
+        kwargs['agent'] = settings(connection='no_sharing')      # signed in, but no plan usage shared: not_configured
     summary, rows, model = run(db, market, 1, tickers=['SYNQ', 'SYNTH'], **kwargs)
     assert model.calls.get('review', 0) == 0
     [quiet] = reviews(db, 'SYNQ')

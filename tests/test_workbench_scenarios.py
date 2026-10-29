@@ -404,7 +404,7 @@ def test_agent_track_end_to_end(offline, scripted_model):
                            'invalidation': [{'kind': 'close_below', 'params': {'price': 112},
                                              'text': '收盘跌破 112', 'refs': [ref]}]}, ensure_ascii=False)
 
-    settings = agent_model_module.AgentSettings(provider='zhipu', model='glm-5.3', base_url='https://x/v4',
+    settings = agent_model_module.AgentSettings(provider='chatgpt', model='gpt-test',
                                                 api_key='sk-test', daily_tokens=None, config_error=None)
 
     def agent_deps(responses):
@@ -528,8 +528,8 @@ def test_signal_day_creates_agent2_version_zero(offline, scripted_model, monkeyp
     d = p1_deps()
     d.agent_model = scripted_model(unit_replies('SYNC') + unit_replies('SYNTH'))
     d.agent_checkpointer = lambda: nullcontext(InMemorySaver())
-    d.agent_settings = agent_model_module.AgentSettings(provider='zhipu', model='glm-5.3', base_url='https://x/v4',
-                                                        api_key='sk-test', daily_tokens=None, config_error=None)
+    d.agent_settings = agent_model_module.AgentSettings(provider='chatgpt', model='gpt-test',
+                                                api_key='sk-test', daily_tokens=None, config_error=None)
     batch = service.run_batch(now=evening(S1), deps=d)
     assert batch['agent']['runs'] == {'SYNC': 'error: model_error', 'SYNTH': 'ok'}
 
@@ -648,8 +648,8 @@ def test_review_expansion_end_to_end(offline, scripted_model):
                AIMessage(content=_json.dumps({'counter': [], 'risks': []})),
                tool_msg('get_trigger', {}), AIMessage(content=posn_json)]
     sources = Sources()
-    settings = agent_model.AgentSettings(provider='zhipu', model='glm-5.3', base_url='https://agent.test/v4',
-                                         api_key='sk-test', daily_tokens=None, config_error=None)
+    settings = agent_model.AgentSettings(provider='chatgpt', model='gpt-test',
+                                                api_key='sk-test', daily_tokens=None, config_error=None)
     deps = service.Deps(bar_fetcher=sources.bars, news_fetcher=sources.news, filing_source=sources,
                         earnings_fetcher=sources.earnings, agent_model=scripted_model(replies),
                         agent_checkpointer=lambda: nullcontext(InMemorySaver()), agent_settings=settings,

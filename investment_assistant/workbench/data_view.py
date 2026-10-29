@@ -365,7 +365,7 @@ def _last_failures(runs: list[dict[str, Any]], targets: list[str]) -> dict[str, 
             elif target == '*':
                 scoped = (row.get('detail') or {}).get('failed_targets')
                 if scoped is None:
-                    scoped = targets if row.get('job') == 'workbench' else []
+                    scoped = targets if row.get('job') in ('workbench', 'daily') else []
                 for name in scoped:
                     if name in target_set:
                         failure.setdefault(name, reason)

@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from investment_assistant.config import AssistantConfig, load_config
 from investment_assistant.tasks import _harness
-from investment_assistant.workbench import repository, service, workflow
+from investment_assistant.workbench import families, repository, service, workflow
 from investment_assistant.workbench import stages as stages_module
 
 logger = logging.getLogger(__name__)
@@ -79,12 +79,21 @@ def exclusive():
 
 
 def is_running() -> bool:
-    """True while some execution holds the lock (the resume / run pre-checks of the API)."""
+    """True while some execution holds the lock (the pre-check of the run / resume entries). It only *looks* at the
+    lock — taking it to probe could make the 11:30 scheduled tick find it busy and skip the day."""
+    import psycopg
+
     try:
-        with exclusive():
-            return False
-    except DailyBusy:
-        return True
+        conn = _lock_connection()
+    except psycopg.OperationalError:
+        raise service.Unavailable('数据库不可达') from None
+    try:
+        # pg_try_advisory_lock(bigint) stores the key as classid (high 32 bits) / objid (low 32 bits), objsubid 1
+        return bool(conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 1 AND granted "
+            "AND ((classid::bigint << 32) | objid::bigint) = hashtext(%s)::bigint)", (LOCK_KEY,)).fetchone()[0])
+    finally:
+        conn.close()
 
 
 def _trigger(trigger_source: str) -> str:
@@ -92,16 +101,19 @@ def _trigger(trigger_source: str) -> str:
 
 
 def _failure_payload(config: AssistantConfig, result: dict[str, Any]) -> dict[str, Any]:
-    """The inputs of ``templates.daily_failed`` from an execution result."""
+    """The inputs of ``templates.daily_failed`` from an execution result: the node that stopped the chain, else the first
+    node a stage booked as ``failed`` (``result['failure']``); a run that never started a graph has neither."""
     summary = result.get('summary') or {}
-    failed = result.get('failed_node')
+    failure = result.get('failure')
     titles = {stage.id: stage.title for stage in stages_module.STAGES}
     session = result.get('session') or summary.get('session')
     payload: dict[str, Any] = {'session': session, 'run_id': result['run_id'],
-                               'public_url': config.workbench.public_url, 'reason': str(summary.get('error') or '')[:300]}
-    if failed is not None:
-        payload.update(node_title=titles.get(failed, failed), retried=bool((result.get('failure') or {}).get('retried')),
-                       skipped=len(workflow.NODES) - workflow.NODES.index(failed) - 1)
+                               'public_url': config.workbench.public_url,
+                               'reason': str((failure or {}).get('reason') or summary.get('error') or '')[:300]}
+    if failure is not None:
+        node = failure['node']
+        payload.update(node_title=titles.get(node, node), retried=bool(failure.get('retried')),
+                       skipped=int(failure.get('skipped') or 0))
         if session:
             deadline = workflow.resume_deadline(date.fromisoformat(session)).astimezone(SH)
             payload['deadline_text'] = deadline.strftime('%Y-%m-%d %H:%M') + '（北京时间）'
@@ -165,6 +177,10 @@ def _refused(run_id: str, reason: str, *, started_at: datetime, trigger_source: 
     return _report(result, started_at=started_at, trigger_source=trigger_source, config=config, notify_cfg=notify_cfg)
 
 
+def _abort_reason(exc: BaseException) -> str:
+    return f'aborted: {families.sanitize_reason(exc) or type(exc).__name__}'
+
+
 def _ready() -> bool:
     try:
         with service.read_only_tx() as conn:
@@ -196,6 +212,9 @@ def run(config: AssistantConfig | None = None, *, trigger_source: str = 'schedul
             except workflow.CheckpointUnavailable:
                 return _refused(rid, 'checkpoint_unavailable', started_at=started_at, trigger_source=trigger_source,
                                 config=effective, notify_cfg=notify_cfg)
+            except Exception as exc:    # noqa: BLE001 - whatever else: the execution still gets its row and notice
+                return _refused(rid, _abort_reason(exc), started_at=started_at, trigger_source=trigger_source,
+                                config=effective, notify_cfg=notify_cfg)
             return _report(result, started_at=started_at, trigger_source=trigger_source, config=effective,
                            notify_cfg=notify_cfg)
     except DailyBusy:
@@ -214,9 +233,18 @@ def resume(run_id: str, node: str, *, now: datetime | None = None, deps: service
     effective = config if config is not None else load_config()
     started_at = datetime.now(UTC)
     with exclusive():
-        result = workflow.resume(run_id, node, now=now or datetime.now(UTC), deps=deps,
-                                 checkpointer_factory=checkpointer_factory, sleep=sleep, notify_cfg=notify_cfg,
-                                 config=effective)
+        try:
+            result = workflow.resume(run_id, node, now=now or datetime.now(UTC), deps=deps,
+                                     checkpointer_factory=checkpointer_factory, sleep=sleep, notify_cfg=notify_cfg,
+                                     config=effective)
+        except (workflow.ResumeRejected, LookupError, ValueError, service.Unavailable):
+            raise                       # refused before anything ran: the caller maps these, nothing is written
+        except workflow.CheckpointUnavailable:
+            return _refused(run_id, 'checkpoint_unavailable', started_at=started_at, trigger_source='resume',
+                            config=effective, notify_cfg=notify_cfg)
+        except Exception as exc:    # noqa: BLE001
+            return _refused(run_id, _abort_reason(exc), started_at=started_at, trigger_source='resume',
+                            config=effective, notify_cfg=notify_cfg)
         return _report(result, started_at=started_at, trigger_source='resume', config=effective,
                        notify_cfg=notify_cfg)
 

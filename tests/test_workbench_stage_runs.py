@@ -329,11 +329,11 @@ def test_rerun_marks_existing_plans(db):
 
 
 def test_agent_unavailable_beats_empty(db, scripted_model):
-    d = agent_deps(scripted_model, [], settings=_agent_settings(api_key=None))
+    d = agent_deps(scripted_model, [], settings=_agent_settings(connection='disconnected'))
     d.bar_fetcher = ShortHistorySources().bars                         # 没有买入单元
     service.run_batch(tickers=['NEW'], now=NOW, deps=d, stages=_recorder('run-noagent'))
     row = _rows(db, 'run-noagent')['agent']
-    assert row['status'] == 'skipped' and row['reason'] == 'agent_unavailable: not_configured'
+    assert row['status'] == 'skipped' and row['reason'] == 'agent_unavailable: not_connected'
 
 
 def test_agent_stage_counts(db, scripted_model):
@@ -580,7 +580,7 @@ def test_agent_stage_checks_only_its_own_plans(db, scripted_model):
 
 
 def test_skipped_agent_stage_has_no_derivation(db, scripted_model):
-    d = agent_deps(scripted_model, [], settings=_agent_settings(api_key=None))
+    d = agent_deps(scripted_model, [], settings=_agent_settings(connection='disconnected'))
     service.run_batch(tickers=['NVDA'], now=NOW, deps=d, run_id='run-noagent2', stages=_recorder('run-noagent2'))
     row = _rows(db, 'run-noagent2')['agent']
     assert row['status'] == 'skipped' and 'derivation' not in row['detail']

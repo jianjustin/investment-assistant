@@ -50,37 +50,37 @@ FAMILIES: tuple[Family, ...] = (
         id='bars',
         title='日线',
         purpose='用于规则 v1 信号、`plan-1` 价位、`screen-1` 筛选、区制广度和「标的」页 K 线。',
-        kind='fetched', job='workbench', per_ticker=True,
+        kind='fetched', job='daily', per_ticker=True,
     ),
     Family(
         id='sec_filings',
         title='SEC 申报',
         purpose='用于 `earnings_gap_up` 的财报事件、「标的」页 SEC 列表和 SEC 监控通知。',
-        kind='fetched', job='filings', per_ticker=True,
+        kind='fetched', job='daily', per_ticker=True,
     ),
     Family(
         id='news',
         title='资讯',
         purpose='用于 Agent 工具读取的资讯标题和「标的」页资讯列表；规则不读。',
-        kind='fetched', job='workbench', per_ticker=True,
+        kind='fetched', job='daily', per_ticker=True,
     ),
     Family(
         id='atr',
         title='ATR',
         purpose='用于 `plan-1` 止损与仓位、`screen-1` 的 ATR 区间和移动止损。',
-        kind='derived', job='workbench', per_ticker=False, fetch_via='bars',
+        kind='derived', job='daily', per_ticker=False, fetch_via='bars',
     ),
     Family(
         id='fred',
         title='FRED 利差',
         purpose='用于区制的宏观部分：HY 利差 `BAMLH0A0HYM2`、2s10s `T10Y2Y`。',
-        kind='fetched', job='workbench', per_ticker=False,
+        kind='fetched', job='daily', per_ticker=False,
     ),
     Family(
         id='universe',
         title='纳指 100 范围',
         purpose='用于 `screen-1` 的筛选范围和区制广度样本。',
-        kind='manual', job='workbench', per_ticker=False,
+        kind='manual', job='daily', per_ticker=False,
     ),
 )
 

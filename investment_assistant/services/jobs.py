@@ -77,14 +77,28 @@ def _date_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def trigger_job(name: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run a registered job in the background. ``daily`` and ``sec_backfill`` share the ``daily:run`` lock: while it is
+    held ``daily.DailyBusy`` is raised (the route turns it into 409 ``daily_running``). A ``daily`` run gets its id up
+    front and returns it as ``daily_run_id`` (the id of ``job_reports`` / the detail page)."""
     if name not in REGISTRY:
         raise UnknownJobError(f"unknown job: {name}")
     config = load_config()
     kwargs = _date_kwargs(payload or {})
     if name == "sec_backfill" and not kwargs:
         raise ValueError("date or from/to is required for sec_backfill")
+    if name in ("daily", "sec_backfill"):
+        from investment_assistant.tasks import daily
+
+        try:
+            busy = daily.is_running()
+        except Exception:   # noqa: BLE001 - no database to ask: the run itself reports what is wrong
+            busy = False
+        if busy:
+            raise daily.DailyBusy()
     if name == "daily":
-        kwargs = {}     # the daily workflow always targets the latest settled session
+        rid = daily.new_run_id()    # the date arguments do not apply: it always targets the latest settled session
+        run_id = runner.submit(name, lambda: REGISTRY[name](config, trigger_source="manual", run_id=rid))
+        return {"run_id": run_id, "status": "pending", "daily_run_id": rid}
     run_id = runner.submit(name, lambda: REGISTRY[name](config, trigger_source="manual", **kwargs))
     return {"run_id": run_id, "status": "pending"}
 

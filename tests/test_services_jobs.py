@@ -180,10 +180,41 @@ def test_sec_backfill_requires_dates(client, monkeypatch):
     assert out == {"run_id": "run-9", "status": "pending"} and submitted["kind"] == "sec_backfill"
 
 
-def test_daily_job_ignores_dates(monkeypatch):
+def test_daily_job_ignores_dates_and_returns_its_run_id(monkeypatch):
+    from investment_assistant.tasks import daily
+
     seen = {}
     monkeypatch.setattr(jobs, "REGISTRY", {"daily": lambda config, **kw: seen.update(kw) or {"ok": True}})
     monkeypatch.setattr(jobs, "load_config", lambda: object())
-    monkeypatch.setattr(jobs.runner, "submit", lambda kind, fn: fn() and "run-3")
-    jobs.trigger_job("daily", {"date": "2026-10-01"})
-    assert seen == {"trigger_source": "manual"}
+    monkeypatch.setattr(daily, "is_running", lambda: False)
+    monkeypatch.setattr(jobs.runner, "submit", lambda kind, fn: fn() and "runner-3")
+    out = jobs.trigger_job("daily", {"date": "2026-10-01"})
+    assert out["run_id"] == "runner-3" and out["status"] == "pending"
+    assert out["daily_run_id"] == seen["run_id"]                   # the id the run will use (job_reports / detail page)
+    assert out["daily_run_id"].startswith("daily-") and set(seen) == {"trigger_source", "run_id"}
+    assert seen["trigger_source"] == "manual"
+
+
+@pytest.mark.parametrize("name, payload", [("daily", {}), ("sec_backfill", {"date": "2026-10-01"})])
+def test_manual_runs_raise_daily_busy_while_the_lock_is_held(monkeypatch, name, payload):
+    from investment_assistant.tasks import daily
+
+    monkeypatch.setattr(jobs, "REGISTRY", {name: lambda config, **kw: pytest.fail("must not run")})
+    monkeypatch.setattr(jobs, "load_config", lambda: object())
+    monkeypatch.setattr(daily, "is_running", lambda: True)
+    monkeypatch.setattr(jobs.runner, "submit", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(daily.DailyBusy):
+        jobs.trigger_job(name, payload)
+
+
+def test_a_missing_database_does_not_block_the_manual_run(monkeypatch):
+    from investment_assistant.tasks import daily
+
+    def no_db():
+        raise RuntimeError("数据库未配置")
+
+    monkeypatch.setattr(jobs, "REGISTRY", {"daily": lambda config, **kw: {"ok": True}})
+    monkeypatch.setattr(jobs, "load_config", lambda: object())
+    monkeypatch.setattr(daily, "is_running", no_db)
+    monkeypatch.setattr(jobs.runner, "submit", lambda kind, fn: "runner-4")
+    assert jobs.trigger_job("daily")["run_id"] == "runner-4"

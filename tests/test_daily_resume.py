@@ -255,3 +255,55 @@ def test_resume_with_the_real_postgres_saver(daily_db, clock, notices, monkeypat
     assert out['failed_node'] is None and out['status'] in ('success', 'degraded')
     assert [r['attempt'] for r in rows(daily_db, run_id) if r['stage'] == 'plan'] == [1, 2]
     assert out['summary']['session'] == SESSION.isoformat() and 'NVDA' in out['summary']['tickers']
+
+
+def test_resume_from_sec_monitor(daily_db, clock, notices, monkeypatch):
+    """The SEC node is the likeliest to fail twice; its resume must work (the node reads the config from its context)."""
+    factory = failed_run(daily_db, clock, monkeypatch, node='sec_monitor')
+    out = resume(clock, factory, 'sec_monitor')
+    assert out['failed_node'] is None and out['status'] in ('success', 'degraded')
+    for stage in ('sec_monitor', 'collect'):
+        assert [r['attempt'] for r in rows(daily_db) if r['stage'] == stage] == [1, 2]
+
+
+def test_resume_at_review_restarts_agent_window(daily_db, clock, notices, monkeypatch):
+    """D24: a resume counts the Agent window from the resumed execution, not from the first run's ``agent`` node."""
+    from investment_assistant.workbench import plan_review
+
+    seen = {}
+
+    def spy(session, **kwargs):
+        seen['elapsed'] = kwargs['clock']() - kwargs['started']
+
+    def down(state, ctx, acc):
+        raise service.Unavailable('数据库不可达')           # no retry: the node fails at once
+
+    original = workflow.BODIES['review']
+    monkeypatch.setitem(workflow.BODIES, 'review', down)
+    saver, factory = shared_saver()
+    first = go(daily_db, clock, factory=factory)
+    assert first['failed_node'] == 'review'
+    clock.advance(3 * 3600)                                   # the resume comes three hours later
+    monkeypatch.setitem(workflow.BODIES, 'review', original)
+    monkeypatch.setattr(plan_review, 'run_stage', spy)
+    out = resume(clock, factory, 'review', now=NOW + timedelta(hours=3))
+    assert out['failed_node'] is None and seen['elapsed'] < 5          # not 10 800 s, which would skip every review
+    assert [r['attempt'] for r in rows(daily_db) if r['stage'] == 'agent'] == [1]      # agent did not run again
+
+
+def test_resume_rejected_when_the_node_never_wrote_a_row(daily_db, clock, notices, monkeypatch):
+    """M3: a process killed inside a node leaves the checkpoint in front of it but no row: rerun the run in full."""
+    class Died(BaseException):
+        pass
+
+    def dies(state, ctx, acc):
+        raise Died()
+
+    monkeypatch.setitem(workflow.BODIES, 'regime', dies)
+    saver, factory = shared_saver()
+    with pytest.raises(Died):
+        go(daily_db, clock, factory=factory)
+    assert [r['stage'] for r in rows(daily_db)] == ['sec_monitor', 'collect', 'screen']       # regime has no row
+    with pytest.raises(workflow.ResumeRejected) as caught:
+        workflow.resume_check(RUN_ID, 'regime', now=LATER, checkpointer_factory=factory)
+    assert caught.value.code == 'not_failed'

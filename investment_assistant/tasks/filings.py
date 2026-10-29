@@ -56,7 +56,7 @@ def _monitor_targets(config: AssistantConfig) -> tuple[list[str], str | None]:
 
 def _record_fetch_run(result: dict[str, Any], *, config: AssistantConfig,
                       trigger_source: str, started_at: datetime, job: str = "daily",
-                      trigger: str | None = None) -> dict[str, Any]:
+                      trigger: str | None = None, wall_now=None) -> dict[str, Any]:
     """Append this run's one sec_filings row to data_fetch_runs (v2.3 §6.3).
 
     Targets are what this run actually collected (I03): the monitor reads its own
@@ -131,7 +131,7 @@ def _record_fetch_run(result: dict[str, Any], *, config: AssistantConfig,
     data_status, ids = collect.write_runs_with_ids([tally.row(
         trigger=trigger,
         run_id=result.get("run_id"), session=None,
-        started_at=started_at, finished_at=datetime.now(UTC))])
+        started_at=started_at, finished_at=(wall_now or (lambda: datetime.now(UTC)))())])
     if data_status.get("error"):
         print(f"[data_fetch_runs] write failed family=sec_filings job={job} trigger={trigger} "
               f"error={data_status['error']}", file=sys.stderr)
@@ -201,17 +201,18 @@ def stage_sec_monitor(state: dict[str, Any], ctx, acc) -> dict[str, Any]:
     research refresh after it only degrades the node."""
     from investment_assistant.workbench import collect
 
-    config = getattr(ctx, "config", None) or load_config()
+    config = ctx.config if isinstance(getattr(ctx, "config", None), AssistantConfig) else load_config()
     now = datetime.fromisoformat(state["cutoff_at"])
     ny_date = date.fromisoformat(state["ny_date"])
-    started = datetime.now(UTC)
+    wall = getattr(ctx, "wall_now", None) or (lambda: datetime.now(UTC))
+    started = wall()
     with collect.family_locks(["sec_filings"]):
         result, mode = _scan(config, start_date=None, end_date=None, ny_date=ny_date,
                              drop_after=now if ctx.resumed else None, notify_cfg=ctx.notify_cfg)
         trigger = state.get("trigger") or "scheduled"
         data_status = _record_fetch_run({"run_id": state.get("run_id"), "summary": result}, config=config,
                                         trigger_source="scheduled" if trigger == "scheduled" else "manual",
-                                        started_at=started)
+                                        started_at=started, wall_now=wall)
     _account(result, mode, acc, config=config, ids=data_status.get("ids") or [])
     research = _local_research_after_success({"summary": result}, config).get("research")
     if research is not None:
