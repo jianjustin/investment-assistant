@@ -25,8 +25,9 @@ def test_reason_text_covers_every_status_reason():
                'checkpoint_unavailable', 'thesis_count', 'invalid_condition', 'changes_mismatch', 'no_change',
                'review_malformed', 'migration_026_missing', 'review_in_progress', 'plan_invalid',
                'retro_malformed', 'lesson_invalid', 'answer_malformed', 'migration_027_missing',
-               'discussion_busy', 'draft_exists'}
+               'discussion_busy', 'draft_exists', 'not_connected', 'model_unavailable'}
     assert set(REASON_TEXT) == reasons
+    assert REASON_TEXT['not_connected'] == 'ChatGPT 未连接' and REASON_TEXT['model_unavailable'] == '所选模型不可用'
     assert REASON_TEXT['plan_invalid'] == '修订版按规则作废'
     assert {k: REASON_TEXT[k] for k in reasons if k in ('retro_malformed', 'lesson_invalid', 'answer_malformed',
                                                        'migration_027_missing', 'discussion_busy', 'draft_exists')} == {

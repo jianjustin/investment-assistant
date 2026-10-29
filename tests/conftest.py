@@ -14,10 +14,17 @@ def isolate_unit_tests_from_local_database(monkeypatch):
     monkeypatch.delenv('INVESTMENT_ASSISTANT_DATABASE_URL', raising=False)
     monkeypatch.setenv('SCHEDULER_ENABLED', '0')
     # A test-triggered load_dotenv() can still import keys from .env mid-session
-    # (e.g. FRED_API_KEY); agent keys and FRED must never reach the test process.
+    # (e.g. FRED_API_KEY); the FRED key and the agent switches must never reach the test process.
     monkeypatch.delenv('FRED_API_KEY', raising=False)
-    monkeypatch.delenv('ZHIPU_API_KEY', raising=False)
     monkeypatch.delenv('WORKBENCH_AGENT_PROVIDER', raising=False)
+    monkeypatch.delenv('WORKBENCH_CHATGPT_CALLBACK_PORT', raising=False)
+    for name in ('TOOL_SHAPE', 'EXTRA_FORBIDDEN', 'OVERRIDES', 'INSTRUCTIONS_FROM_SYSTEM'):
+        monkeypatch.delenv(f'WORKBENCH_CHATGPT_{name}', raising=False)
+    # No test may read (or refresh) a real ChatGPT connection: the default reader says "not connected". Tests that
+    # need a connected agent pass settings / read_connection explicitly.
+    from investment_assistant.workbench import agent_connection
+    monkeypatch.setattr(agent_connection, 'read_for_settings',
+                        lambda: {'status': 'disconnected', 'scopes_ok': False, 'model': None, 'secret': None})
 
 
 @pytest.fixture()

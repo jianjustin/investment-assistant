@@ -81,6 +81,17 @@ def test_read_env_status_booleans(monkeypatch):
     assert out["SEC_USER_AGENT"] is True and out["INVESTMENT_ASSISTANT_DATABASE_URL"] is False
 
 
+def test_env_keys_for_the_chatgpt_agent(monkeypatch):
+    # v2.8 D34: the old provider's key is gone; the provider switch and the callback port are reported (set / unset only)
+    assert "ZHI" + "PU_API_KEY" not in settings._ENV_KEYS
+    assert "WORKBENCH_AGENT_PROVIDER" in settings._ENV_KEYS and "WORKBENCH_CHATGPT_CALLBACK_PORT" in settings._ENV_KEYS
+    monkeypatch.setenv("WORKBENCH_AGENT_PROVIDER", "off")
+    monkeypatch.delenv("WORKBENCH_CHATGPT_CALLBACK_PORT", raising=False)
+    out = settings.read_env_status()
+    assert out["WORKBENCH_AGENT_PROVIDER"] is True and out["WORKBENCH_CHATGPT_CALLBACK_PORT"] is False
+    assert set(out.values()) <= {True, False}                  # booleans only: never a value
+
+
 def test_effective_notify_config_overlays_channel_and_email(monkeypatch):
     monkeypatch.setenv("INVESTMENT_ASSISTANT_DATABASE_URL", "postgres://x")
     monkeypatch.setattr(settings, "_with_conn", lambda fn: fn("CONN"))

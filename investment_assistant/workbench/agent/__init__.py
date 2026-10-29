@@ -34,4 +34,7 @@ REASON_TEXT = {
     'migration_027_missing': '迁移 027 未执行',
     'discussion_busy': '上一个问题还在回答',
     'draft_exists': '这张卡已有成功的草稿',
+    # v2.8 ChatGPT connection (spec §8.8, verbatim; the frontend AGENT_REASON_TEXT has the same texts)
+    'not_connected': 'ChatGPT 未连接',
+    'model_unavailable': '所选模型不可用',
 }

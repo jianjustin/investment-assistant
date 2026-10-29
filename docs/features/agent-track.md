@@ -6,7 +6,7 @@
 
 ## 怎么工作
 
-- **运行时**：LangGraph，默认模型智谱 `glm-5.3`（OpenAI 兼容接口），检查点存在本库（PostgresSaver）。
+- **运行时**：LangGraph，模型走你的 ChatGPT 订阅（v2.8，Sign in with ChatGPT，见下面「模型层」），检查点存在本库（PostgresSaver）。
 - **工具层**（`workbench/agent/tools.py`）：十个普通 Python 函数（批处理的提议、反方、复查、解读和复盘卡起草都用这十个）。前八个（`get_trigger`、`get_price_bars`、`get_indicators`、`get_filings`、`get_news`、`get_earnings`、`get_market_context`、`get_position`）只能读运行截止时间之前的数据，只允许查单元自身的标的和 SPY/SMH/XLK/QQQ，不接受日期参数。截止时间由批处理传入，模型无法修改。每次调用的参数、返回值和 SHA-256 都写入 `agent_tool_calls`。
 - **`get_concept`**（v2.6，第九个工具）：`get_concept(concept_id=None)` 读取系统概念卡（[知识层](knowledge.md)）：不给 id 返回全部 id、标题与分组，给 id（如 `plan.stop`）返回整张卡（`concept_ref`、版本、`summary`、给 Agent 的纯文本 `body`、`content_sha256`）。它是**截止时间的唯一例外**：不读数据库、不用截止时间，概念卡随代码版本走，任何时刻读到的都是当前代码版本的卡；结果里写明 `point_in_time: false` 和说明，连同 `concept_ref`、`content_sha256` 原样存进 `agent_tool_calls`，推理阅读视图对这类调用标「概念卡随代码版本走，不受截止时间约束」。未知 id 记成错误信封「未知概念 <id>，不给 id 可取全部列表」；卡目录校验失败记成「概念卡不可用：<第一条问题>」，只影响这个工具。它不是价格类工具（价位仍须引用 `get_price_bars` / `get_indicators`），它的 `call:N` 与其它工具一样可以被论点引用；提示词、`agent_version`、工具轮数上限与预算都不变。
 - **`get_knowledge`**（v2.7，第十个工具，排在 `get_concept` 之后）：`get_knowledge(ticker=None, concept=None)` 读你审定过的经验（[我的知识](knowledge.md)，只读条目、版本与状态三张表，**没有任何工具读复盘卡草稿或教训草稿**）。给 `ticker`（过同样的标的范围检查）或 `concept`（`plan.stop` 或 `concept:plan.stop@1`，版本忽略）取挂在上面的条目，两个都给 → 错误信封「ticker 与 concept 只能给一个」，未知概念 → 「未知概念 <id>」；都不给返回索引（`ref`、标题、挂靠、`written_at`，不含正文，至多 50 条）。条目按 `written_at` 倒序至多 10 条，超出记 `omitted`；每条带 `ref`（`know:<id>@<版本>`）、`id`、`version`、标题、正文、适用范围、反例、挂靠。**按截止时间读**：只含 `created_at ≤ cutoff` 的版本，截止时间时已归档的不返回，之后写的新版本、之后的归档都看不到；结果写明 `point_in_time: true`、`cutoff_at` 和说明「这是用户审定过的经验，是判断不是事实；价位不能只引用它」，推理阅读视图对这类调用标「我的知识按截止时间读取：只含截止时间之前写入的版本」。迁移 027 未执行 → 错误信封「我的知识不可用：迁移 027 未执行」，只影响这个工具。它不是价格类工具。
@@ -22,7 +22,7 @@
 - **Agent 计划与版本链**：结果为 `ok` 的首版生成 `agent` 计划（`plan_version = agent-2`），同一个事务里依次写计划行、运行行与工具调用、版本行 `agent_plan_versions`（`version_no = 0`、`origin = signal`、`cutoff_at` 等于运行的截止时间）和简报，任何一步失败都整体回滚，单元记 `error`。有效期 T+1…T+3、移动止损与 `plan-1` 相同，仓位按入场区间中点计算，`inputs` 另记 `as_of_session`、`version_no`、`supersedes_plan_id`、`chain_entry_cap`（入场期链上限：信号日后第 10 个交易日）。手动「重新运行 Agent」同样只生成首版；已有 `ok` / `pass` 时返回 409。首版计划进入影子跟踪和推导核对（`('agent-2', 'agent')`：价位核对 `agent_runs.output`，有效期按 `as_of_session` 与链上限推导，缺版本行 → `incomplete`）。采纳时可以把执行依据选为「Agent 建议」。
 - **`agent-1` 旧版**：v2.5 之前生成的 `agent-1` 计划原样保留、只读，照常展示与影子跟踪，标「agent-1（旧版，不参与复查）」；不迁移、不回填、不进每日复查。
 - **解读（`interpret`，`agent-brief-1`）**：无冲突买入单元的解读，直接取提议的摘要和第一条反证（`agent-1` 运行取反方风险）；其余单元单独跑一次单阶段解读。模型不可用或校验失败时，退回规则版摘要。
-- **隔离**：Agent 在规则计划全部写入之后才开始，失败只影响 Agent 轨道。每个单元最多尝试 3 次（超过记 `skipped / max_attempts`）；批处理开始 1500 秒后不再启动新单元；智谱额度用尽时其余单元记 `skipped / quota_exhausted`；达到每日 token 上限时记 `skipped / token_budget`。扩展池单元也跑，但排在后面，结果不推送。
+- **隔离**：Agent 在规则计划全部写入之后才开始，失败只影响 Agent 轨道。每个单元最多尝试 3 次（超过记 `skipped / max_attempts`）；批处理开始 1500 秒后不再启动新单元；ChatGPT 订阅的共享用量用尽时其余单元记 `skipped / quota_exhausted`；ChatGPT 未连接 / 连接失效、所选模型不可用时整个节点记 `skipped / not_connected` / `model_unavailable`；达到每日 token 上限时记 `skipped / token_budget`。扩展池单元也跑，但排在后面，结果不推送。
 - **迁移 026 未执行**：写不了版本行，所以需要提议的单元逐个记 `skipped / migration_026_missing`（主列表单元照旧得到规则版简报），解读照常运行；`agent` 阶段记 `degraded`（`migration_026_missing`），`summary.errors` 加一条 `timeline: migration_026_missing`；规则计划照常。「今日」照旧按最新运行显示，不带链。
 
 ## 计划时间线
@@ -72,15 +72,43 @@
 - **`agent-1` 旧运行**：`legacy: true`，`notes` 写「agent-1（旧版）：没有失效条件、下次复查条件与逐条对应的反证，也不参与复查；以下按原样显示」；步骤是 `read → proposal`（论点作为「理由」）`→ check → read → counter`（只有 `risks`）`→ outcome`，没有 `response`。
 - **迁移 026 未执行**：没有 `version`、`evidence`、`response`，`notes` 写「迁移 026 未执行，没有版本与复查记录」。
 
+## 模型层（v2.8）
+
+Agent 的模型调用走你自己的 ChatGPT 订阅（Sign in with ChatGPT）：不再有 API 密钥，也没有智谱。设计见 [v2.8 每日工作流 §8](../specs/2026-10-29-v2.8-daily-workflow-design.md)，协议版本 `siwc-1`（`CHATGPT_PROTOCOL_VERSION`，写进 `agent_connection_events.detail.protocol`）。
+
+- **连接**（`workbench/agent_connection.py` 是读写 `agent_connections` / `agent_connection_events` 的唯一模块；协议在 `workbench/agent/chatgpt.py`）：在「设置 → Agent 连接」点「连接 ChatGPT」，服务在 `127.0.0.1` 上起一个只收一次回调的监听（端口默认由系统分配，`WORKBENCH_CHATGPT_CALLBACK_PORT` 可固定；不用服务的 8787 端口，因为它挂着认证），返回授权地址在本机浏览器里打开。授权参数：动态注册（首次 `client_id = dynamic_agent_client` + `agent_name_hint`，之后用保存的 `client_id`）、PKCE `S256`、`state` / `nonce` / `code_verifier` 各 32 字节随机、`resource`、`ext_agent_host_id`（本机固定的 `urn:uuid:…`，之后永不改变）、已知邮箱加 `login_hint`。回调只接受 `GET /auth/callback`，`Host` 必须是 `127.0.0.1:<端口>`，`state` 必须恰好出现一次且常数时间相等，不符的请求回 400 / 404 但不结束这次登录；回调里的 `client_id` 必须是 `^[A-Za-z0-9_-]{1,200}$`、不是 `dynamic_agent_client`、与已保存的一致，否则 `registration_incomplete`；换令牌之前先把 `client_id` 写库（一次性 code 可能换失败，注册结果不能丢）。待定的登录只存在服务进程内存里，10 分钟（`LOGIN_TTL_S`）没有回调、点「取消」或服务重启都使登录作废，状态回到原值（`disconnected` / `needs_login`）。
+- **令牌与校验**：令牌端点响应必须是 `bearer`、`expires_in > 0`、有 `access_token` 与 `refresh_token`、`scope` 是字符串；ID token 校验 `iss`、`aud`（及 `azp`）、`exp`、`nonce`（登录时）与 `sub` 不变（再次登录 / 刷新时，不同账号 → `account_mismatch`），**不验签名**（令牌直接从令牌端点经 TLS 取得，D28）。`scope` 不含 `chatgpt.tokens.use.direct`（计划用量共享）→ 状态仍是 `connected`，但 Agent 记 `not_configured`，设置页提示「已登录，但这个账号没有开启计划用量共享」。
+- **凭据存储**：明文存在本机数据库的单行表 `agent_connections`（与 `.env` 里的密钥同一安全级别，表进数据库备份时要当作机密）。令牌不进日志、不经任何接口回显（`status_view` 只返回状态、脱敏邮箱、到期时间、模型、`last_error` 等）、不进 `agent_connection_events`（只放事件类型、安全错误码、到期时间和模型 slug）、不进异常文本（协议错误一律重建为 `ChatGPTError(code, message)`，`code` 是 `^[A-Za-z0-9_.:-]{1,100}$` 的安全标识符，`message` 是固定中文，响应体只用来读错误码）。
+- **刷新**：每个 Agent 单元 / 每次讨论回答构造模型前取令牌（`access_token()`）：剩余 ≥ 300 秒直接用；不足 300 秒且已过 `earliest_refresh_at` → 在 `SELECT … FROM agent_connections WHERE id = 1 FOR UPDATE` 的事务里向令牌端点换新令牌，**先写库、提交，再把新令牌交给调用方**（进程内另有一把线程锁；两个线程同时来只刷新一次，第二个拿到新令牌）。过期但没到 `earliest_refresh_at` → `refresh_not_ready`（本单元 `model_error`，下个单元再试）。令牌端点的授权码 / 刷新请求是 POST，不会在可能已发出后重发（`fetch-1` 的 `retry_post=False`：只在请求没发出或 429 时重试）；发现文档、模型清单是 GET，按 `fetch-1` 重试。refresh token 随每次刷新滚动 30 天，所以每天运行一次连接就不会过期。
+- **刷新失败**：`invalid_grant`、`invalid_refresh_token`、`token_expired`、`refresh_token_expired`、`refresh_token_invalidated`、`refresh_token_reused`、`invalid_id_token`、`account_mismatch` → 清空令牌、状态 `needs_login`、`last_error`、一条 `refresh_failed` 事件；网络错误、5xx 等 → 不改状态，只写 `last_error`，本单元 `model_error`。同一次失效只通知一次：`first_failure_since_ok()` 在上一次 `connected` / `refreshed` 之后恰有一条需重新登录的 `refresh_failed` 时为真。
+- **断开**：向 `revocation_endpoint` 撤销 refresh token（5xx 重试一次），不论撤销是否确认都清空令牌；撤销未确认时返回 `revoked: false`，页面提示「本机凭据已删除，但远端断开未确认，请到 ChatGPT 设置里断开这个应用」。`host_id`、`client_id`、账号与所选模型保留。
+- **模型清单与选择**：`GET {RESOURCE}/models` 返回的 `models[]` 里 `visibility == "list"` 的项（保持服务器顺序，显示 `display_name`、保存 `slug`），不写死任何模型名；选择必须在当前清单里，所选模型之后被拒（`model_not_found`）→ `model_unavailable`。
+- **请求（路径 A）**：`model.chat_model(settings)` 取令牌后构造 `SiwcChatOpenAI`——`ChatOpenAI` 的子类，Responses 模式（`use_responses_api`）、`output_version='v0'`、`store=False`、`streaming=True`、`temperature=None`、`max_retries=0`（重试交给每个单元的尝试次数闸）、`httpx.Timeout(180, connect=10)`、`base_url = RESOURCE`，HTTP 客户端读环境里的代理变量，并去掉请求里的 `OpenAI-Organization` / `OpenAI-Project`（这是 ChatGPT 账号，不是平台账号）。子类覆写 `_get_request_payload` 调 `chatgpt.rewrite_payload`（纯函数）：① `input` 开头所有 `system` / `developer` 的纯文本项取出，按顺序用两个换行拼成 `instructions`，其余位置的 `system` 项改为 `developer`；② 函数工具按 `TOOL_SHAPE` 摆放（`top_level` 顶层 / `namespace` 包进 `{"type": "namespace", "name": "workbench", …}` / `additional_tools` 作为 `input` 开头的 `{"type": "additional_tools", "role": "developer", …}` 项）；回传给模型的 `function_call` 项去掉 `id`（`store` 为 false，没有可引用的条目），`namespace` 形状下带上所属 namespace；③ 合并 `REQUEST_OVERRIDES`；④ 最后一步删除 `FORBIDDEN_FIELDS`（官方限制页的 16 个：`background`、`conversation`、`max_output_tokens`、`max_tool_calls`、`metadata`、`moderation`、`multi_agent`、`prompt`、`prompt_cache_retention`、`safety_identifier`、`temperature`、`top_logprobs`、`top_p`、`truncation`、`user`、`previous_response_id`）。`_stream` 覆写读流：`response.failed` / `error` 事件按错误码抛 `ChatGPTError`，`response.incomplete` → `response_incomplete`，流在 `response.completed` 之前结束 → `stream_interrupted`；纯文本块合并为字符串，所以四张子图、`ToolNode` 与校验器一行不改。`usage_metadata` 来自 `response.completed`（`input_tokens`、`output_tokens`，缓存与推理 token 在 `input_token_details.cache_read` / `output_token_details.reasoning`）。
+- **选路与核查期开关**：模型层按 [v2.8 spec §8.7](../specs/2026-10-29-v2.8-daily-workflow-design.md) 由 §17 的核查结果选路；§17 还没有结果时先按路径 A 实现（上面这条），`TOOL_SHAPE`（默认 `namespace`）、`FORBIDDEN_FIELDS`、`REQUEST_OVERRIDES`（默认空）、`INSTRUCTIONS_FROM_SYSTEM`（默认开）是 `chatgpt.py` 里的常量，核查期可用环境变量覆盖：`WORKBENCH_CHATGPT_TOOL_SHAPE`（`top_level` / `namespace` / `additional_tools`）、`WORKBENCH_CHATGPT_EXTRA_FORBIDDEN`（逗号分隔的额外字段）、`WORKBENCH_CHATGPT_OVERRIDES`（JSON 对象，合并进请求）、`WORKBENCH_CHATGPT_INSTRUCTIONS_FROM_SYSTEM`（`0` / `1`）。这些变量只在核查期使用，核查结果追加进 spec §17 后改成常量并删掉变量，不进「设置 → 环境变量」。
+- **错误分类**（`model.classify_error(exc, secret) -> (reason, detail)`；`detail` 去掉当前令牌、本进程发出过的令牌、`Bearer …` 与 JWT 形状的片段，不含请求内容，截断 300 字）：
+
+| 来源 | 条件 | `reason` | 影响 |
+| --- | --- | --- | --- |
+| Responses（HTTP 或 `response.failed`） | `subscription_sharing_usage_limit_exceeded` | `quota_exhausted` | 本次其余单元跳过，推送里如实标注 |
+| 同上 | `subscription_sharing_usage_unavailable`、`subscription_sharing_user_unavailable` | `model_error` | 走尝试次数闸 |
+| 同上 | `model_not_found` | `model_unavailable` | 本节点其余单元跳过；设置页提示重新选模型 |
+| 同上 | `subscription_sharing_user_not_eligible`、`subscription_sharing_invalid_user`、`chatpass_v2_scope_not_authorized`、`chatpass_v2_invalid_authorization_context`、`invalid_token`、`invalid_api_key`、HTTP 401 | `not_connected` | 同上；调用方用 `agent_connection.mark_needs_login` 把状态改成 `needs_login`（401 只在刷新后仍 401 时） |
+| 同上 | `subscription_sharing_unsupported_capability`、`subscription_sharing_route_not_supported`、HTTP 400 / 422 | `model_error`，`detail` 带安全的 `param` | 走尝试次数闸，三次后 `max_attempts` |
+| 刷新 | 需重新登录的八种（见上） | `not_connected` | 设置页红条「ChatGPT 连接已失效，请重新连接」 |
+| 网络、5xx、429（非额度）、`stream_interrupted`、`response_incomplete`、超时 | — | `model_error` | 走现有尝试次数闸 |
+| 检查点表缺失 | — | `checkpoint_unavailable` | 不变 |
+
+- **删智谱**：旧供应商的密钥、`WORKBENCH_AGENT_MODEL`、`WORKBENCH_AGENT_BASE_URL` 三个环境变量不再读取（真实 `.env` 里的几行由 v2.8 的上线步骤经你授权后删除）；`DEFAULT_MODEL`、`DEFAULT_BASE_URL`、`TEMPERATURE`、`REQUEST_TIMEOUT_S`、`CLIENT_RETRIES` 和旧额度码判断全部删除。已有 `agent_runs` / 计划 / 简报里的旧 `provider` / `model` 保留只读，页面照常显示当时的模型名。`agent_runs.provider` 现为 `chatgpt`，`model` 为所选模型的 slug（没有选模型时单元记 `skipped / model_unavailable`，`model` 列写空串，因为该列不允许为空）。
+
 ## 配置
 
 | 环境变量 | 说明 |
 | --- | --- |
-| `WORKBENCH_AGENT_PROVIDER` | `zhipu`（默认）或 `off` |
-| `ZHIPU_API_KEY` | 智谱密钥；只从环境变量读取，出现在错误文本里时一律替换为 `***` |
-| `WORKBENCH_AGENT_MODEL` | 默认 `glm-5.3` |
-| `WORKBENCH_AGENT_BASE_URL` | 默认 GLM Coding Plan 端点 `https://open.bigmodel.cn/api/coding/paas/v4` |
-| `WORKBENCH_AGENT_DAILY_TOKENS` | 可选，每日 token 上限 |
+| `WORKBENCH_AGENT_PROVIDER` | `chatgpt`（默认）或 `off`；其它值 → 配置错误，Agent 记 `not_configured` |
+| `WORKBENCH_CHATGPT_CALLBACK_PORT` | 可选，固定登录回调监听的本机端口；不设（0）由系统分配 |
+| `WORKBENCH_AGENT_DAILY_TOKENS` | 可选，每日 token 上限（`input + output`） |
+
+模型不再由环境变量选择：在「设置 → Agent 连接」登录并选模型，选择存在 `agent_connections.model`。
 
 首次使用前建检查点表：`python -m investment_assistant.workbench.agent setup`。
 
@@ -95,6 +123,7 @@
 
 ## 已知限制
 
-- 额度错误码（`1113`、`1308`、`1310`）和端点是按文档初值写的，需要拿真实响应核对（看 `error` 运行的 `detail`）。
+- 模型层的请求形状（工具放置方式、被拒字段、`function_call` 回传、`usage` 键）按官方文档与 devkit 写成，等 [v2.8 spec §17](../specs/2026-10-29-v2.8-daily-workflow-design.md) 的真实核查结果确认；额度用尽的真实错误文本（C7）要等第一次出现后核对（看 `error` 运行的 `detail`）。
+- 刷新时进程在「令牌端点已返回、数据库还没提交」之间被杀，旧 refresh token 已失效，下次刷新会得到 `refresh_token_reused` → `needs_login`，重新连接一次即可（概率很低）。
 - 模型输出格式不保证稳定：带围栏的 JSON 和数字字符串已做兼容；JSON 里夹带说明文字的，作废为 `malformed`。
 - Agent 价位来自模型输出，不构成投资建议；证据状态仍是「未验证」。目前不设晋升机制，只观察，不安排用 Agent 替换主计划。

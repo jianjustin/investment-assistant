@@ -37,8 +37,8 @@ cd web && npm install && npm run build && cd ..
 | `SEC_DISCORD_BOT_TOKEN` | SEC 监控需要 | SEC 监控用 Bot 身份直接发 Discord |
 | `SMTP_PASSWORD` | 选邮件渠道时 | 邮件渠道密码 |
 | `FRED_API_KEY` | 否 | FRED 利差；未配置时运行报告记「未配置」 |
-| `ZHIPU_API_KEY` | 否 | Agent 轨道；未配置时 Agent 轨道记原因停下，规则轨道照常 |
-| `WORKBENCH_AGENT_PROVIDER` / `_MODEL` / `_BASE_URL` / `_DAILY_TOKENS` | 否 | Agent 开关（`off` 关闭）、模型、端点、每日 token 上限 |
+| `WORKBENCH_AGENT_PROVIDER` / `WORKBENCH_AGENT_DAILY_TOKENS` | 否 | Agent 开关（`chatgpt` 默认，`off` 关闭）、每日 token 上限；Agent 用你的 ChatGPT 订阅，没有 API 密钥，也不在 `.env` 里选模型：在「设置 → Agent 连接」登录并选模型，未连接时 Agent 轨道记 `not_connected` 停下，规则轨道照常 |
+| `WORKBENCH_CHATGPT_CALLBACK_PORT` | 否 | 固定 ChatGPT 登录回调监听的本机端口；默认由系统分配 |
 
 ### 配置文件（`config/local.json`，示例见 `config/investment-assistant.example.json`）
 
@@ -55,6 +55,8 @@ cd web && npm install && npm run build && cd ..
 ```
 
 然后在「设置 → 关注列表」添加美股并勾选核心池（≤ 15 只）。
+
+要启用 Agent 轨道，启动服务后在「设置 → Agent 连接」点「连接 ChatGPT」，在本机浏览器里完成登录，再选一个模型（不连接也能用：规则轨道照常，Agent 记 `not_connected`）。步骤与排错见 [operations/local-service.md](operations/local-service.md) 的「Agent 连接」，Agent 怎么工作见 [features/agent-track.md](features/agent-track.md)。
 
 ## 启动
 

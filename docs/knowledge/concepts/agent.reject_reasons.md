@@ -4,22 +4,22 @@ title: "作废与跳过原因"
 group: agent
 version: 1
 applies_to: [agent-2, agent-1, agent-review-1, agent-retro-1, agent-discuss-1]
-summary: "Agent 一份建议为什么被作废、跳过或出错，共 26 个原因代码，每个有固定的中文文案；被作废的建议只显示原因、不显示内容。"
+summary: "Agent 一份建议为什么被作废、跳过或出错，共 28 个原因代码，每个有固定的中文文案；被作废的建议只显示原因、不显示内容。"
 related: [agent.action_levels, agent.citation, agent.review_outcome, agent.invalidation]
-sources: [investment_assistant/workbench/agent/__init__.py, investment_assistant/workbench/plan_review.py]
+sources: [investment_assistant/workbench/agent/__init__.py, investment_assistant/workbench/agent/model.py, investment_assistant/workbench/plan_review.py]
 ---
 
 ## 是什么
 Agent 运行的状态有五种：`ok`（通过）、`pass`（不建议买）、`rejected`（校验作废）、`error`（出错）、`skipped`（没有运行）。后三种都带一个原因代码，页面上显示对应的中文文案。作废（`rejected`）的建议**只显示原因，不显示内容**，因为内容没通过校验，不能当作建议看待。
 
 ## 怎么算 / 从哪来
-原因代码与文案由系统固定，下表是全部 26 个：
+原因代码与文案由系统固定，下表是全部 28 个：
 
 | 代码 | 文案 | 一般出现的情形 |
 | --- | --- | --- |
-| `disabled` | 已关闭 | Agent 被配置为关闭，整个轨道跳过 |
-| `not_configured` | 未配置 | 缺少模型密钥 |
-| `quota_exhausted` | 额度用尽 | 模型服务额度用完，其余单元跳过 |
+| `disabled` | 已关闭 | Agent 被配置为关闭（`WORKBENCH_AGENT_PROVIDER=off`），整个轨道跳过 |
+| `not_configured` | 未配置 | 配置项取值无效，或 ChatGPT 已登录但这个账号没有开启计划用量共享 |
+| `quota_exhausted` | 额度用尽 | ChatGPT 订阅的共享用量达到上限（错误码 `subscription_sharing_usage_limit_exceeded`），其余单元跳过 |
 | `token_budget` | 超出 token 上限 | 达到每日 token 上限 |
 | `stage_budget` | 超出时限 | 批处理开始 1500 秒后不再启动新单元 |
 | `max_attempts` | 已达重试上限 | 同一单元尝试已达上限 |
@@ -27,7 +27,7 @@ Agent 运行的状态有五种：`ok`（通过）、`pass`（不建议买）、`
 | `invalid_citation` | 引用无效已作废 | 引用不存在，或价位缺少价格类工具支撑 |
 | `level_check` | 价位校验未通过 | 价位顺序不对，或超出最近收盘价 ±50% |
 | `tool_rounds_exceeded` | 工具调用超限 | 工具调用轮数超过上限 |
-| `model_error` | 模型调用失败 | 模型服务出错 |
+| `model_error` | 模型调用失败 | ChatGPT 服务出错、网络中断、超时、回答没有完成，或请求被拒绝（带安全的错误码，不含请求内容） |
 | `checkpoint_unavailable` | 状态库未就绪 | 运行状态存储不可用 |
 | `thesis_count` | 论点数量不符 | 论点不在 1 到 3 条 |
 | `invalid_condition` | 失效或复查条件无效 | `kind` 未登记、不能用在该栏、参数不合法或缺引用 |
@@ -43,8 +43,10 @@ Agent 运行的状态有五种：`ok`（通过）、`pass`（不建议买）、`
 | `migration_027_missing` | 迁移 027 未执行 | 库里缺复盘卡、我的知识与讨论所需的表 |
 | `discussion_busy` | 上一个问题还在回答 | 同一次讨论里上一轮还没有回答，不能再问 |
 | `draft_exists` | 这张卡已有成功的草稿 | 这张复盘卡已经有一份成功的草稿，不用重新起草 |
+| `not_connected` | ChatGPT 未连接 | 还没有连接 ChatGPT，连接已失效需要重新登录（刷新令牌过期、被撤销、重复使用，或账号不一致），或模型服务判定当前凭据 / 授权不可用；整个节点跳过 |
+| `model_unavailable` | 所选模型不可用 | 还没有选模型，或所选模型已不在 ChatGPT 提供的清单里（`model_not_found`）；整个节点跳过，到「设置 → Agent 连接」重新选择 |
 
-大致规律：校验类原因（`malformed` 到 `no_change` 一带，以及 `retro_malformed`、`lesson_invalid`、`answer_malformed`）对应 `rejected`；`migration_027_missing`、`discussion_busy`、`draft_exists` 是复盘卡与讨论的前置检查拒绝的原因，不生成 Agent 运行；预算和可用性类（`disabled`、`quota_exhausted`、`token_budget`、`stage_budget`、`max_attempts` 等）对应 `skipped`；`model_error`、`checkpoint_unavailable` 对应 `error`。
+大致规律：校验类原因（`malformed` 到 `no_change` 一带，以及 `retro_malformed`、`lesson_invalid`、`answer_malformed`）对应 `rejected`；`migration_027_missing`、`discussion_busy`、`draft_exists` 是复盘卡与讨论的前置检查拒绝的原因，不生成 Agent 运行；预算和可用性类（`disabled`、`quota_exhausted`、`token_budget`、`stage_budget`、`max_attempts`、`not_connected`、`model_unavailable` 等）对应 `skipped`；`model_error`、`checkpoint_unavailable` 对应 `error`。
 
 ## 在系统里哪里看到
 「今日」Agent 块的"Agent 未给出计划：原因"；复盘卡页的起草失败原因与讨论里"这次回答没有通过引用校验"；计划页复查记录里的跳过、出错和"修订未通过"的原因；「运行一览」阶段行的跳过原因。
