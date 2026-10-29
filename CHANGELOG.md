@@ -2,11 +2,91 @@
 
 版本号与 roadmap 版本对应，见 [roadmap](docs/roadmap/roadmap.md)。
 
-## 未发布
+## v2.7.0 — 2026-10-29
+
+我的成长闭环（[spec](docs/specs/2026-10-28-v2.7-growth-loop-design.md)、[实施 plan](docs/plans/2026-10-28-v2.7-growth-loop.md)）：每笔结束的交易有一张复盘卡（事实冻结、Agent 只讲不算、你审定后教训才进「我的知识」）；「我的知识」只追加、带版本，Agent 用 `get_knowledge` 按截止时间读、用 `know:<id>@<版本>` 引用，引用记入 `knowledge_citations`；每条知识有表现回看；计划卡与「标的」页有「就此计划讨论」；周度复盘多一段「你学到了什么」。**有迁移 027**（十一张新表、放宽三处约束），规则、`plans.py`、`tracks.py`、`discipline.py` 等口径一字未动。状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`（代码已合入 `main`；迁移 027 尚未在真实库执行、服务尚未重启跑 v2.7 代码，§16.2 手动验收尚未做）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。
+
+### 新增
+
+- **迁移 027**（`migrations/027_growth_loop.sql`）：十一张只追加的表——`review_cards`（冻结事实，`event_key` 唯一）、`review_card_drafts`、`review_card_verdicts`、`discussions`、`discussion_turns`、`knowledge_items`、`knowledge_versions`、`knowledge_status`、`knowledge_drafts`、`knowledge_draft_verdicts`、`knowledge_citations`；放宽 `agent_runs.mode`（`retro`、`discuss`）、`agent_tool_calls.phase`、`stage_runs.stage`（`retro`）三处约束。不改任何旧行；新表不进 `WORKBENCH_TABLES`，`repository.py` 对它们只有 `INSERT` / `SELECT`；缺表时按 `growth_ready` 降级（见「变更」）。
+- **复盘卡**（`retro.py` 纯函数 `retro-1`、`retro_cards.py`）：批处理新阶段 `retro` 检测最近 5 个交易日内结束的对象（持仓平仓、计划止损、到 T1、过期未成交、作废），把十个事实（`subject`、`plans`、`bars_after`、`shadow`、`tracks`、`decision`、`trades`、`discipline`、`reviews`、`knowledge`）冻结成一张卡；Agent（`agent-retro-1`）把事实讲成一段话并起草至多 3 条教训，每次批处理至多起草 5 张、每张至多 3 次尝试；你审定（教训逐条采纳可改、不采纳或另写）后，一个事务写审定、决定与「我的知识」第 1 版。卡的状态由记录推出：已审定、待审定、起草失败、起草中。
+- **我的知识**（`knowledge_items.py`、`my_knowledge.py`，`my-knowledge-1`）：写、改（新版指向旧版，带 `base_version` 防覆盖）、归档与恢复（状态记录）、看版本；挂靠概念与标的（合计 1–10）；来源有三种——你直接写、复盘卡教训、讨论草稿；截止时间之前的可见性由纯函数 `visible` 决定。
+- **知识表现回看**（`knowledge_perf.py`，`knowledge-perf-1`）：每条知识 → 引用它的计划 → 这些计划的影子结果，每个单元一个样本（取最早引用这条知识的那一版）；样本量常驻，少于 5 个（`review.SHADOW_MIN_SAMPLE`）不给均值。
+- **就此计划讨论**（`discussion.py`，`agent-discuss-1`）：从计划卡、计划页、「标的」页的计划行与复盘卡进入；讨论专用只读工具三个（`get_plan_context`、`get_derivation`、`get_agent_run`），只读本单元；回答带引用，可附一条经验草稿（新写或改写），草稿在「我的知识」草稿队列里审定；可把某一轮存为补充信息（走 v2.5 的用户输入）。回答在后台生成，历史最近 10 轮 / 12000 字。
+- **Agent 工具 `get_knowledge`**（第十个工具，排在 `get_concept` 之后）：`get_knowledge(ticker=None, concept=None)`，都不给时返回索引（至多 50 条），结果至多 10 条；只返回截止时间之前写入、未归档的版本，**不返回任何草稿**。
+- **`know:<id>@<版本>` 引用**与 `knowledge_citations`：Agent 引用必须带版本，且只能引用本次运行 `get_knowledge` 返回过的版本；`know:` 不能单独支撑价位。引用记录与计划同事务写入、同生共死；作废、`pass`、被反方丢弃的条目不留引用。计划卡、版本链与推理视图显示「引用的知识」，之后有新版时注明。
+- **接口**：`GET/POST /api/workbench/review-cards`（列表、卡页、`/verdict`、`/redraft`）、`/api/workbench/my-knowledge`（列表、新建、条目页、`/versions`、`/status`、`/performance`）、`/api/workbench/my-knowledge-drafts`（列表、`/verdict`）、`/api/workbench/discussions`（建讨论、列表、讨论页、`/turns`）；已有 `today`、`chains`、`instruments/{ticker}`、`weekly-reviews` 只新增键（`knowledge_refs`、`knowledge`、`stats.learning`）。写接口都带 `request_id` 幂等。
+- **两个 CLI**：`python -m investment_assistant.workbench.retro_cards detect | draft | show | check`；`python -m investment_assistant.workbench.my_knowledge show | check-cutoff`（把「知识受截止时间约束」的校验落到真实数据）。
+- **页面与组件**：「复盘」页新增「复盘卡」页签（`#review/cards[/<id>]`，`ReviewCardList`、`ReviewCard`、`CardVerdictForm`）；「知识」菜单新增「我的知识」（`#knowledge/mine[/new|/drafts|/<id>[@<版本>]]`，`KnowledgeList`、`KnowledgeItem`、`KnowledgeForm`、`KnowledgePerformance`）；`KnowledgeRefs`、`RefList`、`DiscussButton`；讨论页 `#discuss/<id>`（`Discussion`）；「标的」页新增「我的知识」一段；周度复盘新增「你学到了什么」。详见 [architecture](docs/architecture.md)。
+- **7 张概念卡与原理页新一节**：概念卡共 95 张（`review.retro_card`、`review.retro_end`、`review.knowledge_performance`、`review.weekly_learning`、`system.my_knowledge`、`system.discussion`、`agent.knowledge_citation`），原理页 13 节（新增 `#stage-retro`）。
+
+### 变更
+
+- **批处理 `stages-2` → `stages-3`**：第 8 个阶段 `retro`（在 `review` 与 `push` 之间），每次运行 9 行 `stage_runs`；`derivation.RUN_STAGE_COUNT` 为 `{stages-1: 7, stages-2: 8, stages-3: 9}`，`derivation stages` 按各运行自己的版本核对。迁移 027 未执行时本次仍按 `stages-2` 记 8 行（没有 `retro` 行），`summary['errors']` 加 `growth: migration_027_missing`。运行一览有 `retro` 一行；每日推送概览末尾加「复盘卡 新增 a · 待审定 b」（都为 0 时不加）。
+- **周度复盘 `review-6` → `review-7`**：快照新增 `stats.learning`（纪律合计、本周结束的复盘卡、本周被检验的知识），周度推送新增字段「你学到了什么」；旧快照不重算，页面标「该快照没有『你学到了什么』」。
+- **Agent 工具由九个变十个**：`agent/tools.py` 只新增 `get_knowledge`、`Recorder.knowledge_refs` 与 `TOOLS` / `TOOL_DESCRIPTIONS` 条目，原有九个工具的函数、参数、返回值、标的范围与截止时间不变；讨论专用三个工具不在批处理的工具表里（批处理的五个阶段绑定的工具不含它们，有测试固定）。
+- **三份 `agent-2` 系提示词新增一段**「可以读、怎么引用知识」；`agent_version`（`agent-2`、`agent-review-1`、`agent-brief-1`）**不变**（spec D19 / Q3）。
+- **Agent 新作废原因**：`retro_malformed`、`lesson_invalid`、`answer_malformed`、`migration_027_missing`、`discussion_busy`、`draft_exists`，前后端文案逐字对齐。
+- **前端路由**：`review`、`knowledge` 两个区保留第一段之后的路径（`#review/cards/12`、`#knowledge/mine/3@2`）；新增区 `discuss`。
+- **新增版本号**：`stages-3`、`retro-1`、`agent-retro-1`、`agent-discuss-1`、`my-knowledge-1`、`knowledge-perf-1`、`review-7`；不变：`agent-2`、`agent-review-1`、`agent-brief-1`、`condition-1`、`timeline-1`、`plan-shadow-1`、`tracks-1`、`monthly-3`、`knowledge-1`。
 
 ### 修正
 
-- **`agent-1` 计划的推理视图入口**：计划页对 `agent-1` 计划另显示一段「Agent 推理」，标「agent-1（旧版，不参与复查）」，「看推理过程」按推导输入里生成它的运行 id 展开推理阅读视图（展开时才请求）。此前 `agent-1` 计划卡只出现在它自己交易日的「今日」页上，历史 `agent-1` 计划的推理视图只能从接口读到（v2.6 验收 §14.2 第 5 条发现）。
+- **`agent-1` 计划的推理视图入口**（原「未发布」条目，随本版发布）：计划页对 `agent-1` 计划另显示一段「Agent 推理」，标「agent-1（旧版，不参与复查）」，「看推理过程」按推导输入里生成它的运行 id 展开推理阅读视图（展开时才请求）。此前 `agent-1` 计划卡只出现在它自己交易日的「今日」页上，历史 `agent-1` 计划的推理视图只能从接口读到（v2.6 验收 §14.2 第 5 条发现）。
+
+### 与 roadmap 文字的差异（spec §20）
+
+- 周度复盘在代码里已是 `review-6`（v2.5 D17），本版升 `review-7`，不是 roadmap 写的「`review-5` 加一段」。
+- 新增批处理第 8 个阶段 `retro`（共 9 行），`stages-2` → `stages-3`；roadmap §4.5 没有提到阶段。
+- `get_knowledge(ticker=None, concept=None)`：两者都不给时返回索引（roadmap 写 `get_knowledge(ticker 或 concept)`）。
+- 「未审定的草稿不被任何 Agent 引用」加强为「不被任何 Agent 工具**返回**」；唯一例外是你在讨论里主动选「就这条改写」，草稿作为你的发言附件让模型看到原文，仍不可引用（D24）。
+- 概念卡新增 7 张（共 95 张）。
+- 按用途给工具（D20）先在 `graph.py` 实现，运行时仍是智谱；v2.8 的按用途配置沿用同一切分。
+
+### spec §21 各项实际按什么实现
+
+- **Q1 未决定、也无成交的单元**：不出卡（只对你做过决定的单元与你的成交出卡，D1）。
+- **Q2 上线前已结束的交易**：不自动补卡，只检测最近 5 个交易日内结束的；要补时授权后用 `retro_cards detect --since <日期>` 手动补（D6）。
+- **Q3 提示词加知识一段是否升 `agent_version`**：不升，仍为 `agent-2` / `agent-review-1`（D19）。
+- **Q4 讨论的截止时间**：提问时刻（D22），提示词要求区分「当时」与「之后」。
+- **Q5 表现回看的样本单位**：每个单元一个，取最早引用这条知识的那一版（D26）。
+- **Q6 起草预算**：每次批处理至多 5 张，计入每日 token 上限，排在复查之后（D9）；复查阶段把额度用尽写进 `summary.review.quota_exhausted`，复盘阶段据此跳过。
+
+### 实现偏差（相对 spec）
+
+- **检测窗口**：「最近 5 个交易日」实现为含 `S` 的 5 个交易日（`retro.window_start(S)` = `S` 前推 4 个交易日）；`retro_subjects` 按**结束日**窗口选对象。
+- **持仓单元的参考计划**：取买入所挂靠的决定的 `plan_id`，否则取决定链上最近一个带 `plan_id` 的决定（spec D3 的读法；起初只看最新决定，终审后改）。`no_plan` 只在平仓落入检测窗口时计数；既无任何计划又无买入的单元不计 `no_plan`；`retro_cards check` 把窗口内无参考计划的结束单独列出并判不通过。`_freeze` 对有买入的单元把参考计划标为 `executed`，所以最新决定是否决的持仓单元也看得到执行的是哪份计划。
+- **决定文案**：`retro.DECISION_TEXT` 多一个兜底键 `accept`（「采纳」，已采纳但执行的计划不明），前端 `DECISION_TEXT` 同键（含 `accept_agent_legacy`）；Agent 版本依据文案 `retro.BASIS_TEXT` / 前端 `VERSION_BASIS_TEXT`（决定时看到的版本 / 首版）。
+- **`filled` 字段**：复盘卡列表行、`learning.cards`、卡视图 `card` 多一个 `filled`（有成交），实际一栏写法为：有 R 写 R，有成交无 R 写「无 R（计划外）」，未成交写「未成交」——spec 模板没有区分「计划外成交」。
+- **409 `draft_decided`**（spec 无此码）：同一请求 id 之外的请求再审定已审定的教训草稿；前端补了文案。讨论草稿视图带 `target_current_version`，目标条目已有新版的改写草稿只能不采纳（409 句子 + 前端禁用；显式给 `base_version` = 最新的 API 调用仍可采纳）。
+- **`get_agent_run` 不读 `retro` 运行**：spec §8.3 只排除讨论自己的运行；D11 与 roadmap「未审定的草稿不被任何 Agent 引用」优先，复盘运行的输出就是卡的草稿。
+- **`get_plan_context` 对卡只给 `reviewed` / `not_reviewed` 两态**：其余状态要读草稿表，而没有任何工具路径可以碰草稿表（有测试固定）。
+- **价位上的 `know:` 不入 `knowledge_citations`**：027 的 `field` CHECK（spec §6.2 的字段集）没有对应值，只记论点、失效条件、变化说明、反方、风险、复查。
+- **`tools.py` 超出「只新增」**：`ToolContext` 改为 frozen dataclass，`tools.call(tools=)` 多一个可选参数（默认 `TOOLS`，行为不变）；`tasks/workbench.py` 按 `growth_ready` 选 `stages-3` / `stages-2` / `stages-1`（D22）。
+- **讨论轮次**：`run_id` 存的是该轮回答将携带的 Agent 运行 id（表只追加，不能提交后再回填），后台执行器 id 只在进程内登记；没有会话级 advisory lock，忙判定在事务锁内加进程内登记，写回答时在同一把锁下复核；重放同一 `request_id` 时返回的 `run_id` 含义与首次不同（202 `{status: 'replayed'}`）。
+- **跳过的起草**：写一行 `review_card_drafts`（`skipped`，无 `agent_runs`），同一原因重复不再写；`draft_cap` 不写行。
+- **`check` 的「事实已变化」**按冻结当时的交易日与已知日线重算，成交作废等后来的变化只列出、不算失败。
+- **LangGraph checkpoint 表**每次 Agent 运行也写行，spec 说讨论「只写四类行」不含它们。
+- **前端**：「存为补充信息」按钮放在每个已写入的用户轮次上（`request_id` 靠这一轮的 `request_id` 派生，发生在该轮写入之后），不放在输入框旁；纪律标记写「死扛亏损」（沿用现有 `FLAG_LABELS`，spec §4.7 写「死扛」）；「标的」页只给 Agent 计划行和「计划价位」行加讨论按钮。
+- **文档与测试**：`tests/test_dashboard_frontend_source.py` 的路由断言随新增的 `discuss` 区更新。
+
+### 已知限制
+
+- **「采纳 + 买入、后又否决」的卡**：卡存在，叙述与成交都在，但 `facts.tracks.actual` 仍按 `tracks-1`（最新决定无 `plan_id` → 显示未执行，0R）；`tracks.py` 本版不动。要改需另发 `tracks-2`。
+- **冻结事实不随后来的更正变化**：卡页与 `retro_cards check` 标「事实已变化」，不重建、不删卡。
+- **纪律「待定」**：过早止盈要卖出后 20 个交易日才能判定，以卡页「现在的判定」为准。
+- **成交在建卡后被作废**，同一单元可能因此变成另一种结束，按 `event_key` 规则出第二张卡（spec §15）。
+- **未决定的单元没有复盘卡**（D1）；上线前的旧交易默认没有卡（D6）。
+- **讨论截止时间是提问时刻**：回答可能用到计划之后的数据，只靠提示词区分「当时」与「之后」；`get_trigger`、`get_position` 不按截止时间过滤（v2.6 已记录）；讨论不流式，一次回答可能要一两分钟，服务重启会中断正在进行的回答。
+- **表现回看只看影子**，不区分你是否真的照着做；**知识正文是纯文本**；概念卡改版后，知识上挂的 `concept:<id>@<旧版>` 不自动更新。
+- **跳过的起草行占用尝试序号**；列表与卡页的读取是逐卡逐条的（N+1，个人规模可接受）；`retro_subjects` 不剪枝未成交且无卡的单元，每个单元每次要做一次影子重放。
+- **没有迁移 027 时**周度「你学到了什么」读作「没有结束的交易」，而不是「未启用」。
+- 链内拆股的换算问题沿用 v2.5。
+
+### 验收
+
+- 测试：离线 pytest 1863 passed / 616 skipped；一次性库 pytest 2479 passed；前端 `npm test` 586 passed（45 个文件），`npm run build` 通过；`knowledge check` 通过（95 张卡、原理页 13 节）。
+- **验收未完成**：只有自动化测试。迁移 027 尚未在真实库执行（执行前先 `pg_dump`）、服务尚未重启、§16.2 手动触发验收与 §16.3 定时观察尚未做；不宣称用户验收已过。执行 027、重启服务、打 tag `v2.7.0`、推送 `origin` 不在本轮执行，各自先征得用户同意。
 
 ## v2.6.0 — 2026-10-28
 

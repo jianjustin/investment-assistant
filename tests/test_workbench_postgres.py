@@ -573,7 +573,7 @@ def test_weekly_review3_has_by_pool(workbench_db, monkeypatch):
                     tier_rows=[{'ticker': 'NVDA', 'tier': 'extended', 'sector_etf': None}],
                     candidate_days=[date(2026, 10, 20)], plan_days=[(date(2026, 10, 20), 'extended')])
     out = service.generate_weekly(date(2026, 10, 19), now=NOW + timedelta(days=2))
-    assert out['calc_version'] == 'review-6'
+    assert out['calc_version'] == 'review-7'
     row = out['stats']['by_pool']['extended']['trend_reclaim']
     assert (row['triggers'], row['plans']) == (1, 1)
 
@@ -612,7 +612,7 @@ def test_old_review2_snapshot_unchanged(workbench_db, monkeypatch):
                     tier_rows=[{'ticker': 'NVDA', 'tier': 'core', 'sector_etf': None}],
                     candidate_days=[date(2026, 10, 20)], plan_days=[(date(2026, 10, 20), 'core')])
     out = service.generate_weekly(date(2026, 10, 19), now=NOW + timedelta(days=2))
-    assert out['calc_version'] == 'review-6'
+    assert out['calc_version'] == 'review-7'
     again = repository.weekly_head(workbench_db, date(2026, 10, 12))
     assert again['id'] == old['id'] and again['calc_version'] == 'review-2' and again['stats'] == {'units': 7}
 

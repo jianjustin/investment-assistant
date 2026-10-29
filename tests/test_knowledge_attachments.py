@@ -125,3 +125,25 @@ def test_reasoning_and_overview_concepts_exist():
     assert len(used) > 30
     missing = sorted(i for i in used if i not in concepts)
     assert not missing, f'concepts used by the back end without a card: {missing}'
+
+
+# ---- v2.7 attach groups (spec §14) ----
+
+V27_GROUPS = ('retroCard', 'myKnowledge', 'discussion', 'weeklyLearning')
+
+
+def test_v27_attach_groups_exist_in_catalog():
+    text = KNOWLEDGE_TS.read_text(encoding='utf-8')
+    concepts = _concepts()
+    ids = set()
+    for group in V27_GROUPS:
+        match = re.search(rf'\n  {group}: \{{(.*?)\n  \}},', text, re.S)
+        assert match, f'ATTACH group {group} not found'
+        group_ids = QUOTED_ID.findall(match.group(1))
+        assert group_ids, f'ATTACH group {group} names no concept'
+        ids |= set(group_ids)
+    # The seven cards v2.7 adds (spec §14) are all attached somewhere.
+    assert {'review.retro_card', 'review.retro_end', 'system.my_knowledge', 'review.knowledge_performance',
+            'agent.knowledge_citation', 'system.discussion', 'review.weekly_learning'} <= ids
+    missing = sorted(i for i in ids if i not in concepts)
+    assert not missing, f'v2.7 attached concepts without a card: {missing}'

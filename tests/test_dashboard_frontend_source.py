@@ -60,10 +60,10 @@ def test_api_client_exports_core_functions():
 
 
 def test_app_hash_router_covers_all_zones():
-    # v2.3 restores data; v2.4 adds the standalone #plan/<id> zone; v2.6 adds knowledge; v2.1 legacy zones still fall back to today.
+    # v2.3 restores data; v2.4 adds the standalone #plan/<id> zone; v2.6 adds knowledge; v2.7 adds the #discuss/<id> zone; v2.1 legacy zones still fall back to today.
     router = Path("web/src/lib/router.ts").read_text(encoding="utf-8")
-    assert "export type Zone = 'today' | 'instrument' | 'review' | 'data' | 'knowledge' | 'tools' | 'settings' | 'plan'" in router
-    assert "export const zones: Zone[] = [...workbenchZones, 'data', 'knowledge', 'tools', 'settings', 'plan']" in router
+    assert "export type Zone = 'today' | 'instrument' | 'review' | 'data' | 'knowledge' | 'tools' | 'settings' | 'plan' | 'discuss'" in router
+    assert "export const zones: Zone[] = [...workbenchZones, 'data', 'knowledge', 'tools', 'settings', 'plan', 'discuss']" in router
     for zone in ["technicals", "strategy", "trade"]:
         assert f"'{zone}'" not in router, f"legacy zone still routed: {zone}"
     app = Path("web/src/app.svelte").read_text(encoding="utf-8")
