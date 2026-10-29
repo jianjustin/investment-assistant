@@ -91,9 +91,15 @@ def step(view, kind, nth=0):
 
 # ---------------------------------------------------------------- tables
 
-def test_tool_concepts_cover_tools():
-    assert set(reasoning.TOOL_CONCEPTS) == set(tools.TOOLS)
-    assert len(reasoning.TOOL_CONCEPTS) == 9
+def test_tool_concepts_cover_all_tools():
+    from investment_assistant.workbench.agent.discuss_tools import DISCUSS_TOOLS
+    assert set(reasoning.TOOL_CONCEPTS) == set(tools.TOOLS) | set(DISCUSS_TOOLS)
+    assert len(reasoning.TOOL_CONCEPTS) == 13
+    assert {name: reasoning.TOOL_CONCEPTS[name]['concept'] for name in
+            ('get_knowledge', 'get_plan_context', 'get_derivation', 'get_agent_run')} == {
+        'get_knowledge': 'system.my_knowledge', 'get_plan_context': 'system.discussion',
+        'get_derivation': 'plan.derivation', 'get_agent_run': 'agent.tool_calls'}
+    assert all(name in reasoning.TOOL_TEXT for name in reasoning.TOOL_CONCEPTS)
     assert reasoning.TOOL_CONCEPTS['get_trigger']['concept'] == 'system.decision_unit'
     assert reasoning.TOOL_CONCEPTS['get_concept']['concept'] == 'system.concept_card'
     fields = reasoning.TOOL_CONCEPTS['get_indicators']['fields']
@@ -107,7 +113,8 @@ def test_tool_concepts_cover_tools():
 
 
 def test_checks_tables():
-    assert set(reasoning.CHECKS) == {'agent-2-propose', 'agent-2-revise', 'agent-1', 'review', 'interpret'}
+    assert set(reasoning.CHECKS) == {'agent-2-propose', 'agent-2-revise', 'agent-1', 'review', 'interpret', 'retro',
+                                     'discuss'}
     ids = lambda key: [item[0] for item in reasoning.CHECKS[key]]          # noqa: E731
     assert ids('agent-2-propose') == ['json', 'refs', 'price_refs', 'level_order', 'level_range', 'thesis_count',
                                       'conditions', 'tool_rounds']
@@ -115,8 +122,11 @@ def test_checks_tables():
                                      'conditions', 'changes', 'plan_status', 'tool_rounds']
     assert ids('agent-1') == ['json', 'refs', 'price_refs', 'level_order', 'level_range', 'tool_rounds']
     assert ids('review') == ['json', 'refs', 'tool_rounds'] and ids('interpret') == ['json', 'refs', 'tool_rounds']
+    assert ids('retro') == ['json', 'refs', 'lessons', 'tool_rounds']
+    assert ids('discuss') == ['json', 'refs', 'draft', 'tool_rounds']
     reasons = {r for items in reasoning.CHECKS.values() for item in items for r in item[2]}
     assert reasons <= set(REASON_TEXT)
+    assert {'retro_malformed', 'lesson_invalid', 'answer_malformed'} <= reasons
 
 
 # ---------------------------------------------------------------- propose
@@ -370,6 +380,134 @@ def test_unknown_run_reason_falls_back_to_code():
     assert step(view, 'proposal')['text'] == '这次运行作废：some_new_reason，只保留工具调用'
 
 
+# ---------------------------------------------------------------- v2.7: retro, discuss, get_knowledge
+
+RETRO_RUN_ID = '33333333-3333-4333-8333-333333333333'
+RETRO_OUTPUT = {
+    'headline': '止损后没有回到入场区',
+    'expected_vs_actual': [{'text': '计划止损 96，次日触及。', 'refs': ['fact:plans', 'fact:bars_after']},
+                           {'text': '之后五个交易日都在入场区下方。', 'refs': ['call:1']}],
+    'decision_review': {'text': '你按 Agent 第 1 版执行。', 'refs': ['fact:decision']},
+    'lessons': [{'title': '回踩确认再入', 'body': '等收盘确认。', 'scope': '趋势回踩', 'counter_examples': '跳空时错过',
+                 'concepts': [], 'tickers': ['AMD'], 'refs': ['fact:discipline', 'know:3@1']}]}
+CARD = {'id': 7, 'ticker': 'AMD', 'end_kind': 'stop', 'end_session': date(2026, 10, 23),
+        'facts': {'subject': {'kind': 'unit', 'exit_basis': None}, 'plans': [], 'discipline': {}, 'decision': {}}}
+KNOW_DATA = {'query': {'ticker': 'AMD'}, 'cutoff_at': T.isoformat(), 'point_in_time': True, 'omitted': 0,
+             'entries': [{'ref': 'know:3@1', 'id': 3, 'version': 1, 'title': '回踩确认再入'}], 'note': 'n'}
+
+
+def retro_run(**over):
+    return run_row(**{'mode': 'retro', 'agent_version': 'agent-retro-1', 'output': RETRO_OUTPUT, 'counter': None,
+                      'plan_id': None, 'id': RETRO_RUN_ID, **over})
+
+
+def test_build_retro_steps():
+    calls = [call_row(1, 'get_price_bars', phase='retro', args={'ticker': 'AMD'}, data=[]),
+             call_row(2, 'get_knowledge', phase='retro', args={'ticker': 'AMD'}, data=KNOW_DATA)]
+    view = build(run=retro_run(), calls=calls, version=None, plan_state=None, card=CARD)
+    assert kinds(view) == ['evidence', 'read', 'draft', 'check']
+    assert view['run']['mode'] == 'retro' and view['run']['agent_version'] == 'agent-retro-1'
+    assert view['version'] is None and view['notes'] == []
+    evidence = step(view, 'evidence')
+    assert evidence['fact_keys'] == ['subject', 'plans', 'decision', 'discipline']     # in FACT_KEYS order, as stored
+    assert evidence['text'] == '止损 · 结束日 2026-10-23' and evidence['concept'] == 'review.retro_card'
+    read = step(view, 'read')
+    assert read['phase'] == 'retro' and [c['tool'] for c in read['calls']] == ['get_price_bars', 'get_knowledge']
+    draft = step(view, 'draft')
+    assert draft['available'] is True and draft['summary'] == '止损后没有回到入场区'
+    assert draft['items'] == [{'text': '计划止损 96，次日触及。', 'refs': ['fact:plans', 'fact:bars_after']},
+                              {'text': '之后五个交易日都在入场区下方。', 'refs': ['call:1']},
+                              {'text': '你按 Agent 第 1 版执行。', 'refs': ['fact:decision']}]
+    assert draft['lessons'] == [{'title': '回踩确认再入', 'body': '等收盘确认。', 'scope': '趋势回踩', 'counter_examples': '跳空时错过',
+                                 'refs': ['fact:discipline', 'know:3@1']}]
+    check = step(view, 'check')
+    assert [(i['id'], i['result']) for i in check['items']] == [('json', 'pass'), ('refs', 'pass'), ('lessons', 'pass'),
+                                                                ('tool_rounds', 'pass')]
+    json.dumps(view)
+
+
+def test_build_retro_without_a_card_names_all_ten_fact_keys():
+    from investment_assistant.workbench.retro import FACT_KEYS
+    view = build(run=retro_run(), calls=[], version=None, plan_state=None)
+    assert step(view, 'evidence')['fact_keys'] == list(FACT_KEYS) and step(view, 'read')['note'] == '没有记录到工具调用'
+
+
+@pytest.mark.parametrize('reason, implicated', [('retro_malformed', 'json'), ('invalid_citation', 'refs'),
+                                                ('lesson_invalid', 'lessons'), ('tool_rounds_exceeded', 'tool_rounds')])
+def test_retro_rejected_run_implicates_its_check(reason, implicated):
+    view = build(run=retro_run(status='rejected', reason=reason, output=None), calls=[], version=None, plan_state=None,
+                 card=CARD)
+    assert kinds(view) == ['evidence', 'read', 'draft', 'check']
+    assert step(view, 'draft')['available'] is False and '这次运行作废' in step(view, 'draft')['text']
+    assert {i['id'] for i in step(view, 'check')['items'] if i['result'] == 'implicated'} == {implicated}
+    assert step(view, 'check')['reason_text'] == REASON_TEXT[reason]
+
+
+ANSWER_OUTPUT = {'answer': '止损按 2 倍 ATR 算出。', 'refs': ['call:1', 'fact:context'],
+                 'knowledge_draft': {'title': '先看 ATR', 'body': '止损按 ATR 定。', 'scope': '回踩入场',
+                                     'counter_examples': '跳空时失效', 'concepts': ['plan.stop'], 'tickers': ['AMD'],
+                                     'refs': ['call:1'], 'target': None}}
+DISCUSSION = {'id': 4, 'context_kind': 'plan', 'ticker': 'AMD', 'signal_date': date(2026, 10, 22), 'plan_id': PLAN_ID,
+              'card_id': None}
+TURN = {'id': 11, 'seq': 1, 'role': 'user', 'body': '止损为什么是 96？', 'run_id': RUN_ID,
+        'attachment': {'kind': 'knowledge', 'id': 3, 'version': 2}}
+
+
+def discuss_run(**over):
+    return run_row(**{'mode': 'discuss', 'agent_version': 'agent-discuss-1', 'output': ANSWER_OUTPUT, 'counter': None,
+                      'plan_id': None, **over})
+
+
+def test_build_discuss_steps():
+    calls = [call_row(1, 'get_derivation', phase='discuss', args={'plan_id': PLAN_ID}, data={'consistency': 'x'})]
+    reply = {'id': 12, 'role': 'assistant', 'status': 'ok', 'detail': {}}
+    view = build(run=discuss_run(), calls=calls, version=None, plan_state=None, discussion=DISCUSSION, turn=TURN,
+                 reply=reply)
+    assert kinds(view) == ['question', 'read', 'answer', 'check']
+    question = step(view, 'question')
+    assert question['text'] == '止损为什么是 96？'
+    assert question['attachment'] == '附件（用户提供，非证据，不可引用）：知识 #3@2'
+    assert f'计划 {PLAN_ID}' in question['context'] and 'AMD' in question['context']
+    assert step(view, 'read')['phase'] == 'discuss' and step(view, 'read')['calls'][0]['concept'] == 'plan.derivation'
+    answer = step(view, 'answer')
+    assert answer['available'] is True and answer['text'] == '止损按 2 倍 ATR 算出。'
+    assert answer['refs'] == ['call:1', 'fact:context']
+    assert answer['knowledge_draft'] == {'title': '先看 ATR', 'body': '止损按 ATR 定。', 'scope': '回踩入场',
+                                         'counter_examples': '跳空时失效'}
+    assert 'note' not in answer
+    assert [i['id'] for i in step(view, 'check')['items']] == ['json', 'refs', 'draft', 'tool_rounds']
+    dropped = build(run=discuss_run(output={**ANSWER_OUTPUT, 'knowledge_draft': None}), calls=[], version=None,
+                    plan_state=None, discussion=DISCUSSION, turn={**TURN, 'attachment': None},
+                    reply={**reply, 'detail': {'draft_dropped': 'lesson_invalid'}})
+    assert step(dropped, 'answer')['knowledge_draft'] is None
+    assert step(dropped, 'answer')['note'] == '经验草稿没有通过校验，已丢弃：教训草稿缺适用范围、反例或挂靠无效'
+    assert step(dropped, 'question')['attachment'] is None
+    json.dumps([view, dropped])
+
+
+def test_build_discuss_without_rows_and_when_rejected():
+    view = build(run=discuss_run(status='rejected', reason='answer_malformed', output=None), calls=[], version=None,
+                 plan_state=None)
+    assert kinds(view) == ['question', 'read', 'answer', 'check']
+    assert step(view, 'question')['text'] == '没有找到这一轮的记录'
+    assert step(view, 'answer')['available'] is False
+    assert [i['id'] for i in step(view, 'check')['items'] if i['result'] == 'implicated'] == ['json']
+    card_ctx = build(run=discuss_run(), calls=[], version=None, plan_state=None,
+                     discussion={**DISCUSSION, 'plan_id': None, 'card_id': 7})
+    assert '复盘卡 #7' in step(card_ctx, 'question')['context']
+
+
+def test_get_knowledge_call_note():
+    calls = [call_row(1, 'get_knowledge', args={'ticker': 'AMD'}, data=KNOW_DATA),
+             call_row(2, 'get_concept', data={'id': 'plan.stop'})]
+    view = build(calls=calls)
+    first, second = step(view, 'read', 0)['calls']
+    assert first['cutoff_note'] == '我的知识按截止时间读取：只含截止时间之前写入的版本' and first['cutoff_exempt'] is False
+    assert first['concept'] == 'system.my_knowledge' and first['tool_text'] == '我的知识'
+    assert first['result']['entries'][0]['ref'] == 'know:3@1'            # the frontend links entries[].ref / title
+    assert second['cutoff_exempt'] is True and second['cutoff_note'] == EXEMPT_TEXT
+
+
 # ---------------------------------------------------------------- SQL
 
 from test_workbench_service import NOW, SESSION, _ok_responses, agent_deps, db   # noqa: E402,F401
@@ -478,3 +616,59 @@ def test_reasoning_derivation_failure_reports_reason(db, scripted_model, monkeyp
     assert outcome['consistency'] is None and outcome['consistency_error'] == 'derive exploded'
     assert any('derive exploded' in n for n in view['notes'])
     assert 'proposal' in kinds(view)
+
+
+def test_reasoning_reads_retro_and_discuss_context(db, scripted_model):
+    from test_workbench_repository_growth import card as make_card
+    service.run_batch(tickers=['AAA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses('AAA')))
+    db.commit()
+    first = repository.latest_agent_run(db, 'AAA', SESSION)
+    plan = repository.plan_by_id(db, first['plan_id'])
+    base = {'ticker': 'AAA', 'signal_date': SESSION, 'pool': 'main', 'attempt': 1, 'provider': 'zhipu', 'model': 'm',
+            'cutoff_at': NOW, 'reason': None, 'detail': None, 'counter': None, 'input_tokens': 0, 'output_tokens': 0,
+            'started_at': NOW, 'finished_at': NOW, 'plan_id': None, 'status': 'ok'}
+    know_call = {'seq': 1, 'tool': 'get_knowledge', 'args': {}, 'result': {'ref': 'call:1', 'data': KNOW_DATA},
+                 'result_sha256': 'c' * 64, 'called_at': NOW}
+    retro_id, discuss_id = str(uuid.uuid4()), str(uuid.uuid4())
+    repository.insert_agent_run(db, {**base, 'id': retro_id, 'mode': 'retro', 'agent_version': 'agent-retro-1',
+                                     'output': RETRO_OUTPUT}, [{**know_call, 'phase': 'retro'}])
+    repository.insert_agent_run(db, {**base, 'id': discuss_id, 'mode': 'discuss', 'agent_version': 'agent-discuss-1',
+                                     'output': ANSWER_OUTPUT}, [{**know_call, 'phase': 'discuss'}])
+    cid = make_card(db, key='unit:AAA:ended', ticker='AAA', signal_date=SESSION, end_kind='stop',
+                    end_session=SESSION, facts={'subject': {'kind': 'unit', 'exit_basis': None}, 'plans': []})
+    repository.insert_card_draft(db, {'card_id': cid, 'attempt': 1, 'trigger': 'batch', 'agent_run_id': retro_id,
+                                      'status': 'ok', 'reason': None, 'output': RETRO_OUTPUT})
+    discussion = repository.insert_discussion(db, {'request_id': uuid.uuid4(), 'request_hash': 'h',
+                                                   'context_kind': 'plan', 'ticker': 'AAA', 'signal_date': SESSION,
+                                                   'plan_id': plan['id'], 'card_id': None})
+    user = repository.insert_turn(db, {'discussion_id': discussion['id'], 'seq': 1, 'role': 'user',
+                                       'request_id': uuid.uuid4(), 'request_hash': 'h', 'body': '为什么？',
+                                       'run_id': discuss_id, 'attachment': {'kind': 'draft', 'id': 5}})
+    repository.insert_turn(db, {'discussion_id': discussion['id'], 'seq': 2, 'role': 'assistant', 'body': '因为…',
+                                'reply_to': user['id'], 'status': 'ok', 'cutoff_at': NOW, 'agent_run_id': discuss_id,
+                                'detail': {'draft_dropped': 'invalid_citation'}})
+    db.commit()
+    before = db.execute('SELECT (SELECT count(*) FROM agent_runs), (SELECT count(*) FROM discussion_turns)').fetchone()
+
+    retro_view = reasoning.reasoning(retro_id)
+    assert kinds(retro_view) == ['evidence', 'read', 'draft', 'check']
+    assert step(retro_view, 'evidence')['text'] == '止损 · 结束日 2026-10-22'
+    assert step(retro_view, 'evidence')['fact_keys'] == ['subject', 'plans']
+    assert step(retro_view, 'read')['calls'][0]['tool'] == 'get_knowledge'
+    discuss_view = reasoning.reasoning(discuss_id)
+    assert kinds(discuss_view) == ['question', 'read', 'answer', 'check']
+    question = step(discuss_view, 'question')
+    assert question['text'] == '为什么？' and question['attachment'] == '附件（用户提供，非证据，不可引用）：草稿 #5'
+    assert f"计划 {plan['id']}" in question['context']
+    assert step(discuss_view, 'answer')['note'] == '经验草稿没有通过校验，已丢弃：引用无效已作废'
+    json.dumps([retro_view, discuss_view], default=str)
+    assert db.execute('SELECT (SELECT count(*) FROM agent_runs), (SELECT count(*) FROM discussion_turns)').fetchone() == before
+
+    # without migration 027 the extra context is simply absent
+    db.execute('DROP TABLE knowledge_citations, knowledge_draft_verdicts, review_card_verdicts, knowledge_drafts, '
+               'discussion_turns, discussions, review_card_drafts, review_cards, knowledge_status, '
+               'knowledge_versions, knowledge_items CASCADE')
+    db.commit()
+    bare = reasoning.reasoning(retro_id)
+    assert kinds(bare) == ['evidence', 'read', 'draft', 'check'] and len(step(bare, 'evidence')['fact_keys']) == 10
+    assert step(reasoning.reasoning(discuss_id), 'question')['text'] == '没有找到这一轮的记录'

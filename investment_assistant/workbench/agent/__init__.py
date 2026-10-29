@@ -27,4 +27,11 @@ REASON_TEXT = {
     'migration_026_missing': '迁移 026 未执行',
     'review_in_progress': '正在复查',
     'plan_invalid': '修订版按规则作废',      # v2.5 D23: an entry-phase revision whose plan row is invalid
+    # v2.7 growth loop (spec §6.4, verbatim; the frontend AGENT_REASON_TEXT has the same texts)
+    'retro_malformed': '复盘卡草稿格式无效',
+    'lesson_invalid': '教训草稿缺适用范围、反例或挂靠无效',
+    'answer_malformed': '回答格式无效',
+    'migration_027_missing': '迁移 027 未执行',
+    'discussion_busy': '上一个问题还在回答',
+    'draft_exists': '这张卡已有成功的草稿',
 }

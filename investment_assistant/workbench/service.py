@@ -17,6 +17,7 @@ from investment_assistant.db import connect, list_watchlist_items
 from investment_assistant.workbench import (account, bars, briefs, chart, collect, earnings, exits, families, ledger, monthly,
                                                plans, positions, repository, review, rules, synthesis)
 from investment_assistant.workbench.agent import graph as agent_graph
+from investment_assistant.workbench.agent import growth_check as agent_growth_check
 from investment_assistant.workbench.agent import model as agent_model
 from investment_assistant.workbench.agent import tools as agent_tools
 from investment_assistant.workbench import macro as macro_module
@@ -1680,7 +1681,9 @@ def _agent_run_row(unit: dict, *, settings, attempt: int, now: datetime, status:
             'mode': mode,
             # v2.5 §5.1: first versions (and the skips standing in for them) are agent-2 runs
             'agent_version': {'interpret': agent_graph.INTERPRET_VERSION,
-                              'review': agent_graph.REVIEW_VERSION}.get(mode, agent_graph.AGENT_V2),
+                              'review': agent_graph.REVIEW_VERSION,
+                              'retro': agent_graph.RETRO_AGENT_VERSION,
+                              'discuss': agent_graph.DISCUSS_AGENT_VERSION}.get(mode, agent_graph.AGENT_V2),
             'provider': settings.provider,
             'model': settings.model, 'cutoff_at': now, 'status': status, 'reason': reason, 'detail': detail,
             'output': output, 'counter': counter, 'plan_id': plan_id,
@@ -1796,6 +1799,11 @@ def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt:
                     'supersedes_plan_id': None, 'origin': 'signal', 'agent_run_id': run_id,
                     'cutoff_at': run_row['cutoff_at'], 'as_of_session': signal_date, 'diff': None,
                     'schema_version': timeline.AGENT_V2})
+                # v2.7 D18: the knowledge this plan cited, in the plan's own transaction (none: nothing written)
+                repository.insert_knowledge_citations(conn, [
+                    {**cited, 'agent_run_id': run_id, 'plan_id': plan_id}
+                    for cited in agent_growth_check.knowledge_citations(
+                        output=result['output'], counter=result['counter'], mode='propose', calls=result['calls'])])
                 if unit['pool'] == 'main':
                     repository.store_brief(conn, briefs.for_run(_brief_run(run_row), result['calls'], unit=unit,
                                                                 candidates=unit['candidates']))

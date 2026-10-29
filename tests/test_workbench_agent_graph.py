@@ -563,6 +563,338 @@ def test_wrapped_tools_include_get_concept(monkeypatch):
     from investment_assistant.workbench.agent.tools import Recorder
     tools = graph._wrapped_tools(_ctx(monkeypatch), Recorder(), now=lambda: NOW)
     by_name = {t.name: t for t in tools}
-    assert len(by_name) == 9 and 'get_concept' in by_name
+    assert len(by_name) == 10 and 'get_concept' in by_name and list(by_name)[-1] == 'get_knowledge'
     props = by_name['get_concept'].args_schema.model_json_schema()['properties']
     assert list(props) == ['concept_id']
+    assert list(by_name['get_knowledge'].args_schema.model_json_schema()['properties']) == ['ticker', 'concept']
+    assert by_name['get_knowledge'].description == graph.TOOL_DESCRIPTIONS['get_knowledge']
+
+
+# --- v2.7: get_knowledge, know: citations, the discussion's wider tool table, retro and discuss runs ---
+
+from investment_assistant.workbench import repository   # noqa: E402
+from investment_assistant.workbench.agent import growth_check   # noqa: E402
+from investment_assistant.workbench.agent.discuss_tools import DISCUSS_TOOLS, DiscussContext   # noqa: E402
+from investment_assistant.workbench.agent.tools import TOOLS   # noqa: E402
+
+VERSION_ROW = {'id': 31, 'knowledge_id': 3, 'version': 1, 'supersedes_id': None, 'request_id': None,
+               'request_hash': 'h', 'draft_id': None, 'title': '回踩确认再入', 'body': '等收盘确认。', 'scope': '趋势回踩',
+               'counter_examples': '放量跳空时会错过', 'concepts': [], 'tickers': ['AMD'], 'schema_version': 'my-knowledge-1',
+               'created_at': NOW - timedelta(days=3)}
+
+
+def _kctx(monkeypatch, **kwargs):
+    ctx = _ctx(monkeypatch, **kwargs)
+    monkeypatch.setattr(repository, 'growth_ready', lambda conn: True)
+    monkeypatch.setattr(repository, 'knowledge_rows', lambda conn, **kw: ([VERSION_ROW], []))
+    return ctx
+
+
+def _get_knowledge(call_id='k1'):
+    return _tool_call('get_knowledge', {'ticker': 'AMD'}, call_id)
+
+
+def run_v2k(monkeypatch, make, responses, **kwargs):
+    from langgraph.checkpoint.memory import InMemorySaver
+    model = make(responses)
+    result = graph.run_unit_v2(unit=UNIT, ctx=_kctx(monkeypatch), model=model, checkpointer=InMemorySaver(),
+                               run_id='run-k', last_close=LAST_CLOSE, as_of_session=S, now=lambda: NOW, **kwargs)
+    return result, model
+
+
+def test_propose_may_cite_knowledge(monkeypatch, scripted_model):
+    result, _ = run_v2k(monkeypatch, scripted_model, [
+        _get_knowledge(),
+        _tool_call('get_price_bars', {'ticker': 'AMD', 'lookback': 30}, 't2'),
+        AIMessage(content=_plan2_json(ref='call:2', thesis=[
+            {'text': '回踩确认后再入', 'refs': ['call:2', 'know:3@1']}, {'text': '量能放大', 'refs': ['call:2']}],
+            invalidation=[_cond('close_below', {'price': 94}, ['call:2', 'know:3@1'])])),
+        AIMessage(content=json.dumps({'counter': [{'thesis': 1, 'text': '经验在放量跳空时失效', 'refs': ['know:3@1']}],
+                                      'risks': [{'text': '财报临近', 'refs': ['call:2']}]}, ensure_ascii=False)),
+    ])
+    assert result['status'] == 'ok', result['reason']
+    assert result['output']['thesis'][0]['refs'] == ['call:2', 'know:3@1']
+    assert [(c['seq'], c['tool']) for c in result['calls']] == [(1, 'get_knowledge'), (2, 'get_price_bars')]
+    knowledge_call = result['calls'][0]['result']['data']
+    assert knowledge_call['entries'][0]['ref'] == 'know:3@1' and knowledge_call['point_in_time'] is True
+    assert result['counter']['counter'][0]['refs'] == ['know:3@1']            # the counter may cite it too
+    cited = growth_check.knowledge_citations(output=result['output'], counter=result['counter'], mode='propose',
+                                             calls=result['calls'])
+    assert sorted((c['field'], c['call_seq']) for c in cited) == [('counter', 1), ('invalidation', 1), ('thesis', 1)]
+
+
+def test_unreturned_knowledge_ref_rejected(monkeypatch, scripted_model):
+    thesis = [{'text': '回踩确认后再入', 'refs': ['call:1', 'know:3@1']}]
+    # never called get_knowledge
+    result, _ = run_v2k(monkeypatch, scripted_model, [
+        _tool_call('get_price_bars', {'ticker': 'AMD', 'lookback': 30}, 't1'),
+        AIMessage(content=_plan2_json(ref='call:1', thesis=thesis))])
+    assert result['status'] == 'rejected' and result['reason'] == 'invalid_citation'
+    # called it, but cites another id / another version
+    for ref in ('know:9@1', 'know:3@2'):
+        result, _ = run_v2k(monkeypatch, scripted_model, [
+            _get_knowledge(), _tool_call('get_price_bars', {'ticker': 'AMD', 'lookback': 30}, 't2'),
+            AIMessage(content=_plan2_json(ref='call:2', thesis=[{'text': 'x', 'refs': ['call:2', ref]}]))])
+        assert result['status'] == 'rejected' and result['reason'] == 'invalid_citation', ref
+    # a counter entry citing an unreturned ref is dropped, not kept
+    result, _ = run_v2k(monkeypatch, scripted_model, [
+        _get_knowledge(), _tool_call('get_price_bars', {'ticker': 'AMD', 'lookback': 30}, 't2'),
+        AIMessage(content=_plan2_json(ref='call:2')),
+        AIMessage(content=json.dumps({'counter': [{'thesis': 1, 'text': 'x', 'refs': ['know:9@1']}],
+                                      'risks': [{'text': 'y', 'refs': ['know:3@1']}]}))])
+    assert result['status'] == 'ok' and result['counter']['counter'] == []
+    assert result['counter']['risks'] == [{'text': 'y', 'refs': ['know:3@1']}] and result['counter']['dropped'] == 1
+
+
+def test_level_backed_only_by_knowledge_rejected(monkeypatch, scripted_model):
+    result, _ = run_v2k(monkeypatch, scripted_model, [
+        _get_knowledge(),
+        AIMessage(content=_plan2_json(ref='know:3@1'))])         # every level cites only the lesson
+    assert result['status'] == 'rejected' and result['reason'] == 'invalid_citation'
+    assert result['output'] is None and result['counter'] is None
+
+
+def test_review_may_cite_knowledge(monkeypatch, scripted_model):
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    def review(responses):
+        return graph.run_review(unit=UNIT, ctx=_kctx(monkeypatch), model=scripted_model(responses),
+                                checkpointer=InMemorySaver(), run_id='review-k', now=lambda: NOW, evidence=EVIDENCE,
+                                user_refs=frozenset({'user:7'}))
+
+    result = review([_get_knowledge(), _verdict('invalidate', ['know:3@1', 'user:7'])])
+    assert result['status'] == 'ok' and result['output']['refs'] == ['know:3@1', 'user:7']
+    assert [c['phase'] for c in result['calls']] == ['review']
+    assert growth_check.knowledge_citations(output=result['output'], counter=None, mode='review',
+                                            calls=result['calls']) == [
+        {'knowledge_id': 3, 'version': 1, 'field': 'review', 'call_seq': 1}]
+    for refs in (['know:3@1'], ['know:9@1']):                     # never fetched / not the returned one
+        bad = review([_verdict('revise', refs)] if refs == ['know:3@1'] else [_get_knowledge(), _verdict('revise', refs)])
+        assert bad['status'] == 'rejected' and bad['reason'] == 'invalid_citation'
+
+
+def test_prompts_carry_knowledge_note():
+    assert graph.KNOWLEDGE_NOTE == ('可以用 get_knowledge 读用户审定过的经验（按本标的或概念）。经验是用户的判断，不是事实：'
+                                    '可以作为论点或反证的依据之一，引用写 know:<id>@<版本>，只能引用本次工具返回过的条目；'
+                                    '价位仍须引用价格类工具。')
+    for prompt in (graph.PROPOSE_PROMPT_V2, graph.COUNTER_PROMPT_V2, graph.REVIEW_PROMPT):
+        assert graph.KNOWLEDGE_NOTE in prompt
+    for prompt in (graph.PROPOSE_PROMPT, graph.COUNTER_PROMPT, graph.INTERPRET_PROMPT):     # agent-1 and interpret
+        assert 'get_knowledge' not in prompt and 'know:' not in prompt
+    assert graph.RETRO_AGENT_VERSION == 'agent-retro-1' and graph.DISCUSS_AGENT_VERSION == 'agent-discuss-1'
+
+
+def _spy_tools(monkeypatch):
+    names: list[list[str]] = []
+    real = graph._wrapped_tools
+
+    def spy(*args, **kwargs):
+        tools = real(*args, **kwargs)
+        names.append([t.name for t in tools])
+        return tools
+    monkeypatch.setattr(graph, '_wrapped_tools', spy)
+    return names
+
+
+def _dctx(monkeypatch):
+    base = _kctx(monkeypatch)
+    return DiscussContext(ticker=base.ticker, session=base.session, cutoff_at=base.cutoff_at, read=base.read,
+                          signal_date=S, plan_id='p-1', card_id=None, unit_plan_ids=frozenset({'p-1'}),
+                          unit_run_ids=frozenset({'r-1'}))
+
+
+RETRO_CARD = {'id': 7, 'ticker': 'AMD', 'end_session': S, 'end_kind': 'stop'}
+FACTS_TEXT = '[fact:subject] AMD 止损\n[fact:plans] 计划 98.5–101.5\n'
+
+
+def _draft_json(**over):
+    payload = {'headline': '止损后没有回到入场区',
+               'expected_vs_actual': [{'text': '计划止损 96，次日触及。', 'refs': ['fact:plans', 'fact:bars_after']}],
+               'decision_review': {'text': '照 Agent 第 1 版执行。', 'refs': ['fact:decision', 'call:1']},
+               'lessons': [{'title': '回踩确认再入', 'body': '等收盘确认。', 'scope': '趋势回踩', 'counter_examples': '跳空时错过',
+                            'concepts': [], 'tickers': [], 'refs': ['fact:discipline', 'know:3@1']}]}
+    return json.dumps({**payload, **over}, ensure_ascii=False)
+
+
+def retro(monkeypatch, make, responses, **kwargs):
+    from langgraph.checkpoint.memory import InMemorySaver
+    saver, model = InMemorySaver(), make(responses)
+    result = graph.run_retro(card=RETRO_CARD, ctx=_kctx(monkeypatch), model=model, checkpointer=saver,
+                             run_id='retro-1', now=lambda: NOW, facts_text=FACTS_TEXT,
+                             concept_ids=kwargs.get('concept_ids', {'plan.stop'}))
+    return result, saver, model
+
+
+def test_batch_phases_never_bind_discuss_tools(monkeypatch, scripted_model):
+    from langgraph.checkpoint.memory import InMemorySaver
+    names = _spy_tools(monkeypatch)
+    ctx = _kctx(monkeypatch)
+    saver = InMemorySaver()
+    plain = lambda *r: scripted_model(list(r))   # noqa: E731
+    graph.run_unit(unit=UNIT, ctx=ctx, model=plain(AIMessage(content='x')), checkpointer=saver, run_id='a',
+                   last_close=LAST_CLOSE, now=lambda: NOW)
+    graph.run_unit_v2(unit=UNIT, ctx=ctx, model=plain(AIMessage(content='x')), checkpointer=saver, run_id='b',
+                      last_close=LAST_CLOSE, as_of_session=S, now=lambda: NOW)
+    graph.run_review(unit=UNIT, ctx=ctx, model=plain(AIMessage(content='x')), checkpointer=saver, run_id='c',
+                     now=lambda: NOW, evidence=EVIDENCE, user_refs=frozenset())
+    graph.run_interpret(unit=UNIT, ctx=ctx, model=plain(AIMessage(content='x')), checkpointer=saver, run_id='d',
+                        now=lambda: NOW)
+    graph.run_retro(card=RETRO_CARD, ctx=ctx, model=plain(AIMessage(content='x')), checkpointer=saver, run_id='e',
+                    now=lambda: NOW, facts_text=FACTS_TEXT, concept_ids=set())
+    assert len(names) == 5
+    for tool_names in names:                                         # propose, counter, review, interpret, retro
+        assert set(tool_names) == set(TOOLS) and len(tool_names) == 10
+        assert not set(tool_names) & set(DISCUSS_TOOLS)
+
+
+def test_discuss_binds_thirteen_tools(monkeypatch, scripted_model):
+    from langgraph.checkpoint.memory import InMemorySaver
+    names = _spy_tools(monkeypatch)
+    graph.run_discuss(discussion={'id': 1}, ctx=_dctx(monkeypatch),
+                      model=scripted_model([AIMessage(content='x')]), checkpointer=InMemorySaver(), run_id='f',
+                      now=lambda: NOW, context_text='ctx', history_text='', question='q', attachment_text=None,
+                      user_refs=frozenset(), targets=set(), concept_ids=set())
+    [tool_names] = names
+    assert len(tool_names) == 13 and set(tool_names) == set(TOOLS) | set(DISCUSS_TOOLS)
+    assert tool_names[-3:] == ['get_plan_context', 'get_derivation', 'get_agent_run']
+
+
+def test_run_retro_ok_and_rejected(monkeypatch, scripted_model):
+    result, saver, model = retro(monkeypatch, scripted_model, [
+        _tool_call('get_price_bars', {'ticker': 'AMD', 'lookback': 30}, 't1'), _get_knowledge('t2'),
+        AIMessage(content=_draft_json(decision_review={'text': '照 Agent 第 1 版。', 'refs': ['fact:decision', 'call:1']}))])
+    assert result['status'] == 'ok' and result['reason'] is None
+    assert set(result) == {'status', 'reason', 'output', 'calls', 'input_tokens', 'output_tokens'}
+    assert result['output']['headline'] == '止损后没有回到入场区'
+    assert result['output']['lessons'][0]['tickers'] == ['AMD']              # nothing attached: the card's ticker
+    assert [(c['phase'], c['tool']) for c in result['calls']] == [('retro', 'get_price_bars'), ('retro', 'get_knowledge')]
+    assert result['input_tokens'] == 30 and result['output_tokens'] == 15
+    assert saver.get({'configurable': {'thread_id': 'retro-1'}}) is not None
+    assert model.seen[0][0].type == 'system' and model.seen[0][0].content == graph.RETRO_PROMPT
+    human = next(m for m in model.seen[0] if m.type == 'human').content
+    assert FACTS_TEXT in human and '复盘卡 #7' in human
+    for key in ('subject', 'plans', 'discipline', 'knowledge'):                # the prompt names the ten fact keys
+        assert key in graph.RETRO_PROMPT
+    assert '不能改写' in graph.RETRO_PROMPT and '适用范围' in graph.RETRO_PROMPT and '反例' in graph.RETRO_PROMPT
+
+    def reason_of(text, *calls):
+        result, _, _ = retro(monkeypatch, scripted_model, [*calls, AIMessage(content=text)])
+        assert result['status'] == 'rejected' and result['output'] is None
+        return result['reason']
+
+    assert reason_of('我认为可以。') == 'retro_malformed'
+    assert reason_of(_draft_json(headline='')) == 'retro_malformed'
+    assert reason_of(_draft_json(), _tool_call('get_price_bars', {'ticker': 'AMD'}, 't1')) == 'invalid_citation'   # know:3@1 never returned
+    assert reason_of(_draft_json(expected_vs_actual=[{'text': 'x', 'refs': ['fact:bogus']}]),
+                     _get_knowledge()) == 'invalid_citation'
+    bad_lesson = json.loads(_draft_json())['lessons'][0] | {'scope': ' '}
+    assert reason_of(_draft_json(lessons=[bad_lesson]), _get_knowledge()) == 'lesson_invalid'
+
+
+def test_run_retro_may_cite_concept_returned_this_run(monkeypatch, scripted_model, tmp_path):
+    import yaml
+
+    from investment_assistant.workbench import knowledge
+
+    folder = tmp_path / 'concepts'
+    folder.mkdir()
+    front = yaml.safe_dump({'id': 'plan.stop', 'title': '止损', 'group': 'plan', 'version': 1, 'applies_to': ['plan-1'],
+                            'summary': '参考价减 2 倍 ATR14。', 'related': []}, allow_unicode=True, sort_keys=False)
+    (folder / 'plan.stop.md').write_text(f'---\n{front}---\n\n## 是什么\n\n止损是一个价位。\n', encoding='utf-8')
+    monkeypatch.setattr(knowledge, 'DEFAULT_ROOT', tmp_path)
+    knowledge.reset_cache()
+    try:
+        draft = _draft_json(expected_vs_actual=[{'text': '止损定义见概念卡。', 'refs': ['concept:plan.stop@1']}])
+        ok, _, _ = retro(monkeypatch, scripted_model, [_tool_call('get_concept', {'concept_id': 'plan.stop'}, 't1'),
+                                                       _get_knowledge('t2'), AIMessage(content=draft)])
+        assert ok['status'] == 'ok', ok['reason']
+        bad, _, _ = retro(monkeypatch, scripted_model, [_get_knowledge('t2'), AIMessage(content=draft)])
+        assert bad['status'] == 'rejected' and bad['reason'] == 'invalid_citation'   # the card was not read
+    finally:
+        knowledge.reset_cache()
+
+
+def discuss(monkeypatch, make, responses, **over):
+    from langgraph.checkpoint.memory import InMemorySaver
+    saver, model = InMemorySaver(), make(responses)
+    args = dict(discussion={'id': 1}, ctx=_dctx(monkeypatch), model=model, checkpointer=saver, run_id='discuss-1',
+                now=lambda: NOW, context_text='AMD 计划第 0 版，计划当时的截止时间 2026-10-21T22:30Z', history_text='Q1/A1',
+                question='止损为什么是 96？', attachment_text=None, user_refs=frozenset({'user:12'}),
+                targets=set(), concept_ids={'plan.stop'})
+    result = graph.run_discuss(**{**args, **over})
+    return result, saver, model
+
+
+def _answer_json(**over):
+    return json.dumps({'answer': '止损按 2 倍 ATR 算出。', 'refs': ['call:1', 'fact:context'],
+                       'knowledge_draft': None, **over}, ensure_ascii=False)
+
+
+def test_run_discuss_ok_rejected_and_dropped_draft(monkeypatch, scripted_model):
+    out_of_unit = _tool_call('get_derivation', {'plan_id': 'p-9'}, 't1')
+    result, saver, model = discuss(monkeypatch, scripted_model, [out_of_unit, AIMessage(content=_answer_json(
+        refs=['call:1', 'user:12', 'fact:context']))], attachment_text='我原来的草稿：先看 ATR。')
+    assert result['status'] == 'ok' and result['reason'] is None and result['draft_dropped'] is None
+    assert set(result) == {'status', 'reason', 'output', 'calls', 'input_tokens', 'output_tokens', 'draft_dropped'}
+    assert result['output'] == {'answer': '止损按 2 倍 ATR 算出。', 'refs': ['call:1', 'user:12', 'fact:context'],
+                                'knowledge_draft': None}
+    [recorded] = result['calls']
+    assert recorded['phase'] == 'discuss' and recorded['tool'] == 'get_derivation'
+    assert recorded['result']['error'] == '只能查本次讨论的计划与运行'          # the boundary, recorded not raised
+    assert saver.get({'configurable': {'thread_id': 'discuss-1'}}) is not None
+    assert model.seen[0][0].content == graph.DISCUSS_PROMPT
+    human = next(m for m in model.seen[0] if m.type == 'human').content
+    for part in ('计划当时的截止时间', 'Q1/A1', '止损为什么是 96？', '用户提供，非证据，不可引用', '我原来的草稿：先看 ATR。'):
+        assert part in human
+    assert human.index('止损为什么是 96？') < human.index('我原来的草稿')
+    assert '不能改任何东西' in graph.DISCUSS_PROMPT and '之后发生的' in graph.DISCUSS_PROMPT
+
+    plain, _, model2 = discuss(monkeypatch, scripted_model, [AIMessage(content=_answer_json(refs=['fact:context']))])
+    human2 = next(m for m in model2.seen[0] if m.type == 'human').content
+    assert '附件' not in human2                                                  # no attachment, no block
+
+    def rejected(text, *calls, **over):
+        res, _, _ = discuss(monkeypatch, scripted_model, [*calls, AIMessage(content=text)], **over)
+        assert res['status'] == 'rejected' and res['output'] is None and res['draft_dropped'] is None
+        return res['reason']
+
+    assert rejected('回答如下') == 'answer_malformed'
+    assert rejected(_answer_json(answer='')) == 'answer_malformed'
+    assert rejected(_answer_json(refs=['call:9'])) == 'invalid_citation'
+    assert rejected(_answer_json(refs=['user:13'])) == 'invalid_citation'          # not shown in this discussion
+    assert rejected(_answer_json(refs=['know:3@1'])) == 'invalid_citation'         # get_knowledge not called
+    # a bad knowledge draft costs the draft only
+    bad = {'title': 't', 'body': 'b', 'scope': '', 'counter_examples': 'c', 'concepts': [], 'tickers': [],
+           'refs': ['call:1'], 'target': None}
+    res, _, _ = discuss(monkeypatch, scripted_model, [out_of_unit, AIMessage(content=_answer_json(knowledge_draft=bad))])
+    assert res['status'] == 'ok' and res['draft_dropped'] == 'lesson_invalid'
+    assert res['output']['knowledge_draft'] is None and res['output']['answer'] == '止损按 2 倍 ATR 算出。'
+    good = {**bad, 'scope': '趋势回踩', 'target': 'know:3@1'}
+    res, _, _ = discuss(monkeypatch, scripted_model, [_get_knowledge(), AIMessage(content=_answer_json(
+        refs=['call:1'], knowledge_draft={**good, 'refs': ['call:1']}))])
+    assert res['status'] == 'ok' and res['draft_dropped'] is None            # know:3@1 was returned this run
+    assert res['output']['knowledge_draft']['target'] == 'know:3@1' and res['output']['knowledge_draft']['tickers'] == ['AMD']
+    res, _, _ = discuss(monkeypatch, scripted_model, [out_of_unit, AIMessage(content=_answer_json(
+        knowledge_draft={**good, 'target': 'know:3@1', 'refs': ['call:1']}))], targets={'know:3@1'})
+    assert res['draft_dropped'] is None                                      # or named by the attachment
+    res, _, _ = discuss(monkeypatch, scripted_model, [out_of_unit, AIMessage(content=_answer_json(
+        knowledge_draft={**good, 'refs': ['call:1']}))])
+    assert res['draft_dropped'] == 'lesson_invalid'                          # neither returned nor attached
+
+
+def test_retro_discuss_tool_rounds_exceeded(monkeypatch, scripted_model):
+    spam = [_tool_call('get_news', {'days': 7}, f't{i}') for i in range(9)]
+    result, _, _ = retro(monkeypatch, scripted_model, spam)
+    assert result['status'] == 'rejected' and result['reason'] == 'tool_rounds_exceeded'
+    assert len(result['calls']) == 8 and {c['phase'] for c in result['calls']} == {'retro'}
+    result, _, _ = discuss(monkeypatch, scripted_model, [_tool_call('get_news', {'days': 7}, f't{i}') for i in range(9)])
+    assert result['status'] == 'rejected' and result['reason'] == 'tool_rounds_exceeded'
+    assert len(result['calls']) == 8 and {c['phase'] for c in result['calls']} == {'discuss'}
+    assert result['draft_dropped'] is None
+
+
+def test_retro_discuss_model_exception_propagates(monkeypatch, scripted_model):
+    with pytest.raises(AssertionError):
+        retro(monkeypatch, scripted_model, [])
+    with pytest.raises(AssertionError):
+        discuss(monkeypatch, scripted_model, [])

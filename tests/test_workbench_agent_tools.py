@@ -1,4 +1,6 @@
 """Agent tool layer: recording, bounds, indicator math and cutoff visibility. No network."""
+import json
+import uuid
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -21,9 +23,16 @@ def test_reason_text_covers_every_status_reason():
     reasons = {'disabled', 'not_configured', 'quota_exhausted', 'token_budget', 'stage_budget', 'max_attempts',
                'malformed', 'invalid_citation', 'level_check', 'tool_rounds_exceeded', 'model_error',
                'checkpoint_unavailable', 'thesis_count', 'invalid_condition', 'changes_mismatch', 'no_change',
-               'review_malformed', 'migration_026_missing', 'review_in_progress', 'plan_invalid'}
+               'review_malformed', 'migration_026_missing', 'review_in_progress', 'plan_invalid',
+               'retro_malformed', 'lesson_invalid', 'answer_malformed', 'migration_027_missing',
+               'discussion_busy', 'draft_exists'}
     assert set(REASON_TEXT) == reasons
     assert REASON_TEXT['plan_invalid'] == '修订版按规则作废'
+    assert {k: REASON_TEXT[k] for k in reasons if k in ('retro_malformed', 'lesson_invalid', 'answer_malformed',
+                                                       'migration_027_missing', 'discussion_busy', 'draft_exists')} == {
+        'retro_malformed': '复盘卡草稿格式无效', 'lesson_invalid': '教训草稿缺适用范围、反例或挂靠无效',
+        'answer_malformed': '回答格式无效', 'migration_027_missing': '迁移 027 未执行',
+        'discussion_busy': '上一个问题还在回答', 'draft_exists': '这张卡已有成功的草稿'}
     assert STATUSES == ('ok', 'pass', 'rejected', 'error', 'skipped')
 
 
@@ -178,10 +187,14 @@ def boom_ctx():
     return ToolContext(ticker='AMD', session=S, cutoff_at=CUTOFF, read=read)
 
 
-def test_tools_count_is_nine():
-    assert len(agent_tools.TOOLS) == 9 and 'get_concept' in agent_tools.TOOLS
+def test_tools_count_is_ten():
+    assert len(agent_tools.TOOLS) == 10 and list(agent_tools.TOOLS)[-1] == 'get_knowledge'
+    assert list(agent_tools.TOOLS).index('get_concept') == list(agent_tools.TOOLS).index('get_knowledge') - 1
     assert set(agent_tools.TOOLS) == set(agent_tools.TOOL_DESCRIPTIONS)
     assert agent_tools.TOOL_DESCRIPTIONS['get_concept'] == CONCEPT_DESCRIPTION
+    assert agent_tools.TOOL_DESCRIPTIONS['get_knowledge'] == (
+        '读用户审定过的经验（我的知识）：给 ticker 或概念 id 取挂在上面的条目，不给取索引；'
+        '只返回截止时间之前写入的版本；引用写 know:<id>@<版本>')
     assert list(agent_tools.TOOLS)[:8] == ['get_trigger', 'get_price_bars', 'get_indicators', 'get_filings',
                                            'get_news', 'get_earnings', 'get_market_context', 'get_position']
 
@@ -258,3 +271,245 @@ def test_get_concept_not_a_price_tool(cards):
     rec = Recorder()
     call(boom_ctx(), rec, 'get_concept', {'concept_id': 'plan.stop'}, now=CUTOFF)
     assert rec.refs() == {'call:1'} and rec.price_refs() == set()
+
+
+# ---------------------------------------------------------------- get_knowledge (v2.7 spec §6.1)
+
+import inspect   # noqa: E402
+import re   # noqa: E402
+
+from investment_assistant.workbench import repository   # noqa: E402
+
+KNOWLEDGE_NOTE_TEXT = '这是用户审定过的经验，是判断不是事实；价位不能只引用它'
+
+
+def _version(kid, version, *, created_at=None, title=None, tickers=('AMD',), concepts=()):
+    return {'id': kid * 10 + version, 'knowledge_id': kid, 'version': version, 'supersedes_id': None,
+            'request_id': None, 'request_hash': 'h', 'draft_id': None, 'title': title or f'经验{kid}',
+            'body': f'正文{kid}.{version}', 'scope': '范围', 'counter_examples': '反例', 'concepts': list(concepts),
+            'tickers': list(tickers), 'schema_version': 'my-knowledge-1',
+            'created_at': created_at or CUTOFF - timedelta(days=kid, hours=version)}
+
+
+def knowledge_ctx(monkeypatch, versions=(), statuses=(), ready=True):
+    """A tool context whose knowledge reads are faked; returns (ctx, the kwargs knowledge_rows was called with)."""
+    seen: dict = {}
+    monkeypatch.setattr(repository, 'growth_ready', lambda conn: ready)
+
+    def rows(conn, **kwargs):
+        seen.update(kwargs)
+        return list(versions), list(statuses)
+    monkeypatch.setattr(repository, 'knowledge_rows', rows)
+    return ToolContext(ticker='AMD', session=S, cutoff_at=CUTOFF, read=lambda fn: fn(object())), seen
+
+
+def test_get_knowledge_args(monkeypatch, cards):
+    ctx_, seen = knowledge_ctx(monkeypatch, [_version(1, 1)])
+    rec = Recorder()
+    both = call(ctx_, rec, 'get_knowledge', {'ticker': 'AMD', 'concept': 'plan.stop'}, now=CUTOFF)
+    assert both == {'ref': 'call:1', 'error': 'ticker 与 concept 只能给一个'}
+    assert 'error' in call(ctx_, rec, 'get_knowledge', {'ticker': 'NVDA'}, now=CUTOFF)         # out of unit
+    assert call(ctx_, rec, 'get_knowledge', {'concept': 'plan.nope'}, now=CUTOFF)['error'] == '未知概念 plan.nope'
+    assert call(ctx_, rec, 'get_knowledge', {'concept': 'foo'}, now=CUTOFF)['error'] == '未知概念 foo'
+    assert seen == {}                                                                          # no read for a bad call
+    assert 'data' in call(ctx_, rec, 'get_knowledge', {'ticker': 'spy'}, now=CUTOFF)           # the allowed extras
+    assert seen['ticker'] == 'SPY' and seen['concept'] is None and seen['cutoff'] == CUTOFF
+    # a concept as the card ref: the version is ignored, matched by id
+    env = call(ctx_, rec, 'get_knowledge', {'concept': 'concept:plan.stop@1'}, now=CUTOFF)
+    assert env['data']['query'] == {'concept': 'plan.stop'} and seen['concept'] == 'plan.stop'
+    assert seen['ticker'] is None
+
+
+def test_get_knowledge_concept_with_unreadable_catalog_checks_format_only(monkeypatch, tmp_path):
+    (tmp_path / 'concepts').mkdir()
+    (tmp_path / 'concepts' / 'plan.stop.md').write_text('no frontmatter', encoding='utf-8')
+    monkeypatch.setattr(knowledge, 'DEFAULT_ROOT', tmp_path)
+    knowledge.reset_cache()
+    ctx_, seen = knowledge_ctx(monkeypatch, [])
+    rec = Recorder()
+    assert 'data' in call(ctx_, rec, 'get_knowledge', {'concept': 'plan.anything'}, now=CUTOFF)
+    assert seen['concept'] == 'plan.anything'
+    assert call(ctx_, rec, 'get_knowledge', {'concept': 'foo'}, now=CUTOFF)['error'] == '未知概念 foo'
+    knowledge.reset_cache()
+
+
+def test_get_knowledge_shape(monkeypatch):
+    versions = [_version(k, 1) for k in range(1, 13)] + [_version(3, 2, title='经验3新'),
+                                                         _version(13, 1, tickers=('SPY',))]
+    ctx_, _ = knowledge_ctx(monkeypatch, versions)
+    rec = Recorder()
+    data = call(ctx_, rec, 'get_knowledge', {'ticker': 'AMD'}, now=CUTOFF)['data']
+    assert data['query'] == {'ticker': 'AMD'} and data['point_in_time'] is True
+    assert data['cutoff_at'] == CUTOFF.isoformat() and data['note'] == KNOWLEDGE_NOTE_TEXT
+    assert len(data['entries']) == 10 and data['omitted'] == 3               # 13 items visible, at most 10 shown
+    refs = [e['ref'] for e in data['entries']]
+    assert all(re.fullmatch(r'know:[1-9][0-9]*@[1-9][0-9]*', r) for r in refs)
+    assert 'know:3@2' in refs and 'know:3@1' not in refs                     # the highest visible version only
+    first = data['entries'][0]
+    assert set(first) == {'ref', 'id', 'version', 'title', 'body', 'scope', 'counter_examples', 'concepts',
+                          'tickers', 'written_at'}
+    assert refs[0] == 'know:1@1' and first['id'] == 1 and first['written_at'] == versions[0]['created_at'].isoformat()
+    written = [e['written_at'] for e in data['entries']]
+    assert written == sorted(written, reverse=True)                          # newest first
+    assert rec.knowledge_refs() == set(refs)
+
+
+def test_get_knowledge_index_has_no_bodies(monkeypatch):
+    ctx_, seen = knowledge_ctx(monkeypatch, [_version(k, 1, concepts=['concept:plan.stop@1']) for k in range(1, 61)])
+    data = call(ctx_, Recorder(), 'get_knowledge', {}, now=CUTOFF)['data']
+    assert data['query'] == {} and seen['ticker'] is None and seen['concept'] is None
+    assert len(data['entries']) == 50 and data['omitted'] == 10              # the index holds at most 50
+    for entry in data['entries']:
+        assert set(entry) == {'ref', 'title', 'concepts', 'tickers', 'written_at'}
+    assert 'body' not in json.dumps(data, ensure_ascii=False)
+
+
+def test_get_knowledge_hides_archived_and_later_versions(monkeypatch):
+    archived = {'id': 1, 'knowledge_id': 2, 'status': 'archived', 'reason': '', 'created_at': CUTOFF - timedelta(hours=1)}
+    later = {**archived, 'id': 2, 'knowledge_id': 1, 'created_at': CUTOFF + timedelta(hours=1)}
+    versions = [_version(1, 1), _version(2, 1), _version(3, 1, created_at=CUTOFF + timedelta(minutes=1))]
+    ctx_, _ = knowledge_ctx(monkeypatch, versions, [archived, later])
+    refs = {e['ref'] for e in call(ctx_, Recorder(), 'get_knowledge', {'ticker': 'AMD'}, now=CUTOFF)['data']['entries']}
+    assert refs == {'know:1@1'}                  # 2 archived before the cutoff, 3 written after it, 1's archive is later
+
+
+def test_get_knowledge_without_migration(monkeypatch):
+    ctx_, seen = knowledge_ctx(monkeypatch, [_version(1, 1)], ready=False)
+    rec = Recorder()
+    env = call(ctx_, rec, 'get_knowledge', {}, now=CUTOFF)
+    assert env == {'ref': 'call:1', 'error': '我的知识不可用：迁移 027 未执行'} and seen == {}
+    assert rec.knowledge_refs() == set()
+
+
+def test_get_knowledge_not_a_price_tool(monkeypatch):
+    assert 'get_knowledge' not in PRICE_TOOLS
+    ctx_, _ = knowledge_ctx(monkeypatch, [_version(1, 1)])
+    rec = Recorder()
+    call(ctx_, rec, 'get_knowledge', {'ticker': 'AMD'}, now=CUTOFF)
+    assert rec.refs() == {'call:1'} and rec.price_refs() == set()
+
+
+def test_recorder_knowledge_refs_by_phase():
+    rec = Recorder()
+    entries = lambda *refs: {'entries': [{'ref': r} for r in refs]}                         # noqa: E731
+    rec.record('get_knowledge', {}, data=entries('know:1@1', 'know:2@3'), now=CUTOFF)
+    rec.record('get_news', {}, data=[{'ref': 'know:9@9'}], now=CUTOFF)                     # another tool: ignored
+    rec.record('get_knowledge', {'ticker': 'X'}, error='boom', now=CUTOFF)                  # failed call: ignored
+    rec.phase = 'counter'
+    rec.record('get_knowledge', {}, data=entries('know:2@3', 'know:4@1'), now=CUTOFF)
+    assert rec.knowledge_refs() == {'know:1@1', 'know:2@3', 'know:4@1'}
+    assert rec.knowledge_refs('propose') == {'know:1@1', 'know:2@3'}
+    assert rec.knowledge_refs('counter') == {'know:2@3', 'know:4@1'}
+    assert rec.knowledge_refs('review') == set()
+
+
+def test_call_dispatches_in_the_given_table_only():
+    seen = []
+    table = {'only_here': lambda ctx_, x=1: seen.append(x) or {'x': x}}
+    rec = Recorder()
+    assert call(ctx(), rec, 'only_here', {'x': 3}, now=CUTOFF, tools=table)['data'] == {'x': 3}
+    assert call(ctx(), rec, 'only_here', {}, now=CUTOFF)['error'] == '未知工具 only_here'         # default table: TOOLS
+    assert seen == [3]
+
+
+def test_no_tool_queries_draft_tables():
+    """Nothing the agent can call reads the lesson drafts or the card drafts (spec §5.4, D11)."""
+    from investment_assistant.workbench import derivation_view, plan_shadow, reasoning, service
+    from investment_assistant.workbench.agent import discuss_tools
+
+    banned = ('knowledge_drafts', 'review_card_drafts')
+    modules = (agent_tools, discuss_tools)
+    extra = [service.chain_status, service.unit_buys, derivation_view.load_rows, reasoning.view_in,
+             reasoning._inputs, plan_shadow.simulate]
+    sources = [inspect.getsource(m) for m in modules] + [inspect.getsource(f) for f in extra]
+    called = {name for source in sources for name in re.findall(r'repository\.(\w+)', source)
+              if callable(getattr(repository, name))}
+    assert {'knowledge_rows', 'growth_ready', 'review_card', 'card_verdict', 'knowledge_item'} <= called
+    for name in called:
+        source = inspect.getsource(getattr(repository, name))
+        assert not any(word in source for word in banned), name
+    for source in sources:
+        assert not any(word in source for word in banned)
+
+
+# --- SQL: the cutoff and the drafts (spec §16.1) ---
+
+from test_workbench_repository_growth import card as make_card, item_with_versions   # noqa: E402
+
+
+def _archive(conn, item_id, status, created_at):
+    sid = repository.insert_knowledge_status(conn, {'knowledge_id': item_id, 'status': status, 'reason': '',
+                                                    'request_id': uuid.uuid4(), 'request_hash': 'h'})
+    conn.execute('UPDATE knowledge_status SET created_at = %s WHERE id = %s', (created_at, sid))
+
+
+def test_get_knowledge_respects_cutoff(workbench_db):
+    conn = workbench_db
+    before, after = CUTOFF - timedelta(hours=2), CUTOFF + timedelta(hours=1)
+    concept = ['concept:plan.stop@1']
+    a = item_with_versions(conn, [(before, ['AMD'], concept), (after, ['AMD'], concept)])   # v2 written after
+    b = item_with_versions(conn, [(before, ['AMD'], concept)])
+    _archive(conn, b, 'archived', after)                                                   # archived after
+    c = item_with_versions(conn, [(after, ['AMD'], concept)])                              # created after
+    d = item_with_versions(conn, [(before, ['AMD'], concept)])
+    _archive(conn, d, 'archived', before)                                                  # archived before
+    e = item_with_versions(conn, [(before, ['AMD'], concept)])
+    _archive(conn, e, 'archived', before)
+    _archive(conn, e, 'active', after)                                                     # restored after
+    f = item_with_versions(conn, [(before, ['AMD'], ['concept:plan.stop@1']),
+                                  (before + timedelta(minutes=5), ['MSFT'], [])])          # moved off the ticker
+    ctx_ = ctx('AMD', read=lambda fn: fn(conn))
+    want = {f'know:{a}@1', f'know:{b}@1'}
+    by_ticker = get_knowledge_data(ctx_, ticker='AMD')
+    assert {x['ref'] for x in by_ticker['entries']} == want
+    assert {x['ref'] for x in get_knowledge_data(ctx_, concept='plan.stop')['entries']} == want
+    index = get_knowledge_data(ctx_)
+    assert {x['ref'] for x in index['entries']} == want | {f'know:{f}@2'}
+    assert by_ticker['point_in_time'] is True and by_ticker['cutoff_at'] == CUTOFF.isoformat()
+    assert all(x['title'] and 'body' not in x for x in index['entries'])
+    # the same call at a later cutoff sees the rest
+    later = ToolContext(ticker='AMD', session=S, cutoff_at=CUTOFF + timedelta(days=1), read=lambda fn: fn(conn))
+    assert {x['ref'] for x in agent_tools.get_knowledge(later, ticker='AMD')['entries']} == {
+        f'know:{a}@2', f'know:{c}@1', f'know:{e}@1'}
+
+
+def get_knowledge_data(ctx_, **kwargs):
+    return call(ctx_, Recorder(), 'get_knowledge', kwargs, now=CUTOFF)['data']
+
+
+def test_get_knowledge_never_reads_drafts(workbench_db):
+    conn = workbench_db
+    run = uuid.uuid4()
+    cid = make_card(conn, ticker='AMD')
+    conn.execute(
+        "INSERT INTO agent_runs (id, ticker, signal_date, pool, attempt, mode, agent_version, provider, model, "
+        "cutoff_at, status, reason, started_at, finished_at) VALUES (%s, 'AMD', %s, 'main', 1, 'retro', "
+        "'agent-retro-1', 'zhipu', 'glm', %s, 'ok', NULL, %s, %s)", (run, S, CUTOFF, CUTOFF, CUTOFF))
+    draft = repository.insert_card_draft(conn, {'card_id': cid, 'attempt': 1, 'trigger': 'batch', 'agent_run_id': run,
+                                                'status': 'ok', 'reason': None, 'output': {'headline': '草稿'}})
+    base = {'origin': 'review_card', 'card_draft_id': draft, 'discussion_turn_id': None, 'target_knowledge_id': None,
+            'target_version': None, 'body': 'b', 'scope': 's', 'counter_examples': 'c', 'concepts': [],
+            'tickers': ['AMD'], 'refs': ['fact:plans']}
+    ids = [repository.insert_knowledge_draft(conn, {**base, 'lesson_index': i, 'title': f'草稿{i}'}) for i in range(3)]
+    repository.insert_draft_verdict(conn, {'draft_id': ids[1], 'action': 'dismiss', 'knowledge_version_id': None,
+                                           'request_id': uuid.uuid4()})                  # a dismissed one
+    discussion = repository.insert_discussion(conn, {'request_id': uuid.uuid4(), 'request_hash': 'h',
+                                                     'context_kind': 'card', 'ticker': 'AMD', 'signal_date': S,
+                                                     'plan_id': None, 'card_id': cid})
+    user = repository.insert_turn(conn, {'discussion_id': discussion['id'], 'seq': 1, 'role': 'user',
+                                         'request_id': uuid.uuid4(), 'request_hash': 'h', 'body': '问'})
+    answer = repository.insert_turn(conn, {'discussion_id': discussion['id'], 'seq': 2, 'role': 'assistant',
+                                           'body': '答', 'reply_to': user['id'], 'status': 'ok', 'cutoff_at': CUTOFF})
+    repository.insert_knowledge_draft(conn, {'origin': 'discussion', 'discussion_turn_id': answer['id'],
+                                             'title': '讨论草稿', 'body': 'b', 'scope': 's', 'counter_examples': 'c',
+                                             'concepts': [], 'tickers': ['AMD'], 'refs': ['fact:context'],
+                                             'card_draft_id': None, 'lesson_index': None, 'target_knowledge_id': None,
+                                             'target_version': None})
+    ctx_ = ctx('AMD', read=lambda fn: fn(conn))
+    assert get_knowledge_data(ctx_, ticker='AMD')['entries'] == []
+    assert get_knowledge_data(ctx_)['entries'] == []
+    blob = json.dumps([get_knowledge_data(ctx_, ticker='AMD'), get_knowledge_data(ctx_)], ensure_ascii=False)
+    assert '草稿' not in blob and '讨论草稿' not in blob
+    # a reviewed lesson written as knowledge is visible as soon as it exists before the cutoff
+    item_with_versions(conn, [(CUTOFF - timedelta(hours=1), ['AMD'], [])])
+    assert len(get_knowledge_data(ctx_, ticker='AMD')['entries']) == 1

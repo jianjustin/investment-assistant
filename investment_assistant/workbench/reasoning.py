@@ -18,13 +18,15 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from investment_assistant.workbench import labels
+from investment_assistant.workbench import labels, retro
 from investment_assistant.workbench.agent import REASON_TEXT
 from investment_assistant.workbench.agent import conditions as condition_registry
 
 AGENT_V1 = 'agent-1'
 CUTOFF_EXEMPT_TOOLS = frozenset({'get_concept'})
 CUTOFF_EXEMPT_TEXT = '概念卡随代码版本走，不受截止时间约束'
+KNOWLEDGE_CUTOFF_TEXT = '我的知识按截止时间读取：只含截止时间之前写入的版本'
+ATTACHMENT_MARK = '用户提供，非证据，不可引用'
 LEGACY_NOTE = 'agent-1（旧版）：没有失效条件、下次复查条件与逐条对应的反证，也不参与复查；以下按原样显示'
 NO_TIMELINE_NOTE = '迁移 026 未执行，没有版本与复查记录'
 NO_CALLS_NOTE = '没有记录到工具调用'
@@ -35,11 +37,12 @@ IMPLICATED_NOTE = '未通过的检查在这几项之中：{items}；校验器遇
 TOOL_TEXT: dict[str, str] = {
     'get_trigger': '触发规则', 'get_price_bars': '日线', 'get_indicators': '技术指标', 'get_filings': 'SEC 文件',
     'get_news': '资讯', 'get_earnings': '财报日', 'get_market_context': '市场环境', 'get_position': '持仓',
-    'get_concept': '概念卡',
+    'get_concept': '概念卡', 'get_knowledge': '我的知识',
+    'get_plan_context': '计划上下文', 'get_derivation': '计划推导', 'get_agent_run': '运行记录',
 }
 
-# Tool -> the concept card of the tool's result, and result field -> concept (spec §8.3). Every tool in
-# agent.tools.TOOLS has a row (a test pins it).
+# Tool -> the concept card of the tool's result, and result field -> concept (spec §8.3, v2.7 §6.5). Every tool in
+# agent.tools.TOOLS and agent.discuss_tools.DISCUSS_TOOLS has a row (a test pins it).
 TOOL_CONCEPTS: dict[str, dict] = {
     'get_trigger': {'concept': 'system.decision_unit',
                     'fields': {rule_id: f'rule.{rule_id}' for rule_id in labels.RULE_TEXT}},
@@ -59,6 +62,10 @@ TOOL_CONCEPTS: dict[str, dict] = {
         'macro.BAMLH0A0HYM2': 'indicator.hy_oas', 'macro.T10Y2Y': 'indicator.t10y2y'}},
     'get_position': {'concept': 'review.position', 'fields': {}},
     'get_concept': {'concept': 'system.concept_card', 'fields': {}},
+    'get_knowledge': {'concept': 'system.my_knowledge', 'fields': {}},
+    'get_plan_context': {'concept': 'system.discussion', 'fields': {}},
+    'get_derivation': {'concept': 'plan.derivation', 'fields': {}},
+    'get_agent_run': {'concept': 'agent.tool_calls', 'fields': {}},
 }
 
 # Validator checks per run kind: (id, text, the reject reasons that can come from it). The validator stops
@@ -87,6 +94,13 @@ CHECKS: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
                ('refs', '修订 / 作废必须有引用且都存在', ('invalid_citation',)), _ROUNDS),
     'interpret': (('json', '输出是合法 JSON 且字段齐全', ('malformed',)),
                   ('refs', '引用都存在', ('invalid_citation',)), _ROUNDS),
+    # v2.7 (spec §6.5): the card draft and the discussion answer
+    'retro': (('json', '草稿格式', ('retro_malformed',)),
+              ('refs', '引用都存在', ('invalid_citation',)),
+              ('lessons', '教训写明适用范围与反例，挂靠有效', ('lesson_invalid',)), _ROUNDS),
+    'discuss': (('json', '回答格式', ('answer_malformed',)),
+                ('refs', '引用都存在', ('invalid_citation',)),
+                ('draft', '经验草稿合规（不合规只丢弃草稿，回答照常）', ('lesson_invalid',)), _ROUNDS),
 }
 
 LEVEL_CONCEPTS = (('entry_low', '入场下沿', 'plan.entry_zone'), ('entry_high', '入场上沿', 'plan.entry_zone'),
@@ -143,7 +157,8 @@ def _call_view(call: dict) -> dict:
         'called_at': call.get('called_at'),
         'concept': TOOL_CONCEPTS.get(tool, {}).get('concept'),
         'fields': {} if error else _call_fields(tool, data),
-        'cutoff_exempt': exempt, 'cutoff_note': CUTOFF_EXEMPT_TEXT if exempt else None,
+        'cutoff_exempt': exempt,
+        'cutoff_note': CUTOFF_EXEMPT_TEXT if exempt else (KNOWLEDGE_CUTOFF_TEXT if tool == 'get_knowledge' else None),
     }
 
 
@@ -287,6 +302,74 @@ def _interpretation(run: dict) -> dict:
             'conflicts': out.get('conflicts') or []}
 
 
+def _retro_evidence(card: dict | None) -> dict:
+    base = {'kind': 'evidence', 'title': '冻结的事实', 'concept': 'review.retro_card'}
+    if card is None:
+        return {**base, 'text': '复盘卡的十个冻结事实', 'fact_keys': list(retro.FACT_KEYS)}
+    facts = card.get('facts') or {}
+    basis = (facts.get('subject') or {}).get('exit_basis')
+    try:
+        end = retro.end_text(card['end_kind'], basis)
+    except KeyError:
+        end = str(card.get('end_kind'))
+    return {**base, 'text': f"{end} · 结束日 {card.get('end_session')}",
+            'fact_keys': [key for key in retro.FACT_KEYS if key in facts]}
+
+
+def _draft(run: dict) -> dict:
+    out = run.get('output')
+    if not isinstance(out, dict):
+        return _unavailable('draft', '起草', 'review.retro_card', run)
+    narrative = [{'text': i.get('text'), 'refs': list(i.get('refs') or [])}
+                 for i in out.get('expected_vs_actual') or [] if isinstance(i, dict)]
+    review = out.get('decision_review')
+    if isinstance(review, dict):
+        narrative.append({'text': review.get('text'), 'refs': list(review.get('refs') or [])})
+    lessons = [{'title': item.get('title'), 'body': item.get('body'), 'scope': item.get('scope'),
+                'counter_examples': item.get('counter_examples'), 'refs': list(item.get('refs') or [])}
+               for item in out.get('lessons') or [] if isinstance(item, dict)]
+    return {'kind': 'draft', 'title': '起草', 'concept': 'review.retro_card', 'available': True,
+            'summary': out.get('headline'), 'items': narrative, 'lessons': lessons}
+
+
+def _attachment_line(attachment: Any) -> str | None:
+    if not isinstance(attachment, dict):
+        return None
+    kind = '知识' if attachment.get('kind') == 'knowledge' else '草稿'
+    version = f"@{attachment['version']}" if attachment.get('version') else ''
+    return f"附件（{ATTACHMENT_MARK}）：{kind} #{attachment.get('id')}{version}"
+
+
+def _context_line(discussion: dict | None) -> str | None:
+    if discussion is None:
+        return None
+    subject = f"计划 {discussion['plan_id']}" if discussion.get('plan_id') else f"复盘卡 #{discussion.get('card_id')}"
+    return f"讨论对象：{subject} · {discussion.get('ticker')} · 信号日 {discussion.get('signal_date')}"
+
+
+def _question(turn: dict | None, discussion: dict | None) -> dict:
+    base = {'kind': 'question', 'title': '你的问题', 'concept': 'system.discussion'}
+    if turn is None:
+        return {**base, 'text': '没有找到这一轮的记录', 'attachment': None, 'context': _context_line(discussion)}
+    return {**base, 'text': turn.get('body'), 'attachment': _attachment_line(turn.get('attachment')),
+            'context': _context_line(discussion)}
+
+
+def _answer(run: dict, reply: dict | None) -> dict:
+    out = run.get('output')
+    if not isinstance(out, dict):
+        return _unavailable('answer', '回答', 'system.discussion', run)
+    draft = out.get('knowledge_draft')
+    step = {'kind': 'answer', 'title': '回答', 'concept': 'system.discussion', 'available': True,
+            'text': out.get('answer'), 'refs': list(out.get('refs') or []),
+            'knowledge_draft': ({k: draft.get(k) for k in ('title', 'body', 'scope', 'counter_examples')}
+                                if isinstance(draft, dict) else None)}
+    dropped = ((reply or {}).get('detail') or {}).get('draft_dropped')
+    if dropped:
+        step['note'] = f"经验草稿没有通过校验，已丢弃：{_reason_text(dropped)}"
+    return step
+
+
 # ---------------------------------------------------------------- assembly
 
 def _run_view(run: dict) -> dict:
@@ -305,14 +388,20 @@ def _check_key(run: dict, legacy: bool) -> str:
         return 'interpret'
     if mode == 'review':
         return 'review'
+    if mode in ('retro', 'discuss'):
+        return mode
     if mode == 'revise':
         return 'agent-2-revise'
     return 'agent-1' if legacy else 'agent-2-propose'
 
 
 def build(*, run: dict, calls: list[dict], version: dict | None, trigger_review: dict | None,
-          later_reviews: list[dict], plan_state: dict | None, timeline_ready: bool) -> dict:
-    """The §8.1 payload of one run. Pure; see the module docstring for what each input is."""
+          later_reviews: list[dict], plan_state: dict | None, timeline_ready: bool,
+          card: dict | None = None, discussion: dict | None = None, turn: dict | None = None,
+          reply: dict | None = None) -> dict:
+    """The §8.1 payload of one run. Pure; see the module docstring for what each input is. ``card`` (the review
+    card of a retro run) and ``discussion`` / ``turn`` / ``reply`` (the discussion, the user's turn and its answer
+    of a discuss run) are optional: a step shows what was stored and says so when the row is missing."""
     mode = run['mode']
     legacy = run.get('agent_version') == AGENT_V1
     counter_ran = isinstance(run.get('counter'), dict)
@@ -320,7 +409,17 @@ def build(*, run: dict, calls: list[dict], version: dict | None, trigger_review:
 
     if mode in ('revise', 'review') and timeline_ready:
         steps.append(_evidence(trigger_review))
-    if mode == 'review':
+    if mode == 'retro':
+        steps.append(_retro_evidence(card))
+        steps.append(_read(calls, 'retro', '起草者读了什么', NO_CALLS_NOTE))
+        steps.append(_draft(run))
+        steps.append(_check(run, _check_key(run, legacy)))
+    elif mode == 'discuss':
+        steps.append(_question(turn, discussion))
+        steps.append(_read(calls, 'discuss', '回答前读了什么', NO_CALLS_NOTE))
+        steps.append(_answer(run, reply))
+        steps.append(_check(run, _check_key(run, legacy)))
+    elif mode == 'review':
         steps.append(_read(calls, 'review', '复查员读了什么', NO_CALLS_NOTE))
         steps.append(_verdict(run))
         steps.append(_check(run, _check_key(run, legacy)))
@@ -365,39 +464,75 @@ def _uuid(value: Any) -> str:
         raise ValueError(f'运行 id 不是合法的 UUID：{value}') from None
 
 
+def _inputs(conn, key: str) -> dict:
+    """The stored rows ``build`` takes, read on ``conn`` (a read-only transaction)."""
+    from investment_assistant.workbench import derivation, derivation_view, repository
+
+    run = repository.agent_run_by_id(conn, key)
+    if run is None:
+        raise LookupError(f'运行不存在：{key}')
+    calls = repository.agent_tool_calls(conn, key)
+    ready = repository.timeline_ready(conn)
+    version = trigger_review = None
+    later: list[dict] = []
+    if ready:
+        version = repository.version_by_run(conn, key)
+        if run['mode'] in ('revise', 'review'):
+            trigger_review = repository.review_by_run(conn, key)
+        if run.get('plan_id'):
+            later = repository.reviews_of_head(conn, run['plan_id'])
+            for review in later:
+                if review.get('new_plan_id'):
+                    review['new_version'] = repository.version_by_plan(conn, review['new_plan_id'])
+    plan_state = None
+    plan = repository.plan_by_id(conn, run['plan_id']) if run.get('plan_id') else None
+    if plan is not None:
+        plan_state = {'plan': plan, 'consistency': None, 'consistency_error': None}
+        try:
+            with conn.transaction():      # a savepoint: a failed read must not poison the rest of the view
+                plan_state['consistency'] = derivation.derive_plan(
+                    plan, derivation_view.load_rows(conn, plan))['consistency']
+        except Exception as exc:    # noqa: BLE001 - side panel: the reading view must still load, with the reason
+            plan_state['consistency_error'] = (str(exc).splitlines() or [''])[0][:200] or type(exc).__name__
+    return {'run': run, 'calls': calls, 'version': version, 'trigger_review': trigger_review,
+            'later_reviews': later, 'plan_state': plan_state, 'timeline_ready': ready}
+
+
+def view_in(conn, run_id: str) -> dict:
+    """``build`` of one run read on ``conn``: the plan, review and interpret views, no retro / discuss context
+    (``reasoning`` adds that). LookupError for an unknown run. The discussion's ``get_agent_run`` uses this."""
+    return build(**_inputs(conn, _uuid(run_id)))
+
+
+def _growth_context(conn, run: dict) -> dict:
+    """The review card of a retro run, or the discussion, the user's turn and its answer of a discuss run.
+    Needs migration 027; whatever is not found stays out and the step says so."""
+    from investment_assistant.workbench import repository
+
+    if not repository.growth_ready(conn):
+        return {}
+    key = str(run['id'])
+    if run['mode'] == 'retro':
+        row = conn.execute('SELECT card_id FROM review_card_drafts WHERE agent_run_id = %s', (key,)).fetchone()
+        return {'card': repository.review_card(conn, row[0]) if row else None}
+    row = conn.execute("SELECT discussion_id FROM discussion_turns WHERE role = 'user' AND run_id = %s",
+                       (key,)).fetchone()
+    if row is None:
+        return {}
+    turns = repository.turns(conn, row[0])
+    user = next((t for t in turns if t['role'] == 'user' and t.get('run_id') == key), None)
+    reply = next((t for t in turns if user is not None and t.get('reply_to') == user['id']), None)
+    return {'discussion': repository.discussion(conn, row[0]), 'turn': user, 'reply': reply}
+
+
 def reasoning(run_id: str) -> dict:
     """Read-only use case behind ``GET /api/workbench/agent-runs/{run_id}/reasoning``.
 
     ValueError for a non-UUID id, LookupError for an unknown run, ``service.Unavailable`` without a database."""
-    from investment_assistant.workbench import derivation, derivation_view, repository, service
+    from investment_assistant.workbench import service
 
     key = _uuid(run_id)
     with service.read_only_tx() as conn:
-        run = repository.agent_run_by_id(conn, key)
-        if run is None:
-            raise LookupError(f'运行不存在：{key}')
-        calls = repository.agent_tool_calls(conn, key)
-        ready = repository.timeline_ready(conn)
-        version = trigger_review = None
-        later: list[dict] = []
-        if ready:
-            version = repository.version_by_run(conn, key)
-            if run['mode'] in ('revise', 'review'):
-                trigger_review = repository.review_by_run(conn, key)
-            if run.get('plan_id'):
-                later = repository.reviews_of_head(conn, run['plan_id'])
-                for review in later:
-                    if review.get('new_plan_id'):
-                        review['new_version'] = repository.version_by_plan(conn, review['new_plan_id'])
-        plan_state = None
-        plan = repository.plan_by_id(conn, run['plan_id']) if run.get('plan_id') else None
-        if plan is not None:
-            plan_state = {'plan': plan, 'consistency': None, 'consistency_error': None}
-            try:
-                with conn.transaction():      # a savepoint: a failed read must not poison the rest of the view
-                    plan_state['consistency'] = derivation.derive_plan(
-                        plan, derivation_view.load_rows(conn, plan))['consistency']
-            except Exception as exc:    # noqa: BLE001 - side panel: the reading view must still load, with the reason
-                plan_state['consistency_error'] = (str(exc).splitlines() or [''])[0][:200] or type(exc).__name__
-    return build(run=run, calls=calls, version=version, trigger_review=trigger_review, later_reviews=later,
-                 plan_state=plan_state, timeline_ready=ready)
+        inputs = _inputs(conn, key)
+        extra = _growth_context(conn, inputs['run']) if inputs['run']['mode'] in ('retro', 'discuss') else {}
+    return build(**inputs, **extra)

@@ -50,7 +50,7 @@ def result_hash(result: dict) -> str:
     return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
 
 
-@dataclass
+@dataclass(frozen=True)
 class ToolContext:
     ticker: str
     session: date
@@ -81,6 +81,18 @@ class Recorder:
     def price_refs(self) -> set[str]:
         return {c['result']['ref'] for c in self.calls
                 if c['tool'] in PRICE_TOOLS and 'error' not in c['result']}
+
+    def knowledge_refs(self, phase: str | None = None) -> set[str]:
+        """Every ``know:<id>@<version>`` a successful ``get_knowledge`` call of this run (this phase)
+        returned: the only knowledge a plan, counter, review, draft or answer may cite (spec §6.1)."""
+        found: set[str] = set()
+        for c in self.calls:
+            if c['tool'] != 'get_knowledge' or 'error' in c['result'] or (phase is not None and c['phase'] != phase):
+                continue
+            data = c['result'].get('data')
+            entries = data.get('entries') if isinstance(data, dict) else None
+            found.update(e['ref'] for e in entries or [] if isinstance(e, dict) and isinstance(e.get('ref'), str))
+        return found
 
 
 def indicators(bars: list[dict], spy_bars: list[dict]) -> dict:
@@ -233,6 +245,63 @@ def get_concept(ctx: ToolContext, concept_id: str | None = None) -> dict:
         raise ToolError(str(exc)) from exc
 
 
+KNOWLEDGE_NOTE = '这是用户审定过的经验，是判断不是事实；价位不能只引用它'
+
+
+def get_knowledge(ctx: ToolContext, ticker: str | None = None, concept: str | None = None) -> dict:
+    """The user's reviewed lessons ("my knowledge", v2.7 spec §6.1) as they stood at the cutoff.
+
+    ``ticker`` (the unit's or one of the allowed extras) or ``concept`` (``plan.stop`` or
+    ``concept:plan.stop@1``, the version is ignored) picks the entries attached there, neither returns
+    the index (no bodies). Only versions written at or before ``ctx.cutoff_at`` come back, an item archived
+    by then does not, and nothing that is still unreviewed can: the tool reads the item, version and status
+    tables only. Not a price tool. Needs migration 027."""
+    from investment_assistant.workbench import knowledge, knowledge_items
+
+    if ticker is not None and concept is not None:
+        raise ToolError('ticker 与 concept 只能给一个')
+    upper = _allowed(ctx, ticker) if ticker is not None else None
+    concept_id = None
+    if concept is not None:
+        match = knowledge.REF_RE.fullmatch(concept.strip()) if isinstance(concept, str) else None
+        if match is None:
+            raise ToolError(f'未知概念 {concept}')
+        concept_id = match.group(1)
+        try:
+            cards = knowledge.catalog().concepts
+        except knowledge.KnowledgeError:
+            cards = None                      # catalog unreadable: the format check above is all we can do
+        if cards is not None and concept_id not in cards:
+            raise ToolError(f'未知概念 {concept_id}')
+
+    def read(conn):
+        if not repository.growth_ready(conn):
+            return None
+        return repository.knowledge_rows(conn, cutoff=ctx.cutoff_at, ticker=upper, concept=concept_id)
+
+    rows = ctx.read(read)
+    if rows is None:
+        raise ToolError('我的知识不可用：迁移 027 未执行')
+    versions, statuses = rows
+    seen = sorted(knowledge_items.visible(versions, statuses, cutoff=ctx.cutoff_at),
+                  key=lambda v: (v['created_at'], v['knowledge_id']), reverse=True)
+    query = {k: v for k, v in (('ticker', upper), ('concept', concept_id)) if v is not None}
+    base = {'query': query, 'cutoff_at': ctx.cutoff_at.isoformat(), 'point_in_time': True}
+    if not query:                               # the index: titles and attachments only, no bodies
+        shown = seen[:knowledge_items.INDEX_MAX]
+        return {**base, 'entries': [
+            {'ref': knowledge_items.ref(v['knowledge_id'], v['version']), 'title': v['title'],
+             'concepts': list(v['concepts']), 'tickers': list(v['tickers']), 'written_at': v['created_at'].isoformat()}
+            for v in shown], 'omitted': len(seen) - len(shown), 'note': KNOWLEDGE_NOTE}
+    shown = seen[:knowledge_items.KNOWLEDGE_RESULT_MAX]
+    return {**base, 'entries': [
+        {'ref': knowledge_items.ref(v['knowledge_id'], v['version']), 'id': v['knowledge_id'],
+         'version': v['version'], 'title': v['title'], 'body': v['body'], 'scope': v['scope'],
+         'counter_examples': v['counter_examples'], 'concepts': list(v['concepts']), 'tickers': list(v['tickers']),
+         'written_at': v['created_at'].isoformat()} for v in shown],
+        'omitted': len(seen) - len(shown), 'note': KNOWLEDGE_NOTE}
+
+
 TOOLS: dict[str, Callable] = {
     'get_trigger': get_trigger,
     'get_price_bars': get_price_bars,
@@ -243,6 +312,7 @@ TOOLS: dict[str, Callable] = {
     'get_market_context': get_market_context,
     'get_position': get_position,
     'get_concept': get_concept,
+    'get_knowledge': get_knowledge,
 }
 
 TOOL_DESCRIPTIONS: dict[str, str] = {
@@ -255,13 +325,16 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     'get_market_context': '读取本交易日的市场区制标签、广度、行业强弱与利差',
     'get_position': '读取当前持仓股数与成本，无持仓则为空',
     'get_concept': '读取系统概念卡：不给 id 返回全部 id 与标题；给 id（如 `plan.stop`）返回整张卡。概念卡随代码版本走，不受截止时间约束',
+    'get_knowledge': '读用户审定过的经验（我的知识）：给 ticker 或概念 id 取挂在上面的条目，不给取索引；只返回截止时间之前写入的版本；引用写 know:<id>@<版本>',
 }
 
 
-def call(ctx: ToolContext, recorder: Recorder, name: str, args: dict, *, now: datetime) -> dict:
-    """Dispatch one tool call; every failure is recorded as an error envelope, never raised."""
+def call(ctx: ToolContext, recorder: Recorder, name: str, args: dict, *, now: datetime,
+         tools: dict[str, Callable] | None = None) -> dict:
+    """Dispatch one tool call; every failure is recorded as an error envelope, never raised.
+    ``tools`` is the table to dispatch in (default ``TOOLS``; the discussion passes its wider one)."""
     try:
-        tool = TOOLS.get(name)
+        tool = (TOOLS if tools is None else tools).get(name)
         if tool is None:
             raise ToolError(f'未知工具 {name}')
         data = tool(ctx, **(args or {}))

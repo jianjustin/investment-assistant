@@ -39,6 +39,7 @@ from investment_assistant.workbench import plan_shadow as plan_shadow_module
 from investment_assistant.workbench import stages as stages_module
 from investment_assistant.workbench.agent import conditions as condition_registry
 from investment_assistant.workbench.agent import graph as agent_graph
+from investment_assistant.workbench.agent import growth_check
 from investment_assistant.workbench.agent import model as agent_model
 from investment_assistant.workbench.agent import tools as agent_tools
 
@@ -471,7 +472,13 @@ def _review_chain(obj: dict, *, session: date, now: datetime, trigger: str, run_
 
     said = reviewed['output']
     said_base = {**review_base, 'decided_by': 'agent', 'reason': _reason(said['reason'], settings),
-                 'refs': said.get('refs') or []}
+                 'refs': said.get('refs') or [],
+                 # v2.7 D27: the knowledge the verdict cited; _commit writes it after the review row (it needs
+                 # the review id) and takes the key off the row first
+                 'knowledge_citations': [
+                     {**cited, 'agent_run_id': review_id}
+                     for cited in growth_check.knowledge_citations(output=said, counter=None, mode='review',
+                                                                   calls=reviewed['calls'])]}
     if said['outcome'] in ('maintain', 'invalidate'):  # §7.4 step 5
         def concluded(conn, attempt: int) -> dict:
             review_run(conn, attempt)
@@ -572,6 +579,11 @@ def _revision(conn, attempt: int, *, seen: dict, said_base: dict, review_run: Ca
         'origin': 'recheck' if trigger == 'recheck' else 'review', 'agent_run_id': revise_id, 'cutoff_at': now,
         'as_of_session': session, 'diff': (revised['output'] or {}).get('diff') or [],
         'schema_version': timeline.AGENT_V2})
+    # v2.7 D18: the knowledge the new version cited, with the version in the same transaction
+    repository.insert_knowledge_citations(conn, [
+        {**cited, 'agent_run_id': revise_id, 'plan_id': plan_id}
+        for cited in growth_check.knowledge_citations(output=revised['output'], counter=revised['counter'],
+                                                      mode='revise', calls=revised['calls'])])
     return {**row, 'new_plan_id': plan_id}
 
 
@@ -625,7 +637,11 @@ def _commit(seen: dict, *, ticker: str, signal_date: date, session: date, trigge
         last = repository.last_effective_review(conn, seen['plan']['id'])
         if (last or {}).get('id') != (seen['last_review'] or {}).get('id'):
             return {'skipped_without_row': 'review_in_progress'}       # the head was reviewed meanwhile
-        return repository.insert_plan_review(conn, build(conn, len(attempts) + 1))
+        row = build(conn, len(attempts) + 1)
+        cited = row.pop('knowledge_citations', None) or []
+        record = repository.insert_plan_review(conn, row)
+        repository.insert_knowledge_citations(conn, [{**c, 'review_id': record['id']} for c in cited])
+        return record
 
 
 # ---------------------------------------------------------------- the stage

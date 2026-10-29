@@ -9,6 +9,7 @@ from investment_assistant.workbench import (
     plans, regime, retro, review, rules, screen, stages, timeline, tracks,
 )
 from investment_assistant.workbench.agent import REASON_TEXT, conditions, graph, tools
+from investment_assistant.workbench.agent.discuss_tools import DISCUSS_TOOLS
 from investment_assistant.workbench.knowledge import DEFAULT_ROOT, load
 
 REQUIRED_IDS = (
@@ -40,8 +41,9 @@ REQUIRED_IDS = (
     'system.gate_hold', 'system.cutoff', 'system.append_only', 'system.stages', 'system.stage_status',
     'system.pool_tiers', 'system.screen', 'system.decision_unit', 'system.conflict', 'system.decision',
     'system.push', 'system.versions', 'system.concept_card',
-    # v2.7 growth loop (4 of 7; the rest arrive with the agent and orchestration tasks)
+    # v2.7 growth loop (6 of 7; review.weekly_learning arrives with the orchestration task)
     'review.retro_card', 'review.retro_end', 'system.my_knowledge', 'review.knowledge_performance',
+    'agent.knowledge_citation', 'system.discussion',
 )
 
 STAGE_STATUSES = ('success', 'partial', 'degraded', 'failed', 'skipped')
@@ -53,6 +55,8 @@ CURRENT_VERSIONS = {
     'timeline.AGENT_V2': timeline.AGENT_V2,
     'graph.REVIEW_VERSION': graph.REVIEW_VERSION,
     'graph.INTERPRET_VERSION': graph.INTERPRET_VERSION,
+    'graph.RETRO_AGENT_VERSION': graph.RETRO_AGENT_VERSION,
+    'graph.DISCUSS_AGENT_VERSION': graph.DISCUSS_AGENT_VERSION,
     'conditions.CONDITIONS_VERSION': conditions.CONDITIONS_VERSION,
     'timeline.TIMELINE_VERSION': timeline.TIMELINE_VERSION,
     'plans.CONTEXT_VERSION': plans.CONTEXT_VERSION,
@@ -83,7 +87,7 @@ def body_of(catalog, card_id: str) -> str:
 
 
 def test_catalog_loads_and_matches_required_ids(catalog):
-    assert len(REQUIRED_IDS) == 92 and len(set(REQUIRED_IDS)) == 92
+    assert len(REQUIRED_IDS) == 94 and len(set(REQUIRED_IDS)) == 94
     assert set(catalog.concepts) == set(REQUIRED_IDS)
 
 
@@ -106,7 +110,7 @@ CODE_SET_CASES = [
     ('stage_ids', list(stages.STAGE_IDS), ('system.stages',)),
     ('stage_status', list(STAGE_STATUSES), ('system.stage_status',)),
     ('track_status', sorted(tracks.TRACK_STATUS_TEXT), ('review.track_status',)),
-    ('tools', sorted(set(tools.TOOLS) | {'get_concept'}), ('agent.tool_calls',)),
+    ('tools', sorted(set(tools.TOOLS) | set(DISCUSS_TOOLS)), ('agent.tool_calls',)),
     ('retro_end_kinds', list(retro.END_KINDS), ('review.retro_end',)),
     ('retro_card_statuses', list(retro.CARD_STATUSES), ('review.retro_card',)),
     ('retro_fact_keys', list(retro.FACT_KEYS), ('review.retro_card',)),

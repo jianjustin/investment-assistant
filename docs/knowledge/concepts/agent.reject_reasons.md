@@ -3,8 +3,8 @@ id: agent.reject_reasons
 title: "作废与跳过原因"
 group: agent
 version: 1
-applies_to: [agent-2, agent-1, agent-review-1]
-summary: "Agent 一份建议为什么被作废、跳过或出错，共 20 个原因代码，每个有固定的中文文案；被作废的建议只显示原因、不显示内容。"
+applies_to: [agent-2, agent-1, agent-review-1, agent-retro-1, agent-discuss-1]
+summary: "Agent 一份建议为什么被作废、跳过或出错，共 26 个原因代码，每个有固定的中文文案；被作废的建议只显示原因、不显示内容。"
 related: [agent.action_levels, agent.citation, agent.review_outcome, agent.invalidation]
 sources: [investment_assistant/workbench/agent/__init__.py, investment_assistant/workbench/plan_review.py]
 ---
@@ -13,7 +13,7 @@ sources: [investment_assistant/workbench/agent/__init__.py, investment_assistant
 Agent 运行的状态有五种：`ok`（通过）、`pass`（不建议买）、`rejected`（校验作废）、`error`（出错）、`skipped`（没有运行）。后三种都带一个原因代码，页面上显示对应的中文文案。作废（`rejected`）的建议**只显示原因，不显示内容**，因为内容没通过校验，不能当作建议看待。
 
 ## 怎么算 / 从哪来
-原因代码与文案由系统固定，下表是全部 20 个：
+原因代码与文案由系统固定，下表是全部 26 个：
 
 | 代码 | 文案 | 一般出现的情形 |
 | --- | --- | --- |
@@ -37,11 +37,17 @@ Agent 运行的状态有五种：`ok`（通过）、`pass`（不建议买）、`
 | `migration_026_missing` | 迁移 026 未执行 | 库里缺版本链所需的表 |
 | `review_in_progress` | 正在复查 | 这条链正被另一次复查占用 |
 | `plan_invalid` | 修订版按规则作废 | 入场期的修订版按计划规则作废（如有效期内有财报） |
+| `retro_malformed` | 复盘卡草稿格式无效 | 复盘卡起草的输出不是合法 JSON，或字段、长度、条数不符 |
+| `lesson_invalid` | 教训草稿缺适用范围、反例或挂靠无效 | 教训的适用范围或反例为空，概念不存在、标的无效或挂靠超过 10 处 |
+| `answer_malformed` | 回答格式无效 | 讨论回答不是合法 JSON，或回答、引用的字段不符 |
+| `migration_027_missing` | 迁移 027 未执行 | 库里缺复盘卡、我的知识与讨论所需的表 |
+| `discussion_busy` | 上一个问题还在回答 | 同一次讨论里上一轮还没有回答，不能再问 |
+| `draft_exists` | 这张卡已有成功的草稿 | 这张复盘卡已经有一份成功的草稿，不用重新起草 |
 
-大致规律：校验类原因（`malformed` 到 `no_change` 一带）对应 `rejected`；预算和可用性类（`disabled`、`quota_exhausted`、`token_budget`、`stage_budget`、`max_attempts` 等）对应 `skipped`；`model_error`、`checkpoint_unavailable` 对应 `error`。
+大致规律：校验类原因（`malformed` 到 `no_change` 一带，以及 `retro_malformed`、`lesson_invalid`、`answer_malformed`）对应 `rejected`；`migration_027_missing`、`discussion_busy`、`draft_exists` 是复盘卡与讨论的前置检查拒绝的原因，不生成 Agent 运行；预算和可用性类（`disabled`、`quota_exhausted`、`token_budget`、`stage_budget`、`max_attempts` 等）对应 `skipped`；`model_error`、`checkpoint_unavailable` 对应 `error`。
 
 ## 在系统里哪里看到
-「今日」Agent 块的"Agent 未给出计划：原因"；计划页复查记录里的跳过、出错和"修订未通过"的原因；「运行一览」阶段行的跳过原因。
+「今日」Agent 块的"Agent 未给出计划：原因"；复盘卡页的起草失败原因与讨论里"这次回答没有通过引用校验"；计划页复查记录里的跳过、出错和"修订未通过"的原因；「运行一览」阶段行的跳过原因。
 
 ## 注意
 作废不等于模型错了：很多是格式或预算问题。同一个单元一天内可能因不同原因多次尝试，最终展示的是最后一次的结果。
