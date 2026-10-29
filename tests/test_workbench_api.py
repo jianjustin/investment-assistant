@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, date, datetime
 
 import pytest
@@ -71,47 +72,32 @@ def test_shadow_since_is_validated(client, monkeypatch):
 
 
 def test_manual_run_is_submitted_in_background(client, monkeypatch):
-    from investment_assistant.tasks import runner
+    """v2.8 §4.8: the manual run is the daily workflow, with its run id known up front for the detail page."""
+    from investment_assistant.tasks import daily, runner
     submitted = []
-    monkeypatch.setattr(runner, 'submit', lambda kind, fn: submitted.append(kind) or 'run-1')
+    monkeypatch.setattr(daily, 'is_running', lambda: False)
+    monkeypatch.setattr(runner, 'submit', lambda kind, fn: submitted.append((kind, fn)) or 'daily-20261029030000-aaaaaaaa')
     resp = client.post('/api/workbench/run')
-    assert resp.json() == {'run_id': 'run-1', 'status': 'pending'} and submitted == ['workbench']
+    body = resp.json()
+    assert resp.status_code == 200 and body['status'] == 'pending' and body['run_id'] == 'daily-20261029030000-aaaaaaaa'
+    assert re.fullmatch(r'daily-\d{14}-[0-9a-f]{8}', body['daily_run_id']) and [k for k, _ in submitted] == ['daily']
+    seen = {}
+    monkeypatch.setattr(daily, 'run', lambda **kw: seen.update(kw) or {})
+    submitted[0][1]()                                           # the background body: a manual run with that id
+    assert seen == {'trigger_source': 'manual', 'run_id': body['daily_run_id']}
+
+
+def test_manual_run_while_daily_is_running_is_409(client, monkeypatch):
+    from investment_assistant.tasks import daily, runner
+    monkeypatch.setattr(daily, 'is_running', lambda: True)
+    monkeypatch.setattr(runner, 'submit', lambda *a, **k: pytest.fail('must not submit'))
+    resp = client.post('/api/workbench/run')
+    assert resp.status_code == 409 and resp.json() == {'error': 'daily_running'}
 
 
 def test_task_is_registered_with_scheduler():
-    from investment_assistant.tasks import scheduler, workbench
-    assert scheduler.REGISTRY['workbench'] is workbench.run
-
-
-def test_scheduled_task_uses_db_pool(monkeypatch):
-    from investment_assistant.config import AssistantConfig
-    from investment_assistant.tasks import workbench
-    recorded = {}
-
-    def run_task(task, fn, *, config, trigger_source, notify, pass_run_id=False):
-        summary = fn('workbench-fake-run') if pass_run_id else fn()
-        recorded.update(task=task, notify=notify, trigger_source=trigger_source, summary=summary)
-        return {'status': 'ok'}
-    monkeypatch.setattr(workbench, 'run_task', run_task)
-
-    def run_batch(**kw):
-        recorded.update(batch_kwargs=kw)
-        return {'pool': {'core': 2, 'extended': 3, 'holdings': 0, 'changes': []}}
-    monkeypatch.setattr(workbench.service, 'run_batch', run_batch)
-    monkeypatch.setattr(workbench.service, 'push',
-                        lambda **_: {'session': '2026-10-22', 'sent': True, 'messages': 4})
-    rows = []
-    monkeypatch.setattr(workbench.stages_module, 'write_stage_row', rows.append)   # 不碰真实库
-    workbench.run(AssistantConfig(watchlist=['NVDA', '688008.SH']), now=datetime(2026, 10, 22, 22, tzinfo=UTC))
-    assert recorded['task'] == 'workbench' and recorded['notify'] is False
-    assert 'tickers' not in recorded['batch_kwargs']
-    assert recorded['batch_kwargs']['skip_non_trading'] is True
-    assert recorded['batch_kwargs']['stages'].run_id == 'workbench-fake-run'
-    assert recorded['summary'] == {'pool': {'core': 2, 'extended': 3, 'holdings': 0, 'changes': []},
-                                   'push': {'session': '2026-10-22', 'sent': True, 'messages': 4},
-                                   'stage_status': {'written': 7, 'error': None}}
-    push = [row for row in rows if row['stage'] == 'push']        # 桩批处理没记前六阶段：close 补 not_reached
-    assert len(rows) == 7 and push[0]['status'] == 'success' and push[0]['output_count'] == 4
+    from investment_assistant.tasks import daily, scheduler
+    assert scheduler.REGISTRY['daily'] is daily.run
 
 
 def test_trade_list_endpoint(client, monkeypatch):

@@ -1,4 +1,8 @@
-"""Daily US workbench batch: collect, evaluate rules, plan, brief, push. Never trades."""
+"""The v2.7 ``workbench`` task layer (deleted from the product in v2.8), kept as a test helper.
+
+The v2.7 batch tests (stage evidence, ``derivation stages``, ``job_reports`` rows around ``run_batch``) drive the batch
+through this wrapper: a ``stages-3`` recorder, ``service.run_batch`` and the push stage after it. The product now runs
+the ``daily`` graph (``tasks/daily.py``), whose own tests are ``test_daily_*.py``."""
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -6,7 +10,7 @@ from typing import Any
 
 from investment_assistant.config import AssistantConfig, load_config
 from investment_assistant.tasks._harness import run_task
-from investment_assistant.workbench import bars, families, repository, service
+from investment_assistant.workbench import bars, repository, service
 from investment_assistant.workbench import stages as stages_module
 
 
@@ -28,27 +32,6 @@ def _growth_ready() -> bool:
         return False
 
 
-def _account_push(recorder: stages_module.StageRecorder, acc: stages_module.StageAcc,
-                  out: dict[str, Any]) -> None:
-    """Close the push stage from the notifier's result (v2.4 §4): a skip for the three
-    non-events, success for sent / no_notifications, failed for every other reason.
-
-    The notifier reports only the messages actually sent, so input equals output here."""
-    reason = out.get('reason')
-    if not out.get('sent') and reason in ('already_pushed', 'task_disabled'):
-        recorder.skip('push', reason)
-        return
-    messages = int(out.get('messages') or 0)
-    acc.input(messages)
-    acc.output(messages)
-    acc.set_ref('push', {'sent': bool(out.get('sent')), 'messages': messages,
-                         'reason': families.sanitize_reason(reason) if reason else None})
-    if out.get('sent') or reason == 'no_notifications':
-        recorder.finish('push')
-    else:
-        recorder.finish('push', failed=str(reason or 'not_sent'))
-
-
 def run(config: AssistantConfig | None = None, *, trigger_source: str = 'scheduled', now: datetime | None = None,
         deps: service.Deps | None = None):
     effective = config if config is not None else load_config()
@@ -63,7 +46,7 @@ def run(config: AssistantConfig | None = None, *, trigger_source: str = 'schedul
         growth = ready and _growth_ready()
         recorder = stages_module.StageRecorder(run_id, 'scheduled' if scheduled else 'manual_batch',
                                                bars.latest_closed_session(moment),
-                                               version=stages_module.STAGES_VERSION if growth
+                                               version=stages_module.STAGES_VERSION_V3 if growth
                                                else stages_module.STAGES_VERSION_V2 if ready
                                                else stages_module.STAGES_VERSION_V1)
         failure: BaseException | None = None
@@ -94,7 +77,7 @@ def run(config: AssistantConfig | None = None, *, trigger_source: str = 'schedul
             except BaseException as exc:
                 recorder.finish('push', failed=f'aborted: {exc}')
                 raise
-            _account_push(recorder, acc, summary['push'])
+            service.account_push(recorder, acc, summary['push'])
             return summary
         except BaseException as exc:
             failure = exc

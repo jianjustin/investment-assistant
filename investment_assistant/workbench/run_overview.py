@@ -41,6 +41,9 @@ REASON_TEXT: dict[str, str] = {
     'object_cap': '超出复查对象上限 20',
     'atr_unavailable': 'ATR 无法计算',
     'draft_cap': '超出每次起草上限 5 张',
+    'upstream_failed': '上游节点失败，未执行',
+    'not_due': '今天没有到期的复盘',
+    'daily_running': '另一次运行正在进行',
     # degradation kinds
     'fred_not_configured': 'FRED 未配置',
     'label_insufficient': '广度样本不足',
@@ -65,6 +68,7 @@ CLOSED_TEXT = '休市'
 
 # Concept cards each stage line links to (spec §7.3, right column).
 STAGE_CONCEPTS: dict[str, tuple[str, ...]] = {
+    'sec_monitor': ('family.sec_filings', 'system.daily_workflow'),
     'collect': ('family.bars', 'family.news', 'family.sec_filings', 'family.fred'),
     'screen': ('system.screen', 'family.universe'),
     'regime': ('indicator.breadth', 'indicator.regime', 'indicator.sector_strength'),
@@ -221,6 +225,16 @@ RETRO_KIND_TEXT = (('position_closed', '平仓'), ('stop', '止损'), ('target',
 def _retro(r: dict) -> str:
     """v2.7 §9 的两句模板；数字都是该行自己的值（detail 缺键按 0）。"""
     detail = r['detail'] if isinstance(r['detail'], dict) else {}
+    half = ''
+    if 'weekly' in detail or 'monthly' in detail:        # v2.8: the weekly / monthly review part of the node
+        half = f"周度复盘：{_tick_text(detail.get('weekly'))}；月度：{_tick_text(detail.get('monthly'))}"
+        if detail.get('cards') is False:                 # a non-trading day: no card part ran
+            return half
+        half = '；' + half
+    return _retro_cards(r, detail) + half
+
+
+def _retro_cards(r: dict, detail: dict) -> str:
     events, new_cards = int(detail.get('events') or 0), int(detail.get('new_cards') or 0)
     to_review = int(detail.get('to_review') or 0)
     if not events and not new_cards and not r['input_count']:
@@ -235,6 +249,30 @@ def _retro(r: dict) -> str:
             f"起草 {r['output_count']}/{attempted} 张；待审定 {to_review} 张")
 
 
+def _sec_monitor(r: dict) -> str:
+    """v2.8 §7.4: the monitor's scan / archive / notification counts, or the downloader's; the failed tickers follow."""
+    if _get(r['detail'], 'mode') == 'downloader':
+        text = f"下载器模式：新下载 {r['output_count']} 份申报"
+    else:
+        sent = _get(r['detail'], 'notifications', 'sent') or 0
+        text = f"扫描 {r['input_count']} 只，新归档 {r['output_count']} 份申报，通知 {sent} 条"
+    if r['failures']:
+        text += f"；{len(r['failures'])} 只失败"
+    return text
+
+
+def _tick_text(tick: Any) -> str:
+    """One review part (weekly / monthly) of the retro node: pushed, generated but not pushed, or not due."""
+    if not isinstance(tick, dict):
+        return '未到期'
+    if tick.get('action') == 'error':
+        return '出错'
+    if tick.get('action') in ('generated', 'reused', 'reminded'):
+        push = tick.get('push')
+        return '已推送' if isinstance(push, dict) and push.get('sent') else '已生成未推送'
+    return '未到期'
+
+
 def _push(r: dict) -> str:
     messages = _get(r['outputs'], 'push', 'messages')
     messages = r['output_count'] if messages is None else messages
@@ -245,7 +283,7 @@ def _push(r: dict) -> str:
     return f'发送 {messages} 条消息'
 
 
-TEMPLATES = {'collect': _collect, 'screen': _screen, 'regime': _regime, 'signals': _signals, 'plan': _plan,
+TEMPLATES = {'sec_monitor': _sec_monitor, 'collect': _collect, 'screen': _screen, 'regime': _regime, 'signals': _signals, 'plan': _plan,
              'agent': _agent, 'review': _review, 'retro': _retro, 'push': _push}
 
 
@@ -268,13 +306,16 @@ def _suffixes(skips: list[dict], failures: list[dict], degradations: list[dict])
 def _sentence(r: dict) -> str:
     status, reason = r['status'], r.get('reason')
     if status == 'skipped':
+        if r['stage'] == 'retro' and reason == 'not_due':
+            return reason_text('not_due')                 # v2.8 §7.4: the whole sentence
         return f'跳过：{reason_text(reason)}' if reason else '跳过'
     if status == 'failed':
         return f'失败：{reason_text(reason)}' if reason else '失败'
     template = TEMPLATES.get(r['stage'])
     if template is None:
         return UNKNOWN_STAGE_NOTE
-    return template(r) + _suffixes(r['skips'], r['failures'], r['degradations'])
+    failures = [] if r['stage'] == 'sec_monitor' else r['failures']     # its sentence names the failed tickers itself
+    return template(r) + _suffixes(r['skips'], failures, r['degradations'])
 
 
 def describe(row: dict, *, title: str, purpose: str) -> dict:
@@ -313,7 +354,9 @@ def _iso(moment: Any) -> Any:
 
 def _is_closed(rows: list[dict]) -> bool:
     """A closed-market dry run: every stage before ``push`` is skipped with ``not_trading_day`` (D10)."""
-    before_push = [r for r in rows if r['stage'] != 'push']
+    ids = stages_module.STAGE_IDS_BY_VERSION.get(rows[0]['stages_version'], stages_module.STAGE_IDS) if rows else ()
+    before = ids[:ids.index('push')] if 'push' in ids else tuple(i for i in ids if i != 'push')
+    before_push = [r for r in rows if r['stage'] in before]
     return bool(before_push) and all(r['status'] == 'skipped' and r.get('reason') == 'not_trading_day'
                                      for r in before_push)
 
@@ -347,6 +390,39 @@ def _select(runs: list[dict], run_id: str | None) -> dict:
     return (real or runs)[-1]
 
 
+LEGACY_VERSIONS = (stages_module.STAGES_VERSION_V1, stages_module.STAGES_VERSION_V2, stages_module.STAGES_VERSION_V3)
+
+
+def _display_ids(version: str) -> tuple[str, ...]:
+    """The stage list a run of this version is drawn with: the v2.7 nine for ``stages-1`` .. ``stages-3`` (the two older
+    ones show their missing stages as ``not_recorded``), the ten of ``stages-4`` otherwise."""
+    return stages_module.STAGE_IDS_V3 if version in LEGACY_VERSIONS else stages_module.STAGE_IDS
+
+
+def _stage_def(stage_id: str, version: str) -> stages_module.StageDef:
+    if version in LEGACY_VERSIONS and stage_id in stages_module.LEGACY_STAGES:
+        return stages_module.LEGACY_STAGES[stage_id]
+    return next(s for s in stages_module.STAGES if s.id == stage_id)
+
+
+def _effective(rows: list[dict]) -> dict[str, dict]:
+    """Per stage the row with the highest ``attempt``; rows without the field keep their order (the last one wins)."""
+    chosen: dict[str, dict] = {}
+    for r in rows:
+        known = chosen.get(r['stage'])
+        if known is None or int(r.get('attempt') or 1) >= int(known.get('attempt') or 1):
+            chosen[r['stage']] = r
+    return chosen
+
+
+def _attempt_counts(rows: list[dict]) -> dict[str, int]:
+    """How often each stage was booked (its highest ``attempt``, or its row count when rows carry none)."""
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r['stage']] = max(counts.get(r['stage'], 0) + 1, int(r.get('attempt') or 0))
+    return counts
+
+
 def _unfinished(run: dict) -> bool:
     """The run has no row for its version's last stage and everything missing comes after the last recorded stage.
 
@@ -356,29 +432,28 @@ def _unfinished(run: dict) -> bool:
     ids = stages_module.STAGE_IDS_BY_VERSION.get(run['stages_version'], stages_module.STAGE_IDS)
     if not ids or ids[-1] in recorded:
         return False
-    order = [s.id for s in stages_module.STAGES]
+    order = list(ids)
     last_recorded = max((order.index(stage) for stage in recorded if stage in order), default=-1)
     missing = [order.index(stage) for stage in ids if stage not in recorded]
     return bool(missing) and all(index > last_recorded for index in missing)
 
 
 def _stage_views(run: dict) -> list[dict]:
-    members = {}
-    for r in run['_members']:
-        members[r['stage']] = r                        # a repeated stage keeps its last row
-    registry = {s.id: s for s in stages_module.STAGES}
-    ids = stages_module.STAGE_IDS_BY_VERSION.get(run['stages_version'], stages_module.STAGE_IDS)
+    members = _effective(run['_members'])
+    version = run['stages_version']
+    ids = stages_module.STAGE_IDS_BY_VERSION.get(version, stages_module.STAGE_IDS)
+    registry = {s.id for s in stages_module.STAGES}
     missing_note = UNFINISHED_NOTE if _unfinished(run) else MISSING_NOTE
     views = []
-    for stage in stages_module.STAGES:
+    for stage_id in _display_ids(version):
+        stage = _stage_def(stage_id, version)
         if stage.id in members:
             views.append(describe(members[stage.id], title=stage.title, purpose=stage.purpose))
-        elif stage.id not in ids and run['stages_version'] in (stages_module.STAGES_VERSION_V1,
-                                                                 stages_module.STAGES_VERSION_V2):
+        elif stage.id not in ids and version in (stages_module.STAGES_VERSION_V1, stages_module.STAGES_VERSION_V2):
             if stage.id == 'review':
                 note = STAGES_1_NOTE
             else:                                  # retro: which note depends on the run's own version
-                note = STAGES_1_RETRO_NOTE if run['stages_version'] == stages_module.STAGES_VERSION_V1 else STAGES_2_NOTE
+                note = STAGES_1_RETRO_NOTE if version == stages_module.STAGES_VERSION_V1 else STAGES_2_NOTE
             views.append(_placeholder(stage.id, stage.title, stage.purpose, status='not_recorded', sentence=note))
         else:
             views.append(_placeholder(stage.id, stage.title, stage.purpose, status='missing', sentence=missing_note))
@@ -393,16 +468,43 @@ def _duration_text(seconds: int) -> str:
     return f'{minutes} 分 {rest} 秒' if minutes else f'{rest} 秒'
 
 
+def _stage_title(stage_id: str, version: str) -> str:
+    try:
+        return _stage_def(stage_id, version).title
+    except StopIteration:
+        return stage_id
+
+
 def _headline(run: dict, stages: list[dict]) -> str:
     if run['closed']:
         return CLOSED_HEADLINE
-    started = run['started_at'].astimezone(SH).strftime('%H:%M')
-    seconds = int((run['finished_at'] - run['started_at']).total_seconds())
-    counts = [f"{text} {n}" for status, text in STATUS_TEXT.items()
-              if (n := sum(1 for s in stages if s['status'] == status))]
-    suffix = RUNNING_SUFFIX if _unfinished(run) else ''
-    return (f"{run['trigger_text']}运行 · {started} 开始 · 用时 {_duration_text(seconds)} · "
-            f"{len(stages)} 个阶段：{' · '.join(counts)}{suffix}")
+    version = run['stages_version']
+    members = _effective(run['_members'])
+    counts = _attempt_counts(run['_members'])
+    executions = max(counts.values(), default=1) if version == stages_module.STAGES_VERSION else 1
+    failed = next((s for s in stages if s['status'] == 'failed'), None)
+    if failed is not None and version == stages_module.STAGES_VERSION:
+        # v2.8 §7.4: "<date>的运行在「<节点>」失败（已自动重试 1 次）：<原因>；其后 <n> 个节点未执行"
+        day = run['_members'][0]['session']
+        row = members.get(failed['id']) or {}
+        retried = bool(_get(row.get('detail'), 'retry'))
+        after = sum(1 for s in stages if s['status'] == 'skipped' and s.get('reason') == 'upstream_failed')
+        text = (f"{day.month} 月 {day.day} 日的运行在「{failed['title']}」失败"
+                f"{'（已自动重试 1 次）' if retried else ''}：{failed['reason_text'] or failed['reason'] or '未知'}；"
+                f"其后 {after} 个节点未执行")
+    else:
+        started = run['started_at'].astimezone(SH).strftime('%H:%M')
+        seconds = int((run['finished_at'] - run['started_at']).total_seconds())
+        shown = [f"{text} {n}" for status, text in STATUS_TEXT.items()
+                 if (n := sum(1 for s in stages if s['status'] == status))]
+        suffix = RUNNING_SUFFIX if _unfinished(run) else ''
+        text = (f"{run['trigger_text']}运行 · {started} 开始 · 用时 {_duration_text(seconds)} · "
+                f"{len(stages)} 个阶段：{' · '.join(shown)}{suffix}")
+    if executions > 1:
+        # the node the last resume started from: the first stage (in order) booked that many times
+        node = next((i for i in stages_module.STAGE_IDS if counts.get(i) == executions), None)
+        text += f"（第 {executions} 次执行，从「{_stage_title(node, version)}」续跑）" if node else ''
+    return text
 
 
 def build(rows: list[dict], *, session: date, run_id: str | None, ready: bool) -> dict:

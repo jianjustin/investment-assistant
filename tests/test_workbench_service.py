@@ -373,7 +373,7 @@ def seed_watchlist(db, rows):
 
 def _task_run(trigger, moment=NOW, task_deps=None):
     from investment_assistant.config import AssistantConfig
-    from investment_assistant.tasks import workbench as workbench_task
+    import _v27_task as workbench_task
 
     return workbench_task.run(config=AssistantConfig(), trigger_source=trigger, now=moment,
                               deps=task_deps or deps(Sources()))
@@ -581,20 +581,6 @@ def test_100_tickers_complete_with_timings(db):
     assert len(summary['tickers']) == 100
     assert all(isinstance(v, (int, float)) for v in summary['timings'].values())
     assert set(summary['timings']) == {'collect', 'regime', 'rules', 'agent', 'total'}
-    assert not any('batch_over_budget' in e for e in summary['errors'])
-
-
-def test_over_budget_recorded(db):
-    tick = {'t': 0.0}
-
-    def clock():
-        tick['t'] += 1000.0
-        return tick['t']
-    seed_watchlist(db, [('AAA', ['core'])])
-    summary = service.run_batch(now=NOW, deps=service.Deps(
-        bar_fetcher=Sources().bars, news_fetcher=Sources().news, filing_source=Sources(),
-        earnings_fetcher=Sources().earnings, clock=clock))
-    assert any(e.startswith('batch_over_budget') for e in summary['errors'])
 
 
 def test_rerun_with_context_returns_existing_p1_plan(db):
@@ -673,7 +659,7 @@ from langgraph.checkpoint.memory import InMemorySaver                           
 
 def _agent_settings(**overrides):
     from investment_assistant.workbench.agent import model as agent_model_module
-    values = {'provider': 'zhipu', 'model': 'glm-5.3', 'base_url': 'https://agent.test/v4',
+    values = {'provider': 'chatgpt', 'model': 'gpt-test',
               'api_key': 'sk-test', 'daily_tokens': None, 'config_error': None}
     values.update(overrides)
     return agent_model_module.AgentSettings(**values)
@@ -1440,8 +1426,9 @@ def test_batch_waits_for_family_lock(db):
     assert out['summary']['data_status'] == {'written': 5, 'error': None}
 
 
-def test_batch_sec_whole_failure_keeps_real_denominator(db):
-    """SEC 列表整调用失败：'*' 是哨兵不是目标，分母固定为本次真实目标（I04）。"""
+def test_batch_sec_listing_is_per_ticker(db):
+    """v2.8 D21: the SEC listing is one request per ticker, so a source that is down fails each ticker of the collect
+    list on its own (no ``'*'``); MU, a screen member, is back-filled by the screen node, not part of this family row."""
     seed_watchlist(db, [('NVDA', ['core'])])
 
     class SecDown(Sources):
@@ -1455,14 +1442,37 @@ def test_batch_sec_whole_failure_keeps_real_denominator(db):
         def discover(self, tickers, start, end):
             raise RuntimeError('edgar down')
 
-    service.run_batch(now=NOW, deps=_universe_deps(SecDown(), ['MU']), record_trigger='scheduled')
+    summary = service.run_batch(now=NOW, deps=_universe_deps(SecDown(), ['MU']), record_trigger='scheduled')
     row = db.execute("SELECT status, target_count, ok_count, failures, detail "
                      "FROM data_fetch_runs WHERE family = 'sec_filings'").fetchone()
-    real_targets = {'NVDA', 'MU'}                               # 该次列表调用覆盖的 all_tickers
     assert row[0] == 'failed'
-    assert row[1] == len(real_targets) and row[2] == 0          # 不多不少，没有 N+1
-    assert row[3] == [{'target': '*', 'reason': 'edgar down'}]
-    assert row[4]['failed_targets'] == sorted(real_targets)
+    assert row[1] == 1 and row[2] == 0                          # NVDA only: the denominator is the real target set
+    assert row[3] == [{'target': 'NVDA', 'reason': 'edgar down'}]
+    assert 'failed_targets' not in row[4]
+    assert 'edgar down' in ' '.join(summary['errors'])
+
+
+def test_batch_sec_company_tickers_failure_is_the_call_sentinel(db):
+    """Only when company_tickers.json is unreachable nothing can be resolved: ``'*'`` with the real denominator (I04)."""
+    from investment_assistant.data.fetch_policy import FetchError
+    from investment_assistant.filings import monitor_source
+
+    seed_watchlist(db, [('NVDA', ['core'])])
+
+    class NoDirectory(Sources):
+        def discover(self, tickers, start, end):
+            raise FetchError('dns down', kind='network', attempts=[{'n': 1, 'kind': 'network', 'status': None,
+                                                                    'elapsed_ms': 5}],
+                             target=monitor_source.COMPANY_TICKERS_TARGET)
+
+    service.run_batch(tickers=['NVDA', 'MU'], now=NOW, deps=service.Deps(
+        bar_fetcher=NoDirectory().bars, news_fetcher=NoDirectory().news, filing_source=NoDirectory(),
+        earnings_fetcher=NoDirectory().earnings), record_trigger='scheduled')
+    row = db.execute("SELECT status, target_count, ok_count, failures, detail "
+                     "FROM data_fetch_runs WHERE family = 'sec_filings'").fetchone()
+    assert row[0] == 'failed' and row[1] == 2 and row[2] == 0
+    assert [f['target'] for f in row[3]] == ['*']
+    assert row[4]['failed_targets'] == ['MU', 'NVDA']
 
 
 def test_batch_rows_use_real_wall_clock(db):
@@ -1819,3 +1829,86 @@ def test_today_chain_carries_head_cutoff_diff_and_review_conditions(db, scripted
     assert chain['diff'] == [{'field': 'stop', 'before': str(v0['stop']), 'after': '95.5'}]
     assert chain['latest_review']['outcome'] == 'maintain'
     assert chain['latest_review']['conditions'] == conditions
+
+
+# ------------------------------------------------- max_attempts reset and rerun (v2.8 D26, migration 028)
+
+@pytest.fixture
+def db28(db):
+    from _daily_db import apply_028
+    apply_028(db)
+    return db
+
+
+def _exhaust_attempts(db, scripted_model):
+    for i in range(4):          # three failed batches, the fourth records max_attempts
+        service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=10 * i), deps=agent_deps(scripted_model, []))
+    runs = repository.agent_runs_for(db, 'NVDA', SESSION)
+    assert [(r['status'], r['reason']) for r in runs][-1] == ('skipped', 'max_attempts') and len(runs) == 4
+
+
+def _reset(db, request_id=None):
+    return repository.insert_attempt_reset(db, {'ticker': 'NVDA', 'signal_date': SESSION, 'mode': 'propose',
+                                                'request_id': request_id or str(uuid.uuid4()), 'origin': 'api'})
+
+
+def test_reset_clears_attempt_gate(db28, scripted_model):
+    _exhaust_attempts(db28, scripted_model)
+    _reset(db28)
+    summary = service.run_batch(tickers=['NVDA'], now=NOW + timedelta(hours=1),
+                                deps=agent_deps(scripted_model, _ok_responses()))
+    last = repository.agent_runs_for(db28, 'NVDA', SESSION)[-1]
+    assert last['status'] in ('ok', 'pass') and summary['agent']['runs']['NVDA'] in ('ok', 'pass')   # no longer blocked
+
+
+def test_attempt_number_keeps_counting(db28, scripted_model):
+    _exhaust_attempts(db28, scripted_model)
+    _reset(db28)
+    for i in range(4):          # after the reset three more failures are allowed, then max_attempts again
+        service.run_batch(tickers=['NVDA'], now=NOW + timedelta(hours=1, minutes=i), deps=agent_deps(scripted_model, []))
+    runs = repository.agent_runs_for(db28, 'NVDA', SESSION)
+    assert [r['attempt'] for r in runs] == [1, 2, 3, 4, 5, 6, 7, 8]                  # the history is never reset
+    assert [(r['status'], r['reason']) for r in runs[4:]][-1] == ('skipped', 'max_attempts')
+    assert [r['status'] for r in runs[4:7]] == ['error'] * 3
+
+
+def test_old_max_attempts_row_does_not_block_after_reset(db28, scripted_model):
+    _exhaust_attempts(db28, scripted_model)
+    before = len(repository.agent_runs_for(db28, 'NVDA', SESSION))
+    service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=50), deps=agent_deps(scripted_model, []))
+    assert len(repository.agent_runs_for(db28, 'NVDA', SESSION)) == before            # still blocked without a reset
+    _reset(db28)
+    service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=60), deps=agent_deps(scripted_model, []))
+    assert len(repository.agent_runs_for(db28, 'NVDA', SESSION)) == before + 1
+
+
+def test_reset_request_id_idempotent(db28, scripted_model):
+    _exhaust_attempts(db28, scripted_model)
+    request_id = str(uuid.uuid4())
+    d = agent_deps(scripted_model, _ok_responses())
+    first = service.rerun_agent('nvda', SESSION, 'propose', request_id=request_id, origin='run_detail',
+                                now=NOW + timedelta(hours=1), deps=d)
+    assert first['replayed'] is False and first['run_id'] is not None
+    runs = repository.agent_runs_for(db28, 'NVDA', SESSION)
+    assert str(runs[-1]['id']) == first['run_id'] and runs[-1]['status'] in ('ok', 'pass')
+    again = service.rerun_agent('NVDA', SESSION, 'propose', request_id=request_id, origin='run_detail',
+                                now=NOW + timedelta(hours=2), deps=d)
+    assert again == {'reset_id': first['reset_id'], 'run_id': None, 'replayed': True}
+    assert db28.execute('SELECT count(*) FROM agent_attempt_resets').fetchone()[0] == 1
+    assert len(repository.agent_runs_for(db28, 'NVDA', SESSION)) == len(runs)         # nothing ran twice
+
+
+def test_rerun_not_needed_409(db28, scripted_model):
+    service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))   # an ok run
+    kwargs = dict(origin='api', now=NOW + timedelta(hours=1), deps=agent_deps(scripted_model, []))
+    with pytest.raises(service.AgentConflict, match='not_needed'):
+        service.rerun_agent('NVDA', SESSION, 'propose', request_id=str(uuid.uuid4()), **kwargs)
+    assert db28.execute('SELECT count(*) FROM agent_attempt_resets').fetchone()[0] == 0       # no reset for a unit that did not need it
+    with pytest.raises(LookupError):
+        service.rerun_agent('MU', SESSION, 'propose', request_id=str(uuid.uuid4()), **kwargs)
+    with pytest.raises(ValueError):
+        service.rerun_agent('NVDA', SESSION, 'review', request_id=str(uuid.uuid4()), **kwargs)
+    with pytest.raises(ValueError):
+        service.rerun_agent('NVDA', SESSION, 'propose', request_id='not-a-uuid', **kwargs)
+    with pytest.raises(ValueError):
+        service.rerun_agent('NVDA', SESSION, 'propose', request_id=str(uuid.uuid4()), **{**kwargs, 'origin': 'plan'})

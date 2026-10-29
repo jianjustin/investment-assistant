@@ -8,17 +8,17 @@ from zoneinfo import ZoneInfo
 
 from investment_assistant.config import AssistantConfig
 from investment_assistant.db import connect, due_scheduled_jobs, reschedule_job
+from investment_assistant.tasks import daily as daily_task
 from investment_assistant.tasks import filings as filings_task
-from investment_assistant.tasks import workbench as workbench_task
-from investment_assistant.tasks import workbench_review as workbench_review_task
 
 logger = logging.getLogger(__name__)
 
-REGISTRY: dict[str, Callable[[AssistantConfig], dict[str, Any]]] = {
-    "filings": filings_task.run,
-    "workbench": workbench_task.run,
-    "workbench_review": workbench_review_task.run,
+REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
+    "daily": daily_task.run,
+    "sec_backfill": filings_task.backfill,
 }
+# Registered but only ever run by hand (no scheduled_jobs row): the scheduler never executes them (v2.8 D17).
+MANUAL_ONLY: frozenset[str] = frozenset({"sec_backfill"})
 
 
 def _parse_weekday_mask(mask: str) -> set[int]:
@@ -54,6 +54,9 @@ def run_due_jobs(conn, config: AssistantConfig, *, now: datetime, registry=REGIS
     results: list[dict[str, Any]] = []
     for job in due_scheduled_jobs(conn, now=now):
         name = job["name"]
+        if name in MANUAL_ONLY:
+            logger.warning("job %s is manual-only; the scheduler skips it", name)
+            continue
         fn = registry.get(name)
         if fn is None:
             logger.warning("scheduled job %s is not registered; skipping", name)

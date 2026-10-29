@@ -186,11 +186,6 @@ def test_scheduler_module_has_no_cli_main():
     assert not hasattr(scheduler, "main")  # 独立调度进程入口已删除，防双跑
 
 
-def test_registry_has_workbench_review():
-    from investment_assistant.tasks import scheduler
-    assert scheduler.REGISTRY['workbench_review'] is not None
-
-
 def test_registry_has_no_ashares():
     assert 'ashares' not in scheduler.REGISTRY
 
@@ -208,5 +203,50 @@ def test_removed_jobs_are_skipped_and_rescheduled(monkeypatch):
     assert rescheduled == ["metrics"]
 
 
-def test_registry_is_mainline_only():
-    assert set(scheduler.REGISTRY) == {"filings", "workbench", "workbench_review"}
+def test_registry_has_daily_and_sec_backfill_only():
+    from investment_assistant.tasks import daily, filings
+
+    assert set(scheduler.REGISTRY) == {"daily", "sec_backfill"}
+    assert scheduler.REGISTRY["daily"] is daily.run and scheduler.REGISTRY["sec_backfill"] is filings.backfill
+    for old in ("filings", "workbench", "workbench_review"):
+        assert old not in scheduler.REGISTRY
+    assert scheduler.MANUAL_ONLY == {"sec_backfill"}
+
+
+def test_compute_next_run_daily_beijing():
+    """The daily job: Beijing 11:30 on Tuesday to Saturday (isoweekday 2-6)."""
+    shanghai = ZoneInfo("Asia/Shanghai")
+    monday_noon = datetime(2026, 10, 26, 12, 0, tzinfo=shanghai)
+    assert scheduler.compute_next_run("11:30", "2-6", "Asia/Shanghai", after=monday_noon) == \
+        datetime(2026, 10, 27, 11, 30, tzinfo=shanghai).astimezone(UTC)                    # Monday → Tuesday
+    saturday_late = datetime(2026, 10, 31, 11, 31, tzinfo=shanghai)
+    assert scheduler.compute_next_run("11:30", "2-6", "Asia/Shanghai", after=saturday_late) == \
+        datetime(2026, 11, 3, 11, 30, tzinfo=shanghai).astimezone(UTC)                     # Saturday → next Tuesday
+    friday_early = datetime(2026, 10, 30, 11, 0, tzinfo=shanghai)
+    assert scheduler.compute_next_run("11:30", "2-6", "Asia/Shanghai", after=friday_early) == \
+        datetime(2026, 10, 30, 11, 30, tzinfo=shanghai).astimezone(UTC)
+
+
+def test_manual_only_job_never_scheduled(monkeypatch):
+    """Even a stray ``scheduled_jobs`` row named ``sec_backfill`` is not run (and nothing is rescheduled for it)."""
+    ran, rescheduled = [], []
+    monkeypatch.setattr(scheduler, "due_scheduled_jobs",
+                        lambda conn, *, now: [{"name": "sec_backfill", "time_local": "09:30", "weekday_mask": "1-5",
+                                               "timezone": "Asia/Shanghai"}])
+    monkeypatch.setattr(scheduler, "reschedule_job", lambda *a, **k: rescheduled.append(a))
+    registry = {"sec_backfill": lambda config, **kw: ran.append("sec_backfill") or {"status": "success"}}
+    out = scheduler.run_due_jobs(None, AssistantConfig(), now=datetime(2026, 10, 28, 4, 0, tzinfo=UTC),
+                                 registry=registry)
+    assert ran == [] and out == [] and rescheduled == []
+
+
+def test_daily_job_is_called_with_the_config_only(monkeypatch):
+    calls = []
+    monkeypatch.setattr(scheduler, "due_scheduled_jobs",
+                        lambda conn, *, now: [{"name": "daily", "time_local": "11:30", "weekday_mask": "2-6",
+                                               "timezone": "Asia/Shanghai"}])
+    monkeypatch.setattr(scheduler, "reschedule_job", lambda conn, name, next_run_at, last_run_at: calls.append(name))
+    config = AssistantConfig()
+    out = scheduler.run_due_jobs(None, config, now=datetime(2026, 10, 28, 4, 0, tzinfo=UTC),
+                                 registry={"daily": lambda cfg: calls.append(cfg) or {"status": "degraded"}})
+    assert out == [{"name": "daily", "status": "degraded"}] and calls == [config, "daily"]

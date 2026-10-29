@@ -1,0 +1,282 @@
+"""The ``daily`` task shell (v2.8 §4.7, §5.9): the lock, the graph run, ``job_reports`` and the failure notice.
+
+One *execution* — a first run or a resume — takes the ``daily:run`` session lock on a connection of its own, runs
+``workflow.run`` / ``workflow.resume``, appends one ``job_reports`` row (``task = 'daily'``, the run's ``run_id``;
+resume rows carry ``trigger_source = 'resume'``) and, when the run failed, sends one failure notice. It does not use
+``_harness.run_task``: the status comes from the nodes' effective rows (D13), not from ``summary.errors``.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import sys
+import time
+import uuid
+from contextlib import contextmanager
+from datetime import UTC, date, datetime
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from investment_assistant.config import AssistantConfig, load_config
+from investment_assistant.tasks import _harness
+from investment_assistant.workbench import repository, service, workflow
+from investment_assistant.workbench import stages as stages_module
+
+logger = logging.getLogger(__name__)
+
+LOCK_KEY = 'daily:run'
+SH = ZoneInfo('Asia/Shanghai')
+JOB_STATUS = {'success': 'success', 'degraded': 'degraded', 'failed': 'error'}      # run status → job_reports.status
+
+
+class DailyBusy(RuntimeError):
+    """Another ``daily`` execution (or a ``sec_backfill``) holds the ``daily:run`` lock (HTTP 409 ``daily_running``)."""
+
+    def __init__(self, message: str = 'daily_running'):
+        super().__init__(message)
+
+
+def new_run_id() -> str:
+    """``daily-<UTC yyyymmddHHMMSS>-<8 hex>``: the thread id, ``job_reports.run_id`` and the detail-page id."""
+    return f"daily-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+
+
+def _lock_connection():
+    """A connection of its own, outside the pool and in autocommit: the lock is held for the whole execution (up to
+    hours) and must neither take a pool connection nor ride on one whose transactions commit underneath it."""
+    import psycopg
+
+    url = os.environ.get('INVESTMENT_ASSISTANT_DATABASE_URL')
+    if not url:
+        raise service.Unavailable('数据库未配置')
+    return psycopg.connect(url, autocommit=True)
+
+
+@contextmanager
+def exclusive():
+    """Hold the ``daily:run`` session advisory lock for the ``with`` block (``DailyBusy`` when taken). Always released
+    in ``finally`` and the connection always closed, which releases it too should the unlock fail (D18)."""
+    import psycopg
+
+    try:
+        conn = _lock_connection()
+    except psycopg.OperationalError:
+        raise service.Unavailable('数据库不可达') from None
+    try:
+        if not conn.execute('SELECT pg_try_advisory_lock(hashtext(%s))', (LOCK_KEY,)).fetchone()[0]:
+            raise DailyBusy()
+        try:
+            yield
+        finally:
+            try:
+                conn.execute('SELECT pg_advisory_unlock(hashtext(%s))', (LOCK_KEY,))
+            except Exception:      # noqa: BLE001 - closing the connection releases the lock anyway
+                pass
+    finally:
+        conn.close()
+
+
+def is_running() -> bool:
+    """True while some execution holds the lock (the resume / run pre-checks of the API)."""
+    try:
+        with exclusive():
+            return False
+    except DailyBusy:
+        return True
+
+
+def _trigger(trigger_source: str) -> str:
+    return 'scheduled' if trigger_source == 'scheduled' else 'manual_batch'
+
+
+def _failure_payload(config: AssistantConfig, result: dict[str, Any]) -> dict[str, Any]:
+    """The inputs of ``templates.daily_failed`` from an execution result."""
+    summary = result.get('summary') or {}
+    failed = result.get('failed_node')
+    titles = {stage.id: stage.title for stage in stages_module.STAGES}
+    session = result.get('session') or summary.get('session')
+    payload: dict[str, Any] = {'session': session, 'run_id': result['run_id'],
+                               'public_url': config.workbench.public_url, 'reason': str(summary.get('error') or '')[:300]}
+    if failed is not None:
+        payload.update(node_title=titles.get(failed, failed), retried=bool((result.get('failure') or {}).get('retried')),
+                       skipped=len(workflow.NODES) - workflow.NODES.index(failed) - 1)
+        if session:
+            deadline = workflow.resume_deadline(date.fromisoformat(session)).astimezone(SH)
+            payload['deadline_text'] = deadline.strftime('%Y-%m-%d %H:%M') + '（北京时间）'
+    else:
+        payload.update(node_title='每日工作流', retried=False)
+    return payload
+
+
+def _notify_failure(config: AssistantConfig, result: dict[str, Any], notify_cfg: Any) -> dict[str, Any] | None:
+    """One failure notice per execution (D14); a notifier error never changes the run's result."""
+    from investment_assistant.notify import notifier, templates
+
+    try:
+        notify_cfg = notify_cfg if notify_cfg is not None else _effective_notify(config)
+        return notifier.send_notifications('workbench', templates.daily_failed(_failure_payload(config, result)),
+                                           notify_cfg)
+    except Exception as exc:    # noqa: BLE001 - reported in the summary, never raised
+        logger.warning('daily failure notice not sent: %s', type(exc).__name__)
+        return {'sent': False, 'reason': f'notice_failed: {type(exc).__name__}'}
+
+
+def _effective_notify(config: AssistantConfig) -> Any:
+    from investment_assistant.services.settings import effective_notify_config
+
+    return effective_notify_config(config.notify)
+
+
+def _report(result: dict[str, Any], *, started_at: datetime, trigger_source: str, config: AssistantConfig,
+            notify_cfg: Any) -> dict[str, Any]:
+    """Append the execution's ``job_reports`` row and, on a failed run, send the one failure notice."""
+    status = JOB_STATUS[result['status']]
+    summary = result['summary']
+    if result['status'] == 'failed':
+        summary['failure_notice'] = _notify_failure(config, result, notify_cfg)
+    session = result.get('session')
+    day = date.fromisoformat(session) if session else None
+    try:
+        _harness._record(task='daily', run_id=result['run_id'], status=status, started_at=started_at,
+                         finished_at=datetime.now(UTC), summary=summary, target_start_date=day, target_end_date=day,
+                         trigger_source=trigger_source)
+    except Exception as exc:    # noqa: BLE001 - the execution happened; its record failing is logged, not raised
+        logger.error('daily job report not written: %s', type(exc).__name__)
+    return {'run_id': result['run_id'], 'task': 'daily', 'status': status, 'summary': summary,
+            'run_status': result['status']}
+
+
+def _refused(run_id: str, reason: str, *, started_at: datetime, trigger_source: str, config: AssistantConfig,
+             notify_cfg: Any, notice: bool = True, session: str | None = None) -> dict[str, Any]:
+    """An execution that never started a graph (migration 028 missing, no checkpoints, lock busy): one error row."""
+    result = {'run_id': run_id, 'status': 'failed', 'summary': {'error': reason, 'run_status': 'failed'},
+              'failed_node': None, 'failure': None, 'session': session}
+    if not notice:
+        status_row = {'run_id': run_id, 'task': 'daily', 'status': 'error', 'summary': result['summary'],
+                      'run_status': 'failed'}
+        try:
+            _harness._record(task='daily', run_id=run_id, status='error', started_at=started_at,
+                             finished_at=datetime.now(UTC), summary=result['summary'], trigger_source=trigger_source)
+        except Exception as exc:    # noqa: BLE001
+            logger.error('daily job report not written: %s', type(exc).__name__)
+        return status_row
+    return _report(result, started_at=started_at, trigger_source=trigger_source, config=config, notify_cfg=notify_cfg)
+
+
+def _ready() -> bool:
+    try:
+        with service.read_only_tx() as conn:
+            return repository.daily_ready(conn)
+    except Exception:    # noqa: BLE001 - an unreadable database cannot run the workflow either
+        return False
+
+
+def run(config: AssistantConfig | None = None, *, trigger_source: str = 'scheduled', now: datetime | None = None,
+        deps: service.Deps | None = None, run_id: str | None = None, checkpointer_factory=None, sleep=time.sleep,
+        notify_cfg: Any = None, explicit_pool=None) -> dict[str, Any]:
+    """One ``daily`` execution (the scheduler's and the manual entry's): lock → graph → report. ``DailyBusy`` for a
+    manual run while another execution holds the lock; a scheduled one records ``error / daily_running`` instead.
+    Returns ``{'run_id', 'task', 'status', 'summary', 'run_status'}`` (``status`` = the ``job_reports`` status)."""
+    effective = config if config is not None else load_config()
+    moment = now or datetime.now(UTC)
+    rid = run_id or new_run_id()
+    started_at = datetime.now(UTC)
+    scheduled = trigger_source == 'scheduled'
+    try:
+        with exclusive():
+            if not _ready():            # D36: no half-new, half-old runs
+                return _refused(rid, 'migration_028_missing', started_at=started_at, trigger_source=trigger_source,
+                                config=effective, notify_cfg=notify_cfg)
+            try:
+                result = workflow.run(run_id=rid, trigger=_trigger(trigger_source), now=moment, deps=deps,
+                                      explicit_pool=explicit_pool, checkpointer_factory=checkpointer_factory,
+                                      sleep=sleep, notify_cfg=notify_cfg, config=effective)
+            except workflow.CheckpointUnavailable:
+                return _refused(rid, 'checkpoint_unavailable', started_at=started_at, trigger_source=trigger_source,
+                                config=effective, notify_cfg=notify_cfg)
+            return _report(result, started_at=started_at, trigger_source=trigger_source, config=effective,
+                           notify_cfg=notify_cfg)
+    except DailyBusy:
+        if not scheduled:
+            raise
+        return _refused(rid, 'daily_running', started_at=started_at, trigger_source=trigger_source,
+                        config=effective, notify_cfg=notify_cfg, notice=False)
+
+
+def resume(run_id: str, node: str, *, now: datetime | None = None, deps: service.Deps | None = None,
+           config: AssistantConfig | None = None, checkpointer_factory=None, sleep=time.sleep,
+           notify_cfg: Any = None) -> dict[str, Any]:
+    """Continue a failed run from ``node`` (spec §5.4): lock → ``workflow.resume`` → a ``job_reports`` row with
+    ``trigger_source = 'resume'``. ``DailyBusy``, ``workflow.ResumeRejected``, ``LookupError`` and
+    ``service.Unavailable`` propagate before anything is written."""
+    effective = config if config is not None else load_config()
+    started_at = datetime.now(UTC)
+    with exclusive():
+        result = workflow.resume(run_id, node, now=now or datetime.now(UTC), deps=deps,
+                                 checkpointer_factory=checkpointer_factory, sleep=sleep, notify_cfg=notify_cfg,
+                                 config=effective)
+        return _report(result, started_at=started_at, trigger_source='resume', config=effective,
+                       notify_cfg=notify_cfg)
+
+
+# ---------------------------------------------------------------- command line
+
+def _show(run_id: str) -> int:
+    """The node table of a run — status, duration, attempt, failures — and no raw summary."""
+    with service.read_only_tx() as conn:
+        rows = repository.stage_rows_for_run(conn, run_id)
+    if not rows:
+        print(f'没有这次运行：{run_id}', file=sys.stderr)
+        return 2
+    effective = workflow.effective_rows(rows)
+    print(f'{run_id}  {workflow.run_status(rows)}')
+    for stage_id in workflow.NODES:
+        row = effective.get(stage_id)
+        if row is None:
+            print(f'  {stage_id:<12} 未开始')
+            continue
+        seconds = (row['duration_ms'] or 0) / 1000
+        print(f"  {stage_id:<12} {row['status']:<9} {seconds:>8.1f}s  attempt {row.get('attempt', 1)}  "
+              f"失败目标 {len(row.get('failures') or [])}  {row.get('reason') or ''}".rstrip())
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    parser = argparse.ArgumentParser(prog='python -m investment_assistant.tasks.daily',
+                                     description='每日工作流：运行、续跑、查看。')
+    commands = parser.add_subparsers(dest='command', required=True)
+    run_cmd = commands.add_parser('run', help='前台跑一次')
+    run_cmd.add_argument('--manual', action='store_true', help='按手动运行（不推送）')
+    resume_cmd = commands.add_parser('resume', help='从失败的节点续跑')
+    resume_cmd.add_argument('--run-id', required=True)
+    resume_cmd.add_argument('--node', required=True)
+    show_cmd = commands.add_parser('show', help='打印一次运行的节点表')
+    show_cmd.add_argument('--run-id', required=True)
+    args = parser.parse_args(argv)
+    try:
+        if args.command == 'show':
+            return _show(args.run_id)
+        if args.command == 'run':
+            out = run(trigger_source='manual' if args.manual else 'scheduled')
+        else:
+            out = resume(args.run_id, args.node)
+    except DailyBusy:
+        print('每日工作流正在运行（daily_running）', file=sys.stderr)
+        return 2
+    except workflow.ResumeRejected as exc:
+        print(f'{exc.code}：{exc.message}', file=sys.stderr)
+        return 2
+    except (LookupError, ValueError, service.Unavailable) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(json.dumps({key: out[key] for key in ('run_id', 'status', 'run_status')}, ensure_ascii=False))
+    return 0 if out['status'] != 'error' else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

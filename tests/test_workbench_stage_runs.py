@@ -18,7 +18,8 @@ SATURDAY = datetime(2026, 10, 24, 22, 30, tzinfo=UTC)   # 纽约周六，非交�
 
 
 def _recorder(run_id: str, *, trigger: str = 'scheduled') -> stages_module.StageRecorder:
-    return stages_module.StageRecorder(run_id, trigger, SESSION, wall_now=lambda: NOW)
+    return stages_module.StageRecorder(run_id, trigger, SESSION, wall_now=lambda: NOW,
+                                       version=stages_module.STAGES_VERSION_V3)
 
 
 def _stage(db, run_id: str, stage_id: str) -> dict:
@@ -45,9 +46,11 @@ def test_collect_counts_match_fetch_runs(db):
                                                  ('bars', 'news', 'sec_filings', 'fred')]
     assert row['status'] == 'partial'
     assert {'target': 'bars:MU', 'reason': 'provider down'} in row['failures']
-    assert {'target': 'sec_filings:*', 'reason': 'edgar down'} in row['failures']
+    assert {'target': 'sec_filings:MU', 'reason': 'edgar down'} in row['failures']      # v2.8 D21: one SEC request per ticker
     assert any(d['kind'] == 'fred_not_configured' for d in row['degradations'])
-    assert row['detail']['earnings'] == {'targets': 2, 'ok': 2, 'failed': 0}
+    earnings = row['detail']['earnings']                  # v2.8: plus the per-target items
+    assert {k: earnings[k] for k in ('targets', 'ok', 'failed')} == {'targets': 2, 'ok': 2, 'failed': 0}
+    assert len(earnings['items']) == 2
 
 
 def test_screen_stage(db):
@@ -96,11 +99,12 @@ def test_non_trading_day_skips_six():
     """周六早退：push 之前的阶段（含 review）整段 skipped，push 留给任务层，不写行。"""
     rows = []
     recorder = stages_module.StageRecorder('run-closed', 'scheduled', date(2026, 10, 24),
-                                            writer=rows.append, wall_now=lambda: SATURDAY)
+                                            writer=rows.append, wall_now=lambda: SATURDAY,
+                                            version=stages_module.STAGES_VERSION_V3)
     summary = service.run_batch(now=SATURDAY, skip_non_trading=True, deps=batch_deps(),
                                 stages=recorder)
     assert summary['status'] == 'skipped'
-    assert [row['stage'] for row in rows] == list(stages_module.STAGE_IDS[:-1])
+    assert [row['stage'] for row in rows] == list(stages_module.STAGE_IDS_V3[:-1])
     assert all(row['status'] == 'skipped' and row['reason'] == 'not_trading_day'
                for row in rows)
 
@@ -167,7 +171,7 @@ def test_stage_runs_nine_rows(wired, monkeypatch):
         assert run_id == result['run_id']
         rows = repository.stage_runs_for_run(wired, run_id)
         assert [r['stage'] for r in rows].count('push') == 1
-        assert {r['stage'] for r in rows} == set(stages_module.STAGE_IDS) and len(rows) == 9
+        assert {r['stage'] for r in rows} == set(stages_module.STAGE_IDS_V3) and len(rows) == 9
         assert {r['run_id'] for r in rows} == {run_id}
         assert {r['stages_version'] for r in rows} == {'stages-3'}
         assert result['summary']['stage_status'] == {'written': 9, 'error': None}
@@ -186,7 +190,7 @@ def test_stage_runs_nine_rows(wired, monkeypatch):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()), stages=recorder)
     assert recorder.close() == {'written': 9, 'error': None}
     rows = _rows(wired, 'run-explicit-pool')
-    assert set(rows) == set(stages_module.STAGE_IDS)
+    assert set(rows) == set(stages_module.STAGE_IDS_V3)
     assert rows['screen']['reason'] == 'explicit_pool'
     assert (rows['push']['status'], rows['push']['reason']) == ('skipped', 'not_reached')
 
@@ -197,7 +201,7 @@ def test_stage_runs_nine_rows(wired, monkeypatch):
     monkeypatch.setattr(regime_module, 'snapshot', boom)
     result = _task_run('scheduled', moment=NOW + timedelta(minutes=10))
     rows = repository.stage_runs_for_run(wired, result['run_id'])
-    assert len(rows) == 9 and {r['stage'] for r in rows} == set(stages_module.STAGE_IDS)
+    assert len(rows) == 9 and {r['stage'] for r in rows} == set(stages_module.STAGE_IDS_V3)
     assert {r['status'] for r in rows if r['stage'] in ('review', 'retro', 'push')} == {'failed'}
 
 
@@ -402,7 +406,7 @@ def test_abort_marks_remaining_failed(wired, monkeypatch):
     result = _task_run('scheduled', task_deps=batch_deps())
     assert result['status'] == 'error' and result['summary'] == {'error': 'boom'}
     rows = _rows(wired, result['run_id'])
-    assert set(rows) == set(stages_module.STAGE_IDS)
+    assert set(rows) == set(stages_module.STAGE_IDS_V3)
     assert rows['collect']['status'] in ('success', 'partial')
     assert rows['screen']['status'] == 'success'
     assert (rows['regime']['status'], rows['regime']['reason']) == ('failed', 'aborted: boom')
@@ -546,7 +550,7 @@ def test_batch_derivation_check_error(db, monkeypatch):
     assert summary['plans'] == {'NVDA': 'existing', 'MU': 'existing'} and base['plans'] == {
         'NVDA': 'inserted', 'MU': 'inserted'}
     rows = _rows(db, 'run-boom')
-    assert set(rows) == set(stages_module.STAGE_IDS[:-1])            # push 由任务层记
+    assert set(rows) == set(stages_module.STAGE_IDS_V3[:-1])            # push 由任务层记
     assert rows['plan']['status'] == 'degraded'
     assert rows['plan']['degradations'] == [{'kind': 'derivation_check_error', 'detail': 'derivation exploded'}]
     assert 'derivation' not in rows['plan']['detail']

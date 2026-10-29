@@ -321,3 +321,52 @@ def test_old_snapshot_has_no_learning_field():
     assert payload['learning'] is None
     message = _sent_text(payload)
     assert '你学到了什么' not in [f.name for f in message.fields]
+
+
+def test_daily_failed_template():
+    """v2.8 §13.2, verbatim: title, red, the four fields, and the link only with ``workbench.public_url``."""
+    from investment_assistant.notify import templates
+
+    payload = {'session': '2026-10-29', 'node_title': '数据采集', 'reason': '运行中断：provider down',
+               'skipped': 8, 'deadline_text': '2026-10-31 05:00（北京时间）',
+               'run_id': 'daily-20261030033000-1a2b3c4d', 'public_url': ''}
+    [plain] = templates.daily_failed(payload)
+    assert plain.title == '⚠️ 每日工作流失败 · 2026-10-29' and plain.color == templates.DAILY_FAILED_COLOR == 15548997
+    assert [(f.name, f.value) for f in plain.fields] == [
+        ('失败节点', '数据采集（已自动重试 1 次）'),
+        ('原因', '运行中断：provider down'),
+        ('未执行', '其后 8 个节点'),
+        ('续跑', '2026-10-31 05:00（北京时间） 之前可在运行详情「从此节点继续」')]
+    [linked] = templates.daily_failed({**payload, 'public_url': 'https://wb.example.com/'})
+    assert [f.name for f in linked.fields] == ['失败节点', '原因', '未执行', '续跑', '运行详情']
+    assert linked.fields[-1].value == 'https://wb.example.com/#tools/runs/daily-20261030033000-1a2b3c4d'
+    [long] = templates.daily_failed({**payload, 'reason': 'x' * 500})
+    assert len(long.fields[1].value) == 300                                    # ≤ 300 characters
+    [never_ran] = templates.daily_failed({'session': None, 'node_title': '每日工作流', 'retried': False,
+                                          'reason': 'migration_028_missing', 'run_id': 'daily-x', 'public_url': ''})
+    assert [(f.name, f.value) for f in never_ran.fields] == [('失败节点', '每日工作流'),
+                                                            ('原因', 'migration_028_missing')]
+
+
+def test_daily_failed_goes_through_the_workbench_category(monkeypatch):
+    """Sent as ``send_notifications('workbench', …)``: the existing category key, channel and switch (D15)."""
+    from investment_assistant.notify import notifier, templates
+
+    class Cfg:
+        channel = 'discord'
+        discord_enabled = True
+        task_enabled = {'workbench': True}
+        task_channels = {'workbench': 'signals'}
+
+    sent = []
+
+    class Client:
+        def send(self, channel, message):
+            sent.append((channel.value, message))
+
+    out = notifier.send_notifications('workbench', templates.daily_failed(
+        {'session': '2026-10-29', 'node_title': '筛选 `screen-1`', 'reason': 'boom', 'skipped': 7,
+         'deadline_text': 'x', 'run_id': 'daily-x', 'public_url': ''}), Cfg(), client=Client())
+    assert out['sent'] is True and out['messages'] == 1 and sent[0][0] == 'signals'
+    Cfg.task_enabled = {'workbench': False}
+    assert notifier.send_notifications('workbench', [], Cfg(), client=Client())['reason'] == 'task_disabled'

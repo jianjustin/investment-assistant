@@ -136,9 +136,13 @@ def stage_runs_view(*, session: date | None = None, run_id: str | None = None) -
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in stored:
         grouped.setdefault(row['run_id'], []).append(row)
-    order = {stage: i for i, stage in enumerate(stages_module.STAGE_IDS)}
-    runs = [{'run_id': rid, 'rows': sorted(rows, key=lambda r: order.get(r['stage'], len(order)))}
-            for rid, rows in grouped.items()]
+    def ordered(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # each run in the stage order of its own version (stages-3 has ``retro`` before ``push``, stages-4 after it)
+        ids = stages_module.STAGE_IDS_BY_VERSION.get(rows[0]['stages_version'], stages_module.STAGE_IDS)
+        order = {stage: i for i, stage in enumerate(ids)}
+        return sorted(rows, key=lambda r: order.get(r['stage'], len(order)))
+
+    runs = [{'run_id': rid, 'rows': ordered(rows)} for rid, rows in grouped.items()]
     return {'stages': list(stages_module.STAGES), 'stage_runs_ready': ready, 'runs': runs}
 
 

@@ -1,6 +1,6 @@
 # 每日计划：规则 → 交易计划 → 推送
 
-每天早上收到一份交易计划：价位能追溯到规则和数据，由你决定采纳还是否决、自己下单并录入成交。系统只给研究候选，不自动下单、不接券商；所有规则都**未经验证**（Phase 0 Gate HOLD），推送里会如实标注。
+每天中午前（北京时间周二至周六 11:30 开始运行）收到一份交易计划：价位能追溯到规则和数据，由你决定采纳还是否决、自己下单并录入成交。系统只给研究候选，不自动下单、不接券商；所有规则都**未经验证**（Phase 0 Gate HOLD），推送里会如实标注。
 
 设计：[工作台](../specs/2026-10-23-us-research-workbench-design.md)、[P1 规则计划与推送](../specs/2026-10-23-p1-rule-plans-and-push-design.md)。
 
@@ -8,12 +8,33 @@
 
 | 时间（北京） | 发生什么 | 你要做的 |
 |---|---|---|
-| 周二至周六 06:30 | 任务 `workbench`：采集日线、资讯、财报日、SEC 列表、行业 ETF、FRED；跑纳指 100 筛选（成员自动进扩展池，见[观察池](pool-and-context.md)）；记录各数据族拉取结果；生成市场环境；对最近收盘交易日跑规则；生成规则计划；跑 Agent 轨道；对每份有效 Agent 计划做每日复查（见下文[每日复查](#每日复查)）；检测已结束的交易并起草复盘卡（见下文[复盘卡检测](#复盘卡检测)）；推送；记录 9 个阶段的证据（`stage_runs`，每次运行恰好 9 行；迁移 027 未执行时按 `stages-2` 记 8 行、迁移 026 未执行时按 `stages-1` 记 7 行，见[调度与通知](../operations/scheduling-and-notifications.md)）。纽约休市日跳过，推一行「纽约休市，未运行」 | 无 |
+| 周二至周六 11:30 | 任务 `daily`（一张 LangGraph 图，十个节点，见下文[十个节点](#十个节点)）：SEC 监控 → 数据采集（含纳指 100 范围成分的日线与财报日）→ 筛选（成员自动进扩展池，为新成员补采资讯与 SEC，见[观察池](pool-and-context.md)）→ 市场环境 → 规则信号 → 规则计划 → Agent 轨道 → 每日复查（见下文[每日复查](#每日复查)）→ 推送 → 复盘（复盘卡检测与周 / 月复盘，见下文[复盘卡检测](#复盘卡检测)）。每个节点写一行证据（`stage_runs`，每次运行十条有效行；续跑追加 `attempt` 行，见[调度与通知](../operations/scheduling-and-notifications.md)）。纽约休市日 `push` 之前的八个节点跳过，推一行「纽约休市，未运行」，`retro` 仍判断周 / 月复盘 | 无；出错时会收到一条「每日工作流失败」通知 |
 | 早上 | 打开「今日」：每只股票每天一个决策单元，显示候选规则、输入值、Agent 计划（默认在前，见下文[「今日」：Agent 优先](#今日agent-优先)）、规则基线、解读（支持 / 反证 / 冲突，带引用）、近期财报与资讯；筛选来源的单元带「筛选」标记；单元列表之后是进行中的 Agent 计划 | 采纳 / 否决 / 降级为观察，写一句理由；采纳时选执行依据：Agent 计划（第 n 版）、规则计划或自定价位 |
 | 成交后 | 「复盘 → 交易与持仓」录入成交（本机时区），关联当时的决定 | 录错就「作废」并写理由，再重新录入 |
-| 交易结束后 | 「复盘 → 复盘卡」出现新卡（待审定），每日推送概览写「复盘卡 新增 a · 待审定 b」 | 逐条审定教训草稿（可改、可不采纳），采纳的进「知识 → 我的知识」 |
+| 交易结束后 | 「复盘 → 复盘卡」出现新卡（待审定），下一次每日推送概览写「复盘卡 上次推送后新增 a · 待审定 b」 | 逐条审定教训草稿（可改、可不采纳），采纳的进「知识 → 我的知识」 |
 
-「今日」右上可「立即运行批处理」：手动运行总是针对最近一个已收盘的交易日（纽约 17:00 后算当天收盘），**不推送**。
+「今日」右上可「立即运行批处理」（也就是手动运行 `daily`）：总是针对最近一个已收盘的交易日（纽约 17:00 后算当天收盘），**不推送**（`push` 记 `skipped: manual_run`），周 / 月复盘只生成不推送。另一次执行正在进行时返回「每日工作流正在运行」（409）。
+
+### 十个节点
+
+| # | 节点 | 做什么 | 整节点跳过 |
+|---|---|---|---|
+| 1 | `sec_monitor` | 扫描 SEC 观察名单的申报、归档原文、提取正文事实，Bot 直发通知并去重（见 [SEC 采集](sec-filings.md)） | 休市 |
+| 2 | `collect` | 日线、资讯、财报日、SEC 列表、行业 ETF、FRED、纳指 100 成分；每个请求连接 10 秒、总 30 秒，失败按目标重试 2 次 | 休市 |
+| 3 | `screen` | 读库选取成员入扩展池；为当天新入池的成员补采资讯与 SEC | 显式池、休市 |
+| 4 | `regime` | 市场环境 `regime-2` | 休市 |
+| 5 | `signals` | 规则 v1 信号（与 `plan` 在同一个逐只循环里、每只一个事务） | 休市 |
+| 6 | `plan` | 规则计划 `plan-1`；本节点重新推导核对，循环里计划部分的耗时在 `detail.timings.in_signals_ms` | 休市 |
+| 7 | `agent` | Agent 建议；时间预算从本节点开始计 | 休市、Agent 不可用 |
+| 8 | `review` | 每日复查，与 `agent` 共用预算窗口 | 休市 |
+| 9 | `push` | 推送每日计划 / 休市一行 | `already_pushed`、`task_disabled`、`manual_run` |
+| 10 | `retro` | 复盘卡与周 / 月复盘 | `not_due` |
+
+**两层自动重试**：每个外部请求按目标重试 2 次（退避 2 秒、8 秒，4xx 不重试，见[外部请求策略](data-menu.md)），单个目标失败不拖住节点；节点抛出没人接住的异常时，等 60 秒自动重试一次，第一次的错误记进该行 `detail.retry`；再失败就停在该节点，它后面的节点各记一行 `skipped / upstream_failed`，运行状态为失败，并发一条失败通知。数据库连不上不重试。区制计算出错也会停链（信号依赖当天区制）。
+
+**续跑**：失败的运行可以从失败的节点继续（运行详情页的「从此节点继续」，`POST /api/jobs/daily/resume`，命令行 `python -m investment_assistant.tasks.daily resume --run-id … --node …`）：已完成的节点不重跑，截止时间和交易日沿用原运行，只给重新执行的节点追加 `attempt` 更大的行；下一个交易日纽约 17:00 之后只能整次重新运行。
+
+**运行状态**：由十个节点的有效行推出：有失败 → 失败；有 `partial` / `degraded` → 降级；否则成功。降级是常态（例如 FRED 没配置），不发通知；失败发通知。
 
 ## 规则 v1
 
@@ -75,25 +96,25 @@
 
 ## 每日复查
 
-批处理的第 7 个阶段 `review`（「每日复查」，在 `agent` 之后、`push` 之前，设计见 [v2.5 计划时间线 §7](../specs/2026-10-28-v2.5-plan-timeline-design.md#7-每日复查阶段-review)）对每条有效的 `agent-2` 计划链做一次复查，每条链每个交易日至多一条有效批处理复查记录（`plan_reviews`）。
+每日工作流的第 8 个节点 `review`（「每日复查」，在 `agent` 之后、`push` 之前，设计见 [v2.5 计划时间线 §7](../specs/2026-10-28-v2.5-plan-timeline-design.md#7-每日复查阶段-review)）对每条有效的 `agent-2` 计划链做一次复查，每条链每个交易日至多一条有效批处理复查记录（`plan_reviews`）。
 
 - **对象**：链状态为入场期（`entry`）或持仓期（`holding`）的链；当天刚生成的版本不复查（`fresh_version`，生成本身就是当天的记录），当天已有有效批处理复查的不再复查（`already_reviewed`）。顺序：持仓期在前，然后主列表入场期，扩展池入场期最后，各自按最新版截止日、再按标的；超过 20 条的记 `object_cap`。已作废、已否决、已平仓、已过期的链不复查，计入阶段 `detail.ended`；持仓所在单元完全没有 `agent-2` 链的列在 `detail.holdings_without_chain`（链在持仓期间被作废等已结束的不算「无链」）。
 - **链标的只采集**：有效链的标的若已不在观察池与持仓里，批处理在逐只采集之后单独采集它的日线、资讯、财报日，并计入 SEC 列表，**不跑规则**（不产生候选、单元、计划或推送）；运行报告 `pool.chains` 记这类标的数，`collect` 阶段计数照常包含它们。
 - **信号与条件**：宿主只读取截止时间之前的数据，判定七项系统信号（`new_8k`、`abnormal_move`、`stop_touched`、`t1_touched`、`expiry_near`、`regime_change`、`user_input`，窗口是「上次有效复查之后」）以及最新版的失效条件与下次复查条件（`met` / `not_met` / `unknown`，数据缺失不当作成立；当天日线缺失时 `detail.bars_missing`），全部写进复查记录。
-- **结论顺序**：① 任一失效条件成立 → 系统规则作废（「失效条件成立：<条件文案>」），不调用模型；② 没有信号、没有新的用户输入、复查条件都未满足 → 系统规则维持（「无新信号，复查条件未满足（<条件文案>）」），不调用模型；③ 预算闸门（批处理开始 1500 秒后 `stage_budget`、Agent 不可用、本次已遇额度用尽 `quota_exhausted`、当日 token 上限 `token_budget`）→ 写 `skipped` 记录；同链同日已有 3 条 `skipped` / `error` 记录后不再写行，只在阶段 `skips` 记 `max_attempts`；④ 一次 `agent-review-1` 单阶段复查（`agent_runs.mode = review`，工具按复查交易日取数，信号日的原始触发由宿主写进证据块），输出无效或模型出错 → `error` 记录；⑤ 维持 / 作废照写；⑥ 修订 → 完整的提议 + 反方 + 校验（`mode = revise`）：通过则新计划行、新版本行（`origin = review`，有效期复查日 S+1 至 S+3，入场期不晚于信号日后第 10 个交易日）、修订运行、复查运行与复查记录同一事务写入；校验不过、入场期新版按规则作废（如有效期内有财报，`plan_invalid: earnings_in_validity`）或出错 → 记录为 `revise`、没有新版、`detail.revision_status` 写原因，最新版不变，阶段 `degraded`（`revision_failed`）；修订时改口不买（`pass`）→ 作废（`detail.via = revision_pass`）。持仓期的新版即使按仓位规则作废（`no_room`）也成为最新版，链照常复查。
+- **结论顺序**：① 任一失效条件成立 → 系统规则作废（「失效条件成立：<条件文案>」），不调用模型；② 没有信号、没有新的用户输入、复查条件都未满足 → 系统规则维持（「无新信号，复查条件未满足（<条件文案>）」），不调用模型；③ 预算闸门（`agent` 节点开始 1500 秒后 `stage_budget`，与 `agent` 共用一个窗口、采集的重试不占；Agent 不可用、本次已遇额度用尽 `quota_exhausted`、当日 token 上限 `token_budget`）→ 写 `skipped` 记录；同链同日已有 3 条 `skipped` / `error` 记录后不再写行，只在阶段 `skips` 记 `max_attempts`；④ 一次 `agent-review-1` 单阶段复查（`agent_runs.mode = review`，工具按复查交易日取数，信号日的原始触发由宿主写进证据块），输出无效或模型出错 → `error` 记录；⑤ 维持 / 作废照写；⑥ 修订 → 完整的提议 + 反方 + 校验（`mode = revise`）：通过则新计划行、新版本行（`origin = review`，有效期复查日 S+1 至 S+3，入场期不晚于信号日后第 10 个交易日）、修订运行、复查运行与复查记录同一事务写入；校验不过、入场期新版按规则作废（如有效期内有财报，`plan_invalid: earnings_in_validity`）或出错 → 记录为 `revise`、没有新版、`detail.revision_status` 写原因，最新版不变，阶段 `degraded`（`revision_failed`）；修订时改口不买（`pass`）→ 作废（`detail.via = revision_pass`）。持仓期的新版即使按仓位规则作废（`no_room`）也成为最新版，链照常复查。
 - **互斥**：每条链的复查全程（读取、调用模型、写入）在一条不经连接池的专用连接上持有会话级 advisory lock `review-run:<标的>:<信号日>`，读取与写入事务里另有事务级锁 `review:<标的>:<信号日>`；任一把被占（正在重新复查）时本次跳过（`review_in_progress`），不写行，也不调用模型。写入前核对链仍有效、最新版没变；模型调用期间链被改动（如提交了不买的决定）时不写复查记录，但模型运行记为 `skipped`（`review_in_progress`）并带 token，计入每日上限。模型调用期间不占用数据库事务。阶段 `detail.excluded` 逐链记下未复查的链与原因（`fresh_version`、`already_reviewed`、`object_cap` 与无行跳过），供 `plan_review check` 核对。
 - **阶段证据**：`review` 行的输入 = 复查对象数，产出 = 有效复查记录数，`outputs` 列出复查记录、新版计划与复查 / 修订运行的 id，`detail` 有各结论与 `decided_by` 计数、信号触发次数、入场 / 持仓对象数、`ended`、`holdings_without_chain`、token 与新版推导核对；Agent 不可用但有对象时宿主可判定的照写、其余写 `skipped`、阶段 `degraded`（`agent_unavailable`），没有对象时整阶段 `skipped`（`agent_unavailable: <原因>`）。迁移 026 未执行时本阶段不运行，本次按 `stages-1` 记账。
-- **验证一次**：手动运行批处理后，`stage_runs` 该 `run_id` 有 9 行，`review` 行的输出计数等于 `plan_reviews` 里该交易日 `trigger = batch` 的有效记录数；信号日当天的新链只出现在 `review` 行的 `skips`（`fresh_version`）里，次一交易日才有复查记录。
+- **验证一次**：手动运行后，`stage_runs` 该 `run_id` 有 10 条有效行，`review` 行的输出计数等于 `plan_reviews` 里该交易日 `trigger = batch` 的有效记录数；信号日当天的新链只出现在 `review` 行的 `skips`（`fresh_version`）里，次一交易日才有复查记录。
 
 ## 复盘卡检测
 
-批处理的第 8 个阶段 `retro`（「复盘卡」，在 `review` 之后、`push` 之前，设计见 [v2.7 §9](../specs/2026-10-28-v2.7-growth-loop-design.md#9-批处理阶段-retro)；卡的含义、审定与命令行见 [复盘](review.md#复盘卡)）：
+每日工作流的第 10 个节点 `retro`（「复盘」，在 `push` 之后，设计见 [v2.7 §9](../specs/2026-10-28-v2.7-growth-loop-design.md#9-批处理阶段-retro)；卡的含义、审定与命令行见 [复盘](review.md#复盘卡)）。v2.8 起它做两件事：交易日检测并起草复盘卡（下面的内容，自己的 1500 秒窗口）；任何日子判断周 / 月复盘是否到期，到期就生成并推送（手动运行只生成不推送，`detail.weekly.push = manual_run`）。两件都没做记 `skipped / not_due`，交易日不会记 `not_due`。复盘卡在推送之后才建，所以推送概览报的是上一次推送之后的新卡数：
 
 - **执行**（`retro_cards.run_stage`）：只读事务里枚举对象与结束事件并冻结事实；一个写事务插入新卡（`event_key` 唯一，同一 session 重跑不重复建卡）；之后对没有成功草稿的卡按结束日升序起草，每张卡一个写事务，每次批处理至多 5 张，预算闸门与 `agent` 阶段同一顺序。单个标的或单张卡出错只影响它自己（进 `failures`），阶段继续。
 - **阶段证据**：`input_count` = 本次需要起草的卡数（新卡加之前没起草成功、且失败不足 3 次的），`output_count` = 本次成功的草稿数，`outputs` 有 `card_ids` / `draft_ids` / `agent_run_ids`，`skips` 逐卡记原因（`stage_budget`、`quota_exhausted`、`token_budget`、`max_attempts`、`draft_cap`、`agent_unavailable: <原因>`），草稿作废进降级 `draft_rejected`、出错进 `failures`，`detail` = `{events, new_cards, by_end_kind, no_plan, drafts: {ok, rejected, error, skipped}, to_review, tokens}`；运行报告 `summary.retro = {new_cards, drafts, to_review}`。Agent 不可用时照常检测与建卡，起草全部跳过，阶段 `degraded`（`agent_unavailable`）；没有需要起草的卡时阶段 `success`。
-- **迁移 027 未执行**：本阶段不运行，本次按 `stages-2` 记 8 行（没有 `retro` 行），运行报告 `errors` 有一条 `growth: migration_027_missing`，其余阶段照常。
-- **每日推送**：概览字段末尾多一行「复盘卡 新增 a · 待审定 b」（a、b 都为 0 时不加），不新增消息。
-- **验证一次**：手动运行批处理后 `stage_runs` 该 `run_id` 有 9 行，`retro` 行计数与 `review_cards` / `review_card_drafts` 一致；`python -m investment_assistant.workbench.retro_cards check --since <首次批处理交易日 S 之前的第 4 个交易日（= S−4，检测窗口起点）>` 通过；「运行一览」第 8 行读作「新结束 n 笔（平仓 a · 止损 b …），新建复盘卡 n 张；起草 x/y 张；待审定 z 张」。
+- **迁移 027 未执行**：`daily` 要求迁移 028，028 之后 027 一定已执行；v2.7 的 `run_batch` 外壳（命令行与测试用）遇到缺 027 时仍按 `stages-2` 记 8 行。
+- **每日推送**：概览字段末尾的「复盘卡 上次推送后新增 a · 待审定 b」（a 是上一次每日推送之后新建的卡数，b 是推送时的待审定数；a、b 都为 0 时不加），不新增消息。
+- **验证一次**：手动运行后 `stage_runs` 该 `run_id` 有 10 条有效行，`retro` 行计数与 `review_cards` / `review_card_drafts` 一致；`python -m investment_assistant.workbench.retro_cards check --since <首次批处理交易日 S 之前的第 4 个交易日（= S−4，检测窗口起点）>` 通过；「运行一览」最后一行读作「新结束 n 笔（平仓 a · 止损 b …），新建复盘卡 n 张；起草 x/y 张；待审定 z 张」。
 
 ## 「今日」：Agent 优先
 
@@ -144,21 +165,21 @@
 
 ## 推送
 
-定时运行在批处理之后，把当日简报推到 Discord（默认 `signals` 频道），按顺序发：概览（含市场环境、扩展池新计划数、「计划更新 修订 a · 作废 b」、「复盘卡 新增 a · 待审定 b」）、新计划（核心池 + 持仓与可决定的筛选单元；筛选来源的计划字段名带「【筛选】」前缀）、计划更新（有更新时才发）、持仓、待处理与异常、筛选报告（概览 / 今日触发 → 复核 / 形态候选前 10 只，形态列全要看页面；筛选未运行时写原因与沿用成员数）。平常五条，有计划更新时六条；`push` 阶段的产出计数是实际发送的消息数。没有新计划也推送；同一交易日已成功推送就不再重复；推送失败只写进运行报告，下次推送附「上次推送失败」。单个字段截断到 1024 字符，单条消息不超过 6000 字符（超出的整字段丢弃，末尾注明「其余 n 条见系统」）。
+`push` 节点把当日简报推到 Discord（默认 `signals` 频道），按顺序发：概览（含市场环境、扩展池新计划数、「计划更新 修订 a · 作废 b」、「复盘卡 上次推送后新增 a · 待审定 b」、有数据族没拿全时一行「数据：日线 118/131（13 个目标没拿到，见运行详情）」，多个族用「；」连接、至多 3 个）、新计划（核心池 + 持仓与可决定的筛选单元；筛选来源的计划字段名带「【筛选】」前缀）、计划更新（有更新时才发）、持仓、待处理与异常、筛选报告（概览 / 今日触发 → 复核 / 形态候选前 10 只，形态列全要看页面；筛选未运行时写原因与沿用成员数）。平常五条，有计划更新时六条；`push` 阶段的产出计数是实际发送的消息数。没有新计划也推送；同一交易日已成功推送就不再重复；推送失败只写进运行报告，下次推送附「上次推送失败」。单个字段截断到 1024 字符，单条消息不超过 6000 字符（超出的整字段丢弃，末尾注明「其余 n 条见系统」）。
 
 - **新计划的字段**（设计见 [v2.5 §10.3](../specs/2026-10-28-v2.5-plan-timeline-design.md#103-推送)）：有 Agent 结果的单元，Agent 行在前、规则计划作为「规则基线：区间 · 止损 · T1 · 股数」在后（不写风险金额）。`agent-2` 写「Agent 第 n 版：区间 · 止损 · T1 · 股数 · 摘要 · 反证：<首条反证>」（n 是链的最新版）；链已作废写「Agent 已作废此计划（第 n 版）：<理由>」；Agent 没有可用计划（出错、跳过、校验作废等）写「Agent 未给出计划（<原因>）」；不建议买入照旧写「Agent（模型）不建议买入；摘要」；`agent-1` 单元保留原来的 Agent 行，末尾标「agent-1（旧版，不参与复查）」。Agent 简报（`agent-1`、`agent-2`）的摘要和反证已经在 Agent 行里，不再重复附在计划后面。没有 Agent 结果的单元（卖出、观察等）照旧只写规则计划。证据状态「证据：未验证」照旧。
 - **「🔁 计划更新 · <交易日>」**：列出时间窗内写入的复查记录（批处理与重新复查都算），只推作废和产生了新版的修订，每条一个字段：
   - 修订：「<标的> 第 n−1 → n 版：<变化说明逐条> · 新价位 区间 · 止损 · T1 · 有效期至 <日期>」，变化说明取修订运行输出的 `changes`；
   - 作废：「<标的> 作废（Agent / 系统规则）：<理由>」。
   - 维持、修订失败（没有新版）、跳过、出错都不推；扩展池入场期的链不推（只影子跟踪），持仓期的链总是推。
-  - 时间窗（D25）：起点是上一次成功的、交易日早于本次的每日推送读取复查记录的时刻（`job_reports` 里 `workbench` 的 `summary.push.sent = true`，取 `summary.push.reviews_until`；没有这个键的旧记录取报告时间 `created_at`；休市日那一行不算），终点是本次推送读取复查记录的时刻（写进本次的 `summary.push.reviews_until`），只取复查交易日不晚于本次的记录；从未成功推送过时只取本交易日的记录。推送之后才做的重新复查——包括推送发送期间、运行报告落库之前写入的——下一次推送照样会推。手动「重新推送今日计划」（`POST /api/workbench/push`）不写运行报告，不移动时间窗；同一交易日重推时起点不变，内容只会多出此后新写入的记录。迁移 026 未执行时不发这条消息，概览也不写「计划更新」一行。
+  - 时间窗（D25）：起点是上一次成功的、交易日早于本次的每日推送读取复查记录的时刻（`job_reports` 里 `workbench`（v2.7 及以前）或 `daily` 的 `summary.push.sent = true`，取 `summary.push.reviews_until`；没有这个键的旧记录取报告时间 `created_at`；休市日那一行不算），终点是本次推送读取复查记录的时刻（写进本次的 `summary.push.reviews_until`），只取复查交易日不晚于本次的记录；从未成功推送过时只取本交易日的记录。推送之后才做的重新复查——包括推送发送期间、运行报告落库之前写入的——下一次推送照样会推。手动「重新推送今日计划」（`POST /api/workbench/push`）不写运行报告，不移动时间窗；同一交易日重推时起点不变，内容只会多出此后新写入的记录。迁移 026 未执行时不发这条消息，概览也不写「计划更新」一行。
 
 ## 入口与验证
 
 - 页面：「今日」（决策单元、Agent 计划块与折叠的规则基线、布局开关、进行中的 Agent 计划与「重新复查」、持仓止损、市场环境、「重新推送今日计划」）；「标的」（单只股票的 K 线图（MA20/50/200 与成交量，最多 250 根日线）、日线、候选、计划与决定历史，页尾「Agent 计划」与「我的补充」）；计划页 `#plan/<id>`（`agent-2` 计划另有版本链、复查记录、「重新复查」与「我的补充」）。
 - API：`GET /api/workbench/today`、`POST /api/workbench/decisions`（`plan_id` 与 `own_plan` 二选一；可选 `agent_plan_id`、`review_view`，见上文）、`GET /api/workbench/instruments/{ticker}`、`GET/POST /api/workbench/trades`、`POST /api/workbench/trades/{id}/void`、`POST /api/workbench/push`。
-- 运行报告：`job_reports` 中 `workbench` 的 `summary`，包括 `retro`（`{new_cards, drafts, to_review}`，v2.7）、`tickers.<T>`（日线、资讯、候选、跳过原因）、`plans`（`inserted` / `existing` / `conflict` / `skip: 原因`）、`earnings`、`push`、`sources`（按数据源列出失败）、`timings`、`pool.chains`（只采集不跑规则的链标的数）、`review`（复查对象数、各结论条数、token）。
-- 验证一次：手动运行批处理后，运行报告里 `plans.<T> == "inserted"`；「今日」显示「入场区间 x–y · 止损 z · T1 w · 建议 N 股」和「证据：未验证」；点「重新推送今日计划」，页面提示「已推送 N 条」，`push.sent == true`。
+- 运行报告：`job_reports` 中 `daily` 的 `summary`（每次执行一行，续跑另追加 `trigger_source = resume` 的行；v2.7 及以前是 `workbench`），额外有 `graph_version`、`run_status`、`failed_node`、`resumed`、`stage_status`，以及 `retro`（`{new_cards, drafts, to_review}`，v2.7）、`tickers.<T>`（日线、资讯、候选、跳过原因）、`plans`（`inserted` / `existing` / `conflict` / `skip: 原因`）、`earnings`、`push`、`sources`（按数据源列出失败）、`timings`、`pool.chains`（只采集不跑规则的链标的数）、`review`（复查对象数、各结论条数、token）。
+- 验证一次：手动运行后，运行报告里 `plans.<T> == "inserted"`；「今日」显示「入场区间 x–y · 止损 z · T1 w · 建议 N 股」和「证据：未验证」；点「重新推送今日计划」，页面提示「已推送 N 条」，`push.sent == true`。
 - 验证 Agent 优先：有 `agent-2` 链的单元，「今日」先显示「Agent 计划 · 第 n 版」块，下面是一行「规则基线 plan-1：…」；点「展开」看到完整规则计划；页头切到「规则优先（旧）」后顺序反过来、都不折叠，刷新页面仍保持；提交决定后 `signal_decisions.review_view` 记下当时的布局与是否展开过。
 
 ## 数据与时点

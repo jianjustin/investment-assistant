@@ -290,14 +290,22 @@ def test_bot_returns_receipt_and_does_not_leak_token_on_timeout(monkeypatch):
 
 
 def test_monitor_config_loads_and_routes_filings_task(tmp_path, monkeypatch):
+    """v2.8: the sec_monitor node's pass takes the monitor path when the config enables it (and the scan range is the
+    configured start date to New York today)."""
+    from datetime import date
+
     from investment_assistant.filings import monitor
     from investment_assistant.tasks import filings
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"sec_monitor": {"enabled": True, "start_date": "2026-10-01"}}))
     cfg = load_config(path)
-    monkeypatch.setattr(monitor, "run_monitor", lambda *a, **kw: {"migrated": True})
-    out = filings.run(cfg)
-    assert {k: v for k, v in out.items() if k != "data_status"} == {"migrated": True}
+    seen = {}
+    monkeypatch.setattr(monitor, "scan_and_notify",
+                        lambda config, start, end, **kw: seen.update(start=start, end=end) or {"migrated": True})
+    out, mode = filings._scan(cfg, start_date=None, end_date=None, ny_date=date(2026, 10, 22), drop_after=None,
+                              notify_cfg=object())
+    assert (out, mode) == ({"migrated": True}, "monitor")
+    assert seen == {"start": date(2026, 10, 1), "end": date(2026, 10, 22)}
 
 
 def test_harness_reports_collector_error_without_duplicate_notification(monkeypatch):

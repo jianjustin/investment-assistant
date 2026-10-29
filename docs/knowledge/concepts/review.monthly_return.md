@@ -2,7 +2,7 @@
 id: review.monthly_return
 title: "月度收益与分档"
 group: review
-version: 1
+version: 2
 applies_to: [monthly-3]
 summary: "月度收益 =（本月末资金快照 − 上月末资金快照 − 区间净出入金）÷ 上月末资金快照，按 20%、10%、0% 分四档并对比 SPY；缺快照不算。"
 related: [review.process_check, review.sensitivity, review.weekly, review.position]
@@ -21,7 +21,7 @@ sources: [investment_assistant/workbench/monthly.py, investment_assistant/config
 资金快照按券商月末总资金录入，更正时必须指向当前有效的那份快照；出入金按笔录入，录错只能作废。
 
 ## 在系统里哪里看到
-「复盘 → 月度复盘」和「资金」，页面显示"月度收益 +x.xx% · 档位 · SPY …"；月度推送由 `workbench_review` 任务在上月有月末快照、且还没推送时发出。
+「复盘 → 月度复盘」和「资金」，页面显示"月度收益 +x.xx% · 档位 · SPY …"；月度推送由每日工作流的 `retro` 节点在上月有月末快照、且还没推送时发出。
 
 ## 注意
 分档只是便于一眼读数的标签，不是对决策水平的评价；一个月的收益受仓位、市场和出入金时点影响很大。

@@ -304,7 +304,7 @@ def derivation_candidate():
 def _stage_row(run_id, stage, session=SESSION, *, offset=0):
     started = NOW + timedelta(seconds=offset)
     return {'run_id': run_id, 'job': 'workbench', 'trigger': 'scheduled', 'session': session, 'stage': stage,
-            'stages_version': stages_module.STAGES_VERSION, 'status': 'success', 'reason': None,
+            'stages_version': stages_module.STAGES_VERSION_V3, 'status': 'success', 'reason': None,
             'input_count': 1, 'output_count': 1, 'skips': [], 'failures': [], 'degradations': [],
             'outputs': {}, 'detail': {}, 'started_at': started, 'finished_at': started, 'duration_ms': 0}
 
@@ -312,7 +312,7 @@ def _stage_row(run_id, stage, session=SESSION, *, offset=0):
 def test_stage_runs_view_orders_and_validates(db):
     # 阶段行故意倒序写入：视图按 STAGE_IDS 排列；两次运行按先后分组
     for run_id in ('run-a', 'run-b'):
-        for i, stage in enumerate(reversed(stages_module.STAGE_IDS)):
+        for i, stage in enumerate(reversed(stages_module.STAGE_IDS_V3)):
             repository.insert_stage_run(db, _stage_row(run_id, stage, offset=i))
     repository.insert_stage_run(db, _stage_row('run-other', 'collect', date(2026, 10, 21)))
     db.commit()
@@ -322,7 +322,7 @@ def test_stage_runs_view_orders_and_validates(db):
     assert out['stages'] == list(stages_module.STAGES)
     assert [r['run_id'] for r in out['runs']] == ['run-a', 'run-b']
     for run in out['runs']:
-        assert [row['stage'] for row in run['rows']] == list(stages_module.STAGE_IDS)
+        assert [row['stage'] for row in run['rows']] == list(stages_module.STAGE_IDS_V3)
     by_run = view.stage_runs_view(run_id='run-other')
     assert [(r['run_id'], [x['stage'] for x in r['rows']]) for r in by_run['runs']] == [('run-other', ['collect'])]
     assert view.stage_runs_view(run_id='nope')['runs'] == []

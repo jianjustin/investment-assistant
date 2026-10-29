@@ -936,7 +936,8 @@ def derive_unit(candidates: list[dict[str, Any]]) -> dict[str, Any]:
 
 NY = ZoneInfo('America/New_York')
 PLAN_KINDS = ('rule', 'own', 'agent')
-RUN_STAGE_COUNT = {'stages-1': 7, 'stages-2': 8, 'stages-3': 9}     # stage rows per run, by stages_version (v2.5 §7.1, v2.7 §9)
+# effective stage rows per run (the highest attempt of each stage), by stages_version (v2.5 §7.1, v2.7 §9, v2.8 D9)
+RUN_STAGE_COUNT = {'stages-1': 7, 'stages-2': 8, 'stages-3': 9, 'stages-4': 10}
 
 
 def session_window(session: date) -> tuple[datetime, datetime]:
@@ -1005,9 +1006,31 @@ def _stage_derivation(row: dict[str, Any]) -> str:
     return f"{found['checked']} 份，mismatch {found['mismatch']}，incomplete {found['incomplete']}"
 
 
+def _attempt_problems(rows: list[dict[str, Any]]) -> list[str]:
+    """The attempt guard of ``stages-4`` (v2.8 §4.4): per stage the attempts count 1, 2, … without a gap, and an attempt
+    above 1 exists only where the previous one failed or was skipped as ``upstream_failed`` — a completed node never
+    runs again. A row without ``attempt`` (before migration 028) is attempt 1."""
+    by_stage: dict[str, dict[int, dict[str, Any]]] = {}
+    for row in rows:
+        by_stage.setdefault(row['stage'], {})[int(row.get('attempt') or 1)] = row
+    problems = []
+    for stage, attempts in by_stage.items():
+        numbers = sorted(attempts)
+        if numbers != list(range(1, len(numbers) + 1)):
+            problems.append(f"{stage} 的 attempt 不连续：{', '.join(str(n) for n in numbers)}")
+            continue
+        for n in numbers[1:]:
+            before = attempts[n - 1]
+            if not (before['status'] == 'failed'
+                    or (before['status'] == 'skipped' and before.get('reason') == 'upstream_failed')):
+                problems.append(f"{stage} 的 attempt {n} 不该存在：上一次是 {before['status']}（已完成的节点不重跑）")
+    return problems
+
+
 def _stages(args: argparse.Namespace, out: Callable[[str], None]) -> int:
     from investment_assistant.workbench import repository, service
     from investment_assistant.workbench import stages as stages_module
+    from investment_assistant.workbench import workflow
 
     start, end = session_window(args.session)
     with service.read_only_tx() as conn:
@@ -1025,24 +1048,29 @@ def _stages(args: argparse.Namespace, out: Callable[[str], None]) -> int:
                 runs[report['run_id']] = rows
             else:
                 no_evidence.append(report)
+        if ready and repository.daily_ready(conn):          # migration 028: rows with their attempt
+            runs = {run_id: repository.stage_rows_for_run(conn, run_id) for run_id in runs}
         reported = repository.workbench_run_ids(conn, list(runs))
     if not ready:
         out('迁移 025 未执行，暂无阶段证据')
     complete = incomplete = unreported = 0
-    for run_id, rows in runs.items():
+    for run_id, all_rows in runs.items():
+        rows = list(workflow.effective_rows(all_rows).values())
         have = {row['stage'] for row in rows}
         versions = sorted({row['stages_version'] for row in rows})
         version = versions[0] if len(versions) == 1 else None
         expected = stages_module.STAGE_IDS_BY_VERSION.get(version) if version is not None else None
         missing = [stage for stage in expected if stage not in have] if expected is not None else []
-        ok = expected is not None and not missing and len(rows) == RUN_STAGE_COUNT[version]
+        problems = _attempt_problems(all_rows)
+        ok = expected is not None and not missing and not problems and len(rows) == RUN_STAGE_COUNT[version]
         complete += ok
         incomplete += not ok
         unreported += run_id not in reported
-        first = rows[0]
+        first = all_rows[0]
+        extra = f'（共 {len(all_rows)} 条记录，含重试）' if len(all_rows) != len(rows) else ''
         out(f"运行 {run_id}  {first['trigger']}  session {first['session']}  {'/'.join(versions)}  "
-            f"开始 {_beijing(min(row['started_at'] for row in rows))}（北京）  {len(rows)} 行")
-        order = {stage: i for i, stage in enumerate(stages_module.STAGE_IDS)}
+            f"开始 {_beijing(min(row['started_at'] for row in all_rows))}（北京）  {len(rows)} 行{extra}")
+        order = {stage: i for i, stage in enumerate(expected or stages_module.STAGE_IDS)}
         table = [[row['stage'], row['status'], str(row['input_count']), str(row['output_count']),
                   _stage_derivation(row), row['reason'] or ''] for row in sorted(rows, key=lambda r: order.get(r['stage'], 99))]
         for line in _table(['阶段', '状态', '输入', '输出', '推导', '原因'], table, indent='  '):
@@ -1051,6 +1079,8 @@ def _stages(args: argparse.Namespace, out: Callable[[str], None]) -> int:
             out(f"  阶段版本无法核对：{', '.join(versions)}")
         if missing:
             out(f"  缺少阶段：{', '.join(missing)}")
+        for problem in problems:
+            out(f'  {problem}')
         if run_id not in reported:
             out(f'  不在 job_reports：{run_id}')
     for report in no_evidence:
@@ -1064,8 +1094,9 @@ def _stages(args: argparse.Namespace, out: Callable[[str], None]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """``check`` lists plan consistency (exit 1 when a status=ok plan is not consistent); ``stages`` verifies
-    the stage evidence of one session (exit 1 on a run without its version's rows — 7 for stages-1,
-    8 for stages-2 — a run missing from job_reports or a report without stage rows). Exit 2 for bad
+    the stage evidence of one session (exit 1 on a run without its version's effective rows — 7 for stages-1,
+    8 for stages-2, 9 for stages-3, 10 for stages-4 — or whose attempts are not consecutive or rerun a completed node,
+    a run missing from job_reports or a report without stage rows). Exit 2 for bad
     arguments or an unavailable database."""
     parser = argparse.ArgumentParser(prog='python -m investment_assistant.workbench.derivation',
                                      description='计划推导与阶段证据的只读校验。')

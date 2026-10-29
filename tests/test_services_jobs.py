@@ -134,10 +134,56 @@ def test_scheduled_jobs_carry_description(monkeypatch):
 
     monkeypatch.setattr(jobs, "_has_db", lambda: True)
     monkeypatch.setattr(jobs, "_with_conn", lambda fn: [
-        {"name": "workbench", "enabled": True},
+        {"name": "daily", "enabled": True},
         {"name": "ghost", "enabled": True},
     ])
     out = jobs.scheduled_jobs()
     assert out["degraded"] is False
-    assert out["jobs"][0]["description"]["title"] == catalog.JOB_INFO["workbench"]["title"]
+    assert out["jobs"][0]["description"]["title"] == catalog.JOB_INFO["daily"]["title"]
     assert out["jobs"][1]["description"] is None
+
+
+def test_scheduled_jobs_list_manual_only_registry_jobs(monkeypatch):
+    """``sec_backfill`` has no scheduled_jobs row; the task center still gets a row for it (only 按日期运行)."""
+    from investment_assistant.tasks import catalog
+
+    monkeypatch.setattr(jobs, "_has_db", lambda: True)
+    monkeypatch.setattr(jobs, "_with_conn", lambda fn: [{"name": "daily", "enabled": True}])
+    out = jobs.scheduled_jobs()["jobs"]
+    assert out[0] == {"name": "daily", "enabled": True, "description": catalog.describe("daily")}   # normal rows as before
+    assert out[1] == {"name": "sec_backfill", "manual_only": True, "enabled": False, "next_run_at": None,
+                      "time_local": None, "weekday_mask": None, "timezone": None,
+                      "description": catalog.describe("sec_backfill")}
+    assert len(out) == 2
+    monkeypatch.setattr(jobs, "_with_conn", lambda fn: [{"name": "sec_backfill", "enabled": True}])    # a real row wins
+    assert [j.get("manual_only") for j in jobs.scheduled_jobs()["jobs"]] == [None]
+
+
+def test_old_job_names_404(client, monkeypatch):
+    monkeypatch.setattr(jobs, "load_config", lambda: object())
+    for old in ("workbench", "workbench_review", "filings"):
+        with pytest.raises(jobs.UnknownJobError):
+            jobs.trigger_job(old)
+        response = client.post(f"/api/jobs/{old}/run", json={})
+        assert response.status_code == 404 and response.json() == {"error": f"unknown job: {old}"}
+
+
+def test_sec_backfill_requires_dates(client, monkeypatch):
+    monkeypatch.setattr(jobs, "load_config", lambda: object())
+    submitted = {}
+    monkeypatch.setattr(jobs.runner, "submit", lambda kind, fn: submitted.update({"kind": kind, "fn": fn}) or "run-9")
+    with pytest.raises(ValueError):
+        jobs.trigger_job("sec_backfill", {})
+    assert client.post("/api/jobs/sec_backfill/run", json={}).status_code == 400
+    assert submitted == {}
+    out = jobs.trigger_job("sec_backfill", {"date": "2026-10-01"})
+    assert out == {"run_id": "run-9", "status": "pending"} and submitted["kind"] == "sec_backfill"
+
+
+def test_daily_job_ignores_dates(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(jobs, "REGISTRY", {"daily": lambda config, **kw: seen.update(kw) or {"ok": True}})
+    monkeypatch.setattr(jobs, "load_config", lambda: object())
+    monkeypatch.setattr(jobs.runner, "submit", lambda kind, fn: fn() and "run-3")
+    jobs.trigger_job("daily", {"date": "2026-10-01"})
+    assert seen == {"trigger_source": "manual"}

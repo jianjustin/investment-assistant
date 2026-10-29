@@ -185,9 +185,16 @@ def push_today():
 
 @router.post('/api/workbench/run')
 def run_now():
-    from investment_assistant.tasks.workbench import run
-    run_id = runner.submit('workbench', lambda: run(trigger_source='manual'))
-    return {'run_id': run_id, 'status': 'pending'}
+    from investment_assistant.tasks import daily
+    try:
+        busy = daily.is_running()
+    except Exception:   # noqa: BLE001 - no database to ask: the run itself reports what is wrong
+        busy = False
+    if busy:
+        raise HTTPException(status_code=409, detail='daily_running')
+    rid = daily.new_run_id()
+    run_id = runner.submit('daily', lambda: daily.run(trigger_source='manual', run_id=rid))
+    return {'run_id': run_id, 'status': 'pending', 'daily_run_id': rid}
 
 
 @router.get('/api/workbench/agent-runs')

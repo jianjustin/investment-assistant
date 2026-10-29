@@ -1,8 +1,11 @@
-"""The screen stage of the daily batch: collect universe bars, run screen-1, persist and pick.
+"""The range collection and the screen stage of the daily workflow.
 
-Owns its transactions, like every other stage of ``run_batch``. On failure
-(unreadable universe, missing benchmark) the members stay with the locked and
-retention-window tickers, no new picks, and an error row lands in screen_runs.
+v2.8 (D4) split the old screen stage in two: ``collect_range`` fetches the Nasdaq-100 range's bars and earnings
+dates inside the ``collect`` node, ``run_stage`` only reads what is stored, runs screen-1, persists and picks, and
+``backfill_new_members`` collects news and SEC listings for the members the collect node did not cover.
+
+Owns its transactions, like every other stage. On failure (unreadable universe, missing benchmark) the members stay
+with the locked and retention-window tickers, no new picks, and an error row lands in screen_runs.
 """
 from __future__ import annotations
 
@@ -23,20 +26,21 @@ OVER_BUDGET_S = 600
 COLLECT_LOOKBACK_DAYS = 400
 
 
-def _collect(conn_factory, *, session: date, now: datetime, targets: list[str],
-             deps: Any) -> tuple[set[str], list[str], dict[str, str]]:
-    """Collect daily bars and earnings for range tickers outside the manual pool.
+def collect_range(conn_factory, *, session: date, now: datetime, targets: list[str],
+                  deps: Any, tally: 'collect.Tally | None' = None) -> tuple[set[str], list[str], dict[str, str]]:
+    """Collect daily bars and earnings for range tickers outside the manual pool (the ``collect`` node's range step).
 
     Bar failures are skips, never filters: they surface in the batch-level
     summary['sources']['bars'] and never count as illiquid or no-setup. Earnings
-    failures leave the date unknown, which screen-1 only notes."""
+    failures leave the date unknown, which screen-1 only notes. With ``tally`` each ticker's bars outcome is
+    booked there (target = ticker, attempts and all)."""
     fetched: set[str] = set()
     failures: list[str] = []
     reasons: dict[str, str] = {}
     for ticker in targets:
         try:
             collect.bars_one(ticker, session=session, now=now, deps=deps,
-                             lookback_days=COLLECT_LOOKBACK_DAYS)
+                             lookback_days=COLLECT_LOOKBACK_DAYS, tally=tally)
             fetched.add(ticker)
         except Exception as exc:
             failures.append(ticker)
@@ -99,8 +103,13 @@ def _persist(conn_factory, *, session: date, now: datetime, run_id: str | None,
 
 
 def run_stage(*, session: date, now: datetime, manual: pool_module.Pool, held: list[str], deps: Any,
-              run_id: str | None) -> dict[str, Any]:
-    """Run screen-1 for the session. Returns members, fetched tickers, the universe and summary['screen']."""
+              run_id: str | None, fetched: set[str] | None = None,
+              fetch_reasons: dict[str, str] | None = None) -> dict[str, Any]:
+    """Run screen-1 for the session over what the ``collect`` node stored (no requests for the range any more).
+
+    ``fetched`` / ``fetch_reasons`` are the collect node's outcomes for the range tickers; they ride along in the
+    result (``fetched``, ``fetch_failures``, ``fetch_reasons``) so the caller can account every attempted ticker.
+    Returns members, fetched tickers, the universe and summary['screen']."""
     from investment_assistant.workbench import service as service_module
 
     conn_factory = service_module.connection
@@ -110,9 +119,9 @@ def run_stage(*, session: date, now: datetime, manual: pool_module.Pool, held: l
                                'counts': {}, 'skips': {}, 'evicted': [], 'removed': [],
                                'flags': [], 'error': None, 'timing': 0.0}
     universe_: universe_module.Universe | None = None
-    fetched: set[str] = set()
-    fetch_failures: list[str] = []
-    fetch_reasons: dict[str, str] = {}
+    fetched = set(fetched or ())
+    fetch_reasons = dict(fetch_reasons or {})
+    fetch_failures: list[str] = list(fetch_reasons)
 
     def fail(error: str) -> dict[str, Any]:
         """Carry the locked and retention-window members, nothing new. A loaded universe
@@ -142,8 +151,6 @@ def run_stage(*, session: date, now: datetime, manual: pool_module.Pool, held: l
             summary['flags'].append('universe_stale')
         targets = [t for t in universe_.tickers
                    if t not in manual.tickers and t != screen.BENCHMARK]
-        fetched, fetch_failures, fetch_reasons = _collect(conn_factory, session=session, now=now,
-                                                          targets=targets, deps=deps)
         with conn_factory() as conn:
             bars_by_ticker = {t: repository.read_bars(conn, t, session, cutoff_at=now, limit=300)
                               for t in targets}
@@ -175,6 +182,64 @@ def run_stage(*, session: date, now: datetime, manual: pool_module.Pool, held: l
         return fail(f'universe: {exc}')
     except screen.BenchmarkMissing:
         return fail('benchmark_missing')
+
+
+def backfill_new_members(tickers: list[str], *, session: date, now: datetime, deps: Any,
+                         drop_after: datetime | None = None, fetched: set[str] | frozenset[str] = frozenset(),
+                         ny_date: date | None = None,
+                         bars_tally: 'collect.Tally | None' = None, news_tally: 'collect.Tally | None' = None,
+                         sec_tally: 'collect.Tally | None' = None) -> dict[str, Any]:
+    """News and SEC listings for the screen members the ``collect`` node did not cover (v2.8 D4).
+
+    A member the range step did not fetch today (retained or locked, no longer in the range file) also gets its
+    bars here, and every member its earnings date once more (as the v2.7 per-ticker loop gave them: the plan that
+    follows reads the refreshed date). Nothing raises but ``Unavailable``: a ticker's failures come back in
+    ``problems`` (``{ticker: ['bars: …', 'news: …']}``), the earnings outcome in ``earnings`` (``{ticker: status or
+    'error: …'}``) and the listing's failure in ``filings_error``; with the tallies the outcomes are booked per
+    target. Returns ``{'bars', 'news', 'earnings', 'problems', 'filings', 'filings_error'}`` (the first three are
+    per-ticker dicts, ``filings`` the ``collect.sec_listing`` result or None)."""
+    from investment_assistant.workbench import service as service_module
+
+    out: dict[str, Any] = {'bars': {}, 'news': {}, 'earnings': {}, 'problems': {}, 'filings': None,
+                           'filings_error': None}
+    today = ny_date or now.astimezone(NY).date()
+    for ticker in tickers:
+        problems = out['problems'].setdefault(ticker, [])
+        if ticker in fetched:
+            out['bars'][ticker] = 'collected_in_screen'
+        else:
+            try:
+                out['bars'][ticker] = collect.bars_one(ticker, session=session, now=now, deps=deps,
+                                                       lookback_days=service_module.HISTORY_DAYS, tally=bars_tally)
+            except service_module.Unavailable:
+                raise
+            except Exception as exc:
+                problems.append(f'bars: {exc}')
+        try:
+            out['news'][ticker] = collect.news_one(ticker, now=now, deps=deps, drop_after=drop_after,
+                                                   tally=news_tally)
+        except service_module.Unavailable:
+            raise
+        except Exception as exc:
+            problems.append(f'news: {exc}')
+        try:
+            row = earnings_module.fetch_next(ticker, fetcher=deps.earnings_fetcher, today=today)
+            with service_module._tx() as conn:
+                out['earnings'][ticker] = repository.store_earnings(conn, ticker, row, now=now)['status']
+        except service_module.Unavailable:
+            raise
+        except Exception as exc:     # a failed fetch writes nothing and does not pose as "no earnings"
+            out['earnings'][ticker] = f'error: {exc}'
+    try:
+        out['filings'] = collect.sec_listing(tickers, session=session, now=now, deps=deps, tally=sec_tally,
+                                             drop_after=drop_after)
+    except service_module.Unavailable:
+        raise
+    except Exception as exc:
+        out['filings_error'] = str(exc)
+        if sec_tally is not None:
+            sec_tally.fail('*', exc)
+    return out
 
 
 def screen_ref(conn, ticker: str, session: date, *, cutoff_at: datetime | None = None) -> dict[str, Any] | None:

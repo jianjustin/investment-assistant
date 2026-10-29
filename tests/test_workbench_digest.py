@@ -40,12 +40,12 @@ def holding(ticker='NVDA', **over):
 
 
 def build(units=(), holdings=(), summary=None, last_push_failed=False, extended_plans=0, market=None,
-          agent_summary=None, screen=None, plan_updates=None, retro=None):
+          agent_summary=None, screen=None, plan_updates=None, retro=None, fetch_status=None):
     return digest.build(session=SESSION, units=list(units), holdings=list(holdings),
                         summary=summary or {'errors': [], 'earnings': {}},
                         last_push_failed=last_push_failed, public_url=URL,
                         extended_plans=extended_plans, market=market, agent_summary=agent_summary,
-                        screen=screen, plan_updates=plan_updates, retro=retro)
+                        screen=screen, plan_updates=plan_updates, retro=retro, fetch_status=fetch_status)
 
 
 def agent_ok(ticker='NVDA', summary='回踩修复放量', first_risk='财报临近'):
@@ -245,17 +245,16 @@ def test_core_empty_overview_text():
 
 
 def test_errors_grouped_by_source():
-    summary = {'errors': ['MU bars: down', 'batch_over_budget: 2100.0'], 'earnings': {},
+    summary = {'errors': ['MU bars: down'], 'earnings': {},
                'sources': {'bars': ['MU'], 'news': [], 'earnings': [], 'sec': [], 'etf_bars': [], 'fred': [],
                            'regime': []}}
     dg = build(summary=summary)
     assert dg['errors_by_source']['bars'] == ['MU']
-    assert dg['errors_by_source']['budget'] == ['batch_over_budget: 2100.0']
+    assert 'budget' not in dg['errors_by_source']                 # v2.8 deleted the batch budget
     messages = templates.workbench_digest(dg)
     names = {f.name for m in messages for f in m.fields}
-    assert '日线' in names and '耗时' in names and '资讯' not in names
-    text = all_text(messages)
-    assert 'MU' in text and 'batch_over_budget: 2100.0' in text
+    assert '日线' in names and '耗时' not in names and '资讯' not in names
+    assert 'MU' in all_text(messages)
 
 
 def test_digest_limits_with_100_ticker_summary():
@@ -615,15 +614,36 @@ def test_invalidated_chain_says_so_before_baseline():
     assert value.startswith('Agent 已作废此计划（第 1 版）：失效条件成立：收盘跌破 95；规则基线：')
 
 
-# --- v2.7 §9: 「复盘卡 新增 a · 待审定 b」 ---
+# --- v2.8 D3 / §13.1: 「复盘卡 上次推送后新增 a · 待审定 b」 and the data line ---
 
-def test_overview_retro_line():
-    shown = build(retro={'new_cards': 2, 'drafts': 1, 'to_review': 3})
+def test_retro_line_since_last_push():
+    shown = build(retro={'new_cards': 2, 'to_review': 3})
     assert shown['overview']['retro'] == {'new_cards': 2, 'to_review': 3}
     lines = templates.workbench_digest(shown)[0].fields[0].value.split('\n')
-    assert lines[-1] == '复盘卡 新增 2 · 待审定 3'
-    only_pending = build(retro={'new_cards': 0, 'drafts': 0, 'to_review': 4})
-    assert '复盘卡 新增 0 · 待审定 4' in all_text(templates.workbench_digest(only_pending))
-    for quiet in (build(retro={'new_cards': 0, 'drafts': 0, 'to_review': 0}), build(retro=None), build()):
+    assert '复盘卡 上次推送后新增 2 · 待审定 3' in lines
+    only_pending = build(retro={'new_cards': 0, 'to_review': 4})
+    assert '复盘卡 上次推送后新增 0 · 待审定 4' in all_text(templates.workbench_digest(only_pending))
+    for quiet in (build(retro={'new_cards': 0, 'to_review': 0}), build(retro=None), build()):      # a and b both 0
         assert '复盘卡' not in all_text(templates.workbench_digest(quiet))
     assert 'retro' not in build()['overview']
+
+
+def _family(name, status, ok, total):
+    return {'family': name, 'status': status, 'ok_count': ok, 'target_count': total}
+
+
+def test_fetch_degraded_line():
+    status = [_family('bars', 'partial', 118, 131), _family('news', 'success', 100, 100),
+              _family('sec_filings', 'failed', 0, 40), _family('fred', 'skipped', 0, 2),
+              _family('universe', 'partial', 0, 1)]
+    dg = build(fetch_status=status)
+    assert [f['family'] for f in dg['overview']['fetch_degraded']] == ['bars', 'sec_filings', 'universe']
+    overview = templates.workbench_digest(dg)[0].fields[0].value
+    assert ('数据：日线 118/131（13 个目标没拿到，见运行详情）；SEC 申报 0/40（40 个目标没拿到，见运行详情）；'
+            '纳指 100 范围 0/1（1 个目标没拿到，见运行详情）') in overview
+    many = build(fetch_status=[_family(f, 'partial', 1, 2) for f in ('bars', 'news', 'sec_filings', 'fred')])
+    line = next(l for l in templates.workbench_digest(many)[0].fields[0].value.split('\n') if l.startswith('数据：'))
+    assert line.count('；') == 2                                  # at most three families
+    for quiet in (build(fetch_status=[_family('bars', 'success', 3, 3), _family('fred', 'skipped', 0, 2)]),
+                  build(fetch_status=[]), build(fetch_status=None), build()):
+        assert '数据：' not in all_text(templates.workbench_digest(quiet))

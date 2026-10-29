@@ -204,7 +204,10 @@ def test_characterization_spy_failure(db):
                                        {'target': 'SPY', 'reason': 'provider down'}])
     sec = db.execute("SELECT status, target_count, failures FROM data_fetch_runs "
                      "WHERE family = 'sec_filings' ORDER BY id DESC LIMIT 1").fetchone()
-    assert sec == ('failed', 23, [{'target': '*', 'reason': 'edgar down'}])   # 3 池 + 20 成员；哨兵无 N+1
+    # v2.8 D4 / D21: the family row covers the collect node's list (the 3 pool tickers), one target each; the screen
+    # members are back-filled by the screen node (the shell writes no rows for them); no '*' here.
+    assert sec == ('failed', 3, [{'target': 'AAA', 'reason': 'edgar down'}, {'target': 'BBB', 'reason': 'edgar down'},
+                                 {'target': 'CCC', 'reason': 'edgar down'}])
 
 
 # ------------------------------------------------------- v2.4 §6.3 stages 护栏
@@ -254,7 +257,8 @@ def test_characterization_spy_failure_with_stages(db):
                                        {'target': 'SPY', 'reason': 'provider down'}])
     sec = db.execute("SELECT status, target_count, failures FROM data_fetch_runs "
                      "WHERE family = 'sec_filings' ORDER BY id DESC LIMIT 1").fetchone()
-    assert sec == ('failed', 23, [{'target': '*', 'reason': 'edgar down'}])
+    assert sec == ('failed', 3, [{'target': 'AAA', 'reason': 'edgar down'}, {'target': 'BBB', 'reason': 'edgar down'},
+                                 {'target': 'CCC', 'reason': 'edgar down'}])
 
 
 # ------------------------------------------------------- v2.5 §7.1 summary 护栏

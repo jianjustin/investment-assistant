@@ -1049,7 +1049,7 @@ def stage_run_for_plan(conn, plan_id: str) -> dict[str, Any] | None:
 def workbench_reports_between(conn, start: datetime, end: datetime) -> list[dict[str, Any]]:
     """workbench run reports with started_at in [start, end), oldest first."""
     return _all(conn, "SELECT run_id, started_at, trigger_source FROM job_reports "
-                      "WHERE task = 'workbench' AND started_at >= %s AND started_at < %s "
+                      "WHERE task IN ('workbench', 'daily') AND started_at >= %s AND started_at < %s "
                       'ORDER BY started_at, id', (start, end))
 
 
@@ -1057,7 +1057,7 @@ def workbench_run_ids(conn, run_ids: list[str]) -> set[str]:
     """The given run ids that have a workbench report in job_reports."""
     if not run_ids:
         return set()
-    rows = _all(conn, "SELECT run_id FROM job_reports WHERE task = 'workbench' AND run_id = ANY(%s)",
+    rows = _all(conn, "SELECT run_id FROM job_reports WHERE task IN ('workbench', 'daily') AND run_id = ANY(%s)",
                 (list(run_ids),))
     return {row['run_id'] for row in rows}
 
@@ -1066,7 +1066,7 @@ def last_push(conn, *, session: date | None = None) -> dict[str, Any] | None:
     """The newest recorded push result for the workbench task, optionally for one session."""
     if conn.execute("SELECT to_regclass('job_reports')").fetchone()[0] is None:
         return None
-    sql = "SELECT summary->'push' AS push FROM job_reports WHERE task = 'workbench' AND summary ? 'push'"
+    sql = "SELECT summary->'push' AS push FROM job_reports WHERE task IN ('workbench', 'daily') AND summary ? 'push'"
     params: list[Any] = []
     if session is not None:
         sql += " AND (summary->'push'->>'session') = %s"
@@ -1085,7 +1085,7 @@ def last_successful_push_at(conn, *, before_session: date) -> datetime | None:
         return None
     row = conn.execute(
         "SELECT max(COALESCE((summary->'push'->>'reviews_until')::timestamptz, created_at)) "
-        "FROM job_reports WHERE task = 'workbench' "
+        "FROM job_reports WHERE task IN ('workbench', 'daily') "
         "AND summary->'push'->'sent' = 'true'::jsonb AND (summary->'push'->>'session') < %s "
         "AND (summary->>'status') IS DISTINCT FROM 'skipped'", (before_session.isoformat(),)).fetchone()
     return row[0] if row else None

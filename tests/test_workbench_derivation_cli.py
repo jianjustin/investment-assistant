@@ -5,7 +5,7 @@
 import subprocess
 import sys
 from pathlib import Path
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -21,9 +21,9 @@ def _counts(db):
     return {t: db.execute(f'SELECT count(*) FROM {t}').fetchone()[0] for t in TABLES}
 
 
-def _insert_report(db, run_id, started_at, trigger='scheduled'):
+def _insert_report(db, run_id, started_at, trigger='scheduled', task='workbench'):
     db.execute("INSERT INTO job_reports (task, run_id, status, started_at, trigger_source) "
-               "VALUES ('workbench', %s, 'ok', %s, %s)", [run_id, started_at, trigger])
+               "VALUES (%s, %s, 'ok', %s, %s)", [task, run_id, started_at, trigger])
     db.commit()
 
 
@@ -146,7 +146,7 @@ def test_stages_complete_run_passes(wired, monkeypatch, capsys):
     code, out = _run(capsys, 'stages', '--session', SESSION.isoformat())
     assert code == 0, out
     assert result['run_id'] in out
-    for stage in stages_module.STAGE_IDS:
+    for stage in stages_module.STAGE_IDS_V3:
         assert any(line.lstrip().startswith(stage) for line in out.splitlines()), stage
     assert out.strip().splitlines()[-1].startswith('汇总')
     assert _counts(wired) == before
@@ -162,7 +162,7 @@ def test_stages_missing_row_fails(wired, monkeypatch, capsys):
 
 
 def test_run_stage_count_by_version():
-    assert derivation.RUN_STAGE_COUNT == {'stages-1': 7, 'stages-2': 8, 'stages-3': 9}
+    assert derivation.RUN_STAGE_COUNT == {'stages-1': 7, 'stages-2': 8, 'stages-3': 9, 'stages-4': 10}
     assert {v: len(ids) for v, ids in stages_module.STAGE_IDS_BY_VERSION.items()} == derivation.RUN_STAGE_COUNT
 
 
@@ -253,3 +253,77 @@ def test_commands_run_in_read_only_transactions(wired, monkeypatch, capsys):
     _run(capsys, 'check', '--since', SESSION.isoformat())
     _run(capsys, 'stages', '--session', SESSION.isoformat())
     assert len(opened) == 2                                        # 每个子命令一个只读事务
+
+
+# ---------------------------------------------------------------- v2.8: stages-4 and attempt
+
+def _row(run_id, stage, attempt, status, reason=None, *, minute=0):
+    started = datetime(2026, 10, 23, 3, 30, tzinfo=UTC) + timedelta(minutes=minute)
+    return {'run_id': run_id, 'job': 'daily', 'trigger': 'scheduled', 'session': SESSION, 'stage': stage,
+            'stages_version': 'stages-4', 'attempt': attempt, 'status': status, 'reason': reason, 'input_count': 0,
+            'output_count': 0, 'skips': [], 'failures': [], 'degradations': [], 'outputs': {}, 'detail': {},
+            'started_at': started, 'finished_at': started, 'duration_ms': 0}
+
+
+def _insert_run(conn, run_id, *, resumed=False):
+    """Ten rows; ``resumed`` = collect failed in the first execution and the second one re-ran it and what followed."""
+    from investment_assistant.workbench import repository
+
+    nodes = stages_module.STAGE_IDS
+    if not resumed:
+        for stage in nodes:
+            repository.insert_stage_run(conn, _row(run_id, stage, 1, 'success'))
+    else:
+        for n, stage in enumerate(nodes):
+            first = 'success' if n < 2 else ('failed' if stage == 'collect' else 'skipped')
+            repository.insert_stage_run(conn, _row(run_id, stage, 1, 'failed' if stage == 'collect' else first,
+                                                   'aborted: x' if stage == 'collect' else (
+                                                       'upstream_failed' if first == 'skipped' else None)))
+        for stage in nodes[1:]:
+            repository.insert_stage_run(conn, _row(run_id, stage, 2, 'success', minute=30))
+    conn.commit()
+
+
+@pytest.fixture
+def db28(db):
+    from _daily_db import apply_028
+
+    apply_028(db)
+    return db
+
+
+def test_derivation_stages_accepts_resumed_runs_cli(db28, capsys):
+    """The CLI version of the resume proof (spec §5.6): clean 10-row runs and resumed ones pass, a forged
+    "completed node ran again" row fails."""
+    _insert_run(db28, 'daily-20261023033000-aaaaaaaa')
+    _insert_run(db28, 'daily-20261023043000-bbbbbbbb', resumed=True)
+    for run_id in ('daily-20261023033000-aaaaaaaa', 'daily-20261023043000-bbbbbbbb'):
+        _insert_report(db28, run_id, datetime(2026, 10, 23, 3, 30, tzinfo=UTC), task='daily')
+    code, out = _run(capsys, 'stages', '--session', SESSION.isoformat())
+    assert code == 0, out
+    assert 'stages-4' in _line(out, 'daily-20261023033000-aaaaaaaa') and '10 行' in _line(out, 'daily-20261023033000-aaaaaaaa')
+    assert '含重试' in _line(out, 'daily-20261023043000-bbbbbbbb')
+    assert '2 个齐全' in out.splitlines()[-1] and out.splitlines()[-1].endswith('通过')
+    # forge: sec_monitor already succeeded in attempt 1, yet an attempt 2 appears
+    from investment_assistant.workbench import repository
+    repository.insert_stage_run(db28, _row('daily-20261023033000-aaaaaaaa', 'sec_monitor', 2, 'success', minute=40))
+    db28.commit()
+    code, out = _run(capsys, 'stages', '--session', SESSION.isoformat())
+    assert code == 1
+    assert 'sec_monitor 的 attempt 2 不该存在' in out and '1 个齐全' in out.splitlines()[-1]
+    # a gap in the attempts is reported too
+    repository.insert_stage_run(db28, _row('daily-20261023043000-bbbbbbbb', 'collect', 4, 'success', minute=50))
+    db28.commit()
+    code, out = _run(capsys, 'stages', '--session', SESSION.isoformat())
+    assert code == 1 and 'collect 的 attempt 不连续' in out
+
+
+def test_derivation_stages_short_stages_4_run_fails(db28, capsys):
+    from investment_assistant.workbench import repository
+
+    for stage in stages_module.STAGE_IDS[:-1]:
+        repository.insert_stage_run(db28, _row('daily-20261023033000-cccccccc', stage, 1, 'success'))
+    _insert_report(db28, 'daily-20261023033000-cccccccc', datetime(2026, 10, 23, 3, 30, tzinfo=UTC), task='daily')
+    db28.commit()
+    code, out = _run(capsys, 'stages', '--session', SESSION.isoformat())
+    assert code == 1 and 'retro' in _line(out, '缺少阶段')

@@ -1,6 +1,7 @@
 """Transactions and use cases for the US workbench. SQL lives in repository.py."""
 from __future__ import annotations
 
+import copy
 import os
 import uuid
 import time as _time_module
@@ -9,6 +10,7 @@ from decimal import Decimal
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -23,6 +25,7 @@ from investment_assistant.workbench.agent import tools as agent_tools
 from investment_assistant.workbench import macro as macro_module
 from investment_assistant.workbench import pool as pool_module
 from investment_assistant.workbench import regime as regime_module
+from investment_assistant.workbench import screen as screen_module
 from investment_assistant.workbench import screening
 from investment_assistant.workbench import stages as stages_module
 from investment_assistant.workbench import universe as universe_module
@@ -35,8 +38,7 @@ from investment_assistant.workbench import tracks as _tracks_module
 NY = ZoneInfo('America/New_York')
 BENCHMARK = 'SPY'
 ETF_TICKERS = pool_module.SECTOR_ETFS
-BATCH_BUDGET_S = 1800
-AGENT_DEADLINE_S = 1500     # no new agent unit starts after this many seconds since batch start (§8.1)
+AGENT_DEADLINE_S = 1500     # no new agent unit starts after this many seconds since the agent node started (§8.1, v2.8 D24)
 AGENT_MAX_ATTEMPTS = 3      # a failed unit runs at most this many times per batch re-run cycle
 HISTORY_DAYS = 420          # calendar days fetched; covers MA200 plus look-backs
 FILING_LOOKBACK_DAYS = 10
@@ -315,60 +317,146 @@ def _breadth_tickers(manual: pool_module.Pool, universe_: Any) -> tuple[list[str
     return sorted(manual.tickers), ['regime_universe_missing']
 
 
-def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_module.Pool | None = None,
-              deps: Deps | None = None, skip_non_trading: bool = False, run_id: str | None = None,
-              breadth_tickers: list[str] | None = None,
-              record_trigger: str | None = None,
-              wall_now: Callable[[], datetime] | None = None,
-              stages: stages_module.StageRecorder | None = None,
-              timeline_ready: bool | None = None, growth_ready: bool | None = None) -> dict[str, Any]:
-    """Collect -> market context -> rules -> units -> briefs for the latest settled session. Idempotent per session.
+# ---------------------------------------------------------------- the daily stages (v2.8 §4.3)
+#
+# ``run_batch`` used to be one long function. v2.8 cuts it at the stage borders, line for line: judgements, writes and
+# the ``summary`` keys are the ones of v2.7. Each ``stage_*`` takes the graph state (JSON-able values only), the
+# node context and the node's stage accumulator (``None`` when nobody records stage evidence) and returns the state
+# increment; it records whole-stage skips and failures on ``ctx.recorder`` itself, as the old inline code did.
+# ``workflow.py`` wraps them into graph nodes (timing, retry, evidence row); ``run_batch`` below calls them in order
+# for the CLI and the v2.7 tests.
 
-    The batch runs over the tiered watch pool read from the watchlist (holdings
-    join regardless of tier); explicit tickers build an all-core pool for tests
-    and manual overrides.
+def _pool_state(pool_: pool_module.Pool) -> dict[str, Any]:
+    return {'core': list(pool_.core), 'extended': list(pool_.extended), 'sectors': dict(pool_.sectors),
+            'sources': dict(pool_.sources)}
 
-    ``record_trigger`` set ('scheduled' / 'manual_batch') holds the per-family
-    advisory locks for the collection stage and appends one data_fetch_runs row
-    per recorded family afterwards; None keeps the batch exactly as before (v2.3 §6.2).
-    ``wall_now`` (default real wall clock, I07) timestamps those rows' start and
-    finish; ``now`` keeps its old meaning as trading session, data fetched_at and
-    every computation cutoff.
-    ``stages`` (v2.4 §6.2) is the task layer's stage recorder: accounting next to
-    the existing code for collect / screen / regime, never changing the control
-    flow; None keeps the batch exactly as before.
-    ``timeline_ready`` (v2.5 D22, migration 026; read in the first transaction when None) is handed to the
-    agent and review stages. The review stage (v2.5 §7) runs after the agent stage; tickers of active
-    agent-2 chains that left the pool and holdings are collected but never run through the rules (D21).
-    ``growth_ready`` (v2.7 D29, migration 027; read in the first transaction when None) decides whether the retro
-    stage (v2.7 §9) runs after the review stage; without it the batch notes ``growth: migration_027_missing`` in
-    ``summary['errors']`` and the task layer booked the run as ``stages-2`` (no retro row).
-    """
-    from investment_assistant.workbench import plan_review, retro_cards     # both import this module
 
-    deps = deps or Deps()
-    clock = deps.clock or _time_module.monotonic
-    ny_date = now.astimezone(NY).date()
-    if skip_non_trading and not is_trading_day(ny_date):
-        if stages is not None:   # 非交易日：push 之前的阶段整段跳过，push 留给任务层（v2.4 §4）
-            stages.skip_many(stages_module.STAGE_IDS[:-1], 'not_trading_day')
-        return {'status': 'skipped', 'reason': 'not a trading day in New York', 'ny_date': ny_date.isoformat()}
-    session = bars.latest_closed_session(now)
-    started = clock()
-    # The first transaction only reads the manual pool and holdings: the screen
-    # stage runs between them and the merged pool's tier sync.
+def _pool_from_state(data: dict[str, Any]) -> pool_module.Pool:
+    return pool_module.Pool(core=tuple(data.get('core') or ()), extended=tuple(data.get('extended') or ()),
+                            sectors=dict(data.get('sectors') or {}), sources=dict(data.get('sources') or {}))
+
+
+def _moment(state: dict[str, Any]) -> tuple[datetime, date]:
+    """The run's cutoff (every computation's ``now``) and session from the state's ISO strings."""
+    return datetime.fromisoformat(state['cutoff_at']), date.fromisoformat(state['session'])
+
+
+def _stage_skip(ctx, stage_id: str, reason: str) -> None:
+    if ctx.recorder is not None:
+        ctx.recorder.skip(stage_id, reason)
+
+
+def _stage_finish(ctx, stage_id: str, failed: str | None = None) -> None:
+    if ctx.recorder is not None:
+        ctx.recorder.finish(stage_id, failed=failed)
+
+
+def agent_window(state: dict[str, Any], ctx) -> tuple[float, Callable[[], float]]:
+    """``(started, clock)`` for the agent budget (v2.8 §5.8): the window opens when the ``agent`` node starts.
+
+    The state keeps that moment as wall time (a monotonic clock does not cross processes); here it becomes
+    ``clock() - (wall_now() - agent_started_at)``. The v2.7 ``run_batch`` shell keeps its own batch-start window."""
+    clock = ctx.clock
+    if ctx.window_start is not None:
+        return ctx.window_start, clock
+    opened = state.get('agent_started_at')
+    if not opened:
+        return clock(), clock
+    elapsed = (ctx.wall_now() - datetime.fromisoformat(opened)).total_seconds()
+    return clock() - max(0.0, elapsed), clock
+
+
+class _Collector:
+    """Bars, news and the earnings date of one ticker; failures land in the summary (v2.7 ``collect_ticker``)."""
+
+    def __init__(self, *, now: datetime, session: date, ny_date: date, deps: Deps, summary: dict[str, Any],
+                 fetched: set[str], bars_tally=None, news_tally=None, earnings_tally=None,
+                 drop_after: datetime | None = None):
+        self.now, self.session, self.ny_date, self.deps, self.summary = now, session, ny_date, deps, summary
+        self.fetched = fetched
+        self.bars_tally, self.news_tally, self.earnings_tally = bars_tally, news_tally, earnings_tally
+        self.drop_after = drop_after
+        self.earnings_ok = self.earnings_failed = 0
+        self.news_dropped = 0
+
+    def ticker(self, ticker: str, *, earnings_date: bool = True, acc: stages_module.StageAcc | None = None) -> None:
+        summary, now, deps = self.summary, self.now, self.deps
+        entry: dict[str, Any] = {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [], 'skips': [],
+                                 'error': None}
+        problems = []
+        try:
+            if ticker in self.fetched:
+                entry['bars'] = 'collected_in_screen'   # news and earnings still collect below
+            else:
+                out = collect.bars_one(ticker, session=self.session, now=now, deps=deps,
+                                       lookback_days=HISTORY_DAYS, tally=self.bars_tally)
+                entry['bars'] = out['counts']
+                entry['skipped_bars'] = [d.isoformat() for d in out['skipped']]
+        except Unavailable:
+            raise
+        except Exception as exc:
+            problems.append(f'bars: {exc}')
+            summary['sources']['bars'].append(ticker)
+        try:
+            entry['news'] = collect.news_one(ticker, now=now, deps=deps, drop_after=self.drop_after,
+                                             tally=self.news_tally)
+            self.news_dropped += entry['news'].get('after_cutoff_dropped', 0)
+        except Unavailable:
+            raise
+        except Exception as exc:
+            problems.append(f'news: {exc}')
+            summary['sources']['news'].append(ticker)
+        if earnings_date:
+            try:
+                row, fetched = earnings.fetch_next_with_outcome(ticker, fetcher=deps.earnings_fetcher,
+                                                                today=self.ny_date)
+                with _tx() as conn:
+                    summary['earnings'][ticker] = repository.store_earnings(conn, ticker, row, now=now)['status']
+                if self.earnings_tally is not None:
+                    self.earnings_tally.record(ticker, fetched, latest=row.get('earnings_date'))
+                self.earnings_ok += 1
+            except Unavailable:
+                raise
+            except Exception as exc:  # 采集失败不写库，也不冒充无财报
+                summary['earnings'][ticker] = f'error: {exc}'
+                summary['errors'].append(f'{ticker} earnings: {exc}')
+                summary['sources']['earnings'].append(ticker)
+                if self.earnings_tally is not None:
+                    self.earnings_tally.record(ticker, exc)
+                if acc is not None:
+                    acc.fail(f'earnings:{ticker}', exc)
+                self.earnings_failed += 1
+        if problems:
+            entry['error'] = '; '.join(problems)
+            summary['errors'].extend(f'{ticker} {p}' for p in problems)
+        summary['tickers'][ticker] = entry
+
+
+def stage_collect(state: dict[str, Any], ctx, acc: stages_module.StageAcc | None) -> dict[str, Any]:
+    """The ``collect`` node (v2.8 §4.5): SPY and the sector ETFs, the Nasdaq-100 range (bars and earnings dates of the
+    members outside the manual pool, ``screening.collect_range``), then the pool, off-pool holdings and active chains
+    (bars, news, earnings date), their SEC listings, FRED. The four family locks are held over the whole stage."""
+    from investment_assistant.workbench import plan_review     # imports this module
+
+    deps, clock = ctx.deps, ctx.clock
+    now, session = _moment(state)
+    ny_date = date.fromisoformat(state['ny_date'])
+    run_id, record_trigger, job = state.get('run_id'), ctx.record_trigger, ctx.job
+    explicit = bool(state.get('explicit'))
+    drop_after = now if ctx.resumed else None       # a resumed run never reads past its own cutoff (§5.5)
+    # The first transaction only reads the manual pool and holdings: the screen node runs between them and the
+    # merged pool's tier sync.
     with _tx() as conn:
-        explicit = pool is not None or tickers is not None
-        if pool is None:
-            pool = (pool_module.Pool.all_core(tickers) if tickers is not None
-                    else pool_module.from_watchlist(list_watchlist_items(conn)))
+        pool = (_pool_from_state(state['pool']) if explicit
+                else pool_module.from_watchlist(list_watchlist_items(conn)))
         watchlist = list(pool.tickers)
         # Holdings join the batch even off the pool: plan stops and earnings reminders need their data.
         held = [t for t in sorted({r['ticker'] for r in repository.list_trades(conn) if r['voided_at'] is None})
                 if t not in watchlist]
-        ready = repository.timeline_ready(conn) if timeline_ready is None else timeline_ready
-        growth = repository.growth_ready(conn) if growth_ready is None else growth_ready
+        ready = repository.timeline_ready(conn) if state.get('timeline_ready') is None else state['timeline_ready']
+        growth = repository.growth_ready(conn) if state.get('growth_ready') is None else state['growth_ready']
     summary: dict[str, Any] = {
+        **(state.get('summary') or {}),
         'session': session.isoformat(), 'cutoff_at': now.isoformat(), 'tickers': {}, 'benchmark': {},
         'filings': {}, 'earnings': {}, 'plans': {}, 'conflicts': [], 'errors': [], 'briefs': {},
         'screen': None,
@@ -379,40 +467,43 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
                     'regime': [], 'agent': []},
         'timings': {}}
 
-    # v2.3 §6.2 / v2.4 §6.2: per-family outcome accounting, fed next to every collect
-    # call. record_trigger holds the locks and writes data_fetch_runs; stages alone
-    # still builds the tallies for the collect stage's counts — no locks, no rows;
-    # with neither set the path stays exactly as before (no tallies at all).
-    tallies = ({'bars': collect.Tally('bars', 'workbench'),
-                'news': collect.Tally('news', 'workbench'),
-                'sec_filings': collect.Tally('sec_filings', 'workbench'),
-                'fred': collect.Tally('fred', 'workbench', macro_module.MACRO_SERIES)}
-               if record_trigger is not None or stages is not None else None)
-    if tallies is not None and not explicit:   # no screen stage -> no universe row
-        tallies['universe'] = collect.Tally('universe', 'workbench', ('nasdaq100',))
+    # v2.3 §6.2 / v2.4 §6.2: per-family outcome accounting, fed next to every collect call. record_trigger holds the
+    # locks and writes data_fetch_runs; a recorder alone still builds the tallies for the node's counts — no locks,
+    # no rows; with neither set the path stays exactly as before (no tallies at all).
+    tallies = ({'bars': collect.Tally('bars', job),
+                'news': collect.Tally('news', job),
+                'sec_filings': collect.Tally('sec_filings', job),
+                'fred': collect.Tally('fred', job, macro_module.MACRO_SERIES)}
+               if record_trigger is not None or acc is not None else None)
+    if tallies is not None and not explicit:   # no screen node -> no universe row
+        tallies['universe'] = collect.Tally('universe', job, ('nasdaq100',))
+    bars_tally = tallies['bars'] if tallies is not None else None
+    news_tally = tallies['news'] if tallies is not None else None
+    sec_tally = tallies['sec_filings'] if tallies is not None else None
+    fred_tally = tallies['fred'] if tallies is not None else None
 
     t_collect = clock()
-    # I07: the rows' timestamps are real wall clock (injectable), not the batch's
-    # cutoff ``now``; captured from the moment the collection stage starts.
+    # I07: the rows' timestamps are real wall clock (injectable), not the batch's cutoff ``now``; captured from the
+    # moment the collection stage starts.
     if tallies is not None:
-        wall = wall_now or collect.wall_clock
+        wall = ctx.wall_now or collect.wall_clock
         collect_started_at = wall()
-    # v2.4 §4: collect 的窗口从 SPY 采集前开始，包住嵌在其中的 screen，止于 fetch 行落库。
-    c_acc = stages.open('collect') if stages is not None else None
-    c_started = clock() if c_acc is not None else 0.0
-    # v2.3 §6.4: one session advisory lock per fetched family over the whole collection
-    # stage, on a dedicated connection, acquired in a fixed order (a manual fetch holds
-    # a single lock, so no deadlock); universe only reads a file and takes no lock.
+    c_started = clock() if acc is not None else 0.0
+    # v2.3 §6.4: one session advisory lock per fetched family over the whole collection stage, on a dedicated
+    # connection, acquired in a fixed order (a manual fetch holds a single lock, so no deadlock); universe only reads
+    # a file and takes no lock.
+    universe_meta: dict[str, Any] | None = None
+    fetched: set[str] = set()
+    chain_tickers: list[str] = []
+    collected: list[str] = []
     with ExitStack() as locks:
         if record_trigger is not None:
             locks.enter_context(collect.family_locks(['bars', 'news', 'sec_filings', 'fred']))
-        # SPY and the industry ETFs collect bars only, before the screen stage: QQQ is its benchmark.
+        # SPY and the industry ETFs collect bars only, before the range: QQQ is the screen's benchmark.
         for ticker in [BENCHMARK, *ETF_TICKERS]:
             try:
                 out = collect.bars_one(ticker, session=session, now=now, deps=deps,
-                                       lookback_days=HISTORY_DAYS)
-                if tallies is not None:
-                    tallies['bars'].ok(ticker)
+                                       lookback_days=HISTORY_DAYS, tally=bars_tally)
                 if ticker == BENCHMARK:
                     summary['benchmark'] = {'bars': out['counts'],
                                             'skipped_bars': [d.isoformat() for d in out['skipped']],
@@ -422,8 +513,6 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
             except Unavailable:
                 raise
             except Exception as exc:
-                if tallies is not None:
-                    tallies['bars'].fail(ticker, exc)
                 if ticker == BENCHMARK:
                     summary['benchmark'] = {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [],
                                             'skips': [], 'error': f'bars: {exc}'}
@@ -434,153 +523,66 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
                     summary['sources']['etf_bars'].append(ticker)
                     summary['errors'].append(f'{ticker} etf_bars: {exc}')
 
-        # The screen stage: Nasdaq-100 candidates join the extended pool with source 'screen'.
-        # Explicit tickers/pool stay a manual override and skip it entirely.
-        stage = None
-        manual_pool = pool
-        if explicit:
-            summary['screen'] = {'status': 'skipped', 'reason': 'explicit_pool'}
-            if stages is not None:   # 显式池：整阶段跳过（v2.4 §4）
-                stages.skip('screen', 'explicit_pool')
-        else:
-            s_acc = stages.open('screen') if stages is not None else None
-            s_started = clock() if s_acc is not None else 0.0
-            stage = screening.run_stage(session=session, now=now, manual=pool, held=held,
-                                        deps=deps, run_id=run_id)
-            if s_acc is not None:
-                s_acc.duration_ms += (clock() - s_started) * 1000
-                s_acc.input(len(stage['universe'].tickers) if stage['universe'] is not None else 0)
-                s_acc.output(len(stage['summary']['selected']))
-                if stage['summary']['screen_run_id'] is not None:
-                    s_acc.set_ref('screen_run_id', stage['summary']['screen_run_id'])
-                error = stage['summary']['error']
-                if error is None:
-                    stages.finish('screen')
-                elif error.startswith('universe:') or error == 'benchmark_missing':
-                    # 范围文件加载失败或 QQQ 缺当日数据、沿用成员：降级不是失败（§4）
-                    s_acc.degrade('universe_load_failed' if error.startswith('universe:')
-                                  else 'benchmark_missing', error)
-                    stages.finish('screen')
-                else:
-                    stages.finish('screen', failed=error)
-            summary['screen'] = stage['summary']
-            summary['sources']['bars'].extend(stage['fetch_failures'])
-            if tallies is not None:
-                # Screen-stage fetches count once here: the loop below does not fetch them again.
-                for fetched in stage['fetched']:
-                    tallies['bars'].ok(fetched)
-                for failed, reason in stage['fetch_reasons'].items():
-                    tallies['bars'].fail(failed, reason)
-                universe_tally = tallies['universe']
-                if stage['universe'] is not None:
+        # The range (v2.8 D4): the Nasdaq-100 members outside the manual pool collect bars and earnings dates here;
+        # the screen node only reads them. Explicit tickers/pool stay a manual override and skip it entirely.
+        if not explicit:
+            universe_tally = tallies['universe'] if tallies is not None else None
+            try:
+                loaded = collect.load_universe(deps)
+            except universe_module.UniverseError as exc:
+                if universe_tally is not None:
+                    universe_tally.fail('nasdaq100', f'universe: {exc}')
+            else:
+                targets = [t for t in loaded.tickers if t not in pool.tickers and t != screen_module.BENCHMARK]
+                fetched, fetch_failures, fetch_reasons = screening.collect_range(
+                    connection, session=session, now=now, targets=targets, deps=deps, tally=bars_tally)
+                summary['sources']['bars'].extend(fetch_failures)
+                universe_meta = {'name': loaded.name, 'as_of': loaded.as_of.isoformat(),
+                                 'tickers': list(loaded.tickers), 'fetched': sorted(fetched),
+                                 'fetch_reasons': dict(fetch_reasons),
+                                 'stale': universe_module.is_stale(loaded, session)}
+                if universe_tally is not None:
                     universe_tally.ok('nasdaq100')
-                    universe_tally.detail.update(name=stage['universe'].name,
-                                                 as_of=stage['universe'].as_of,
-                                                 tickers=len(stage['universe'].tickers),
-                                                 stale=universe_module.is_stale(stage['universe'], session))
-                else:
-                    universe_tally.fail('nasdaq100', stage['summary']['error'])
-            if stage['status'] == 'error':
-                summary['errors'].append(f"screen: {stage['summary']['error']}")
-            pool = pool_module.with_screen(pool, stage['members'])
-            with _tx() as conn:
-                tier_changes = _sync_pool(conn, pool, session, now)
-            # A held screen member is in the pool now; run it once, not again as an off-pool holding.
-            held = [t for t in held if t not in pool.tickers]
-            summary['pool'] = {**summary['pool'], 'extended': len(pool.extended), 'holdings': len(held),
-                               'screen': len(stage['members']), 'changes': tier_changes}
+                    universe_tally.detail.update(name=loaded.name, as_of=loaded.as_of,
+                                                 tickers=len(loaded.tickers), stale=universe_meta['stale'])
         all_tickers = [*pool.tickers, *held]
         if not pool.core:
             summary['errors'].append('core_empty')
 
-        e_ok = e_failed = 0                 # 财报日成败（collect 阶段 detail.earnings，v2.4 §4）
-
-        def collect_ticker(ticker: str) -> None:
-            """Bars, news and the earnings date of one ticker; failures land in the summary."""
-            nonlocal e_ok, e_failed
-            entry: dict[str, Any] = {'bars': None, 'skipped_bars': [], 'news': None, 'candidates': [], 'skips': [],
-                                     'error': None}
-            problems = []
-            try:
-                if ticker in (stage['fetched'] if stage is not None else ()):
-                    entry['bars'] = 'collected_in_screen'   # news and earnings still collect below
-                else:
-                    out = collect.bars_one(ticker, session=session, now=now, deps=deps,
-                                           lookback_days=HISTORY_DAYS)
-                    if tallies is not None:
-                        tallies['bars'].ok(ticker)
-                    entry['bars'] = out['counts']
-                    entry['skipped_bars'] = [d.isoformat() for d in out['skipped']]
-            except Unavailable:
-                raise
-            except Exception as exc:
-                if tallies is not None:
-                    tallies['bars'].fail(ticker, exc)
-                problems.append(f'bars: {exc}')
-                summary['sources']['bars'].append(ticker)
-            try:
-                entry['news'] = collect.news_one(ticker, now=now, deps=deps)
-                if tallies is not None:
-                    tallies['news'].ok(ticker)
-            except Unavailable:
-                raise
-            except Exception as exc:
-                if tallies is not None:
-                    tallies['news'].fail(ticker, exc)
-                problems.append(f'news: {exc}')
-                summary['sources']['news'].append(ticker)
-            try:
-                row = earnings.fetch_next(ticker, fetcher=deps.earnings_fetcher, today=ny_date)
-                with _tx() as conn:
-                    summary['earnings'][ticker] = repository.store_earnings(conn, ticker, row, now=now)['status']
-                if c_acc is not None:
-                    e_ok += 1
-            except Unavailable:
-                raise
-            except Exception as exc:  # 采集失败不写库，也不冒充无财报
-                summary['earnings'][ticker] = f'error: {exc}'
-                summary['errors'].append(f'{ticker} earnings: {exc}')
-                summary['sources']['earnings'].append(ticker)
-                if c_acc is not None:
-                    c_acc.fail(f'earnings:{ticker}', exc)
-                    e_failed += 1
-            if problems:
-                entry['error'] = '; '.join(problems)
-                summary['errors'].extend(f'{ticker} {p}' for p in problems)
-            summary['tickers'][ticker] = entry
-
+        collector = _Collector(now=now, session=session, ny_date=ny_date, deps=deps, summary=summary,
+                               fetched=fetched, bars_tally=bars_tally, news_tally=news_tally,
+                               earnings_tally=(collect.Tally('earnings', job) if acc is not None else None),
+                               drop_after=drop_after)
         for ticker in all_tickers:
-            collect_ticker(ticker)
+            collector.ticker(ticker, acc=acc)
         # D21: tickers of active agent-2 chains outside the pool and holdings are collected only — bars,
         # news, earnings and the SEC listing below — and never reach the rule loop.
-        chain_tickers: list[str] = []
         if ready:
             try:
                 chain_failures: list[tuple[str, str]] = []
                 with _tx() as conn:
                     chain_tickers = plan_review.chain_tickers(conn, session, now=now, exclude=all_tickers,
                                                               failures=chain_failures)
-                if c_acc is not None:     # the review stage reports the same chain in summary['errors']
+                if acc is not None:     # the review stage reports the same chain in summary['errors']
                     for ticker, reason in chain_failures:
-                        c_acc.fail(f'chains:{ticker}', reason)
+                        acc.fail(f'chains:{ticker}', reason)
             except Unavailable:
                 raise
             except Exception as exc:
                 summary['errors'].append(f'review chains: {exc}')
         summary['pool']['chains'] = len(chain_tickers)
         for ticker in chain_tickers:
-            collect_ticker(ticker)
+            collector.ticker(ticker, acc=acc)
         collected = [*all_tickers, *chain_tickers]
 
-        # Freeze the denominator before the call: one SEC listing covers every
-        # ticker (I04); a whole-call failure is the '*' sentinel, not an N+1th target.
+        # Freeze the denominator before the call: the listing is one request per ticker (D21); a whole-call failure
+        # (company_tickers.json unreachable) is the '*' sentinel, not an N+1th target.
         if tallies is not None:
-            tallies['sec_filings'].set_targets(collected)
+            sec_tally.set_targets(collected)
         try:
-            summary['filings'] = collect.sec_listing(collected, session=session, now=now, deps=deps)
-            if tallies is not None:
-                for ticker in collected:
-                    tallies['sec_filings'].ok(ticker)
+            summary['filings'] = collect.sec_listing(collected, session=session, now=now, deps=deps,
+                                                     tally=sec_tally, drop_after=drop_after)
+            _note_sec_errors(summary, summary['filings'])
         except Unavailable:
             raise
         except Exception as exc:
@@ -588,64 +590,247 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
             summary['errors'].append(f'SEC listings: {exc}')
             summary['sources']['sec'] = ['all']
             if tallies is not None:
-                tallies['sec_filings'].fail('*', exc)
+                sec_tally.fail('*', exc)
 
         # FRED: no key means not_configured, no request, no rows.
         api_key = os.environ.get('FRED_API_KEY')
         if tallies is not None and not api_key:
-            tallies['fred'].skip('FRED_API_KEY 未配置')
-        if c_acc is not None and not api_key:
-            c_acc.degrade('fred_not_configured', 'FRED_API_KEY 未配置')
+            fred_tally.skip('FRED_API_KEY 未配置')
+        if acc is not None and not api_key:
+            acc.degrade('fred_not_configured', 'FRED_API_KEY 未配置')
         for series_id in macro_module.MACRO_SERIES:
             try:
                 summary['macro'][series_id] = collect.fred_series(series_id, session=session, now=now,
-                                                                  deps=deps, api_key=api_key)
-                if tallies is not None and api_key:
-                    tallies['fred'].ok(series_id)
+                                                                  deps=deps, api_key=api_key, tally=fred_tally)
             except Unavailable:
                 raise
             except Exception as exc:
-                if tallies is not None:
-                    tallies['fred'].fail(series_id, exc)
                 summary['macro'][series_id] = f'error: {exc}'
                 summary['sources']['fred'].append(series_id)
                 summary['errors'].append(f'{series_id} fred: {exc}')
         summary['timings']['collect'] = round(clock() - t_collect, 1)
 
+    families_view: list[dict[str, Any]] = []
     if tallies is not None:
         collect_finished_at = wall()
         fetch_rows = [tally.row(trigger=record_trigger, run_id=run_id, session=session,
                                 started_at=collect_started_at, finished_at=collect_finished_at)
                       for tally in tallies.values()]
+        families_view = [{'family': row['family'], 'status': row['status'], 'ok_count': row['ok_count'],
+                          'target_count': row['target_count']} for row in fetch_rows]
         if record_trigger is not None:
             summary['data_status'], fetch_ids = collect.write_runs_with_ids(fetch_rows)
         else:
             fetch_ids = []           # 只记账不落 fetch 行（v2.4 §6.2）
-        if c_acc is not None:
+        if acc is not None:
             # 计数与失败取自 v2.3 四个 Tally 的冻结行（universe 若有在其后，§4）。
             for row in fetch_rows[:4]:
-                c_acc.input(row['target_count'])
-                c_acc.output(row['ok_count'])
+                acc.input(row['target_count'])
+                acc.output(row['ok_count'])
                 for failure in row['failures']:
-                    c_acc.fail(f"{row['family']}:{failure['target']}", failure['reason'])
+                    acc.fail(f"{row['family']}:{failure['target']}", failure['reason'])
             if fetch_ids:
-                c_acc.set_ref('data_fetch_runs', fetch_ids[:4])
-            c_acc.detail['earnings'] = {'targets': len(collected), 'ok': e_ok, 'failed': e_failed}
-            c_acc.duration_ms += (clock() - c_started) * 1000
-            stages.finish('collect')
+                acc.set_ref('data_fetch_runs', fetch_ids)
+            earnings_items = collector.earnings_tally.row(
+                trigger=record_trigger or 'scheduled', run_id=run_id, session=session, started_at=collect_started_at,
+                finished_at=collect_finished_at)['detail'].get('targets', [])
+            acc.detail['earnings'] = {'targets': len(collected), 'ok': collector.earnings_ok,
+                                      'failed': collector.earnings_failed, 'items': earnings_items}
+            if drop_after is not None:
+                acc.detail['after_cutoff_dropped'] = {
+                    'news': collector.news_dropped,
+                    'sec': int((summary['filings'] or {}).get('after_cutoff_dropped') or 0)}
+            acc.duration_ms += (clock() - c_started) * 1000
+    return {'summary': summary, 'pool': _pool_state(pool), 'manual_pool': _pool_state(pool), 'held': held,
+            'chain_tickers': chain_tickers, 'collected': collected, 'universe': universe_meta,
+            'timeline_ready': ready, 'growth_ready': growth,
+            'refs': {**(state.get('refs') or {}), 'collect': {'families': families_view}}}
 
-    # Market context sits between collection and rules; pool bars exclude off-pool holdings.
+
+def _note_sec_errors(summary: dict[str, Any], filings: dict[str, Any], *, whole_call: bool = True) -> None:
+    """Fold the listing's own error map into the summary. One failed ticker is a ``sec`` source and an error line; when
+    nothing could be listed at all — ``company_tickers.json`` unreachable (``'*'``) or every ticker failed — it is the
+    v2.7 whole-call failure: ``summary['filings'] = {'error': …}``, one ``SEC listings`` line, ``sources.sec = ['all']``."""
+    errors = filings.get('errors') or {}
+    if not errors:
+        return
+    if whole_call and ('*' in errors or not filings.get('by_ticker')):
+        reason = errors.get('*') or next(iter(errors.values()))
+        summary['filings'] = {'error': reason}
+        summary['errors'].append(f'SEC listings: {reason}')
+        summary['sources']['sec'] = ['all']
+        return
+    for ticker, reason in errors.items():
+        summary['errors'].append(f'{ticker} sec: {reason}')
+        if summary['sources']['sec'] != ['all'] and ticker not in summary['sources']['sec']:
+            summary['sources']['sec'].append(ticker)
+
+
+def stage_screen(state: dict[str, Any], ctx, acc: stages_module.StageAcc | None) -> dict[str, Any]:
+    """The ``screen`` node: ``screen-1`` over what ``collect`` stored (no requests for the range), members into the
+    extended pool; the members the collect node did not cover get their news and SEC listings now (v2.8 §4.5)."""
+    deps, clock = ctx.deps, ctx.clock
+    now, session = _moment(state)
+    run_id, record_trigger, job = state.get('run_id'), ctx.record_trigger, ctx.job
+    summary = state['summary']
+    pool = manual_pool = _pool_from_state(state['pool'])
+    held = list(state.get('held') or [])
+    if state.get('explicit'):
+        summary['screen'] = {'status': 'skipped', 'reason': 'explicit_pool'}
+        _stage_skip(ctx, 'screen', 'explicit_pool')      # 显式池：整阶段跳过（v2.4 §4）
+        return {'summary': summary, 'pool': _pool_state(pool), 'held': held}
+    universe_meta = state.get('universe') or {}
+    s_started = clock() if acc is not None else 0.0
+    stage = screening.run_stage(session=session, now=now, manual=pool, held=held, deps=deps, run_id=run_id,
+                                fetched=set(universe_meta.get('fetched') or ()),
+                                fetch_reasons=dict(universe_meta.get('fetch_reasons') or {}))
+    failed: str | None = None
+    if acc is not None:
+        acc.duration_ms += (clock() - s_started) * 1000
+        acc.input(len(stage['universe'].tickers) if stage['universe'] is not None else 0)
+        acc.output(len(stage['summary']['selected']))
+        if stage['summary']['screen_run_id'] is not None:
+            acc.set_ref('screen_run_id', stage['summary']['screen_run_id'])
+        error = stage['summary']['error']
+        if error is not None and not (error.startswith('universe:') or error == 'benchmark_missing'):
+            failed = error
+        elif error is not None:
+            # 范围文件加载失败或 QQQ 缺当日数据、沿用成员：降级不是失败（§4）
+            acc.degrade('universe_load_failed' if error.startswith('universe:') else 'benchmark_missing', error)
+    summary['screen'] = stage['summary']
+    if stage['status'] == 'error':
+        summary['errors'].append(f"screen: {stage['summary']['error']}")
+    pool = pool_module.with_screen(pool, stage['members'])
+    with _tx() as conn:
+        tier_changes = _sync_pool(conn, pool, session, now)
+    # A held screen member is in the pool now; run it once, not again as an off-pool holding.
+    held = [t for t in held if t not in pool.tickers]
+    summary['pool'] = {**summary['pool'], 'extended': len(pool.extended), 'holdings': len(held),
+                       'screen': len(stage['members']), 'changes': tier_changes}
+
+    # v2.8 D4: members that collect did not cover (collect only reads the manual pool, holdings and chains) get
+    # their news and SEC listings now; today's range bars and earnings dates are already stored.
+    covered = set(state.get('collected') or ())
+    new_members = [t for t in stage['members'] if t not in covered]
+    if new_members:
+        _backfill_members(new_members, state=state, ctx=ctx, acc=acc, summary=summary, now=now, session=session,
+                          fetched=set(universe_meta.get('fetched') or ()), job=job,
+                          record_trigger=record_trigger, run_id=run_id)
+    if failed is not None:
+        _stage_finish(ctx, 'screen', failed=failed)
+    return {'summary': summary, 'pool': _pool_state(pool), 'manual_pool': _pool_state(manual_pool), 'held': held}
+
+
+def _backfill_members(new_members: list[str], *, state: dict[str, Any], ctx, acc, summary: dict[str, Any],
+                      now: datetime, session: date, fetched: set[str], job: str,
+                      record_trigger: str | None, run_id: str | None) -> None:
+    """News and SEC listing for the screen's new members; failures only count against the screen node (``partial``)."""
+    drop_after = now if ctx.resumed else None
+    # The v2.7 shell never wrote rows for these members (it collected them with the pool): no tallies, locks or rows.
+    tallies = ({'news': collect.Tally('news', job, new_members),
+                'sec_filings': collect.Tally('sec_filings', job, new_members)}
+               if (record_trigger is not None or acc is not None) and not ctx.legacy else None)
+    wall = _wall(ctx)
+    started_at = wall() if tallies is not None else None
+    with ExitStack() as locks:
+        if record_trigger is not None and not ctx.legacy:
+            locks.enter_context(collect.family_locks(['news', 'sec_filings']))
+        got = screening.backfill_new_members(
+            new_members, session=session, now=now, deps=ctx.deps, drop_after=drop_after, fetched=fetched,
+            ny_date=date.fromisoformat(state['ny_date']),
+            news_tally=tallies['news'] if tallies is not None else None,
+            sec_tally=tallies['sec_filings'] if tallies is not None else None)
+    for ticker in new_members:
+        problems = list(got['problems'].get(ticker) or [])
+        bars_ = got['bars'].get(ticker)
+        entry = {'bars': bars_['counts'] if isinstance(bars_, dict) else bars_,
+                 'skipped_bars': [d.isoformat() for d in bars_['skipped']] if isinstance(bars_, dict) else [],
+                 'news': got['news'].get(ticker), 'candidates': [], 'skips': [], 'error': None}
+        if any(p.startswith('bars:') for p in problems):
+            summary['sources']['bars'].append(ticker)
+        if any(p.startswith('news:') for p in problems):
+            summary['sources']['news'].append(ticker)
+        status = got['earnings'].get(ticker)
+        if status is not None:
+            summary['earnings'][ticker] = status
+            if status.startswith('error:'):
+                summary['errors'].append(f'{ticker} earnings: {status[len("error: "):]}')
+                summary['sources']['earnings'].append(ticker)
+        if problems:
+            entry['error'] = '; '.join(problems)
+            summary['errors'].extend(f'{ticker} {p}' for p in problems)
+        summary['tickers'][ticker] = entry
+    if got['filings_error'] is not None:
+        if 'error' not in (summary.get('filings') or {}):       # one failure line, however many calls failed
+            summary['errors'].append(f"SEC listings: {got['filings_error']}")
+        summary['sources']['sec'] = ['all']
+        if not isinstance(summary.get('filings'), dict) or 'error' not in summary['filings']:
+            summary['filings'] = {'error': got['filings_error']}
+    elif got['filings'] is not None:
+        _merge_filings(summary, got['filings'])
+        if 'error' not in (summary.get('filings') or {}):
+            _note_sec_errors(summary, got['filings'], whole_call=False)
+    if tallies is not None:
+        finished_at = wall()
+        rows = [tallies[family].row(trigger=record_trigger or 'scheduled', run_id=run_id, session=session,
+                                    started_at=started_at, finished_at=finished_at)
+                for family in ('news', 'sec_filings')]
+        for row in rows:
+            row['detail']['scope'] = 'screen_new_members'
+        if record_trigger is not None:
+            _, fetch_ids = collect.write_runs_with_ids(rows)
+            if acc is not None and fetch_ids:
+                acc.set_ref('data_fetch_runs', fetch_ids)
+        if acc is not None:
+            failed_targets = set()
+            for row in rows:
+                for failure in row['failures']:
+                    acc.fail(f"{'news' if row['family'] == 'news' else 'sec'}:{failure['target']}", failure['reason'])
+                    failed_targets.add(failure['target'])
+            for ticker in new_members:
+                if any(p.startswith('bars:') for p in got['problems'].get(ticker) or []):
+                    acc.fail(f'bars:{ticker}', next(p for p in got['problems'][ticker] if p.startswith('bars:')))
+            failed = len(failed_targets - {'*'})
+            acc.detail['new_members'] = list(new_members)
+            acc.detail['backfill'] = {'targets': len(new_members), 'ok': max(0, len(new_members) - failed),
+                                      'failed': failed}
+
+
+def _merge_filings(summary: dict[str, Any], listed: dict[str, Any]) -> None:
+    """Add a second listing (the screen's new members) to ``summary['filings']``: counts add up, per-ticker maps merge."""
+    base = summary.get('filings')
+    if not isinstance(base, dict) or 'error' in base:
+        summary['filings'] = listed
+        return
+    for key in ('inserted', 'existing', 'acceptance_filled', 'after_cutoff_dropped'):
+        if key in listed:
+            base[key] = int(base.get(key) or 0) + int(listed[key] or 0)
+    base.setdefault('by_ticker', {}).update(listed.get('by_ticker') or {})
+    base.setdefault('errors', {}).update(listed.get('errors') or {})
+
+
+def stage_regime(state: dict[str, Any], ctx, acc: stages_module.StageAcc | None) -> dict[str, Any]:
+    """The ``regime`` node. Market context sits between collection and rules; pool bars exclude off-pool holdings.
+
+    An exception is booked in ``summary`` (as in v2.7) and then raised: the node retries it and, failing again, stops
+    the chain — the one stage that no longer carries on after a failure, because ``signals`` depend on today's
+    regime (v2.8 §5.2, §22 Q5). The v2.7 ``run_batch`` shell catches it and carries on."""
+    clock = ctx.clock
+    now, session = _moment(state)
+    summary = state['summary']
+    manual_pool = _pool_from_state(state.get('manual_pool') or state['pool'])
     t_regime = clock()
-    r_acc = stages.open('regime') if stages is not None else None
     try:
         with _tx() as conn:
-            if breadth_tickers is not None:
-                breadth_sample = list(breadth_tickers)
-            elif stage is not None:
-                breadth_sample, breadth_notes = _breadth_tickers(manual_pool, stage['universe'])
+            if ctx.breadth_tickers is not None:
+                breadth_sample = list(ctx.breadth_tickers)
+            elif not state.get('explicit'):
+                loaded = state.get('universe')
+                breadth_sample, breadth_notes = _breadth_tickers(
+                    manual_pool, SimpleNamespace(tickers=tuple(loaded['tickers'])) if loaded else None)
                 summary['errors'].extend(breadth_notes)
             else:
-                breadth_sample = watchlist
+                breadth_sample = list(manual_pool.tickers)
             pool_bars = {t: b for t in breadth_sample
                          if (b := repository.read_bars(conn, t, session, cutoff_at=now, limit=300))}
             etf_read = {etf: repository.read_bars(conn, etf, session, cutoff_at=now) for etf in ETF_TICKERS}
@@ -668,32 +853,40 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         summary['regime'] = f'error: {exc}'
         summary['sources']['regime'] = ['all']
         summary['errors'].append(f'regime: {exc}')
-        if stages is not None:   # 区制异常：failed（v2.4 §4）
-            stages.finish('regime', failed=str(exc) or type(exc).__name__)
-    else:
-        if r_acc is not None:
-            r_acc.input(len(breadth_sample))
-            r_acc.output(1)      # 写入或已存的快照（§4）
-            r_acc.set_ref('market_regime_id', out['record']['id'])
-            if snap['label'] == 'insufficient':
-                r_acc.degrade('label_insufficient', '')      # 广度样本不足
-            for series_id, state in macro_status.items():
-                if state != 'ok':
-                    r_acc.degrade('macro_not_ok', f'{series_id}:{state}')
-            if out['status'] == 'conflict':
-                r_acc.degrade('conflict', '')
-            r_acc.duration_ms += (clock() - t_regime) * 1000
-            stages.finish('regime')
+        summary['timings']['regime'] = round(clock() - t_regime, 1)
+        raise
+    if acc is not None:
+        acc.input(len(breadth_sample))
+        acc.output(1)      # 写入或已存的快照（§4）
+        acc.set_ref('market_regime_id', out['record']['id'])
+        if snap['label'] == 'insufficient':
+            acc.degrade('label_insufficient', '')      # 广度样本不足
+        for series_id, state_ in macro_status.items():
+            if state_ != 'ok':
+                acc.degrade('macro_not_ok', f'{series_id}:{state_}')
+        if out['status'] == 'conflict':
+            acc.degrade('conflict', '')
+        acc.duration_ms += (clock() - t_regime) * 1000
     summary['timings']['regime'] = round(clock() - t_regime, 1)
+    return {'summary': summary}
 
+
+def stage_rules(state: dict[str, Any], ctx, sig_acc: stages_module.StageAcc | None,
+                plan_acc: stages_module.StageAcc | None) -> dict[str, Any]:
+    """The ``signals`` node's body: the rule loop over the pool and the holdings, one transaction per ticker, which
+    also writes the rule plan of a fresh buy unit (v2.8 §4.3, §22 Q4). The ``plan`` accumulator is frozen into
+    ``refs['plan_acc']``: the ``plan`` node only re-derives and writes its own row."""
+    clock = ctx.clock
+    now, session = _moment(state)
+    summary, run_id = state['summary'], state.get('run_id')
+    all_tickers = [*_pool_from_state(state['pool']).tickers, *(state.get('held') or [])]
     t_rules = clock()
-    sig_acc = stages.open('signals') if stages is not None else None
-    plan_acc = stages.open('plan') if stages is not None else None
     for acc_ in (sig_acc, plan_acc):   # 空跑与重跑时两个列表也在（inserted 为 []，v2.4 §4）
         if acc_ is not None:
             acc_.outputs.update({'inserted': [], 'existing': []})
     for ticker in all_tickers:
-        entry = summary['tickers'][ticker]
+        entry = summary['tickers'].setdefault(ticker, {'bars': None, 'skipped_bars': [], 'news': None,
+                                                       'candidates': [], 'skips': [], 'error': None})
         if sig_acc is not None:
             sig_acc.input()
         phase = 'signals'          # 异常归到出错的那个阶段
@@ -737,71 +930,300 @@ def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_mod
         except Exception as exc:
             entry['error'] = '; '.join(filter(None, [entry['error'], f'rules: {exc}']))
             summary['errors'].append(f'{ticker} rules: {exc}')
-            if stages is not None:
+            if sig_acc is not None:
                 (plan_acc if phase == 'plan' else sig_acc).fail(ticker, exc)
         else:
-            if stages is not None:
+            if sig_acc is not None:
                 _note_signals(sig_acc, ticker, noted)
                 if noted.get('planned'):
                     _note_plan(plan_acc, ticker, noted['plan'], summary['plans'][ticker])
-    if stages is not None:
-        stages.finish('signals')
-        _check_derivations(plan_acc, plan_acc.outputs['inserted'] + plan_acc.outputs['existing'], summary)
-        stages.finish('plan')
     summary['timings']['rules'] = round(clock() - t_rules, 1)
-    a_acc = stages.open('agent') if stages is not None else None
-    unavailable = _agent_stage(session, now=now, deps=deps, summary=summary, started=started, clock=clock,
-                               acc=a_acc, timeline_ready=ready)
-    if stages is not None:
+    delta: dict[str, Any] = {'summary': summary}
+    if plan_acc is not None:
+        frozen = copy.deepcopy(plan_acc.freeze())
+        # What the plan stage did inside the signals loop: its own timing, not the row's measured time.
+        frozen['detail'] = {**frozen['detail'], 'timings': {'in_signals_ms': round(frozen['duration_ms'])}}
+        frozen['duration_ms'] = 0.0
+        delta['refs'] = {**(state.get('refs') or {}), 'plan_acc': frozen}
+    return delta
+
+
+def stage_plan_check(state: dict[str, Any], ctx, acc: stages_module.StageAcc | None) -> dict[str, Any]:
+    """The ``plan`` node's body: re-derive the plans the rule loop wrote (v2.4 §8). ``acc`` already carries the loop's
+    accounting (the shell passes the live accumulator, the graph restores it from ``refs['plan_acc']``)."""
+    summary = state['summary']
+    if acc is not None:
+        _check_derivations(acc, acc.outputs['inserted'] + acc.outputs['existing'], summary)
+    return {'summary': summary}
+
+
+def stage_agent(state: dict[str, Any], ctx, acc: stages_module.StageAcc | None) -> dict[str, Any]:
+    """The ``agent`` node: the budget window opens now (``agent_started_at``, wall time, v2.8 D24)."""
+    now, session = _moment(state)
+    summary = state['summary']
+    opened = None if ctx.legacy else _wall(ctx)().isoformat()
+    started, clock = agent_window({**state, 'agent_started_at': opened}, ctx)
+    unavailable = _agent_stage(session, now=now, deps=ctx.deps, summary=summary, started=started, clock=clock,
+                               acc=acc, timeline_ready=state.get('timeline_ready'))
+    if ctx.recorder is not None:
         if unavailable is not None:    # 不可用压过「空跑成功」：整阶段 skipped（v2.4 §4）
-            stages.skip('agent', f'agent_unavailable: {unavailable}')
+            ctx.recorder.skip('agent', f'agent_unavailable: {unavailable}')
         else:
-            _check_derivations(a_acc, a_acc.outputs.get('plan_ids', []), summary)
-            stages.finish('agent')
-    # v2.5 §7: the daily review after the agent stage; a failure of the whole stage never fails the batch.
-    rv_acc = stages.open('review') if stages is not None else None
+            _check_derivations(acc, acc.outputs.get('plan_ids', []), summary)
+    return {'summary': summary} if opened is None else {'summary': summary, 'agent_started_at': opened}
+
+
+def stage_review(state: dict[str, Any], ctx, acc: stages_module.StageAcc | None) -> dict[str, Any]:
+    """The ``review`` node (v2.5 §7): the daily review shares the agent node's budget window; a failure of the whole
+    stage is booked as its ``failed`` row and the chain carries on (as in v2.7)."""
+    from investment_assistant.workbench import plan_review     # imports this module
+
+    now, session = _moment(state)
+    summary = state['summary']
+    started, clock = agent_window(state, ctx)
     try:
-        skipped = plan_review.run_stage(session, now=now, deps=deps, summary=summary, started=started,
-                                        clock=clock, run_id=run_id, acc=rv_acc, timeline_ready=ready)
+        skipped = plan_review.run_stage(session, now=now, deps=ctx.deps, summary=summary, started=started,
+                                        clock=clock, run_id=state.get('run_id'), acc=acc,
+                                        timeline_ready=state.get('timeline_ready'))
     except Unavailable:
         raise
     except Exception as exc:
         reason = families.sanitize_reason(exc)
         summary['errors'].append(f'review: {reason}')
-        if stages is not None:
-            stages.finish('review', failed=reason or type(exc).__name__)
+        _stage_finish(ctx, 'review', failed=reason or type(exc).__name__)
     else:
-        if stages is not None:
-            if skipped is not None:
-                stages.skip('review', skipped)
-            else:
-                stages.finish('review')
-    # v2.7 §9: the retro stage after the review stage; a failure of the whole stage never fails the batch.
-    ro_acc = stages.open('retro') if stages is not None else None
-    if not growth:
+        if skipped is not None:
+            _stage_skip(ctx, 'review', skipped)
+    return {'summary': summary}
+
+
+def account_push(recorder: stages_module.StageRecorder | None, acc: stages_module.StageAcc,
+                 out: dict[str, Any]) -> None:
+    """Close the push stage from the notifier's result (v2.4 §4): a skip for the two non-events, success for sent /
+    no_notifications, failed for every other reason.
+
+    The notifier reports only the messages actually sent, so input equals output here."""
+    reason = out.get('reason')
+    if not out.get('sent') and reason in ('already_pushed', 'task_disabled'):
+        if recorder is not None:
+            recorder.skip('push', reason)
+        return
+    messages = int(out.get('messages') or 0)
+    acc.input(messages)
+    acc.output(messages)
+    acc.set_ref('push', {'sent': bool(out.get('sent')), 'messages': messages,
+                         'reason': families.sanitize_reason(reason) if reason else None})
+    if recorder is not None:
+        if out.get('sent') or reason == 'no_notifications':
+            recorder.finish('push')
+        else:
+            recorder.finish('push', failed=str(reason or 'not_sent'))
+
+
+def retro_push_counts(*, now: datetime) -> dict[str, int]:
+    """The push overview's retro-card line (v2.8 D3): cards created since the last ``daily`` push and the cards waiting
+    for review now. Without an earlier ``daily`` push nothing counts as new."""
+    from investment_assistant.workbench import retro_cards
+
+    with read_only_tx() as conn:
+        since = repository.latest_daily_push_finished_at(conn, before=now)
+        cards = repository.review_cards(conn)
+        new = sum(1 for card in cards if since is not None and card['created_at'] > since)
+        to_review = sum(1 for card in cards if retro_cards.card_state(conn, card['id'])['status'] == 'to_review')
+    return {'new_cards': new, 'to_review': to_review}
+
+
+def stage_push(state: dict[str, Any], ctx, acc: stages_module.StageAcc | None) -> dict[str, Any]:
+    """The ``push`` node (from the v2.7 ``workbench`` task): the day's digest, or the one holiday line; a manual run
+    does not push. The retro-card line counts cards since the last ``daily`` push; the digest carries a line for
+    every family that fetched partially or failed."""
+    now, _ = _moment(state)
+    summary = state['summary']
+    if state.get('trigger') == 'manual_batch':
+        _stage_skip(ctx, 'push', 'manual_run')       # 手动运行不推送
+        return {'summary': summary}
+    closed = summary.get('status') == 'skipped'
+    if closed:
+        acc.detail['closed'] = True
+    with acc.timing():
+        if closed:
+            summary['push'] = push_closed(now=now, notify_cfg=ctx.notify_cfg)
+        else:
+            summary['push'] = push(now=now, force=False, summary=summary, notify_cfg=ctx.notify_cfg,
+                                   retro_counts=retro_push_counts(now=_wall(ctx)()),
+                                   fetch_status=(state.get('refs') or {}).get('collect', {}).get('families'))
+    account_push(ctx.recorder, acc, summary['push'])
+    return {'summary': summary}
+
+
+def stage_retro(state: dict[str, Any], ctx, acc: stages_module.StageAcc | None, *,
+                ticks: bool = True) -> dict[str, Any]:
+    """The ``retro`` node (v2.8 D2): on a trading day the review cards (v2.7 §9: detect, freeze, draft — in its own
+    1500-second window, D24), then on any day the weekly and monthly review when due (each in its own ``try``, the
+    v2.7 ``review_tick`` parts; a manual run generates but does not push). Neither done → ``skipped / not_due``.
+    ``ticks=False`` is the v2.7 ``run_batch`` shell: the cards only."""
+    from investment_assistant.workbench import retro_cards
+
+    now, session = _moment(state)
+    summary = state['summary']
+    window = ctx.window_start if ctx.window_start is not None else ctx.clock()
+    growth = state.get('growth_ready')
+    if growth is None:
+        with _tx() as conn:
+            growth = repository.growth_ready(conn)
+    cards = bool(state.get('trading_day', True))
+    if cards and not growth:
         summary['errors'].append('growth: migration_027_missing')
-        if stages is not None:
-            stages.skip('retro', 'migration_027_missing')
-    else:
+        _stage_skip(ctx, 'retro', 'migration_027_missing')
+        return {'summary': summary}
+    if cards:
         try:
-            skipped = retro_cards.run_stage(session, now=now, deps=deps, summary=summary, started=started,
-                                            clock=clock, run_id=run_id, acc=ro_acc)
+            retro_cards.run_stage(session, now=now, deps=ctx.deps, summary=summary, started=window,
+                                  clock=ctx.clock, run_id=state.get('run_id'), acc=acc)
         except Unavailable:
             raise
         except Exception as exc:
             reason = families.sanitize_reason(exc)
             summary['errors'].append(f'retro: {reason}')
-            if stages is not None:
-                stages.finish('retro', failed=reason or type(exc).__name__)
-        else:
-            if stages is not None:
-                if skipped is not None:
-                    stages.skip('retro', skipped)
-                else:
-                    stages.finish('retro')
+            _stage_finish(ctx, 'retro', failed=reason or type(exc).__name__)
+    if not ticks:
+        return {'summary': summary}
+    acted = False
+    manual = state.get('trigger') == 'manual_batch'
+    out: dict[str, Any] = {'weekly': None, 'monthly': None, 'errors': []}
+    for name, part in (('weekly', _tick_weekly), ('monthly', _tick_monthly)):
+        try:
+            out[name] = part(now=now, notify_cfg=ctx.notify_cfg, trigger_source='manual' if manual else 'scheduled',
+                             client=None, push=not manual)
+        except Unavailable:
+            raise
+        except Exception as exc:
+            reason = families.sanitize_reason(exc)
+            out[name] = {'action': 'error', 'error': reason}
+            out['errors'].append(f'review {name}: {reason}')
+            if acc is not None:
+                acc.fail(name, reason)
+        if out[name].get('action') in ('generated', 'reused', 'reminded'):
+            acted = True
+    summary.setdefault('errors', []).extend(out['errors'])
+    summary['review_tick'] = _jsonable(out)
+    if acc is not None:
+        acc.detail['cards'] = cards
+        acc.detail['weekly'] = summary['review_tick']['weekly']
+        acc.detail['monthly'] = summary['review_tick']['monthly']
+    if not cards and not acted and not out['errors']:
+        _stage_skip(ctx, 'retro', 'not_due')
+    return {'summary': summary}
+
+
+def _jsonable(value: Any) -> Any:
+    """Dates to ISO text, recursively: the review parts report their period as a ``date``."""
+    if isinstance(value, dict):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    return value
+
+
+def _wall(ctx) -> Callable[[], datetime]:
+    return ctx.wall_now or collect.wall_clock
+
+
+def run_batch(*, now: datetime, tickers: list[str] | None = None, pool: pool_module.Pool | None = None,
+              deps: Deps | None = None, skip_non_trading: bool = False, run_id: str | None = None,
+              breadth_tickers: list[str] | None = None,
+              record_trigger: str | None = None,
+              wall_now: Callable[[], datetime] | None = None,
+              stages: stages_module.StageRecorder | None = None,
+              timeline_ready: bool | None = None, growth_ready: bool | None = None) -> dict[str, Any]:
+    """Collect -> market context -> rules -> units -> briefs for the latest settled session. Idempotent per session.
+
+    Since v2.8 a thin shell: the stage functions above, called in order (the ``daily`` graph calls the same functions
+    as nodes). It is what the tests and the ``derivation`` CLI use, and with ``stages=None`` it behaves as in v2.7.
+
+    The batch runs over the tiered watch pool read from the watchlist (holdings
+    join regardless of tier); explicit tickers build an all-core pool for tests
+    and manual overrides.
+
+    ``record_trigger`` set ('scheduled' / 'manual_batch') holds the per-family
+    advisory locks for the collection stage and appends one data_fetch_runs row
+    per recorded family afterwards; None keeps the batch exactly as before (v2.3 §6.2).
+    ``wall_now`` (default real wall clock, I07) timestamps those rows' start and
+    finish; ``now`` keeps its old meaning as trading session, data fetched_at and
+    every computation cutoff.
+    ``stages`` (v2.4 §6.2) is a stage recorder: accounting next to the existing code for the stages, never changing
+    the control flow; None keeps the batch exactly as before.
+    ``timeline_ready`` (v2.5 D22, migration 026; read in the first transaction when None) is handed to the
+    agent and review stages. The review stage (v2.5 §7) runs after the agent stage; tickers of active
+    agent-2 chains that left the pool and holdings are collected but never run through the rules (D21).
+    ``growth_ready`` (v2.7 D29, migration 027; read in the first transaction when None) decides whether the retro
+    stage (v2.7 §9) runs after the review stage; without it the batch notes ``growth: migration_027_missing`` in
+    ``summary['errors']`` and the recorder was a ``stages-2`` one (no retro row). The weekly / monthly review and
+    the push are nodes of the ``daily`` graph only.
+    """
+    from investment_assistant.workbench import workflow
+
+    deps = deps or Deps()
+    clock = deps.clock or _time_module.monotonic
+    ny_date = now.astimezone(NY).date()
+    if skip_non_trading and not is_trading_day(ny_date):
+        if stages is not None:   # 非交易日：push 之前的阶段整段跳过，push 留给任务层（v2.4 §4）
+            ids = stages.stage_ids
+            stages.skip_many(ids[:ids.index('push')] if 'push' in ids else ids, 'not_trading_day')
+        return {'status': 'skipped', 'reason': 'not a trading day in New York', 'ny_date': ny_date.isoformat()}
+    session = bars.latest_closed_session(now)
+    started = clock()
+    explicit = pool is not None or tickers is not None
+    state: dict[str, Any] = {
+        'run_id': run_id, 'session': session.isoformat(), 'cutoff_at': now.isoformat(), 'ny_date': ny_date.isoformat(),
+        'trading_day': True, 'explicit': explicit, 'trigger': record_trigger or 'scheduled',
+        'timeline_ready': timeline_ready, 'growth_ready': growth_ready, 'summary': {}}
+    if explicit:
+        state['pool'] = _pool_state(pool if pool is not None else pool_module.Pool.all_core(tickers))
+    ctx = workflow.NodeContext(recorder=stages, deps=deps, clock=clock, wall_now=wall_now, notify_cfg=None,
+                               record_trigger=record_trigger, job=stages.job if stages is not None else 'workbench',
+                               window_start=started, breadth_tickers=breadth_tickers, legacy=True)
+
+    def open_(stage_id: str):
+        return stages.open(stage_id) if stages is not None else None
+
+    def finish(stage_id: str) -> None:
+        if stages is not None:
+            stages.finish(stage_id)
+
+    # v2.4 §4: collect 的窗口从 SPY 采集前开始，止于 fetch 行落库。
+    state.update(stage_collect(state, ctx, open_('collect')))
+    finish('collect')
+    state.update(stage_screen(state, ctx, None if explicit else open_('screen')))
+    finish('screen')
+    r_acc = open_('regime')
+    try:
+        state.update(stage_regime(state, ctx, r_acc))
+    except Unavailable:
+        raise
+    except Exception as exc:   # 区制异常：failed，批处理继续（v2.4 §4；图里改为停链，v2.8 §5.2）
+        if stages is not None:
+            stages.finish('regime', failed=str(exc) or type(exc).__name__)
+    else:
+        finish('regime')
+    sig_acc, plan_acc = open_('signals'), open_('plan')
+    state.update({k: v for k, v in stage_rules(state, ctx, sig_acc, plan_acc).items() if k != 'refs'})
+    if stages is not None:
+        stages.finish('signals')
+        stage_plan_check(state, ctx, plan_acc)
+        stages.finish('plan')
+    a_acc = open_('agent')
+    state.update(stage_agent(state, ctx, a_acc))
+    finish('agent')
+    state.update(stage_review(state, ctx, open_('review')))
+    finish('review')
+    ro_acc = open_('retro')
+    state.update(stage_retro(state, ctx, ro_acc, ticks=False))
+    finish('retro')
+    summary = state['summary']
     summary['timings']['total'] = round(clock() - started, 1)
-    if summary['timings']['total'] > BATCH_BUDGET_S:
-        summary['errors'].append(f"batch_over_budget: {summary['timings']['total']}")
     return summary
 
 
@@ -986,8 +1408,14 @@ def _last_push_failed(conn, session: date) -> bool:
                 and last.get('reason') not in (None, 'already_pushed'))
 
 
-def push(*, now: datetime, force: bool, summary: dict[str, Any] | None = None, notify_cfg, client=None) -> dict[str, Any]:
-    """Send the day's digest; scheduled runs skip when today already pushed successfully."""
+def push(*, now: datetime, force: bool, summary: dict[str, Any] | None = None, notify_cfg, client=None,
+         retro_counts: dict[str, Any] | None = None, fetch_status: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Send the day's digest; scheduled runs skip when today already pushed successfully.
+
+    ``retro_counts`` (v2.8 D3: ``{'new_cards', 'to_review'}``, see ``retro_push_counts``) feeds the overview's retro-card
+    line; ``fetch_status`` (the collect node's family list) the one line for families that fetched partially or failed.
+    Both None (the manual push) keep the digest without those lines — except that a ``summary['retro']`` (the v2.7
+    ``run_batch`` shell sets one before the push) still feeds the retro line."""
     from investment_assistant.config import load_config
     from investment_assistant.notify import notifier, templates
     from investment_assistant.workbench import digest as digest_module
@@ -1016,7 +1444,9 @@ def push(*, now: datetime, force: bool, summary: dict[str, Any] | None = None, n
             public_url=load_config().workbench.public_url,
             extended_plans=sum(1 for u in view.get('extended_units', []) if u.get('plan') is not None),
             market=view.get('market'), agent_summary=(summary or {}).get('agent'),
-            screen=view.get('screen'), plan_updates=plan_updates, retro=(summary or {}).get('retro'))
+            screen=view.get('screen'), plan_updates=plan_updates,
+            retro=retro_counts if retro_counts is not None else (summary or {}).get('retro'),
+            fetch_status=fetch_status)
     out = notifier.send_notifications('workbench', templates.workbench_digest(payload), notify_cfg, client=client)
     result = {'session': session.isoformat(), **out}
     if reviews_until is not None:
@@ -2009,9 +2439,14 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
         completion and attempts are counted per mode."""
         try:
             with _tx() as conn:
-                prior = repository.agent_runs_for(conn, unit['ticker'], unit['signal_date'], mode=mode)
+                history = repository.agent_runs_for(conn, unit['ticker'], unit['signal_date'], mode=mode)
+                # D26: only the runs after the unit's latest reset count towards ``max_attempts``; the history
+                # still counts for the ``attempt`` number, which keeps counting.
+                resets = (repository.attempt_resets_for(conn, unit['ticker'], unit['signal_date'], mode)
+                          if resets_ready else [])
+            prior = [r for r in history if not resets or r['created_at'] > resets[0]['created_at']]
             done = ('ok', 'pass') if mode == 'propose' else ('ok',)
-            if any(r['status'] in done for r in prior):
+            if any(r['status'] in done for r in history):
                 if acc is not None:
                     acc.skip('already_completed', unit['ticker'])
                 return
@@ -2019,7 +2454,7 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
                 if acc is not None:
                     acc.skip('max_attempts', unit['ticker'])
                 return
-            attempt = len(prior) + 1
+            attempt = len(history) + 1
             if clock() - started >= AGENT_DEADLINE_S:
                 run = _skip(unit, 'stage_budget', now=now, settings=settings, attempt=attempt, mode=mode)
             elif unavailable is not None:
@@ -2048,6 +2483,7 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
     with _tx() as conn:
         groups = _session_units(conn, session, now=now)
         ready = repository.timeline_ready(conn) if timeline_ready is None else timeline_ready
+        resets_ready = repository.daily_ready(conn)     # migration 028: the attempt-reset table exists
     if acc is not None:
         acc.input(sum(len(units) for units in groups.values()))
     if not ready:
@@ -2118,6 +2554,54 @@ def run_agent(ticker: str, signal_date: date, *, now: datetime, deps: Deps | Non
     if not ready:
         return _skip(agent_unit, 'migration_026_missing', now=now, settings=settings, attempt=len(prior) + 1)
     return _run_agent_unit(agent_unit, now=now, deps=deps, settings=settings, attempt=len(prior) + 1)
+
+
+RERUN_MODES = ('propose', 'interpret')
+RERUN_ORIGINS = ('run_detail', 'plan_page', 'api')
+
+
+def rerun_agent(ticker: str, signal_date: date, mode: str, *, request_id: str, origin: str, now: datetime,
+                deps: Deps | None = None) -> dict[str, Any]:
+    """Re-run the Agent of one unit whose attempts ran out or whose last run failed (v2.8 D26, §5.7).
+
+    Appends an ``agent_attempt_resets`` row (``request_id`` makes a repeat harmless: the stored reset comes back with
+    ``replayed: True`` and nothing runs again); ``propose`` then runs the unit once (``run_agent``), ``interpret``
+    only resets — the next run or resume executes it. Returns ``{'reset_id', 'run_id' | None, 'replayed'}``.
+
+    ``ValueError``: bad mode / origin / request id, or a ``propose`` unit that is not a conflict-free buy;
+    ``LookupError``: no such unit; ``AgentConflict('not_needed')``: the unit's latest run of this mode is neither
+    ``skipped / max_attempts`` nor ``error``."""
+    if mode not in RERUN_MODES:
+        raise ValueError(f'mode 必须是 {" / ".join(RERUN_MODES)}')
+    if origin not in RERUN_ORIGINS:
+        raise ValueError(f'origin 必须是 {" / ".join(RERUN_ORIGINS)}')
+    try:
+        request_uuid = str(uuid.UUID(str(request_id)))
+    except ValueError:
+        raise ValueError('request_id 必须是 UUID') from None
+    ticker = ticker.upper()
+    with _tx() as conn:
+        group = repository.unit_candidates(conn, ticker, signal_date)
+        if not group:
+            raise LookupError(f'{ticker} {signal_date} 没有候选，不是决策单元')
+        for earlier in repository.attempt_resets_for(conn, ticker, signal_date, mode):
+            if str(earlier['request_id']) == request_uuid:
+                return {'reset_id': earlier['id'], 'run_id': None, 'replayed': True}
+        if mode == 'propose':
+            book = _book(conn, ticker)
+            unit = synthesis.synthesize(ticker, signal_date, group, holding=book['position'] is not None, now=now)
+            if unit is None or unit['proposed_action'] != 'buy' or 'conflict' in unit['labels']:
+                raise ValueError(f'{ticker} {signal_date} 不是无冲突的买入单元')
+        latest = repository.latest_agent_run(conn, ticker, signal_date, mode)
+        if latest is None or not (latest['status'] == 'error'
+                                  or (latest['status'] == 'skipped' and latest['reason'] == 'max_attempts')):
+            raise AgentConflict('not_needed')
+        reset = repository.insert_attempt_reset(conn, {'ticker': ticker, 'signal_date': signal_date, 'mode': mode,
+                                                       'request_id': request_uuid, 'origin': origin})
+    run_id = None
+    if mode == 'propose':
+        run_id = str(run_agent(ticker, signal_date, now=now, deps=deps)['id'])
+    return {'reset_id': reset['id'], 'run_id': run_id, 'replayed': bool(reset['replayed'])}
 
 
 def _agent_view(run: dict[str, Any] | None, plan: dict[str, Any] | None,
@@ -2364,7 +2848,7 @@ def push_review(kind: str, period: date, *, now: datetime, notify_cfg, trigger_s
                         result=result, notify_cfg=notify_cfg)
 
 
-def _tick_weekly(*, now: datetime, notify_cfg, trigger_source: str, client) -> dict[str, Any]:
+def _tick_weekly(*, now: datetime, notify_cfg, trigger_source: str, client, push: bool = True) -> dict[str, Any]:
     """§6.1 weekly: reuse a snapshot frozen after the week's final close, else
     generate one (superseding whatever is there), then push."""
     week = review_digest.due_week(now)
@@ -2380,12 +2864,14 @@ def _tick_weekly(*, now: datetime, notify_cfg, trigger_source: str, client) -> d
     else:
         head = generate_weekly(week, notes='自动生成', supersedes_id=head['id'] if head else None, now=now)
         action = 'generated'
-    push = push_review('weekly', week, now=now, notify_cfg=notify_cfg, trigger_source=trigger_source,
+    if not push:        # v2.8 §13.3: a manual run generates the snapshot but never pushes
+        return {'period': week, 'action': action, 'push': 'manual_run'}
+    sent = push_review('weekly', week, now=now, notify_cfg=notify_cfg, trigger_source=trigger_source,
                        client=client)
-    return {'period': week, 'action': action, 'push': push}
+    return {'period': week, 'action': action, 'push': sent}
 
 
-def _tick_monthly(*, now: datetime, notify_cfg, trigger_source: str, client) -> dict[str, Any]:
+def _tick_monthly(*, now: datetime, notify_cfg, trigger_source: str, client, push: bool = True) -> dict[str, Any]:
     """§6.1 monthly: with the month-end snapshot, reuse-or-generate then push; without it,
     remind once from the first Saturday of the next month on — unless the month predates
     the workbench (no decision or account snapshot on or before its last day)."""
@@ -2409,6 +2895,8 @@ def _tick_monthly(*, now: datetime, notify_cfg, trigger_source: str, client) -> 
             return {'period': month, 'action': 'waiting'}
         if not review_digest.reminder_due(month, now):
             return {'period': month, 'action': 'waiting'}
+        if not push:
+            return {'period': month, 'action': 'waiting', 'push': 'manual_run'}
         payload = review_digest.reminder(month, public_url=load_config().workbench.public_url)
         messages = templates.workbench_review_reminder(payload)
         result = notifier.send_notifications('workbench_review', messages, notify_cfg, client=client)
@@ -2424,9 +2912,11 @@ def _tick_monthly(*, now: datetime, notify_cfg, trigger_source: str, client) -> 
     else:
         head = generate_monthly(month, notes='自动生成', supersedes_id=head['id'] if head else None, now=now)
         action = 'generated'
-    push = push_review('monthly', month, now=now, notify_cfg=notify_cfg, trigger_source=trigger_source,
+    if not push:
+        return {'period': month, 'action': action, 'push': 'manual_run'}
+    sent = push_review('monthly', month, now=now, notify_cfg=notify_cfg, trigger_source=trigger_source,
                        client=client)
-    return {'period': month, 'action': action, 'push': push}
+    return {'period': month, 'action': action, 'push': sent}
 
 
 def review_tick(*, now: datetime, notify_cfg, trigger_source: str, client=None) -> dict[str, Any]:

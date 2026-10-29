@@ -51,12 +51,14 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
           last_push_failed: bool, public_url: str, extended_plans: int = 0,
           market: dict[str, Any] | None = None, agent_summary: dict[str, Any] | None = None,
           screen: dict[str, Any] | None = None, plan_updates: list[dict[str, Any]] | None = None,
-          retro: dict[str, Any] | None = None) -> dict[str, Any]:
+          retro: dict[str, Any] | None = None, fetch_status: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """{'session', 'overview', 'plans', 'plan_updates', 'holdings', 'pending', 'errors', 'errors_by_source'}
     for the day's push. `plan_updates` are the review rows of the D25 window, each with its chain's
     `pool`, `from_version` / `to_version`, `changes` (texts), the new version's `levels` and `valid_until`.
-    `retro` (v2.7 §9, the batch summary's ``retro`` = ``{new_cards, drafts, to_review}``) feeds the overview's
-    「复盘卡 新增 a · 待审定 b」 line; None (no retro stage ran) keeps the overview as before."""
+    `retro` (v2.8 D3: ``{new_cards, to_review}`` — cards created since the last ``daily`` push, cards waiting for
+    review) feeds the overview's 「复盘卡 上次推送后新增 a · 待审定 b」 line; None keeps the overview without it.
+    `fetch_status` (the collect node's ``[{family, status, ok_count, target_count}]``) feeds the overview's data
+    line for the (at most three) families that fetched partially or failed (v2.8 §13.1)."""
     plans = []
     expiring = []
     tomorrow = add_trading_days(session, 1)
@@ -122,9 +124,6 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
                if isinstance(status, str) and status.startswith('error:')]
 
     errors_by_source = {source: list(items) for source, items in (summary.get('sources') or {}).items() if items}
-    budget = [e for e in errors if e.startswith('batch_over_budget')]
-    if budget:
-        errors_by_source['budget'] = budget
 
     updates = select_plan_updates(plan_updates or [])
     # Migration 026 not run (plan_updates None): no plan-updates count in the overview at all.
@@ -142,7 +141,8 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
                      'agent_quota_exhausted': bool((agent_summary or {}).get('quota_exhausted')),
                      **({'plan_updates': update_counts} if update_counts is not None else {}),
                      **({'retro': {'new_cards': int(retro.get('new_cards') or 0),
-                                   'to_review': int(retro.get('to_review') or 0)}} if retro is not None else {})},
+                                   'to_review': int(retro.get('to_review') or 0)}} if retro is not None else {}),
+                     'fetch_degraded': _fetch_degraded(fetch_status)},
         'plans': plans,
         'plan_updates': updates,
         'holdings': holdings_out,
@@ -151,6 +151,20 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
         'errors_by_source': errors_by_source,
         'screen': screen,
     }
+
+
+def _fetch_degraded(fetch_status: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """The families that fetched partially or failed, at most three, each with the number of targets that got nothing."""
+    from investment_assistant.workbench import families
+
+    out = []
+    for item in fetch_status or []:
+        if item.get('status') not in ('partial', 'failed'):
+            continue
+        ok, total = int(item.get('ok_count') or 0), int(item.get('target_count') or 0)
+        out.append({'family': item['family'], 'title': families.get(item['family']).title,
+                    'ok_count': ok, 'target_count': total, 'missed': max(0, total - ok)})
+    return out[:3]
 
 
 def select_plan_updates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

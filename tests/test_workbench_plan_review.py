@@ -164,7 +164,7 @@ class LateClock:
 
 
 def settings(**overrides):
-    values = {'provider': 'zhipu', 'model': 'glm-5.3', 'base_url': 'https://agent.test/v4', 'api_key': 'sk-test',
+    values = {'provider': 'chatgpt', 'model': 'gpt-test', 'api_key': 'sk-test',
               'daily_tokens': None, 'config_error': None}
     values.update(overrides)
     return agent_model_module.AgentSettings(**values)
@@ -709,7 +709,9 @@ def test_chain_ticker_collected_without_rules(db):
     assert ('bars', 'SYNTH', day(1)) in market.calls
     assert db.execute('SELECT count(*) FROM price_bars WHERE ticker = %s AND price_date = %s',
                       ['SYNTH', day(1)]).fetchone()[0] == 1
-    assert rows['collect']['detail']['earnings'] == {'targets': 2, 'ok': 2, 'failed': 0}
+    earnings = rows['collect']['detail']['earnings']          # v2.8: the per-target items ride along
+    assert {k: earnings[k] for k in ('targets', 'ok', 'failed')} == {'targets': 2, 'ok': 2, 'failed': 0}
+    assert sorted(item['target'] for item in earnings['items']) == ['NVDA', 'SYNTH'] or len(earnings['items']) == 2
     assert summary['tickers']['SYNTH']['candidates'] == []
     assert 'SYNTH' in summary['earnings']
     assert db.execute('SELECT count(*) FROM signal_candidates WHERE ticker = %s AND signal_date = %s',

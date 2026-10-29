@@ -9,7 +9,7 @@ MAX_MESSAGE = 6000
 ACTIONS = {'buy': '买入', 'sell': '卖出', 'watch': '观察'}
 SOURCE_NAMES = {'bars': '日线', 'news': '资讯', 'earnings': '财报日期', 'sec': 'SEC', 'etf_bars': 'ETF 日线',
                 'agent': 'Agent',
-                'fred': 'FRED', 'regime': '区制', 'budget': '耗时'}
+                'fred': 'FRED', 'regime': '区制'}
 _SECTOR_STATE = {'strong': '强', 'weak': '弱', 'mixed': '分化'}
 
 
@@ -135,7 +135,11 @@ def workbench_digest(digest: dict) -> list[Notification]:
         lines.append('⚠️ 上次推送失败，请核对')
     retro = overview.get('retro') or {}
     if retro.get('new_cards') or retro.get('to_review'):
-        lines.append(f"复盘卡 新增 {retro.get('new_cards', 0)} · 待审定 {retro.get('to_review', 0)}")
+        lines.append(f"复盘卡 上次推送后新增 {retro.get('new_cards', 0)} · 待审定 {retro.get('to_review', 0)}")
+    degraded = overview.get('fetch_degraded') or []
+    if degraded:
+        lines.append('数据：' + '；'.join(f"{f['title']} {f['ok_count']}/{f['target_count']}"
+                                          f"（{f['missed']} 个目标没拿到，见运行详情）" for f in degraded[:3]))
     overview_fields = [NotifyField('概览', '\n'.join(lines)),
                        NotifyField('市场环境', _market_environment(overview.get('market')))]
     overview_msg = _fit_message(f"📊 工作台 · {session}", overview_fields, _footer())
@@ -295,6 +299,30 @@ def _screen_message(session: str, screen: dict | None):
         setup_lines.append(f"另 {screen['setups_more']} 只见页面")
     _clip_field(fields, '形态候选（等待触发）', '\n'.join(setup_lines) or '今日无形态候选')
     return _fit_message(f"🔎 筛选报告 · {screen.get('session', session)}", fields, _footer())
+
+
+DAILY_FAILED_COLOR = 15548997      # red
+
+
+def daily_failed(payload: dict) -> list[Notification]:
+    """「每日工作流失败」(v2.8 §13.2): the failed node, the redacted reason, how many nodes did not run, until when the
+    run can be resumed, and — with ``workbench.public_url`` — the link to its detail page.
+
+    ``payload``: ``session``, ``node_title``, ``reason``, ``skipped`` (nodes after the failed one), ``deadline_text``
+    (Beijing time), ``run_id``, ``public_url`` (may be empty); ``retried`` (default True) says whether the node was retried.
+    ``skipped`` / ``deadline_text`` are left out of the notice when absent (a run that never started a graph)."""
+    retried = '（已自动重试 1 次）' if payload.get('retried', True) else ''
+    fields = [NotifyField('失败节点', f"{payload.get('node_title')}{retried}"),
+              NotifyField('原因', str(payload.get('reason') or '—')[:300])]
+    if payload.get('skipped') is not None:
+        fields.append(NotifyField('未执行', f"其后 {payload['skipped']} 个节点"))
+    if payload.get('deadline_text'):
+        fields.append(NotifyField('续跑', f"{payload['deadline_text']} 之前可在运行详情「从此节点继续」"))
+    public_url = str(payload.get('public_url') or '').rstrip('/')
+    if public_url and payload.get('run_id'):
+        fields.append(NotifyField('运行详情', f"{public_url}/#tools/runs/{payload['run_id']}"))
+    return [Notification(title=f"⚠️ 每日工作流失败 · {payload.get('session')}", color=DAILY_FAILED_COLOR,
+                         fields=fields, footer=_footer())]
 
 
 def workbench_closed(ny_date) -> list[Notification]:

@@ -2,11 +2,11 @@
 id: system.versions
 title: "版本号"
 group: system
-version: 1
+version: 2
 applies_to: []
 summary: "plan-1、agent-2 这类标签标识每个口径的版本：改口径就发新版本，旧记录保留当时的版本，所以新旧口径的结果不会被悄悄混在一起。"
 related: [system.concept_card, system.append_only, system.stages, agent.version_chain, system.my_knowledge]
-sources: [investment_assistant/workbench/plans.py, investment_assistant/workbench/rules.py, investment_assistant/workbench/timeline.py, investment_assistant/workbench/stages.py, investment_assistant/workbench/retro.py]
+sources: [investment_assistant/workbench/plans.py, investment_assistant/workbench/rules.py, investment_assistant/workbench/timeline.py, investment_assistant/workbench/stages.py, investment_assistant/workbench/workflow.py, investment_assistant/workbench/retro.py]
 ---
 
 ## 是什么
@@ -22,7 +22,8 @@ sources: [investment_assistant/workbench/plans.py, investment_assistant/workbenc
 - `condition-1`：失效与复查条件登记表；`timeline-1`：版本链、信号与链状态
 - `derivation-1`：计划推导与一致性核对
 - `plan-shadow-1`：计划影子；`tracks-1`：三方对比；`review-7`：周度复盘（新增"你学到了什么"，`review-6` 是旧口径）；`monthly-3`：月度复盘；`backcheck-2`：上线前检查
-- `stages-3`：九个阶段的运行证据（`stages-2` 是八个阶段、`stages-1` 是七个阶段的旧口径）
+- `stages-4`：十个节点的运行证据（`sec_monitor` 在前、`retro` 在 `push` 之后，续跑追加 `attempt`；`stages-3` 是九个阶段、`stages-2` 是八个、`stages-1` 是七个的旧口径）
+- `daily-1`：每日工作流这张图的节点、边、状态形状与续跑规则；`fetch-1`：外部请求策略（连接 10 秒、总 30 秒、重试 2 次）；`siwc-1`：ChatGPT 连接的 OAuth 与请求改写规则
 - `retro-1`：复盘卡的对象、结束事件判定、冻结事实与决定文案；`agent-retro-1`：复盘卡起草
 - `my-knowledge-1`：我的知识的字段、挂靠、版本与截止时间可见性；`knowledge-perf-1`：知识表现回看的样本口径；`agent-discuss-1`：就此计划讨论的回答
 - `knowledge-1`：概念卡与原理页的格式与加载规则

@@ -8,7 +8,7 @@ from investment_assistant import db
 from investment_assistant.config import load_config
 from investment_assistant.db import connect
 from investment_assistant.tasks import runner
-from investment_assistant.tasks.scheduler import REGISTRY
+from investment_assistant.tasks.scheduler import MANUAL_ONLY, REGISTRY
 
 
 def _with_conn(fn: Callable[[Any], Any]) -> Any:
@@ -31,6 +31,12 @@ def scheduled_jobs() -> dict[str, Any]:
     jobs = _with_conn(db.list_scheduled_jobs)
     for job in jobs:
         job["description"] = catalog.describe(job["name"])
+    # Manual-only registry jobs have no scheduled_jobs row: list them so the task center can run them by date.
+    present = {job["name"] for job in jobs}
+    for name in sorted(MANUAL_ONLY - present):
+        jobs.append({"name": name, "manual_only": True, "enabled": False, "next_run_at": None,
+                     "time_local": None, "weekday_mask": None, "timezone": None,
+                     "description": catalog.describe(name)})
     return {"jobs": jobs, "degraded": False, "scheduler": scheduler_status}
 
 
@@ -75,6 +81,10 @@ def trigger_job(name: str, payload: dict[str, Any] | None = None) -> dict[str, A
         raise UnknownJobError(f"unknown job: {name}")
     config = load_config()
     kwargs = _date_kwargs(payload or {})
+    if name == "sec_backfill" and not kwargs:
+        raise ValueError("date or from/to is required for sec_backfill")
+    if name == "daily":
+        kwargs = {}     # the daily workflow always targets the latest settled session
     run_id = runner.submit(name, lambda: REGISTRY[name](config, trigger_source="manual", **kwargs))
     return {"run_id": run_id, "status": "pending"}
 

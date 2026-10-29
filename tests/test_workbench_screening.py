@@ -254,9 +254,13 @@ def test_collect_returns_failure_reasons(offline):
     from investment_assistant.workbench import collect
     collect.bars_one('QQQ', session=S1, now=evening(S1), deps=deps,
                      lookback_days=screening.COLLECT_LOOKBACK_DAYS)
+    # v2.8 D4: the range is collected by the collect node (``collect_range``); run_stage only reads and carries the outcomes
+    fetched, failures, reasons = screening.collect_range(service.connection, session=S1, now=evening(S1),
+                                                         targets=['XXX', 'U00'], deps=deps)
+    assert (fetched, failures, reasons) == ({'U00'}, ['XXX'], {'XXX': 'rate limited'})
     stage = screening.run_stage(session=S1, now=evening(S1),
                                 manual=pool_module.Pool(core=('SYNTH',), extended=(), sectors={}),
-                                held=[], deps=deps, run_id=None)
+                                held=[], deps=deps, run_id=None, fetched=fetched, fetch_reasons=reasons)
     assert stage['status'] == 'success'
     assert stage['fetch_reasons'] == {'XXX': 'rate limited'}
     assert stage['fetch_failures'] == ['XXX']

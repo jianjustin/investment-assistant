@@ -17,6 +17,7 @@ from investment_assistant.workbench.agent import REASON_TEXT as AGENT_REASON_TEX
 SESSION = date(2026, 10, 27)
 T0 = datetime(2026, 10, 27, 22, 30, tzinfo=UTC)          # 06:30 Beijing on the 28th
 STAGE_TITLES = {s.id: s for s in stages_module.STAGES}
+V3 = stages_module.STAGE_IDS_V3                 # the nine stages of the v2.7 runs these older tests feed in
 
 
 def row(stage, *, run_id='run-1', status='success', reason=None, i=0, o=0, skips=(), failures=(),
@@ -252,7 +253,7 @@ def test_overview_counts_equal_recorder_rows():
     assert len(rows) == 9
     view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
     assert view['ready'] is True and view['note'] is None and view['session'] == '2026-10-27'
-    assert [s['id'] for s in view['stages']] == list(stages_module.STAGE_IDS)
+    assert [s['id'] for s in view['stages']] == list(V3)
     by_stage = {r['stage']: r for r in rows}
     for stage in view['stages']:
         src = by_stage[stage['id']]
@@ -282,7 +283,7 @@ def test_overview_stages_1_placeholder():
     rows = _recorded_rows(version='stages-1')
     assert len(rows) == 7
     view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
-    assert [s['id'] for s in view['stages']] == list(stages_module.STAGE_IDS)
+    assert [s['id'] for s in view['stages']] == list(V3)
     assert len(view['stages']) == 9
     placeholder = view['stages'][6]
     assert placeholder['id'] == 'review' and placeholder['status'] == 'not_recorded'
@@ -302,7 +303,7 @@ def test_overview_stages_2_placeholder():
     rows = _recorded_rows(version='stages-2')
     assert len(rows) == 8
     view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
-    assert [s['id'] for s in view['stages']] == list(stages_module.STAGE_IDS) and len(view['stages']) == 9
+    assert [s['id'] for s in view['stages']] == list(V3) and len(view['stages']) == 9
     review, retro = view['stages'][6], view['stages'][7]
     assert review['status'] == 'skipped' and retro['status'] == 'not_recorded' and retro['status_text'] == '未记录'
     assert retro['sentence'] == '这次运行按 stages-2 记账（早于 v2.7 或迁移 027 未执行），没有复盘卡阶段'
@@ -311,11 +312,11 @@ def test_overview_stages_2_placeholder():
 
 
 def test_missing_and_unknown_stage():
-    rows = [row(s) for s in stages_module.STAGE_IDS if s != 'regime']
+    rows = [row(s) for s in V3 if s != 'regime']
     rows.append(row('mystery', status='success', i=1, o=1))
     view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
     ids = [s['id'] for s in view['stages']]
-    assert ids[:9] == list(stages_module.STAGE_IDS) and ids[-1] == 'mystery' and len(ids) == 10
+    assert ids[:9] == list(V3) and ids[-1] == 'mystery' and len(ids) == 10
     missing = view['stages'][2]
     assert missing['id'] == 'regime' and missing['status'] == 'missing' and missing['status_text'] == '缺证据'
     assert missing['sentence'] == '这一阶段没有证据行（记账失败，见运行报告）'
@@ -336,7 +337,7 @@ def test_unfinished_run_is_not_an_accounting_failure():
 
 
 def test_gap_before_a_recorded_stage_stays_an_accounting_failure():
-    rows = [row(s) for s in stages_module.STAGE_IDS if s != 'regime']
+    rows = [row(s) for s in V3 if s != 'regime']
     view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
     assert view['stages'][2]['sentence'] == '这一阶段没有证据行（记账失败，见运行报告）'
     assert '可能仍在运行' not in view['headline']
@@ -358,7 +359,7 @@ def test_unfinished_run_is_not_an_accounting_failure():
 
 
 def test_gap_before_a_recorded_stage_stays_an_accounting_failure():
-    rows = [row(s) for s in stages_module.STAGE_IDS if s != 'regime']
+    rows = [row(s) for s in V3 if s != 'regime']
     view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
     assert view['stages'][2]['sentence'] == '这一阶段没有证据行（记账失败，见运行报告）'
     assert '可能仍在运行' not in view['headline']
@@ -388,7 +389,7 @@ def test_not_ready_and_no_rows_notes():
 
 def closed_run(run_id='run-closed', started=T0 + timedelta(hours=1)):
     rows = [row(s, run_id=run_id, status='skipped', reason='not_trading_day', started=started)
-            for s in stages_module.STAGE_IDS if s != 'push']
+            for s in V3 if s != 'push']
     rows.append(row('push', run_id=run_id, i=1, o=1, started=started, detail={'closed': True},
                     outputs={'push': {'sent': True, 'messages': 1, 'reason': None}}))
     return rows
@@ -397,7 +398,7 @@ def closed_run(run_id='run-closed', started=T0 + timedelta(hours=1)):
 def real_run(run_id='run-real', started=T0, statuses=None):
     statuses = statuses or {}
     return [row(s, run_id=run_id, started=started, status=statuses.get(s, 'success'))
-            for s in stages_module.STAGE_IDS]
+            for s in V3]
 
 
 def test_non_trading_day_headline():
@@ -475,7 +476,7 @@ def test_overview_reads_session_rows_read_only(db):
     view = run_overview.overview(session=SESSION, run_id=None, now=NOW)
     assert view['ready'] is True and view['selected_run_id'] == 'run-a'
     assert [r['run_id'] for r in view['runs']] == ['run-a', 'run-z']
-    assert [s['id'] for s in view['stages']] == list(stages_module.STAGE_IDS)
+    assert [s['id'] for s in view['stages']] == list(V3)
     assert _stage_count(db) == before
     # without a session, the latest closed session at `now` is used (2026-10-22 here: no rows)
     assert run_overview.overview(session=None, run_id=None, now=NOW)['stages'] == []
@@ -524,3 +525,104 @@ def test_cli_database_unavailable_exits_two(monkeypatch, capsys):
     monkeypatch.delenv('INVESTMENT_ASSISTANT_DATABASE_URL', raising=False)
     assert run_overview.main(['--session', '2026-10-27']) == 2
     assert '数据库' in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- v2.8: stages-4, sec_monitor, retro, headline
+
+def test_describe_sec_monitor():
+    monitor = describe(row('sec_monitor', i=40, o=3, version='stages-4',
+                           detail={'mode': 'monitor', 'notifications': {'delivery': 'sent', 'sent': 4}}))
+    assert monitor['sentence'] == '扫描 40 只，新归档 3 份申报，通知 4 条'
+    failing = describe(row('sec_monitor', status='partial', i=40, o=3, failures=[{'target': 'sec:MU', 'reason': 'x'}],
+                           detail={'mode': 'monitor', 'notifications': {'delivery': 'sent', 'sent': 1}}))
+    assert failing['sentence'] == '扫描 40 只，新归档 3 份申报，通知 1 条；1 只失败'
+    downloader = describe(row('sec_monitor', i=40, o=2, detail={'mode': 'downloader'}))
+    assert downloader['sentence'] == '下载器模式：新下载 2 份申报'
+    both = describe(row('sec_monitor', status='partial', i=3, o=0, failures=[{'target': 'sec:A', 'reason': 'x'}],
+                        detail={'mode': 'downloader'}))
+    assert both['sentence'] == '下载器模式：新下载 0 份申报；1 只失败'
+    assert describe(row('sec_monitor', status='skipped', reason='not_trading_day'))['sentence'] == '跳过：纽约休市'
+
+
+CARDS = {'events': 3, 'new_cards': 3, 'to_review': 2, 'drafts': {'ok': 2, 'rejected': 1, 'error': 0, 'skipped': 0},
+         'by_end_kind': {'position_closed': 1, 'stop': 1, 'target': 0, 'expired': 1, 'invalidated': 0}}
+CARDS_TEXT = '新结束 3 笔（平仓 1 · 止损 1 · 过期 1），新建复盘卡 3 张；起草 2/3 张；待审定 2 张'
+
+
+def test_describe_retro_with_weekly():
+    sent = {'action': 'generated', 'push': {'sent': True, 'messages': 1}}
+    held = {'action': 'generated', 'push': 'manual_run'}
+    due = describe(row('retro', i=3, o=2, detail={**CARDS, 'cards': True, 'weekly': sent, 'monthly': None}))
+    assert due['sentence'] == CARDS_TEXT + '；周度复盘：已推送；月度：未到期'
+    manual = describe(row('retro', i=3, o=2, detail={**CARDS, 'cards': True, 'weekly': held,
+                                                     'monthly': {'action': 'already_sent'}}))
+    assert manual['sentence'] == CARDS_TEXT + '；周度复盘：已生成未推送；月度：未到期'
+    holiday = describe(row('retro', detail={'cards': False, 'weekly': sent, 'monthly': {'action': 'reused',
+                                                                                         'push': {'sent': False}}}))
+    assert holiday['sentence'] == '周度复盘：已推送；月度：已生成未推送'          # no card pass on a day without trading
+    assert describe(row('retro', i=3, o=2, detail=CARDS))['sentence'] == CARDS_TEXT       # a v2.7 row reads as before
+
+
+def test_describe_retro_not_due():
+    out = describe(row('retro', status='skipped', reason='not_due', version='stages-4'))
+    assert out['sentence'] == '今天没有到期的复盘' and out['reason_text'] == '今天没有到期的复盘'
+
+
+def test_reason_text_new_codes():
+    assert run_overview.reason_text('upstream_failed') == '上游节点失败，未执行'
+    assert run_overview.reason_text('not_due') == '今天没有到期的复盘'
+    assert run_overview.reason_text('daily_running') == '另一次运行正在进行'
+    assert run_overview.reason_text('aborted: boom') == '运行中断：boom'
+    assert describe(row('screen', status='skipped', reason='upstream_failed'))['sentence'] == '跳过：上游节点失败，未执行'
+
+
+def _v4_rows(*, failed_at=None, retried=True, attempts=1):
+    """A stages-4 run; ``failed_at`` fails that node, the later ones are skipped as upstream_failed."""
+    out, broken = [], False
+    for n, stage in enumerate(stages_module.STAGE_IDS):
+        kwargs = dict(version='stages-4', started=T0 + timedelta(seconds=10 * n), run_id='daily-x')
+        if broken:
+            out.append(row(stage, status='skipped', reason='upstream_failed', **kwargs))
+        elif stage == failed_at:
+            broken = True
+            out.append(row(stage, status='failed', reason='aborted: provider down',
+                           detail={'retry': {'first_error': 'provider down', 'waited_s': 60}} if retried else {},
+                           **kwargs))
+        else:
+            out.append(row(stage, i=1, o=1, **kwargs))
+    return out
+
+
+def test_overview_of_a_stages_4_run_has_ten_stages():
+    view = run_overview.build(_v4_rows(), session=SESSION, run_id=None, ready=True)
+    assert [s['id'] for s in view['stages']] == list(stages_module.STAGE_IDS) and len(view['stages']) == 10
+    assert view['stages'][0]['id'] == 'sec_monitor' and view['stages'][-1]['id'] == 'retro'
+    assert view['stages'][-1]['title'] == '复盘' and view['runs'][0]['rows'] == 10
+    legacy = run_overview.build(_recorded_rows(), session=SESSION, run_id=None, ready=True)
+    assert [s['title'] for s in legacy['stages']][7] == '复盘卡'                   # the old name for the old runs
+
+
+def test_headline_failed_and_resumed():
+    failed = run_overview.build(_v4_rows(failed_at='collect'), session=SESSION, run_id=None, ready=True)
+    assert failed['headline'] == '10 月 27 日的运行在「数据采集」失败（已自动重试 1 次）：运行中断：provider down；其后 8 个节点未执行'
+    no_retry = run_overview.build(_v4_rows(failed_at='regime', retried=False), session=SESSION, run_id=None, ready=True)
+    assert no_retry['headline'] == '10 月 27 日的运行在「市场环境 `regime-2`」失败：运行中断：provider down；其后 6 个节点未执行'
+    # resumed from "collect": collect and everything after it carry a second row
+    rows = _v4_rows(failed_at='collect')
+    later = T0 + timedelta(hours=1)
+    rows += [row(stage, i=1, o=1, version='stages-4', run_id='daily-x', started=later + timedelta(seconds=n))
+             for n, stage in enumerate(stages_module.STAGE_IDS[1:])]
+    resumed = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
+    assert resumed['headline'].endswith('（第 2 次执行，从「数据采集」续跑）')
+    assert resumed['headline'].startswith('定时运行 · ') and '失败' not in resumed['headline'].split('·')[0]
+    assert [s['status'] for s in resumed['stages']].count('success') == 10
+    assert resumed['runs'][0]['rows'] == 19
+
+
+def test_a_closed_stages_4_run_is_recognised():
+    rows = [row(stage, status='skipped', reason='not_trading_day', version='stages-4', run_id='daily-h')
+            for stage in stages_module.STAGE_IDS[:8]]
+    rows += [row('push', version='stages-4', run_id='daily-h', i=1, o=1, detail={'closed': True}),
+             row('retro', status='skipped', reason='not_due', version='stages-4', run_id='daily-h')]
+    view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
+    assert view['runs'][0]['closed'] is True and view['headline'] == run_overview.CLOSED_HEADLINE

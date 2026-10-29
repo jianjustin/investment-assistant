@@ -338,7 +338,7 @@ def test_known_versions_cover_code_constants():
     from investment_assistant.data import fetch_policy
     from investment_assistant.workbench import (backcheck, derivation, knowledge_items, knowledge_perf, monthly,
                                                 plan_shadow, plans, regime, retro, review, rules, screen, stages,
-                                                timeline, tracks)
+                                                timeline, tracks, workflow)
     from investment_assistant.workbench.agent import conditions, graph
     current = {plans.PLAN_VERSION, plans.AGENT_VERSION, timeline.AGENT_V2, graph.REVIEW_VERSION,
                graph.INTERPRET_VERSION, conditions.CONDITIONS_VERSION, timeline.TIMELINE_VERSION,
@@ -347,14 +347,15 @@ def test_known_versions_cover_code_constants():
                stages.STAGES_VERSION, backcheck.CALC_VERSION, 'rules-' + rules.RULE_VERSION,
                knowledge.KNOWLEDGE_VERSION, retro.RETRO_VERSION, knowledge_items.MY_KNOWLEDGE_VERSION,
                knowledge_perf.KNOWLEDGE_PERF_VERSION, graph.RETRO_AGENT_VERSION, graph.DISCUSS_AGENT_VERSION,
-               fetch_policy.FETCH_POLICY_VERSION}
+               fetch_policy.FETCH_POLICY_VERSION, workflow.DAILY_GRAPH_VERSION}
     assert current <= knowledge.KNOWN_VERSIONS
-    assert {'stages-3', 'retro-1', 'agent-retro-1', 'agent-discuss-1', 'my-knowledge-1', 'knowledge-perf-1',
-            'review-7'} == {stages.STAGES_VERSION, retro.RETRO_VERSION, graph.RETRO_AGENT_VERSION,
-                            graph.DISCUSS_AGENT_VERSION, knowledge_items.MY_KNOWLEDGE_VERSION,
-                            knowledge_perf.KNOWLEDGE_PERF_VERSION, review.CALC_VERSION}
+    assert {'stages-4', 'daily-1', 'retro-1', 'agent-retro-1', 'agent-discuss-1', 'my-knowledge-1',
+            'knowledge-perf-1', 'review-7'} == {stages.STAGES_VERSION, workflow.DAILY_GRAPH_VERSION,
+                                                 retro.RETRO_VERSION, graph.RETRO_AGENT_VERSION,
+                                                 graph.DISCUSS_AGENT_VERSION, knowledge_items.MY_KNOWLEDGE_VERSION,
+                                                 knowledge_perf.KNOWLEDGE_PERF_VERSION, review.CALC_VERSION}
     assert {'stages-1', 'review-5', 'monthly-2', 'regime-1', 'context-1', 'backcheck-1'} <= knowledge.KNOWN_VERSIONS
-    # v2.8 adds four literals; only fetch-1 has its constant yet (stages-4 / daily-1 / siwc-1 arrive with theirs)
+    # v2.8 adds four literals; siwc-1 arrives with its constant in Task 4
     assert {'stages-4', 'daily-1', 'fetch-1', 'siwc-1'} <= knowledge.KNOWN_VERSIONS
     assert fetch_policy.FETCH_POLICY_VERSION == 'fetch-1'
     assert isinstance(knowledge.KNOWN_VERSIONS, frozenset) and len(knowledge.KNOWN_VERSIONS) == 36

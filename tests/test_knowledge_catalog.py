@@ -7,7 +7,7 @@ import pytest
 from investment_assistant.data import fetch_policy
 from investment_assistant.workbench import (
     backcheck, derivation, families, knowledge, knowledge_items, knowledge_perf, labels, monthly, plan_shadow,
-    plans, regime, retro, review, rules, screen, stages, timeline, tracks,
+    plans, regime, retro, review, rules, screen, stages, timeline, tracks, workflow,
 )
 from investment_assistant.workbench.agent import REASON_TEXT, conditions, graph, tools
 from investment_assistant.workbench.agent.discuss_tools import DISCUSS_TOOLS
@@ -45,8 +45,8 @@ REQUIRED_IDS = (
     # v2.7 growth loop (7)
     'review.retro_card', 'review.retro_end', 'system.my_knowledge', 'review.knowledge_performance',
     'agent.knowledge_citation', 'system.discussion', 'review.weekly_learning',
-    # v2.8 (1): the spec calls it data.fetch_policy, but card ids must start with an existing group (knowledge.GROUPS)
-    'system.fetch_policy',
+    # v2.8 (2): the spec calls it data.fetch_policy, but card ids must start with an existing group (knowledge.GROUPS)
+    'system.fetch_policy', 'system.daily_workflow',
 )
 
 STAGE_STATUSES = ('success', 'partial', 'degraded', 'failed', 'skipped')
@@ -78,6 +78,7 @@ CURRENT_VERSIONS = {
     'knowledge_items.MY_KNOWLEDGE_VERSION': knowledge_items.MY_KNOWLEDGE_VERSION,
     'knowledge_perf.KNOWLEDGE_PERF_VERSION': knowledge_perf.KNOWLEDGE_PERF_VERSION,
     'fetch_policy.FETCH_POLICY_VERSION': fetch_policy.FETCH_POLICY_VERSION,
+    'workflow.DAILY_GRAPH_VERSION': workflow.DAILY_GRAPH_VERSION,
 }
 
 
@@ -91,7 +92,7 @@ def body_of(catalog, card_id: str) -> str:
 
 
 def test_catalog_loads_and_matches_required_ids(catalog):
-    assert len(REQUIRED_IDS) == 96 and len(set(REQUIRED_IDS)) == 96
+    assert len(REQUIRED_IDS) == 97 and len(set(REQUIRED_IDS)) == 97
     assert set(catalog.concepts) == set(REQUIRED_IDS)
 
 
@@ -146,14 +147,17 @@ def test_principles_structure(catalog):
     principles = catalog.principles
     assert principles is not None
     headings = [section.heading for section in principles.sections]
-    assert len(headings) == 13
+    assert len(headings) == 14                                      # v2.8: intro, ten nodes, three closing sections
     assert headings[0] == '系统做什么、不做什么'
     assert headings[-1] == '怎么在系统里核对'
     staged = [section for section in principles.sections if section.stage]
     assert [section.stage for section in staged] == list(stages.STAGE_IDS)
-    assert len({section.stage for section in staged}) == len(staged) == 9      # one section per stage, retro included
+    assert len({section.stage for section in staged}) == len(staged) == 10      # one section per node, sec_monitor included
     for section in staged:
         assert section.concepts, f'{section.heading}: 阶段小节没有链任何概念卡'
-    assert [section.heading for section in principles.sections[10:12]] == ['你做什么：决定与成交', '复盘口径']
-    assert principles.sections[8].stage == 'retro' and principles.sections[8].heading == '⑧ 复盘卡'
-    assert set(principles.sections[8].concepts) == {'review.retro_card', 'review.retro_end'}
+    assert [section.heading for section in principles.sections[11:13]] == ['你做什么：决定与成交', '复盘口径']
+    first, last = principles.sections[1], principles.sections[10]
+    assert first.stage == 'sec_monitor' and first.heading == '⓪ SEC 监控' and 'family.sec_filings' in first.concepts
+    assert last.stage == 'retro' and last.heading == '⑨ 复盘'                    # after push, with the weekly / monthly part
+    assert set(last.concepts) == {'review.retro_card', 'review.retro_end', 'review.weekly'}
+    assert principles.sections[9].stage == 'push' and principles.sections[2].stage == 'collect'

@@ -7,9 +7,10 @@ earlier stage's evidence. Write failures are swallowed into ``close``'s report �
 bookkeeping must never fail the batch.
 
 ``stages-2`` (v2.5) has eight stages, ``review`` between ``agent`` and ``push``; ``stages-3`` (v2.7) has nine,
-``retro`` between ``review`` and ``push``. A run against a database without migration 026 is booked as
-``stages-1`` (D22): the recorder then knows only the seven v2.4 stages and ignores ``review`` and ``retro``;
-without migration 027 as ``stages-2`` (v2.7 D29), which ignores ``retro``.
+``retro`` between ``review`` and ``push``; ``stages-4`` (v2.8) has ten: ``sec_monitor`` in front and ``retro`` after
+``push``. A run against a database without migration 026 is booked as ``stages-1`` (D22): the recorder then knows
+only the seven v2.4 stages and ignores ``review`` and ``retro``; without migration 027 as ``stages-2`` (v2.7 D29),
+which ignores ``retro``. ``stages-1`` .. ``stages-3`` are history: only the v2.7 ``run_batch`` shell still writes them.
 """
 from __future__ import annotations
 
@@ -22,7 +23,8 @@ from typing import Any
 
 from investment_assistant.workbench import collect, families, repository
 
-STAGES_VERSION = 'stages-3'
+STAGES_VERSION = 'stages-4'
+STAGES_VERSION_V3 = 'stages-3'
 STAGES_VERSION_V2 = 'stages-2'
 STAGES_VERSION_V1 = 'stages-1'
 SAMPLES_MAX = 10                      # per skip-reason sample cap (spec §5.1)
@@ -36,6 +38,11 @@ class StageDef:
 
 
 STAGES: tuple[StageDef, ...] = (
+    StageDef(
+        id='sec_monitor',
+        title='SEC 监控',
+        purpose='扫描观察名单的 SEC 申报，归档原文、提取正文事实并经 Discord Bot 直发通知；已通知过的不重发。',
+    ),
     StageDef(
         id='collect',
         title='数据采集',
@@ -72,22 +79,29 @@ STAGES: tuple[StageDef, ...] = (
         purpose='对每份有效 Agent 计划做一次复查：维持、修订或作废；系统信号与你的输入触发认真复查。',
     ),
     StageDef(
-        id='retro',
-        title='复盘卡',
-        purpose='检测已结束的计划与平仓，冻结复盘事实并起草复盘卡',
-    ),
-    StageDef(
         id='push',
         title='复核与推送',
         purpose='组装今日视图并把摘要推送 Discord；手动运行不推送。',
     ),
+    StageDef(
+        id='retro',
+        title='复盘',
+        purpose='交易日检测已结束的计划与平仓并起草复盘卡；周 / 月复盘到期时生成并推送。',
+    ),
 )
 
+# stages-1 .. stages-3 are history: their orders are literal tuples, never derived from STAGES (spec §4.4).
+STAGE_IDS_V3: tuple[str, ...] = ('collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'review', 'retro', 'push')
+STAGE_IDS_V2: tuple[str, ...] = ('collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'review', 'push')
+STAGE_IDS_V1: tuple[str, ...] = ('collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'push')
 STAGE_IDS: tuple[str, ...] = tuple(stage.id for stage in STAGES)
-STAGE_IDS_V2: tuple[str, ...] = tuple(stage_id for stage_id in STAGE_IDS if stage_id != 'retro')
-STAGE_IDS_V1: tuple[str, ...] = tuple(stage_id for stage_id in STAGE_IDS_V2 if stage_id != 'review')
 STAGE_IDS_BY_VERSION: dict[str, tuple[str, ...]] = {STAGES_VERSION_V1: STAGE_IDS_V1, STAGES_VERSION_V2: STAGE_IDS_V2,
-                                                    STAGES_VERSION: STAGE_IDS}
+                                                    STAGES_VERSION_V3: STAGE_IDS_V3, STAGES_VERSION: STAGE_IDS}
+
+# What a stage was called before ``stages-4`` (display of historic runs only): ``retro`` was the retro-card stage.
+LEGACY_STAGES: dict[str, StageDef] = {
+    'retro': StageDef(id='retro', title='复盘卡', purpose='检测已结束的计划与平仓，冻结复盘事实并起草复盘卡'),
+}
 
 
 def classify(*, executed: bool, failed_reason: str | None, failures: list,
@@ -168,6 +182,24 @@ class StageAcc:
         finally:
             self.duration_ms += (self._clock() - start) * 1000
 
+    def freeze(self) -> dict[str, Any]:
+        """The accounting as plain JSON-able data (a checkpoint carries it from one node to the next, v2.8 §4.3)."""
+        return {'input_count': self.input_count, 'output_count': self.output_count, 'skips': self.skips,
+                'failures': self.failures, 'degradations': self.degradations, 'outputs': self.outputs,
+                'detail': self.detail, 'duration_ms': self.duration_ms}
+
+    def restore(self, data: dict[str, Any]) -> None:
+        """Load a ``freeze`` result into this (fresh) accumulator."""
+        self.input_count = int(data.get('input_count') or 0)
+        self.output_count = int(data.get('output_count') or 0)
+        self.skips = [dict(group) for group in data.get('skips') or []]
+        self._skip_groups = {group['reason']: group for group in self.skips}
+        self.failures = [dict(item) for item in data.get('failures') or []]
+        self.degradations = [dict(item) for item in data.get('degradations') or []]
+        self.outputs = dict(data.get('outputs') or {})
+        self.detail = dict(data.get('detail') or {})
+        self.duration_ms = float(data.get('duration_ms') or 0.0)
+
 
 class StageRecorder:
     """Append one stage_runs row per stage of one workbench run (spec §6.2).
@@ -181,9 +213,9 @@ class StageRecorder:
     ``job = 'workbench'``. ``duration_ms`` is the stage's real wall span (``finished_at - started_at``, D25: waits
     and retries included); the accumulator's own sub-timings stay in ``detail.timings.measured_ms``.
 
-    ``version`` picks the stage set: ``stages-3`` (default, nine rows), ``stages-2`` (eight rows, migration 027
-    missing) or ``stages-1`` (seven rows, migration 026 missing): a stage outside the set is ignored by
-    ``open`` / ``finish`` / ``skip``."""
+    ``version`` picks the stage set: ``stages-4`` (default, ten rows, the ``daily`` workflow), ``stages-3`` (nine
+    rows), ``stages-2`` (eight rows, migration 027 missing) or ``stages-1`` (seven rows, migration 026 missing): a
+    stage outside the set is ignored by ``open`` / ``finish`` / ``skip``."""
 
     def __init__(self, run_id: str, trigger: str, session: date | None, *,
                  writer: Callable[[dict], None] | None = None,
@@ -211,6 +243,11 @@ class StageRecorder:
         self.written = 0
         self._error: str | None = None
 
+    @property
+    def error(self) -> str | None:
+        """The first swallowed write error (None when every row was written)."""
+        return self._error
+
     def open(self, stage_id: str) -> StageAcc:
         """Start a stage: keep its accumulator and its first started_at. A stage outside this version
         gets a throwaway accumulator, so callers account as usual and nothing is written."""
@@ -236,6 +273,18 @@ class StageRecorder:
         self._write(self._row(stage_id, status=status, reason=reason, acc=acc,
                               started_at=self._started_at.get(stage_id) or self._wall_now(),
                               finished_at=self._wall_now()))
+
+    def restart(self, stage_id: str) -> StageAcc:
+        """A new accumulator for the same stage, keeping its first ``started_at`` (the node's retry, v2.8 §5.2)."""
+        if stage_id not in self.stage_ids:
+            return StageAcc(self._clock)
+        self._accs[stage_id] = StageAcc(self._clock)
+        self._started_at.setdefault(stage_id, self._wall_now())
+        return self._accs[stage_id]
+
+    def has_row(self, stage_id: str) -> bool:
+        """The stage's row was already written (or its write was attempted) in this recorder."""
+        return stage_id in self._written
 
     @contextmanager
     def stage(self, stage_id: str) -> Iterator[StageAcc]:
@@ -267,7 +316,8 @@ class StageRecorder:
 
         With ``exc`` the leftovers are failed/``aborted: …``, without it
         skipped/``not_reached`` — each run_id ends up with exactly one row per stage of its version
-        (nine for stages-3, eight for stages-2, seven for stages-1)."""
+        (nine for stages-3, eight for stages-2, seven for stages-1); the ``daily`` graph does not use it (its
+        executor writes ``upstream_failed`` rows instead, v2.8 D8)."""
         for stage_id in self.stage_ids:
             if stage_id in self._written:
                 continue

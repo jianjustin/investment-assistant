@@ -224,14 +224,10 @@ def test_sec_success_hook_retains_original_result_and_runs_local_extraction(monk
     from investment_assistant.config import AssistantConfig, SecMonitorConfig
     from investment_assistant.us_research import service
     original = {'run_id':'existing','status':'success','summary':{'downloaded_count':1,'filings':[{'ticker':'MU','path':'local'}], 'errors':{},'delivery':{'status':'sent'}}}
-    if monitor:
-        from investment_assistant.filings import monitor as monitor_module
-        monkeypatch.setattr(monitor_module, 'run_monitor', lambda *a, **kw: copy.deepcopy(original))
-    else:
-        monkeypatch.setattr(filings, 'run_task', lambda *a, **kw: copy.deepcopy(original))
     # Local refresh is the I/O boundary here; its database/parser path has real TEMP tests above.
     monkeypatch.setattr(service, 'refresh_local_filings', lambda tickers, **kw: {'tickers':tickers,'notifications':'disabled'})
-    result = filings.run(AssistantConfig(sec_monitor=SecMonitorConfig(enabled=monitor)))
+    # v2.8: the hook is ``filings._local_research_after_success``, run inside the sec_monitor node after the SEC pass
+    result = filings._local_research_after_success(copy.deepcopy(original), AssistantConfig(sec_monitor=SecMonitorConfig(enabled=monitor)))
     assert {k:v for k,v in result.items() if k not in ('research','data_status')} == original
     assert result['research'] == {'tickers':['MU'],'notifications':'disabled'}
 
@@ -242,10 +238,9 @@ def test_failed_sec_run_does_not_add_research_or_replace_original_error(monkeypa
     from investment_assistant.config import AssistantConfig
     from investment_assistant.us_research import service
     original = {'run_id':'existing','status':'error','summary':{'errors':{'MU':'original'}, 'filings':[]}}
-    monkeypatch.setattr(filings, 'run_task', lambda *a, **kw: copy.deepcopy(original))
     def forbidden(*a): pytest.fail('failed original SEC job started extraction')
     monkeypatch.setattr(service, 'refresh_local_filings', forbidden)
-    result = filings.run(AssistantConfig())
+    result = filings._local_research_after_success(copy.deepcopy(original), AssistantConfig())
     assert {k: v for k, v in result.items() if k != 'data_status'} == original
 
 
@@ -255,10 +250,9 @@ def test_sec_local_hook_failure_is_sanitized_and_preserves_original_success(monk
     from investment_assistant.config import AssistantConfig
     from investment_assistant.us_research import service
     original = {'status':'success','summary':{'filings':[{'ticker':'MU'}], 'errors':{}}}
-    monkeypatch.setattr(filings, 'run_task', lambda *a, **kw: copy.deepcopy(original))
     def bad(*a, **kw): raise ValueError('proxy://user:secret@host')
     monkeypatch.setattr(service, 'refresh_local_filings', bad)
-    result = filings.run(AssistantConfig())
+    result = filings._local_research_after_success(copy.deepcopy(original), AssistantConfig())
     assert result['status']=='success' and result['summary']==original['summary']
     assert result['research']['errors'] and 'secret' not in json.dumps(result)
 
@@ -401,9 +395,8 @@ def test_partial_sec_collection_derives_successful_documents_and_preserves_error
     from investment_assistant.config import AssistantConfig
     from investment_assistant.us_research import service
     original={'status':'error','summary':{'filings':[{'ticker':'MU'}],'errors':{'NVDA':'original source failure'}}}
-    monkeypatch.setattr(filings,'run_task',lambda *a, **kw: copy.deepcopy(original))
     monkeypatch.setattr(service,'refresh_local_filings',lambda tickers,**kw:{'tickers':tickers,'notifications':'disabled'})
-    result=filings.run(AssistantConfig())
+    result=filings._local_research_after_success(copy.deepcopy(original), AssistantConfig())
     assert result['status']=='error' and result['summary']==original['summary']
     assert result['research']['tickers']==['MU']
 
@@ -438,11 +431,7 @@ def test_sec_hook_uses_supplied_config_for_real_local_files_and_exhibits(researc
         ('MU','8-K','2026-10-01','0000999999-26-000001',str(primary)))
     research_db.commit()
     original = {'run_id':'original-sec-job','status':'success','summary':{'filings':[{'ticker':'MU','path':str(primary)}],'errors':{},'delivery':{'status':'sent'}}}
-    if monitor_enabled:
-        monkeypatch.setattr(monitor_module,'run_monitor',lambda *a,**kw:copy.deepcopy(original))
-    else:
-        monkeypatch.setattr(filings,'run_task',lambda *a,**kw:copy.deepcopy(original))
-    result = filings.run(supplied)
+    result = filings._local_research_after_success(copy.deepcopy(original), supplied)
     assert result['research']['results'][0]['status']=='ready'
     assert {k:v for k,v in result.items() if k not in ('research','data_status')}==original
     parsed = s.view('MU')['filings']

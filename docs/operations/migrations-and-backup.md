@@ -32,6 +32,7 @@
 | 025 | v2.4：`stage_runs`：每次 `workbench` 任务、每个阶段追加一行证据（计数、原因、产出引用、耗时）；只建表与索引，不动旧表（2026-10-27 已在真实库手动执行，见下文） | 主线 |
 | 026 | v2.5：计划时间线。新建只追加的 `agent_plan_versions`（版本链）、`plan_reviews`（每日复查记录，每条链每个交易日至多一条有效批处理复查）、`user_inputs`（用户输入）；`signal_decisions` 加可空列 `agent_plan_id`、`review_view`；放宽 `agent_runs.mode`（加 `review`、`revise`）及两条相关 CHECK、`agent_tool_calls.phase`（加 `review`）、`stage_runs.stage`（加 `review`）；`idx_trade_plans_agent_unique` 只管 `agent-1`。不改旧行、可重跑；三张新表不进 `WORKBENCH_TABLES`，就绪与否由 `repository.timeline_ready` 判定。对旧代码无害（只新增表 / 列、放宽约束）。必须先于重启执行（spec D19）；2026-10-28 已在真实库手动执行，见下文 | 主线 |
 | 027 | v2.7：我的成长闭环。新建十一张只追加的表：`review_cards`、`review_card_drafts`、`review_card_verdicts`（复盘卡及其起草与审定）、`discussions`、`discussion_turns`（就此计划讨论）、`knowledge_items`、`knowledge_versions`、`knowledge_status`（我的知识）、`knowledge_drafts`、`knowledge_draft_verdicts`（教训草稿及其决定）、`knowledge_citations`（计划与复查引用了哪一版知识）；放宽 `agent_runs.mode`（加 `retro`、`discuss`）、`agent_tool_calls.phase`（加 `retro`、`discuss`）、`stage_runs.stage`（加 `retro`）。约束名查不到时按定义找出后删除（同 026 的 `DO` 块），不改旧行、不加种子行、可重跑；十一张新表不进 `WORKBENCH_TABLES`，就绪与否由 `repository.growth_ready` 判定。对 v2.6 代码无害（只新增表、放宽约束）。必须先于重启执行（spec D29）；真实库执行需单独授权，见下文 | 主线 |
+| 028 | v2.8：每日工作流。`stage_runs` 增加 `attempt`（默认 1）与 `job` 取值 `daily`、`stage` 取值 `sec_monitor`，唯一键改为 `(run_id, stage, attempt)`（约束名查不到时按定义找出后删除，同 026 / 027 的 `DO` 块）；新建 `agent_connections`（单行，**含令牌**）、`agent_connection_events`、`agent_attempt_resets`；`scheduled_jobs` 删 `workbench`、`workbench_review`、`filings` 三行并插入 `daily`（北京 11:30、周二至周六，`enabled` 沿用原 `workbench` 行，`next_run_at` 直接写下一个 11:30）；加索引 `idx_job_reports_run_id`。不改任何证据行、可重跑；新表不进 `WORKBENCH_TABLES`，就绪与否由 `repository.daily_ready` 判定（`attempt` 列、重置记录表、`daily` 调度行都在）。**必须先于重启执行**：028 未执行时 v2.8 代码拒绝运行 `daily`（`job_reports` 记一行 `error / migration_028_missing`），不做半新半旧的降级；028 执行后、重启前旧代码的调度器只会对 `daily` 记一条「未注册」警告。真实库执行需单独授权，见下文 | 主线 |
 
 另需一次：`python -m investment_assistant.workbench.agent setup` 由 LangGraph `PostgresSaver.setup()` 建检查点表，不进本项目迁移。
 
@@ -189,3 +190,17 @@ INVESTMENT_ASSISTANT_TEST_DATABASE_URL=postgresql://test@127.0.0.1:55433/workben
 ```
 
 Unix socket 路径太长时启动会失败，所以用 `-k ''` 关掉 socket、只走 TCP；不加 `LC_ALL=C` 时服务会拒绝启动。
+
+### 028 的真实库执行（逐步手动，每一步单独授权）
+
+028 改了调度行和 `stage_runs` 的唯一键，新旧代码混跑会产出无法守护的证据，所以**先迁移、后重启，两步之间只差一次重启**：
+
+1. **确认状态**：当前库已到 027（`repository.growth_ready` 为真），服务仍在 v2.7 代码上运行。
+2. **全库备份**：`pg_dump -Fc "$INVESTMENT_ASSISTANT_DATABASE_URL" -f .local/us-workbench/backups/investment_assistant-before-028-<时间戳>.dump`，`shasum -a 256` 记下，`pg_restore --list` 确认可读。**提醒**：028 之后库里有 `agent_connections`，其中的 ChatGPT 访问 / 刷新令牌是**明文**（与 `.env` 同一安全级别，决定 D29），所以之后的 `pg_dump` 备份文件同样含令牌——备份放 `.local/`（不入库），不要上传或共享。
+3. **执行**：`psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=1 -f migrations/028_daily_workflow.sql`；首次执行时 `DROP CONSTRAINT IF EXISTS` 找不到具名约束的 `NOTICE` 属预期。
+4. **核对**：三张新表存在，`stage_runs` 的 `attempt` 列与新约束在位，`scheduled_jobs` 只剩 `daily`（及其它非本版任务）且 `enabled` / `next_run_at` 合理。
+5. **立即重启服务**到 v2.8 代码。
+
+回滚：`pg_restore --clean -d "$INVESTMENT_ASSISTANT_DATABASE_URL" <上面的 dump>`，再重启到 v2.7 代码（回滚会丢掉 028 之后的所有写入，包括令牌）。执行记录写进 `docs/roadmap/v2.8-acceptance.md` 的「迁移 028 执行记录」一节。
+
+**测试库**：`tests/conftest.WORKBENCH_MIGRATIONS` 停在 027；v2.8 的 SQL 测试在 `tests/_daily_db.py` 里自己在一次性 schema 上叠 028。

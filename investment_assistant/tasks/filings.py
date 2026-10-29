@@ -1,3 +1,7 @@
+"""SEC monitoring as the first node of the ``daily`` workflow (v2.8 §4.6) and the manual-only ``sec_backfill`` task.
+
+``stage_sec_monitor`` is the node body (the former ``filings`` task without ``run_task``); ``backfill`` runs the same
+body over a date range, outside the graph, under the ``daily:run`` lock."""
 from __future__ import annotations
 
 import argparse
@@ -6,10 +10,14 @@ import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from investment_assistant.config import AssistantConfig, load_config
 from investment_assistant.filings.service import download_configured_filings
-from investment_assistant.tasks._harness import run_task
+
+NY = ZoneInfo("America/New_York")
+FILINGS_LISTED_MAX = 50        # filings kept in the node's outputs
+MAX_RANGE_DAYS = 92
 
 
 def _core(
@@ -47,7 +55,8 @@ def _monitor_targets(config: AssistantConfig) -> tuple[list[str], str | None]:
 
 
 def _record_fetch_run(result: dict[str, Any], *, config: AssistantConfig,
-                      trigger_source: str, started_at: datetime) -> dict[str, Any]:
+                      trigger_source: str, started_at: datetime, job: str = "daily",
+                      trigger: str | None = None) -> dict[str, Any]:
     """Append this run's one sec_filings row to data_fetch_runs (v2.3 §6.3).
 
     Targets are what this run actually collected (I03): the monitor reads its own
@@ -62,7 +71,7 @@ def _record_fetch_run(result: dict[str, Any], *, config: AssistantConfig,
     from investment_assistant.workbench import collect, families
 
     summary = result.get("summary") or {}
-    trigger = "scheduled" if trigger_source == "scheduled" else "manual_batch"
+    trigger = trigger or ("scheduled" if trigger_source == "scheduled" else "manual_batch")
     if config.sec_monitor.enabled:
         targets_source = "sec_monitor.watchlist_path"
         tickers = summary.get("tickers")
@@ -75,7 +84,7 @@ def _record_fetch_run(result: dict[str, Any], *, config: AssistantConfig,
         targets_source = "config.watchlist"
         tickers, targets_error, mode = list(config.watchlist), None, "downloader"
 
-    tally = collect.Tally("sec_filings", "filings", tickers)
+    tally = collect.Tally("sec_filings", job, tickers)
     tally.detail = {"targets_source": targets_source, "mode": mode}
     if targets_error is not None:
         tally.detail["targets_error"] = families.sanitize_reason(targets_error)
@@ -119,42 +128,136 @@ def _record_fetch_run(result: dict[str, Any], *, config: AssistantConfig,
             tally.ok(ticker)
     if non_target_errors:
         tally.detail["non_target_errors"] = non_target_errors
-    data_status = collect.write_runs([tally.row(
+    data_status, ids = collect.write_runs_with_ids([tally.row(
         trigger=trigger,
         run_id=result.get("run_id"), session=None,
         started_at=started_at, finished_at=datetime.now(UTC))])
     if data_status.get("error"):
-        print(f"[data_fetch_runs] write failed family=sec_filings job=filings trigger={trigger} "
+        print(f"[data_fetch_runs] write failed family=sec_filings job={job} trigger={trigger} "
               f"error={data_status['error']}", file=sys.stderr)
-    return data_status
+    return {**data_status, "ids": ids}
 
 
-def run(
-    config: AssistantConfig,
-    *,
-    start_date: date | None = None,
-    end_date: date | None = None,
-    trigger_source: str = "scheduled",
-) -> dict[str, Any]:
-    started_at = datetime.now(UTC)
+def _monitor_range(config: AssistantConfig, ny_date: date) -> tuple[date, date]:
+    """The monitor's scan range as the scheduled ``filings`` task had it: the configured start date to New York today."""
+    start = date.fromisoformat(config.sec_monitor.start_date)
+    if start > ny_date:
+        raise ValueError("SEC 起始日期晚于结束日期")
+    return start, ny_date
+
+
+def _scan(config: AssistantConfig, *, start_date: date | None, end_date: date | None, ny_date: date,
+          drop_after: datetime | None, notify_cfg: Any) -> tuple[dict[str, Any], str]:
+    """One SEC pass: the monitor (scan, archive, extract, direct delivery) when ``sec_monitor`` is enabled, else the
+    downloader for the natural T-1. Returns ``(result, mode)``; ``drop_after`` (a resumed run's cutoff) makes the monitor
+    ignore filings accepted after it."""
     if config.sec_monitor.enabled:
-        from investment_assistant.filings.monitor import run_monitor
+        from investment_assistant.filings.monitor import scan_and_notify
+        from investment_assistant.filings.monitor_source import EdgarSource
 
-        result = run_monitor(config, start_date=start_date, end_date=end_date, trigger_source=trigger_source)
-    else:
-        target_start = start_date or (date.today() - timedelta(days=1))  # 自然目标日 T-1
-        target_end = end_date or target_start
-        result = run_task(
-            "filings",
-            lambda: _core(config, start_date=start_date, end_date=end_date),
-            config=config,
-            target_start_date=target_start,
-            target_end_date=target_end,
-            trigger_source=trigger_source,
-        )
-    data_status = _record_fetch_run(result, config=config,
-                                    trigger_source=trigger_source, started_at=started_at)
-    return _local_research_after_success({**result, "data_status": data_status}, config)
+        start, end = (start_date, end_date) if start_date else _monitor_range(config, ny_date)
+        end = end or start
+        if start > end:
+            raise ValueError("SEC 起始日期晚于结束日期")
+        source = (EdgarSource(Path(config.sec_monitor.state_dir) / "evidence", drop_after=drop_after)
+                  if drop_after is not None and config.sec_monitor.state_dir else None)
+        result = scan_and_notify(config, start, end, source=source, notify_cfg=notify_cfg)
+        if source is not None:
+            result["after_cutoff_dropped"] = source.after_cutoff_dropped
+        return result, "monitor"
+    target = start_date or (ny_date - timedelta(days=1))          # natural target day T-1
+    return _core(config, start_date=target, end_date=end_date or target), "downloader"
+
+
+def _account(result: dict[str, Any], mode: str, acc, *, config: AssistantConfig, ids: list[int]) -> None:
+    """Fold a pass into the node's accumulator: counts, per-ticker errors, the (capped) filing list, references."""
+    tickers = result.get("tickers")
+    if not isinstance(tickers, list):
+        tickers = _monitor_targets(config)[0] if mode == "monitor" else list(config.watchlist)
+    acc.input(len(tickers))
+    filings = [m for m in result.get("filings") or [] if isinstance(m, dict)]
+    acc.output(len(filings))
+    errors = result.get("errors")
+    for key, reason in (errors.items() if isinstance(errors, dict) else []):
+        acc.fail(f"sec:{key}", reason)
+    delivered = (result.get("delivery") or {}).get("status") == "sent"
+    acc.set_ref("filings", [{"ticker": m.get("ticker"), "form": m.get("form"), "filing_date": m.get("filing_date"),
+                             "accession": m.get("accession_number") or m.get("accession"), "notified": delivered}
+                            for m in filings[:FILINGS_LISTED_MAX]])
+    if ids:
+        acc.set_ref("data_fetch_runs", ids)
+    receipts = (result.get("delivery") or {}).get("receipts") or []
+    acc.detail.update(mode=mode, notifications={"delivery": (result.get("delivery") or {}).get("status"),
+                                                "sent": sum(1 for r in receipts if r.get("status") == "sent")})
+    if "after_cutoff_dropped" in result:
+        acc.detail["after_cutoff_dropped"] = result["after_cutoff_dropped"]
+
+
+def stage_sec_monitor(state: dict[str, Any], ctx, acc) -> dict[str, Any]:
+    """The ``sec_monitor`` node body (spec §4.6): the monitor or the downloader, then the fetch-run row.
+
+    Holds the ``sec_filings`` family lock for the node (so it never runs alongside a manual fetch of the Data menu) and,
+    in monitor mode, the monitor's own state-file lock. Per-ticker errors make the node ``partial``; the local
+    research refresh after it only degrades the node."""
+    from investment_assistant.workbench import collect
+
+    config = getattr(ctx, "config", None) or load_config()
+    now = datetime.fromisoformat(state["cutoff_at"])
+    ny_date = date.fromisoformat(state["ny_date"])
+    started = datetime.now(UTC)
+    with collect.family_locks(["sec_filings"]):
+        result, mode = _scan(config, start_date=None, end_date=None, ny_date=ny_date,
+                             drop_after=now if ctx.resumed else None, notify_cfg=ctx.notify_cfg)
+        trigger = state.get("trigger") or "scheduled"
+        data_status = _record_fetch_run({"run_id": state.get("run_id"), "summary": result}, config=config,
+                                        trigger_source="scheduled" if trigger == "scheduled" else "manual",
+                                        started_at=started)
+    _account(result, mode, acc, config=config, ids=data_status.get("ids") or [])
+    research = _local_research_after_success({"summary": result}, config).get("research")
+    if research is not None:
+        acc.detail["research"] = research
+        if research.get("errors"):
+            acc.degrade("local_research_failed", "")
+    summary = dict(state.get("summary") or {})
+    summary["sec_monitor"] = {"mode": mode, "filings": len(result.get("filings") or []),
+                              "errors": result.get("errors") or {}}
+    return {"summary": summary}
+
+
+def backfill(config: AssistantConfig, *, start_date: date, end_date: date | None = None,
+             trigger_source: str = "manual") -> dict[str, Any]:
+    """The manual-only ``sec_backfill`` task: the same pass over a date range (at most 92 days), outside the graph.
+
+    Holds the ``daily:run`` lock (``DailyBusy`` when a run is in progress), writes one ``data_fetch_runs`` row
+    (``job = 'sec_backfill'``, trigger ``manual_family``) and one ``job_reports`` row (``task = 'sec_backfill'``)."""
+    from investment_assistant.tasks import daily
+    from investment_assistant.tasks._harness import run_task
+
+    end_date = end_date or start_date
+    if end_date < start_date:
+        raise ValueError("to must be greater than or equal to from")
+    if (end_date - start_date).days > MAX_RANGE_DAYS:
+        raise ValueError(f"date range is limited to {MAX_RANGE_DAYS} days")
+    ny_today = datetime.now(NY).date()
+
+    def body(run_id: str) -> dict[str, Any]:
+        from investment_assistant.services.settings import effective_notify_config
+
+        started = datetime.now(UTC)
+        result, mode = _scan(config, start_date=start_date, end_date=end_date, ny_date=ny_today, drop_after=None,
+                             notify_cfg=effective_notify_config(config.notify))
+        data_status = _record_fetch_run({"run_id": run_id, "summary": result}, config=config,
+                                        trigger_source=trigger_source, started_at=started, job="sec_backfill",
+                                        trigger="manual_family")
+        out = {**result, "mode": mode, "data_status": data_status}
+        research = _local_research_after_success({"summary": result}, config).get("research")
+        if research is not None:
+            out["research"] = research
+        return out
+
+    with daily.exclusive():
+        return run_task("sec_backfill", body, config=config, target_start_date=start_date,
+                        target_end_date=end_date, trigger_source=trigger_source, notify=False, pass_run_id=True)
 
 
 def _local_research_after_success(result, config):
@@ -174,21 +277,20 @@ def _local_research_after_success(result, config):
 def main() -> None:
     from dotenv import load_dotenv
     load_dotenv()
-    parser = argparse.ArgumentParser(description="Daily 09:00 filings task")
+    parser = argparse.ArgumentParser(description="SEC 回补（按日期，只手动运行）")
     parser.add_argument("--config", default=None)
-    parser.add_argument("--date", default=None, help="拉取指定单日（YYYY-MM-DD），默认 T-1")
+    parser.add_argument("--date", default=None, help="回补指定单日（YYYY-MM-DD）")
     parser.add_argument("--from", dest="from_date", default=None, help="范围起始日（YYYY-MM-DD）")
     parser.add_argument("--to", dest="to_date", default=None, help="范围结束日（YYYY-MM-DD）")
     args = parser.parse_args()
     if args.date:
         start = end = date.fromisoformat(args.date)
+    elif args.from_date and args.to_date:
+        start, end = date.fromisoformat(args.from_date), date.fromisoformat(args.to_date)
     else:
-        start = date.fromisoformat(args.from_date) if args.from_date else None
-        end = date.fromisoformat(args.to_date) if args.to_date else None
-    print(json.dumps(
-        run(load_config(args.config), start_date=start, end_date=end, trigger_source="manual"),
-        ensure_ascii=False, indent=2, default=str,
-    ))
+        parser.error("必须指定 --date 或 --from 与 --to")
+    print(json.dumps(backfill(load_config(args.config), start_date=start, end_date=end, trigger_source="manual"),
+                     ensure_ascii=False, indent=2, default=str))
 
 
 if __name__ == "__main__":

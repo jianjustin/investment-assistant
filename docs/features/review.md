@@ -76,7 +76,7 @@ Agent 轨道取「你决定时看到的那一版」（v2.5，口径版本仍是 
 
 ## 复盘推送
 
-任务 `workbench_review`（北京时间每天 08:00，默认 `signals` 频道）每天检查一次：
+每日工作流的 `retro` 节点（v2.8 起；北京时间周二至周六 11:30，默认 `signals` 频道，推送类别仍是 `workbench_review`）每个运行日检查一次（休市日也检查；手动运行只生成不推送）：
 
 - **周度**：每周最后一个交易日收盘后的首次运行，冻结并推送该周快照。
 - **月度**：上月有月末资金快照、且还没推送过时，生成并推送。缺快照时，从次月第一个周六起提醒一次；工作台启用之前的月份不提醒（`monthly.action` 记为 `before_start`）。
@@ -85,5 +85,5 @@ Agent 轨道取「你决定时看到的那一版」（v2.5，口径版本仍是 
 ## 入口与验证
 
 - 页面「复盘」：交易与持仓、复盘卡、对照组、周度复盘、月度复盘、资金、轨道对比、上线前检查（见 [观察池与市场环境](pool-and-context.md)）；周度和月度卡片上都有「推送到 Discord」按钮。
-- API：`GET /api/workbench/review/tracks?since=&until=`（默认最近 90 天，不冻结）；`GET/POST /api/workbench/monthly-reviews`；`GET /api/workbench/plans/shadow`；`GET /api/workbench/discipline`；`GET/POST /api/workbench/account/snapshots`、`GET/POST /api/workbench/account/flows`、`POST /api/workbench/account/flows/{id}/void`；`GET/POST /api/workbench/review-pushes`（POST body 为 `kind` 与 `period`；该周期没有快照返回 404，period 不是周一或每月 1 日返回 400）；`POST /api/jobs/workbench_review/run`。
-- 验证一次：周六 08:00 之后手动运行 `workbench_review`，运行报告里 `weekly.action == "generated"` 且 `push.sent == true`（消息里有「你学到了什么」字段）；同一天再跑一次，`weekly.action == "already_sent"`。录入 8-31 和 9-30 两份资金快照后生成 9 月月度复盘，页面显示「月度收益 +x.xx% · 档位 · SPY …」。
+- API：`GET /api/workbench/review/tracks?since=&until=`（默认最近 90 天，不冻结）；`GET/POST /api/workbench/monthly-reviews`；`GET /api/workbench/plans/shadow`；`GET /api/workbench/discipline`；`GET/POST /api/workbench/account/snapshots`、`GET/POST /api/workbench/account/flows`、`POST /api/workbench/account/flows/{id}/void`；`GET/POST /api/workbench/review-pushes`（POST body 为 `kind` 与 `period`；该周期没有快照返回 404，period 不是周一或每月 1 日返回 400）；（原 `POST /api/jobs/workbench_review/run` 已随任务合并删除，手动运行是 `POST /api/workbench/run`）；周 / 月复盘的手动生成与推送接口不变。
+- 验证一次：周六之后的第一个运行日（定时），`retro` 节点行的 `detail.weekly.action == "generated"` 且 `push.sent == true`（手动运行只生成：`push == "manual_run"`）（消息里有「你学到了什么」字段）；同一天再跑一次，`weekly.action == "already_sent"`。录入 8-31 和 9-30 两份资金快照后生成 9 月月度复盘，页面显示「月度收益 +x.xx% · 档位 · SPY …」。
