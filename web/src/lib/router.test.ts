@@ -70,4 +70,15 @@ describe('parseHash', () => {
     expect(parseHash('#instrument/NVDA/extra')).toEqual({ zone: 'instrument', sub: 'NVDA' })
     expect(parseHash('#plan/abc/extra')).toEqual({ zone: 'plan', sub: 'abc' })
   })
+  it('#tools/runs/<run_id> is the run detail page; an id of another shape falls back to the run list', () => {
+    expect(parseHash('#tools/runs/daily-20261030033000-1a2b3c4d'))
+      .toEqual({ zone: 'tools', sub: 'runs/daily-20261030033000-1a2b3c4d' })
+    expect(parseHash('#tools/runs/daily-20261030033000-1a2b3c4d?x=1'))
+      .toEqual({ zone: 'tools', sub: 'runs/daily-20261030033000-1a2b3c4d' })
+    for (const hash of ['#tools/runs/abc', '#tools/runs/', '#tools/runs/daily-20261030033000-1A2B3C4D', '#tools/runs/../settings']) {
+      expect(parseHash(hash)).toEqual({ zone: 'tools', sub: 'runs' })
+    }
+    expect(parseHash('#tools/runs')).toEqual({ zone: 'tools', sub: 'runs' })
+    expect(parseHash('#tools/filings/extra')).toEqual({ zone: 'tools', sub: 'filings' })
+  })
 })

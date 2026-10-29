@@ -348,6 +348,8 @@ export const AGENT_REASON_TEXT: Record<string, string> = {
   retro_malformed: '复盘卡草稿格式无效', lesson_invalid: '教训草稿缺适用范围、反例或挂靠无效',
   answer_malformed: '回答格式无效', migration_027_missing: '迁移 027 未执行',
   discussion_busy: '上一个问题还在回答', draft_exists: '这张卡已有成功的草稿',
+  // v2.8 ChatGPT connection (spec §8.8, verbatim; same as backend agent.REASON_TEXT)
+  not_connected: 'ChatGPT 未连接', model_unavailable: '所选模型不可用',
 }
 
 export const ruleLabel = (id: string) => RULE_LABELS[id] ?? id

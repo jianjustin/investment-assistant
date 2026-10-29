@@ -11,6 +11,7 @@
   import { growthError, truncate } from '../lib/growth'
   import type { DiscussionListItem } from '../lib/growth'
   import { fmtBeijing } from '../lib/format'
+  import { AGENT_REASON_TEXT, describeError, newRequestId } from '../lib/workbench'
 
   // 整页渲染 PlanDerivation（spec 2026-10-27 §10）。标题取推导里的标的与日期，
   // 所以页面自己再请求一次；取不到（404/400/503）时退化为 id，错误文案交给组件呈现，不白屏。
@@ -25,6 +26,15 @@
   // v2.7 §8.1：这个计划已有的讨论；读不到（如迁移 027 未执行）只影响这一段
   let discussions = $state<DiscussionListItem[] | null>(null)
   let discussionsError = $state('')
+  // v2.8 D26：这个单元最近一次 Agent 运行（按 mode）是 max_attempts 或 error 时，给「重新运行 Agent」
+  type RerunRow = { mode: 'propose' | 'interpret'; status: string; reason: string | null }
+  let rerunUnit = $state<{ ticker: string; signal_date: string } | null>(null)
+  let rerunRows = $state<RerunRow[]>([])
+  let rerunBusy = $state<Record<string, boolean>>({})
+  let rerunText = $state<Record<string, string>>({})
+  const rerunIds: Record<string, string> = {}
+  const RERUN_MODE_TEXT: Record<string, string> = { propose: 'Agent 建议', interpret: 'Agent 简报解读' }
+  const RERUN_STATUS_TEXT: Record<string, string> = { error: '出错', skipped: '跳过' }
 
   $effect(() => {
     const id = sub
@@ -35,6 +45,9 @@
     reasoningOpen = false
     discussions = null
     discussionsError = ''
+    rerunUnit = null
+    rerunRows = []
+    rerunText = {}
     void api.getDiscussions({ plan_id: id })
       .then(res => { if (alive) discussions = Array.isArray(res?.discussions) ? res.discussions : [] })
       .catch((e: unknown) => { if (alive) discussionsError = growthError(e) })
@@ -45,12 +58,48 @@
         ticker = d.plan.ticker ?? ''
         unit = d.plan.plan_version === 'agent-2' && d.plan.ticker && d.plan.signal_date
           ? { ticker: d.plan.ticker, signal_date: d.plan.signal_date } : null
+        if (d.plan.ticker && d.plan.signal_date) {
+          const found = { ticker: d.plan.ticker, signal_date: d.plan.signal_date }
+          void api.getAgentRuns(found.signal_date).then(res => {
+            if (!alive) return
+            rerunUnit = found
+            rerunRows = rerunnable(res?.runs ?? [], found)
+          }).catch(() => { /* the entry is optional: a failing list just hides it */ })
+        }
         const runId = d.inputs.agent_run?.id
         legacyRunId = d.plan.plan_version === 'agent-1' && typeof runId === 'string' ? runId : null
       })
       .catch(() => { if (alive) title = id })
     return () => { alive = false }
   })
+
+  /** The latest run of each mode for the unit; only propose / interpret that ended in max_attempts or error qualify. */
+  function rerunnable(runs: api.AgentRunRow[], unit: { ticker: string; signal_date: string }): RerunRow[] {
+    const rows: RerunRow[] = []
+    for (const mode of ['propose', 'interpret'] as const) {
+      const mine = runs.filter(r => r.ticker === unit.ticker && r.signal_date === unit.signal_date && r.mode === mode)
+      const last = mine[mine.length - 1]
+      if (last && (last.status === 'error' || (last.status === 'skipped' && last.reason === 'max_attempts')))
+        rows.push({ mode, status: last.status, reason: last.reason })
+    }
+    return rows
+  }
+
+  async function rerun(row: RerunRow) {
+    if (!rerunUnit || rerunBusy[row.mode]) return
+    rerunBusy[row.mode] = true
+    rerunText[row.mode] = ''
+    rerunIds[row.mode] ??= newRequestId()   // 失败后重试沿用同一个 request_id
+    try {
+      const res = await api.rerunAgent({
+        ticker: rerunUnit.ticker, signal_date: rerunUnit.signal_date, mode: row.mode, request_id: rerunIds[row.mode], origin: 'plan',
+      })
+      delete rerunIds[row.mode]
+      rerunText[row.mode] = res.run_id ? '已重置尝试次数，并已在后台重新运行' : '已重置尝试次数，下一次运行或续跑时执行'
+    } catch (e) {
+      rerunText[row.mode] = e instanceof api.ApiError && e.code === 'not_needed' ? '这个单元不需要重跑' : describeError(e)
+    } finally { rerunBusy[row.mode] = false }
+  }
 
   // 有历史就后退；没有历史（直链打开）时不拦截，沿 href 落到「今日」。
   function goBack(e: MouseEvent) {
@@ -66,6 +115,18 @@
     {#if ticker}<DiscussButton context={{ kind: 'plan', plan_id: sub }} />{/if}
   </header>
   {#key sub}
+    {#if rerunRows.length}
+      <section aria-label="Agent 重新运行" class="space-y-1 text-sm">
+        {#each rerunRows as row (row.mode)}
+          <p class="flex flex-wrap items-center gap-2">
+            <span>{RERUN_MODE_TEXT[row.mode]}：最近一次{RERUN_STATUS_TEXT[row.status] ?? row.status}{row.reason ? `（${AGENT_REASON_TEXT[row.reason] ?? row.reason}）` : ''}</span>
+            <button type="button" class="rounded border border-accent/40 px-2 py-0.5 text-xs text-accent disabled:opacity-50"
+                    disabled={rerunBusy[row.mode]} onclick={() => rerun(row)}>重新运行 Agent</button>
+            {#if rerunText[row.mode]}<span class="text-xs text-muted">{rerunText[row.mode]}</span>{/if}
+          </p>
+        {/each}
+      </section>
+    {/if}
     {#if unit}
       <PlanTimeline ticker={unit.ticker} signalDate={unit.signal_date} currentPlanId={sub} />
     {/if}

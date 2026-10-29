@@ -51,6 +51,32 @@ describe('RunOverview', () => {
     expect(api.getRunOverview).toHaveBeenCalledWith(undefined, undefined)
   })
 
+  it('运行详情 link with selected_run_id', async () => {
+    const id = 'workbench-20261027223000-0a1b2c3d'
+    vi.mocked(api.getRunOverview).mockResolvedValue(overview({
+      runs: [{ run_id: id, trigger: 'scheduled', trigger_text: '定时', stages_version: 'stages-2',
+               started_at: '2026-10-27T22:30:00Z', finished_at: '2026-10-27T22:33:12Z', rows: 8, closed: false }],
+      selected_run_id: id }))
+    render(RunOverview, {})
+    const link = await screen.findByRole('link', { name: '运行详情' })
+    expect(link.getAttribute('href')).toBe(`#tools/runs/${id}`)
+    // the link sits beside the title, before the headline
+    const header = link.closest('header')!
+    expect(header.querySelector('h2')!.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('no 运行详情 link without a run, or with an id the detail page cannot take', async () => {
+    vi.mocked(api.getRunOverview).mockResolvedValue(overview({ selected_run_id: null, runs: [] }))
+    const first = render(RunOverview, {})
+    await first.findByText('定时运行 · 06:30 开始 · 用时 3 分 12 秒 · 8 个阶段：成功 8')
+    expect(screen.queryByRole('link', { name: '运行详情' })).toBeNull()
+    first.unmount()
+    vi.mocked(api.getRunOverview).mockResolvedValue(overview())       // selected_run_id: 'run-1'
+    render(RunOverview, {})
+    await screen.findByText('定时运行 · 06:30 开始 · 用时 3 分 12 秒 · 8 个阶段：成功 8')
+    expect(screen.queryByRole('link', { name: '运行详情' })).toBeNull()
+  })
+
   it('stages-1 placeholder line', async () => {
     vi.mocked(api.getRunOverview).mockResolvedValue(overview({ stages: IDS.map(id => id === 'review'
       ? line(id, { status: 'not_recorded', status_text: '未记录', input_count: null, output_count: null,

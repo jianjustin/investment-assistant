@@ -7,7 +7,10 @@ import type {
   KnowledgeDraftInput, KnowledgeEntry, KnowledgeItemView, KnowledgePerf, KnowledgeValues, ReviewCardsView,
   ReviewCardView,
 } from './growth'
-import { request as workbenchRequest } from './workbench'
+import { request as workbenchRequest, newRequestId, WorkbenchError } from './workbench'
+import type {
+  AgentConnectionView, AgentModel, RerunAgentBody, RerunAgentResult, ResumeAccepted, RunDetail,
+} from './runs'
 export async function get<T>(path: string, options: { errorDetails?: boolean } = {}): Promise<T> {
   const r = await fetch(path, { headers: { Accept: 'application/json' }, cache: 'no-store' })
   if (!r.ok) {
@@ -293,3 +296,63 @@ export const getDiscussions = (params: { plan_id?: string; card_id?: number }) =
 export const getDiscussion = (id: number) => workbenchRequest<Discussion>(`/api/workbench/discussions/${id}`)
 export const postDiscussionTurn = (id: number, body: { request_id: string; body: string; attachment?: DiscussionAttachment }) =>
   send<{ turn_id: number; run_id: string; status: 'pending' | 'replayed' }>(`/api/workbench/discussions/${id}/turns`, body)
+
+// run detail, resume, agent rerun and the Agent connection (v2.8 §7, §8.9, §11.1)
+// Errors keep the HTTP status and a machine code: the backend answers {"error": "<code>"} (a "<code>: <text>" string,
+// a top-level "code" or {"error": {"code", "message"}} are accepted too); pages turn the code into Chinese text.
+export class ApiError extends WorkbenchError {
+  constructor(message: string, status: number, public code: string | null = null) { super(message, status) }
+}
+async function jsonRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const r = await fetch(path, {
+    cache: 'no-store', ...init,
+    headers: { Accept: 'application/json', ...(init.body ? { 'Content-Type': 'application/json' } : {}) },
+  })
+  const data = await r.json().catch(() => null)
+  if (!r.ok) {
+    const raw = data?.error ?? data?.detail ?? data?.message
+    let message = `HTTP ${r.status}`
+    let code: string | null = typeof data?.code === 'string' ? data.code : null
+    if (typeof raw === 'string' && raw) {
+      message = raw
+      code ??= /^([A-Za-z0-9_.-]+)(?::|$)/.exec(raw)?.[1] ?? null
+    } else if (raw && typeof raw === 'object') {
+      if (typeof raw.message === 'string' && raw.message) message = raw.message
+      if (typeof raw.code === 'string') code ??= raw.code
+    }
+    throw new ApiError(message, r.status, code)
+  }
+  return data as T
+}
+const jsonBody = (method: string, body?: unknown): RequestInit =>
+  ({ method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+
+export const getRunDetail = (runId: string) => jsonRequest<RunDetail>(`/api/runs/${seg(runId)}/detail`)
+export const resumeDaily = (runId: string, node: string, requestId: string = newRequestId()) =>
+  jsonRequest<ResumeAccepted>('/api/jobs/daily/resume', jsonBody('POST', { run_id: runId, node, request_id: requestId }))
+export const runDaily = (requestId: string = newRequestId()) =>
+  jsonRequest<{ run_id: string; daily_run_id?: string; status: string }>(
+    '/api/jobs/daily/run', jsonBody('POST', { request_id: requestId }))
+export const rerunAgent = (body: RerunAgentBody) =>
+  jsonRequest<RerunAgentResult>('/api/workbench/agent-runs/rerun', jsonBody('POST', body))
+export const getAgentConnection = () => jsonRequest<AgentConnectionView>('/api/settings/agent-connection')
+export const startAgentLogin = (requestId: string = newRequestId()) =>
+  jsonRequest<{ authorize_url: string; expires_at: string }>(
+    '/api/settings/agent-connection/login', jsonBody('POST', { request_id: requestId }))
+export const cancelAgentLogin = () =>
+  jsonRequest<{ cancelled: boolean }>('/api/settings/agent-connection/cancel', jsonBody('POST', {}))
+export const disconnectAgent = () =>
+  jsonRequest<{ revoked: boolean }>('/api/settings/agent-connection', jsonBody('DELETE'))
+export const getAgentModels = () =>
+  jsonRequest<{ models: AgentModel[] }>('/api/settings/agent-connection/models')
+export const setAgentModel = (slug: string, requestId: string = newRequestId()) =>
+  jsonRequest<{ model: string; model_display_name: string | null }>(
+    '/api/settings/agent-connection/model', jsonBody('PUT', { slug, request_id: requestId }))
+
+// the unit's agent runs since a date (existing endpoint): the plan page looks for a max_attempts / error run
+export interface AgentRunRow {
+  id: string; ticker: string; signal_date: string; mode: string; status: string; reason: string | null
+  attempt?: number; created_at: string
+}
+export const getAgentRuns = (since: string) =>
+  workbenchRequest<{ runs: AgentRunRow[] }>(`/api/workbench/agent-runs${query({ since })}`)

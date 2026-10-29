@@ -3,6 +3,7 @@
   import Skeleton from '../lib/components/Skeleton.svelte'
   import StatusPill from '../lib/components/StatusPill.svelte'
   import Watchlist from '../lib/components/Watchlist.svelte'
+  import AgentConnection from '../lib/components/AgentConnection.svelte'
 
   let { sub = 'system' }: { sub?: string } = $props()
   let loading = $state(true)
@@ -127,6 +128,10 @@
         </ul>
       </div>
     {/if}
+    <!-- v2.8 §8.9：Agent 连接区块放在「系统」之后 -->
+    <div class="mt-8">
+      <AgentConnection />
+    </div>
   </div>
 {:else if sub === 'watchlist'}
   <Watchlist />

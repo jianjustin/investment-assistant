@@ -137,7 +137,15 @@ describe('agent track', () => {
       'migration_026_missing', 'review_in_progress', 'plan_invalid',
       // v2.7 §6.4
       'retro_malformed', 'lesson_invalid', 'answer_malformed', 'migration_027_missing', 'discussion_busy',
-      'draft_exists'].sort())
+      'draft_exists',
+      // v2.8 §8.8
+      'not_connected', 'model_unavailable'].sort())
+  })
+
+  it('AGENT_REASON_TEXT has not_connected and model_unavailable (v2.8 §8.8, verbatim)', async () => {
+    const { AGENT_REASON_TEXT } = await import('./workbench')
+    expect(AGENT_REASON_TEXT).toMatchObject({ not_connected: 'ChatGPT 未连接', model_unavailable: '所选模型不可用' })
+    expect(AGENT_REASON_TEXT.not_configured).toBe('未配置')
   })
 
   it('AGENT_REASON_TEXT has the six new reasons', async () => {

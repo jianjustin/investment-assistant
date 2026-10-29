@@ -1,3 +1,4 @@
+import { RUN_ID_RE } from './runs'
 export type Zone = 'today' | 'instrument' | 'review' | 'data' | 'knowledge' | 'tools' | 'settings' | 'plan' | 'discuss'
 export const workbenchZones: Zone[] = ['today', 'instrument', 'review']
 export const zones: Zone[] = [...workbenchZones, 'data', 'knowledge', 'tools', 'settings', 'plan', 'discuss']
@@ -13,5 +14,8 @@ export function parseHash(hash: string): { zone: Zone; sub: string | undefined }
   if (!known || ((rawZone === 'plan' || rawZone === 'discuss') && !rawSub)) return { zone: 'today', sub: undefined }
   // #discuss/<id> takes a number only: #discuss/abc would ask for /discussions/NaN.
   if (rawZone === 'discuss' && !/^\d+$/.test(rawSub!)) return { zone: 'today', sub: undefined }
+  // #tools/runs/<run_id> is the run detail page; an id of another shape falls back to the run list.
+  if (rawZone === 'tools' && rawSub === 'runs' && rest[1] !== undefined)
+    return { zone: 'tools', sub: RUN_ID_RE.test(rest[1]) ? `runs/${rest[1]}` : 'runs' }
   return { zone: rawZone as Zone, sub: rawSub || undefined }
 }

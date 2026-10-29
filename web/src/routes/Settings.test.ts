@@ -145,3 +145,33 @@ describe('Settings · 通知渠道（Discord/邮件）', () => {
     await screen.findByText('✅ 成功')
   })
 })
+
+describe('Settings · Agent 连接', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('Agent 连接 section after 系统', async () => {
+    vi.spyOn(api, 'getStatus').mockResolvedValue({ db: { status: 'green' } } as any)
+    vi.spyOn(api, 'getOperations').mockResolvedValue({ operations: [] } as any)
+    const conn = vi.spyOn(api, 'getAgentConnection').mockResolvedValue({
+      status: 'disconnected', email_masked: null, scopes_ok: null, access_expires_at: null, refresh_expires_at: null,
+      last_refresh_at: null, last_error: null, model: null, model_display_name: null, provider_setting: 'chatgpt', pending: null,
+    })
+    render(Settings, { props: { sub: 'system' } })
+    const system = await screen.findByRole('heading', { name: '系统' })
+    const agent = await screen.findByRole('heading', { name: 'Agent 连接' })
+    expect(system.compareDocumentPosition(agent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(await screen.findByText('未连接 ChatGPT')).toBeTruthy()
+    expect(conn).toHaveBeenCalledTimes(1)
+  })
+
+  it('other settings pages do not load the connection', async () => {
+    vi.spyOn(api, 'getEnvStatus').mockResolvedValue({ WORKBENCH_AGENT_PROVIDER: true } as any)
+    const conn = vi.spyOn(api, 'getAgentConnection')
+    render(Settings, { props: { sub: 'env' } })
+    await screen.findByText('WORKBENCH_AGENT_PROVIDER')
+    expect(screen.queryByRole('heading', { name: 'Agent 连接' })).toBeNull()
+    expect(conn).not.toHaveBeenCalled()
+  })
+})

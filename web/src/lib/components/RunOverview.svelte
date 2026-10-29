@@ -22,6 +22,7 @@
   import ConceptTerm from './ConceptTerm.svelte'
   import { ATTACH, type StageLine } from '../knowledge'
   import { fmtBeijing } from '../format'
+  import { RUN_ID_RE, runHref } from '../runs'
 
   // 运行一览（spec §7.5）。session 给了就跟着它走（原理页）；不给就用自己的日期选择，缺省 = 最近已收盘交易日。
   // compact 去掉页头；onlyStage 只画一个阶段（原理页「当天这一步」）。
@@ -86,6 +87,9 @@
   {#if !compact && !onlyStage}
     <header class="flex flex-wrap items-center gap-x-3 gap-y-1">
       <h2 class="font-semibold">运行一览</h2>
+      {#if ov?.selected_run_id && RUN_ID_RE.test(ov.selected_run_id)}
+        <a class="text-xs text-accent underline" href={runHref(ov.selected_run_id)}>运行详情</a>
+      {/if}
       {#if ov?.headline}<span class="text-xs text-muted">{ov.headline}</span>{/if}
       <input type="date" aria-label="日期" class="text-xs border border-border rounded px-1 py-0.5 bg-bg"
              value={ov?.session ?? picked} onchange={pickDay} />

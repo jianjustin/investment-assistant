@@ -150,4 +150,61 @@ describe('Plan', () => {
     expect(await screen.findByText(/讨论不可用：迁移 027 未执行/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '标的页' })).toBeInTheDocument()
   })
+
+  describe('重新运行 Agent', () => {
+    const run = (over: Record<string, unknown>) => ({
+      id: 'r', ticker: 'NVDA', signal_date: '2026-10-22', mode: 'propose', status: 'ok', reason: null,
+      created_at: '2026-10-22T22:00:00Z', ...over,
+    })
+
+    it('rerun agent button for max_attempts and error runs', async () => {
+      vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation())
+      const list = vi.spyOn(api, 'getAgentRuns').mockResolvedValue({ runs: [
+        run({ id: 'a', status: 'error', reason: 'model_error', created_at: '2026-10-22T20:00:00Z' }),
+        run({ id: 'b', status: 'skipped', reason: 'max_attempts', created_at: '2026-10-22T22:00:00Z' }),
+        run({ id: 'c', ticker: 'AMD', status: 'skipped', reason: 'max_attempts' }),         // another ticker
+        run({ id: 'd', mode: 'interpret', status: 'ok' }),                                   // latest of its mode is fine
+      ] })
+      const rerun = vi.spyOn(api, 'rerunAgent').mockResolvedValue({ reset_id: 3, run_id: 'run-new', replayed: false })
+      render(Plan, { sub: 'p1' })
+      const section = await screen.findByRole('region', { name: 'Agent 重新运行' })
+      expect(list).toHaveBeenCalledWith('2026-10-22')
+      expect(section).toHaveTextContent('Agent 建议：最近一次跳过（已达重试上限）')
+      const button = within(section).getByRole('button', { name: '重新运行 Agent' })
+      expect(within(section).getAllByRole('button')).toHaveLength(1)
+      await fireEvent.click(button)
+      expect(rerun).toHaveBeenCalledWith({
+        ticker: 'NVDA', signal_date: '2026-10-22', mode: 'propose',
+        request_id: expect.stringMatching(/^[0-9a-f-]{36}$/), origin: 'plan',
+      })
+      expect(await screen.findByText('已重置尝试次数，并已在后台重新运行')).toBeInTheDocument()
+    })
+
+    it('shows the error text of the latest error run, and the 409 text on rerun', async () => {
+      vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation())
+      vi.spyOn(api, 'getAgentRuns').mockResolvedValue({ runs: [run({ mode: 'interpret', status: 'error', reason: 'not_connected' })] })
+      vi.spyOn(api, 'rerunAgent').mockRejectedValue(new api.ApiError('not_needed', 409, 'not_needed'))
+      render(Plan, { sub: 'p1' })
+      const section = await screen.findByRole('region', { name: 'Agent 重新运行' })
+      expect(section).toHaveTextContent('Agent 简报解读：最近一次出错（ChatGPT 未连接）')
+      await fireEvent.click(within(section).getByRole('button', { name: '重新运行 Agent' }))
+      expect(await screen.findByText('这个单元不需要重跑')).toBeInTheDocument()
+    })
+
+    it('no entry when the runs are fine or the list cannot be read', async () => {
+      vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation())
+      const list = vi.spyOn(api, 'getAgentRuns').mockResolvedValue({ runs: [run({ status: 'ok' })] })
+      const first = render(Plan, { sub: 'p1' })
+      await screen.findByRole('heading', { name: 'NVDA · 2026-10-22' })
+      await waitFor(() => expect(list).toHaveBeenCalled())
+      expect(screen.queryByRole('region', { name: 'Agent 重新运行' })).toBeNull()
+      first.unmount()
+      list.mockRejectedValue(new Error('HTTP 503'))
+      render(Plan, { sub: 'p1' })
+      await screen.findByRole('heading', { name: 'NVDA · 2026-10-22' })
+      await waitFor(() => expect(list).toHaveBeenCalledTimes(2))
+      expect(screen.queryByRole('region', { name: 'Agent 重新运行' })).toBeNull()
+      expect(screen.queryByRole('alert')).toBeNull()
+    })
+  })
 })

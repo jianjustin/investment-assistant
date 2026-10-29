@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/svelte'
+import { render, screen, fireEvent, waitFor, act, cleanup, within } from '@testing-library/svelte'
 import Tools from './Tools.svelte'
 import * as api from '../lib/api'
 import { fmtBeijing } from '../lib/format'
@@ -105,7 +105,7 @@ describe('Tools 任务中心', () => {
 
   it('dated run via modal passes date range to runJob', async () => {
     vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
-      jobs: [{ name: 'metrics', time_local: '08:00', enabled: true, next_run_at: null, last_run_at: null }],
+      jobs: [{ name: 'sec_backfill', time_local: '08:00', enabled: true, next_run_at: null, last_run_at: null }],
       degraded: false,
     })
     const spy = vi.spyOn(api, 'runJob').mockResolvedValue({ run_id: 'r1', status: 'pending' })
@@ -115,12 +115,12 @@ describe('Tools 任务中心', () => {
     await fireEvent.input(document.querySelector('#fetch-range-from') as HTMLInputElement, { target: { value: '2026-06-01' } })
     await fireEvent.input(document.querySelector('#fetch-range-to') as HTMLInputElement, { target: { value: '2026-06-30' } })
     await fireEvent.click(await screen.findByText('确认'))
-    expect(spy).toHaveBeenCalledWith('metrics', { from: '2026-06-01', to: '2026-06-30' })
+    expect(spy).toHaveBeenCalledWith('sec_backfill', { from: '2026-06-01', to: '2026-06-30' })
   })
 
   it('dated run modal rejects ranges over 92 days', async () => {
     vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
-      jobs: [{ name: 'filings', time_local: '09:00', enabled: true, next_run_at: null, last_run_at: null }],
+      jobs: [{ name: 'sec_backfill', time_local: '09:00', enabled: true, next_run_at: null, last_run_at: null }],
       degraded: false,
     })
     const spy = vi.spyOn(api, 'runJob').mockResolvedValue({ run_id: 'r1', status: 'pending' })
@@ -134,10 +134,10 @@ describe('Tools 任务中心', () => {
     expect(spy).not.toHaveBeenCalled()
   })
 
-  it('runs table shows target dates, trigger source and detail modal', async () => {
+  it('runs table shows target dates and trigger source', async () => {
     vi.spyOn(api, 'getJobReports').mockResolvedValue({
       reports: [{
-        task: 'filings', status: 'success', trigger_source: 'manual', run_id: 'r9',
+        task: 'sec_backfill', status: 'success', trigger_source: 'manual', run_id: 'sec_backfill-20260704090000-0a1b2c3d',
         started_at: '2026-07-04T09:00:00+00:00', finished_at: '2026-07-04T09:00:12+00:00',
         target_start_date: '2026-06-01', target_end_date: '2026-06-30',
         summary: { downloaded_count: 3 },
@@ -147,9 +147,97 @@ describe('Tools 任务中心', () => {
     render(Tools, { props: { sub: 'runs' } })
     expect(await screen.findByText('2026-06-01 ~ 2026-06-30')).toBeTruthy()
     expect(screen.getByText('手动')).toBeTruthy()
-    await fireEvent.click(screen.getByText('详情'))
-    expect(await screen.findByText(/downloaded_count/)).toBeTruthy()
-    expect(screen.getByText(/r9/)).toBeTruthy()
+  })
+
+  it('runs row links to #tools/runs/<id>', async () => {
+    const id = 'daily-20261030033000-1a2b3c4d'
+    vi.spyOn(api, 'getJobReports').mockResolvedValue({
+      reports: [
+        { ...scheduledReport, task: 'daily', run_id: id },
+        { ...scheduledReport, task: 'workbench', run_id: 'scheduled-1' },       // an id the detail page cannot take
+      ],
+      degraded: false,
+    })
+    render(Tools, { props: { sub: 'runs' } })
+    const link = await screen.findByRole('link', { name: '详情' })
+    expect(link.getAttribute('href')).toBe(`#tools/runs/${id}`)
+    expect(screen.getAllByRole('link', { name: '详情' })).toHaveLength(1)
+  })
+
+  it('no JSON modal', async () => {
+    vi.spyOn(api, 'getJobReports').mockResolvedValue({
+      reports: [{ ...scheduledReport, task: 'daily', run_id: 'daily-20261030033000-1a2b3c4d' }], degraded: false,
+    })
+    render(Tools, { props: { sub: 'runs' } })
+    await fireEvent.click(await screen.findByRole('link', { name: '详情' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(document.querySelector('pre')).toBeNull()
+    expect(document.body.textContent).not.toContain('"tickers"')
+  })
+
+  it('task filter has daily, sec_backfill and old names with （v2.7 及以前）', async () => {
+    vi.spyOn(api, 'getJobReports').mockResolvedValue({ reports: [], degraded: false })
+    render(Tools, { props: { sub: 'runs' } })
+    const select = await screen.findByRole('combobox', { name: '筛选任务' })
+    const options = [...select.querySelectorAll('option')].map(o => [o.getAttribute('value'), o.textContent])
+    expect(options).toEqual([
+      ['', '全部'], ['daily', 'daily'], ['sec_backfill', 'sec_backfill'], ['us-research', '美股研究'],
+      ['filings', 'filings（v2.7 及以前）'], ['workbench', 'workbench（v2.7 及以前）'],
+      ['workbench_review', 'workbench_review（v2.7 及以前）'],
+    ])
+  })
+
+  it('only sec_backfill has run-by-date', async () => {
+    vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
+      jobs: [
+        { name: 'daily', time_local: '11:30', weekday_mask: '2-6', timezone: 'Asia/Shanghai', enabled: true, next_run_at: null, last_run_at: null },
+        { name: 'sec_backfill', time_local: '', enabled: false, next_run_at: null, last_run_at: null },
+      ],
+      degraded: false,
+    })
+    render(Tools, { props: { sub: 'tasks' } })
+    await screen.findByText('daily')
+    expect(screen.getAllByRole('button', { name: '按日期运行' })).toHaveLength(1)
+    const backfillRow = screen.getByText('sec_backfill').closest('tr')!
+    expect(within(backfillRow).getByRole('button', { name: '按日期运行' })).toBeTruthy()
+    expect(within(backfillRow).queryByRole('button', { name: '立即运行' })).toBeNull()     // 必须指定日期
+    const dailyRow = screen.getByText('daily').closest('tr')!
+    expect(within(dailyRow).queryByRole('button', { name: '按日期运行' })).toBeNull()
+    expect(within(dailyRow).getByRole('button', { name: '立即运行' })).toBeTruthy()
+  })
+
+  it('daily run-now goes through runDaily and links to the new run', async () => {
+    vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
+      jobs: [{ name: 'daily', time_local: '11:30', weekday_mask: '2-6', timezone: 'Asia/Shanghai', enabled: true, next_run_at: null, last_run_at: null }],
+      degraded: false,
+    })
+    const run = vi.spyOn(api, 'runDaily').mockResolvedValue({ run_id: 'r1', daily_run_id: 'daily-20261030033000-1a2b3c4d', status: 'pending' })
+    render(Tools, { props: { sub: 'tasks' } })
+    await fireEvent.click(await screen.findByRole('button', { name: '立即运行' }))
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText(/daily 已提交（daily-20261030033000-1a2b3c4d）/)).toBeTruthy()
+    expect(screen.getByRole('link', { name: '运行详情' }).getAttribute('href')).toBe('#tools/runs/daily-20261030033000-1a2b3c4d')
+    // 409 daily_running -> Chinese text
+    run.mockRejectedValue(new api.ApiError('daily_running', 409, 'daily_running'))
+    await fireEvent.click(screen.getByRole('button', { name: '立即运行' }))
+    expect(await screen.findByText('daily 提交失败：每日工作流正在运行')).toBeTruthy()
+  })
+
+  it('renders the run detail page for #tools/runs/<run_id> and nothing of the task center', async () => {
+    const detail = vi.spyOn(api, 'getRunDetail').mockResolvedValue({
+      run_id: 'daily-20261030033000-1a2b3c4d', task: 'daily', kind: 'daily', graph_version: 'daily-1', stages_version: 'stages-4',
+      session: '2026-10-29', cutoff_at: '2026-10-30T03:30:00Z', trigger: 'scheduled', status: 'success', headline: '详情页的一句话',
+      executions: [], resume: null, nodes: [], raw_summary: {},
+    })
+    render(Tools, { props: { sub: 'runs/daily-20261030033000-1a2b3c4d' } })
+    expect(await screen.findByText('详情页的一句话')).toBeTruthy()
+    expect(detail).toHaveBeenCalledWith('daily-20261030033000-1a2b3c4d')
+    expect(api.getScheduledJobs).not.toHaveBeenCalled()
+    // an id of another shape shows the run list instead
+    cleanup()
+    vi.spyOn(api, 'getJobReports').mockResolvedValue({ reports: [], degraded: false })
+    render(Tools, { props: { sub: 'runs/abc' } })
+    expect(await screen.findByRole('combobox', { name: '筛选任务' })).toBeTruthy()
   })
 
   it.each(['tasks', 'runs'])('shows a disabled scheduler above the %s view', async (sub) => {
@@ -197,20 +285,16 @@ describe('Tools 任务中心', () => {
     expect(jobs).toHaveBeenCalledTimes(3)
   })
 
-  it('refreshes runs every 15 seconds without hiding rows or losing the open detail, and stops on unmount', async () => {
+  it('refreshes runs every 15 seconds without hiding rows, and stops on unmount', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const reports = vi.spyOn(api, 'getJobReports')
       .mockResolvedValue({ reports: [scheduledReport, { ...scheduledReport, task: 'filings', run_id: 'scheduled-2' }], degraded: false })
       .mockResolvedValueOnce({ reports: [scheduledReport], degraded: false })
     const { unmount } = render(Tools, { props: { sub: 'runs' } })
     expect(await screen.findByText('定时')).toBeTruthy()
-    await fireEvent.click(screen.getByText('详情'))
-    expect(screen.getByText(/scheduled-1/)).toBeTruthy()
     await act(() => vi.advanceTimersByTimeAsync(15_000))
     expect(reports).toHaveBeenCalledTimes(2)
     expect(screen.getByRole('cell', { name: 'filings' })).toBeTruthy()
-    expect(screen.getByText(/scheduled-1/)).toBeTruthy()
-    expect(screen.getByText(/"tickers": 3/)).toBeTruthy()
     await unmount()
     await act(() => vi.advanceTimersByTimeAsync(30_000))
     expect(reports).toHaveBeenCalledTimes(2)

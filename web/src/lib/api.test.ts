@@ -133,3 +133,85 @@ describe('v2.7 growth-loop wrappers (spec 12)', () => {
     await expect(api.postDiscussionTurn(5, { request_id: 'r', body: 'x' })).rejects.toMatchObject({ status: 409, message: 'discussion_busy' })
   })
 })
+
+describe('run detail, resume, rerun and agent connection wrappers (v2.8 §11.1)', () => {
+  const RID = 'daily-20261030033000-1a2b3c4d'
+  let calls: { url: string; method: string; body: any }[]
+  const respond = (status: number, body: unknown) => {
+    calls = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
+      calls.push({ url, method: init.method ?? 'GET', body: init.body ? JSON.parse(String(init.body)) : undefined })
+      return new Response(JSON.stringify(body), { status })
+    }))
+  }
+
+  it('the ten functions use the spec paths and methods', async () => {
+    respond(200, {})
+    await api.getRunDetail(RID)
+    await api.resumeDaily(RID, 'collect')
+    await api.runDaily()
+    await api.rerunAgent({ ticker: 'NVDA', signal_date: '2026-10-29', mode: 'propose', request_id: 'r1', origin: 'run_detail' })
+    await api.getAgentConnection()
+    await api.startAgentLogin()
+    await api.cancelAgentLogin()
+    await api.disconnectAgent()
+    await api.getAgentModels()
+    await api.setAgentModel('gpt-x')
+    expect(calls.map(c => `${c.method} ${c.url}`)).toEqual([
+      `GET /api/runs/${RID}/detail`,
+      'POST /api/jobs/daily/resume',
+      'POST /api/jobs/daily/run',
+      'POST /api/workbench/agent-runs/rerun',
+      'GET /api/settings/agent-connection',
+      'POST /api/settings/agent-connection/login',
+      'POST /api/settings/agent-connection/cancel',
+      'DELETE /api/settings/agent-connection',
+      'GET /api/settings/agent-connection/models',
+      'PUT /api/settings/agent-connection/model',
+    ])
+  })
+
+  it('write calls carry a request_id (a fresh uuid unless the caller passes one)', async () => {
+    respond(200, {})
+    await api.resumeDaily(RID, 'collect', 'req-1')
+    await api.resumeDaily(RID, 'collect')
+    await api.runDaily()
+    await api.setAgentModel('gpt-x')
+    expect(calls[0].body).toEqual({ run_id: RID, node: 'collect', request_id: 'req-1' })
+    expect(calls[1].body.request_id).toMatch(/^[0-9a-f-]{36}$/)
+    expect(calls[1].body.request_id).not.toBe('req-1')
+    expect(calls[2].body.request_id).toMatch(/^[0-9a-f-]{36}$/)
+    expect(calls[3].body).toMatchObject({ slug: 'gpt-x' })
+    expect(calls[3].body.request_id).toBeTruthy()
+  })
+
+  it('rerunAgent sends the body as given', async () => {
+    respond(200, { reset_id: 1, run_id: null, replayed: false })
+    const body = { ticker: 'NVDA', signal_date: '2026-10-29', mode: 'interpret' as const, request_id: 'r1', origin: 'plan' as const }
+    expect(await api.rerunAgent(body)).toEqual({ reset_id: 1, run_id: null, replayed: false })
+    expect(calls[0].body).toEqual(body)
+  })
+
+  it('errors keep the status and a machine code from {"error": code}', async () => {
+    respond(409, { error: 'node_mismatch' })
+    const err: any = await api.resumeDaily(RID, 'screen').catch(e => e)
+    expect(err).toBeInstanceOf(api.ApiError)
+    expect([err.status, err.code, err.message]).toEqual([409, 'node_mismatch', 'node_mismatch'])
+    respond(409, { error: 'not_needed: 这个单元不需要重跑' })
+    expect(((await api.rerunAgent({} as any).catch(e => e)) as any).code).toBe('not_needed')
+    respond(409, { error: { code: 'daily_running', message: '每日工作流正在运行' } })
+    const nested: any = await api.runDaily().catch(e => e)
+    expect([nested.code, nested.message]).toEqual(['daily_running', '每日工作流正在运行'])
+    respond(404, { error: '没有这次运行' })
+    const missing: any = await api.getRunDetail(RID).catch(e => e)
+    expect([missing.status, missing.code]).toEqual([404, null])
+    respond(503, null)
+    expect(((await api.getAgentConnection().catch(e => e)) as any).message).toBe('HTTP 503')
+  })
+
+  it('getAgentRuns asks for the runs since a date', async () => {
+    respond(200, { runs: [] })
+    await api.getAgentRuns('2026-10-29')
+    expect(calls[0]).toMatchObject({ method: 'GET', url: '/api/workbench/agent-runs?since=2026-10-29' })
+  })
+})
