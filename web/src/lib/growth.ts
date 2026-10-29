@@ -138,8 +138,17 @@ export interface KnowledgeItemView {
 export interface KnowledgeDraft extends KnowledgeValues {
   id: number; origin: 'review_card' | 'discussion'; card_id: number | null; discussion_id: number | null
   discussion_turn_id: number | null; target_knowledge_id: number | null; target_version: number | null
+  /** newest version of the target item now; the draft is stale when it differs from `target_version` */
+  target_current_version: number | null
   refs: string[]; created_at: string
   verdict: { action: VerdictAction; ref: string | null } | null
+}
+/** A discussion draft that rewrites a version which is no longer the newest cannot be adopted (the same sentence the
+ *  backend answers with, 409 `knowledge_stale`): only dismiss it, or rewrite it again in the discussion. */
+export function staleDraftText(d: Pick<KnowledgeDraft, 'target_knowledge_id' | 'target_version' | 'target_current_version'>): string | null {
+  if (d.target_knowledge_id == null || d.target_version == null || d.target_current_version == null) return null
+  if (d.target_current_version === d.target_version) return null
+  return `草稿基于第 ${d.target_version} 版，现在是第 ${d.target_current_version} 版：只能不采纳，或在讨论里基于第 ${d.target_current_version} 版重新改写`
 }
 export interface KnowledgeDraftInput extends Partial<KnowledgeValues> {
   request_id: string; action: VerdictAction; base_version?: number

@@ -285,6 +285,34 @@ describe('我的知识', () => {
     expect(verdict.mock.calls[0][1]).toMatchObject({ action: 'approve', base_version: 2 })
   })
 
+  it('a rewrite draft whose target moved on cannot be adopted, only dismissed', async () => {
+    vi.mocked(api.getKnowledgeDrafts).mockResolvedValue({ drafts: [
+      knowledgeDraft({ target_knowledge_id: 3, target_version: 2, target_current_version: 4 })] })
+    const verdict = vi.spyOn(api, 'postDraftVerdict').mockResolvedValue({ status: 'created' } as any)
+    render(Knowledge, { sub: 'mine/drafts' })
+    const draft = (await screen.findByText('止损别拖')).closest('li')!
+    const hint = '草稿基于第 2 版，现在是第 4 版：只能不采纳，或在讨论里基于第 4 版重新改写'
+    expect(draft).toHaveTextContent(hint)
+    expect(within(draft).getByRole('button', { name: '采纳' })).toBeDisabled()
+    await fireEvent.click(within(draft).getByRole('button', { name: '采纳' }))
+    expect(within(draft).queryByRole('button', { name: '确认采纳' })).toBeNull()
+    await fireEvent.click(within(draft).getByRole('button', { name: '不采纳' }))
+    await waitFor(() => expect(verdict).toHaveBeenCalledTimes(1))
+    expect(verdict.mock.calls[0][1].action).toBe('dismiss')
+  })
+
+  it('a backend stale sentence on adopt is shown as it is', async () => {
+    vi.mocked(api.getKnowledgeDrafts).mockResolvedValue({ drafts: [
+      knowledgeDraft({ target_knowledge_id: 3, target_version: 2, target_current_version: 2 })] })   // moved after loading
+    const sentence = '草稿基于第 2 版，现在是第 3 版：只能不采纳，或在讨论里基于第 3 版重新改写'
+    vi.spyOn(api, 'postDraftVerdict').mockRejectedValue(new WorkbenchError(`knowledge_stale: ${sentence}`, 409))
+    render(Knowledge, { sub: 'mine/drafts' })
+    const draft = (await screen.findByText('止损别拖')).closest('li')!
+    await fireEvent.click(within(draft).getByRole('button', { name: '采纳' }))
+    await fireEvent.click(within(draft).getByRole('button', { name: '确认采纳' }))
+    expect(await within(draft).findByText(sentence)).toBeInTheDocument()
+  })
+
   it('concept page lists attached knowledge', async () => {
     render(Knowledge, { sub: 'plan.stop@1' })
     const section = await screen.findByRole('region', { name: '挂在这张卡上的我的知识' })

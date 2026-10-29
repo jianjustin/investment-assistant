@@ -116,6 +116,8 @@ describe('error texts', () => {
     expect(conflictText('agent_unavailable: quota_exhausted')).toBe('Agent 不可用：额度用尽')
     expect(conflictText('agent_unavailable')).toBe('Agent 不可用')
     expect(conflictText('knowledge_stale: 这条知识已更新到第 3 版，请刷新后再改')).toBe('这条知识已更新到第 3 版，请刷新后再改')
+    expect(conflictText('knowledge_stale: 草稿基于第 2 版，现在是第 4 版：只能不采纳，或在讨论里基于第 4 版重新改写'))
+      .toBe('草稿基于第 2 版，现在是第 4 版：只能不采纳，或在讨论里基于第 4 版重新改写')
     expect(conflictText('draft_decided')).toBe('这条草稿已经审定过了')
     expect(conflictText('something_new')).toBe('something_new')
   })

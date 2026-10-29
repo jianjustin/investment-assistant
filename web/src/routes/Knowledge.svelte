@@ -11,7 +11,7 @@
     ATTACH, GROUP_TEXT, type ConceptCard, type ConceptsView, type PrinciplesView,
   } from '../lib/knowledge'
   import {
-    growthError, idempotentRequests, isTickerLike, knowHref, normalizeTicker, unwrapRecord,
+    growthError, idempotentRequests, isTickerLike, knowHref, normalizeTicker, staleDraftText, unwrapRecord,
   } from '../lib/growth'
   import type { KnowledgeDraft, KnowledgeEntry, KnowledgeValues } from '../lib/growth'
 
@@ -292,14 +292,17 @@
                 <p class="text-xs">来自复盘卡的草稿只能在卡上审定：
                   <a class="text-accent underline" href={`#review/cards/${d.card_id}`}>到复盘卡审定</a></p>
               {:else}
+                {@const stale = staleDraftText(d)}
+                {#if stale}<p class="text-xs text-amber-700">{stale}</p>{/if}
                 <div class="flex gap-2">
-                  <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2"
+                  <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50"
+                          disabled={!!stale} title={stale ?? undefined}
                           onclick={() => adopting[d.id] = true}>采纳</button>
                   <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2"
                           onclick={() => dismiss(d)}>不采纳</button>
                 </div>
                 {#if dismissError[d.id]}<p role="alert" class="text-xs text-red-600">{dismissError[d.id]}</p>{/if}
-                {#if adopting[d.id]}
+                {#if adopting[d.id] && !stale}
                   <div class="border-t border-border pt-2">
                     <KnowledgeForm initial={d} requireCounter submitLabel="确认采纳" requestKey={`draft:${d.id}`}
                                    onSubmit={(values, requestId) => adopt(d, values, requestId)} />

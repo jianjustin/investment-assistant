@@ -136,7 +136,7 @@ export const perf = (over: Partial<KnowledgePerf> = {}): KnowledgePerf => ({
 
 export const knowledgeDraft = (over: Partial<KnowledgeDraft> = {}): KnowledgeDraft => ({
   id: 201, origin: 'discussion', card_id: null, discussion_id: 5, discussion_turn_id: 8, target_knowledge_id: null,
-  target_version: null, title: '止损别拖', body: '触及止损次日就卖。', scope: '持仓期', counter_examples: '财报前后除外',
+  target_version: null, target_current_version: null, title: '止损别拖', body: '触及止损次日就卖。', scope: '持仓期', counter_examples: '财报前后除外',
   concepts: ['plan.stop'], tickers: ['NVDA'], refs: ['call:1'], created_at: '2026-10-28T10:00:00Z', verdict: null, ...over,
 })
 
