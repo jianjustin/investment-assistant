@@ -150,6 +150,15 @@ class QuotaError(Exception):
         self.body = {'error': {'code': 'subscription_sharing_usage_limit_exceeded', 'message': '已达到 5 小时的使用上限'}}
 
 
+class ConnectionLost(Exception):
+    """The ChatGPT endpoint refusing the credential (HTTP 401): classified as ``not_connected``."""
+    status_code = 401
+
+    def __init__(self):
+        super().__init__('Error code: 401')
+        self.body = {'error': {'code': 'invalid_token', 'message': 'x'}}
+
+
 class LateClock:
     """First call is the batch start; everything after is past the agent deadline."""
 
@@ -650,6 +659,35 @@ def test_review_stage_records_its_own_quota_exhaustion(db):
     assert summary['review']['quota_exhausted'] is True
     summary, rows, model = run(db, market, 2, tickers=['SYNTH'])           # nothing to ask the model: no flag
     assert not summary['review'].get('quota_exhausted')
+
+
+def test_connection_lost_in_the_review_skips_the_other_chains(db):
+    """Spec §8.8: the first review call that finds the connection unusable is an ``error`` row; the chains after it are
+    skipped with the same reason and cost no model call (like a quota hit)."""
+    market = Market()
+    signal_day(db, market, ['SYNA', 'SYNTH'])
+    for ticker in ('SYNA', 'SYNTH'):
+        market.jump(ticker, day(1), 1.10)
+    summary, rows, model = run(db, market, 1, tickers=['SYNA', 'SYNTH'], model=make_model(review=[ConnectionLost()]))
+    assert model.calls.get('review', 0) == 1
+    [first] = reviews(db, 'SYNA')
+    assert (first['outcome'], first['reason']) == ('error', 'not_connected')
+    [second] = reviews(db, 'SYNTH')
+    assert (second['outcome'], second['decided_by'], second['reason']) == ('skipped', 'host', 'not_connected')
+    assert second['review_agent_run_id'] is None
+    assert skips(rows['review'])['not_connected'] == ['SYNTH']
+
+
+def test_connection_lost_in_the_agent_stage_reaches_the_review(db):
+    """The agent stage found the connection unusable (an interpretation call): the review stage asks nothing either."""
+    market = Market()
+    signal_day(db, market, ['SYNTH'])
+    market.jump('SYNTH', day(1), 1.10)
+    summary, rows, model = run(db, market, 1, tickers=['SYNTH'], model=make_model(other=[ConnectionLost()]))
+    assert summary['agent']['connection_lost'] == 'not_connected'
+    assert model.calls.get('review', 0) == 0
+    [skipped] = reviews(db, 'SYNTH')
+    assert (skipped['outcome'], skipped['reason']) == ('skipped', 'not_connected')
 
 
 def test_rerun_same_session_already_reviewed(db):

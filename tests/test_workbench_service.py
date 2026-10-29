@@ -817,6 +817,44 @@ def test_quota_exhausted_skips_rest(db, scripted_model):
     assert summary['plans'] == {'MU': 'inserted', 'NVDA': 'inserted'}   # 规则计划照常
 
 
+class _ErrorModel(BaseChatModel):
+    """A chat model whose every call fails like the ChatGPT endpoint: ``status`` and error ``code`` of the response."""
+    status: int = 401
+    code: str = 'invalid_token'
+
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        error = Exception(f'Error code: {self.status}')
+        error.status_code = self.status
+        error.body = {'error': {'code': self.code, 'message': 'x'}}
+        raise error
+
+    @property
+    def _llm_type(self):
+        return 'error-test'
+
+
+@pytest.mark.parametrize('status, code, reason', [(401, 'invalid_token', 'not_connected'),
+                                                  (404, 'model_not_found', 'model_unavailable')])
+def test_connection_lost_mid_node_skips_the_rest(db, scripted_model, status, code, reason):
+    """Spec §8.8: the first unit that finds the connection / model unusable ends the node's model calls; the remaining
+    units are skipped with the same reason (like ``quota_exhausted``), the rule plans are untouched."""
+    d = agent_deps(scripted_model, [])
+    d.agent_model = _ErrorModel(status=status, code=code)
+    summary = service.run_batch(tickers=['MU', 'NVDA'], now=NOW, deps=d)
+    assert summary['agent']['runs'] == {'MU': f'error: {reason}', 'NVDA': f'skipped: {reason}'}
+    assert summary['agent']['connection_lost'] == reason and summary['agent']['quota_exhausted'] is False
+    assert [(r['status'], r['reason']) for r in repository.agent_runs_for(db, 'NVDA', SESSION)] == [('skipped', reason)]
+    assert summary['plans'] == {'MU': 'inserted', 'NVDA': 'inserted'}
+
+
+def test_a_healthy_run_has_no_connection_lost_key(db, scripted_model):
+    summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses('NVDA')))
+    assert 'connection_lost' not in summary['agent']
+
+
 def test_not_configured_makes_no_model_call(db, scripted_model):
     d = agent_deps(scripted_model, [])                     # 若被调用即抛错
     d.agent_settings = _agent_settings(connection='no_sharing')     # signed in, but the account shares no plan usage
@@ -1896,6 +1934,19 @@ def test_reset_request_id_idempotent(db28, scripted_model):
     assert again == {'reset_id': first['reset_id'], 'run_id': None, 'replayed': True}
     assert db28.execute('SELECT count(*) FROM agent_attempt_resets').fetchone()[0] == 1
     assert len(repository.agent_runs_for(db28, 'NVDA', SESSION)) == len(runs)         # nothing ran twice
+
+
+def test_rerun_propose_is_refused_while_a_daily_execution_runs(db28, scripted_model, monkeypatch):
+    from investment_assistant.tasks import daily
+
+    _exhaust_attempts(db28, scripted_model)
+    monkeypatch.setattr(daily, 'is_running', lambda: True)
+    kwargs = dict(origin='api', now=NOW + timedelta(hours=1), deps=agent_deps(scripted_model, _ok_responses()))
+    with pytest.raises(daily.DailyBusy):
+        service.rerun_agent('NVDA', SESSION, 'propose', request_id=str(uuid.uuid4()), **kwargs)
+    assert db28.execute('SELECT count(*) FROM agent_attempt_resets').fetchone()[0] == 0        # nothing was written
+    monkeypatch.setattr(daily, 'is_running', lambda: False)
+    assert service.rerun_agent('NVDA', SESSION, 'propose', request_id=str(uuid.uuid4()), **kwargs)['run_id']
 
 
 def test_rerun_not_needed_409(db28, scripted_model):

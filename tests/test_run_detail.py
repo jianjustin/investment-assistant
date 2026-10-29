@@ -243,7 +243,7 @@ def test_resume_is_not_offered_for_a_node_that_never_wrote_a_row(daily_db):
     graph.update_state({'configurable': {'thread_id': RUN_ID}}, {'run_id': RUN_ID, 'session': SESSION.isoformat()},
                        as_node='screen')
     detail = view(factory=factory)
-    assert detail['status'] == 'failed' and detail['resume']['reason'] == 'not_failed' and not detail['resume']['allowed']
+    assert detail['status'] == 'failed' and detail['resume']['reason'] == 'interrupted' and not detail['resume']['allowed']
     assert [n['status'] for n in detail['nodes']] == ['success'] * 3 + ['pending'] * 7
     assert node(detail, 'regime')['attempt'] is None and node(detail, 'regime')['actions']['resume'] is False
 
@@ -476,6 +476,19 @@ def test_agent_node_lists_rerunnable_units_in_actions(daily_db):
     assert node(going, 'agent')['actions']['rerun_agent'] == []
 
 
+def test_no_rerun_while_any_daily_execution_holds_the_lock(daily_db):
+    """A finished run viewed while another execution runs (maybe the same session): the unit could be in work."""
+    failed = booked_agent_run(daily_db, 'BBB', 'error', 'model_error')
+    book(daily_db, RUN_ID, rows_by_stage={'agent': agent_row([failed])})
+    report(daily_db, RUN_ID)
+    assert node(view(), 'agent')['results']['items'][0]['can_rerun'] is True
+    with daily.exclusive():
+        detail = view()
+    assert detail['status'] == 'degraded'                      # finished, not running: only the lock is someone else's
+    assert node(detail, 'agent')['results']['items'][0]['can_rerun'] is False
+    assert node(detail, 'agent')['actions']['rerun_agent'] == []
+
+
 def test_results_are_capped_at_200_with_the_true_total(daily_db):
     ids = []
     for index in range(205):
@@ -493,6 +506,10 @@ def test_results_are_capped_at_200_with_the_true_total(daily_db):
     assert out['total'] == 205 and len(out['items']) == 200 and out['truncated'] is True
     assert [i['status'] for i in out['items']].count('inserted') == 100 and out['items'][0]['ticker'] == 'T000'
     assert set(out['items'][0]) == {'ticker', 'rule_id', 'candidate_id', 'status'}
+    with service.read_only_tx() as conn:       # a reference without a row is no cap: ``truncated`` follows the cap only
+        missing = run_detail._results(conn, 'signals', {'status': 'success', 'outputs': {'inserted': [
+            *ids[:2], str(uuid.uuid4())]}, 'detail': {}})
+    assert missing['total'] == 3 and len(missing['items']) == 2 and missing['truncated'] is False
     with service.read_only_tx() as conn:
         small = run_detail._results(conn, 'signals', {'status': 'success', 'outputs': {'inserted': ids[:3]},
                                                       'detail': {}})

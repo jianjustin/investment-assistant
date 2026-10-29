@@ -154,6 +154,7 @@ def _results(conn, stage_id: str, row: dict, *, rerun: bool = False, resets_read
     detail = row.get('detail') if isinstance(row.get('detail'), dict) else {}
     items: list[dict] = []
     total: int | None = None
+    truncated: bool | None = None      # id-based lists: cut by the cap, not by a reference that has no row (never happens)
     if row.get('status') == 'skipped' and stage_id != 'push':
         return {'kind': stage_id, 'items': [], 'total': 0, 'truncated': False}
     if stage_id == 'sec_monitor':
@@ -176,12 +177,14 @@ def _results(conn, stage_id: str, row: dict, *, rerun: bool = False, resets_read
         status_of.update({str(i): 'existing' for i in outputs.get('existing') or [] if str(i) not in status_of})
         ordered = list(status_of)
         total = len(ordered)
+        truncated = total > RESULTS_MAX
         found = {str(r['id']): r for r in repository.candidate_refs_by_ids(conn, ordered[:RESULTS_MAX])}
         items = [{'ticker': found[i]['ticker'], 'rule_id': found[i]['rule_id'], 'candidate_id': i,
                   'status': status_of[i]} for i in ordered[:RESULTS_MAX] if i in found]
     elif stage_id == 'plan':
         ordered = [str(i) for i in _ids(outputs, 'inserted', 'existing')]
         total = len(ordered)
+        truncated = total > RESULTS_MAX
         found = {str(r['id']): r for r in repository.plans_by_ids(conn, ordered[:RESULTS_MAX])}
         items = [{'ticker': found[i]['ticker'], 'plan_id': i, 'status': found[i]['status'],
                   'invalid_reasons': list(found[i]['invalid_reasons'] or [])}
@@ -189,6 +192,7 @@ def _results(conn, stage_id: str, row: dict, *, rerun: bool = False, resets_read
     elif stage_id == 'agent':
         ordered = [str(i) for i in outputs.get('agent_run_ids') or []]
         total = len(ordered)
+        truncated = total > RESULTS_MAX
         found = {str(r['id']): r for r in repository.agent_runs_by_ids(conn, ordered[:RESULTS_MAX])}
         for run_id in ordered[:RESULTS_MAX]:
             run = found.get(run_id)
@@ -203,6 +207,7 @@ def _results(conn, stage_id: str, row: dict, *, rerun: bool = False, resets_read
     elif stage_id == 'review':
         ordered = list(outputs.get('review_ids') or [])
         total = len(ordered)
+        truncated = total > RESULTS_MAX
         found = {int(r['id']): r for r in repository.plan_reviews_by_ids(conn, ordered[:RESULTS_MAX])} \
             if ordered and repository.timeline_ready(conn) else {}
         items = [{'ticker': r['ticker'], 'signal_date': _ts(r['signal_date']), 'outcome': r['outcome'],
@@ -224,9 +229,11 @@ def _results(conn, stage_id: str, row: dict, *, rerun: bool = False, resets_read
                               'status': retro_cards.card_state(conn, card['id'])['status'], 'push': None})
         items = cards + _tick_items(detail)
         total = len(ordered) + len(_tick_items(detail))
+        truncated = len(ordered) > RESULTS_MAX
     # 'collect' lists nothing: the fetch block already has every target
     page, count = _page(items, total)
-    return {'kind': stage_id, 'items': page, 'total': count, 'truncated': count > len(page)}
+    return {'kind': stage_id, 'items': page, 'total': count,
+            'truncated': count > len(page) if truncated is None else truncated}
 
 
 # ---------------------------------------------------------------- resume
@@ -240,11 +247,14 @@ def _checkpoint_next(run_id: str, checkpointer_factory) -> tuple[str, ...]:
 
 
 def _resume(run_id: str, *, status: str, effective: dict[str, dict], session: date | None, now: datetime,
-            locked: bool, checkpointer_factory) -> dict:
+            locked: bool, interrupted: bool, checkpointer_factory) -> dict:
     """``{'allowed', 'node', 'deadline_at', 'reason'}`` — the same conditions as ``workflow.resume_check`` (the failed
     node is the checkpoint's ``next[0]`` and its effective row is ``failed`` or ``skipped / upstream_failed``; the
     window closes at the next session's New York 17:00), without raising, plus ``daily_running`` while the lock is held.
-    ``reason`` is one of ``not_failed``, ``resume_window_closed``, ``daily_running``, ``checkpoint_unavailable``."""
+    ``reason`` is one of ``not_failed``, ``interrupted`` (the run stopped without a failed node to resume from: the
+    rows are incomplete or stale, only a rerun in full helps), ``resume_window_closed``, ``daily_running``,
+    ``checkpoint_unavailable``."""
+    nothing_to_resume = 'interrupted' if interrupted else 'not_failed'
     block: dict[str, Any] = {'allowed': False, 'node': None, 'deadline_at': None, 'reason': None}
     if status == 'running':
         block['reason'] = 'daily_running'
@@ -261,7 +271,7 @@ def _resume(run_id: str, *, status: str, effective: dict[str, dict], session: da
     last = effective.get(pending[0]) if pending else None
     if last is None or not (last['status'] == 'failed' or (last['status'] == 'skipped'
                                                           and last.get('reason') == 'upstream_failed')):
-        block['reason'] = 'not_failed'
+        block['reason'] = nothing_to_resume
         return block
     deadline = workflow.resume_deadline(session)
     block.update(node=pending[0], deadline_at=deadline.astimezone(UTC).isoformat())
@@ -406,8 +416,9 @@ def _assemble(conn, run_id: str, rows: list[dict], reports: list[dict], *, now: 
         status = 'failed'                               # the run stopped without finishing (killed): not a success
     else:
         status = workflow.run_status(rows)
+    interrupted = len(effective) < len(ids) or stale
     resume = (_resume(run_id, status=status, effective=effective, session=session, now=now, locked=locked,
-                      checkpointer_factory=checkpointer_factory) if is_daily and rows else _no_resume())
+                      interrupted=interrupted, checkpointer_factory=checkpointer_factory) if is_daily and rows else _no_resume())
     if rows:
         run = run_overview._group(rows)[0]
         views = {view['id']: view for view in run_overview._stage_views(run)}
@@ -422,7 +433,7 @@ def _assemble(conn, run_id: str, rows: list[dict], reports: list[dict], *, now: 
     for stage_id in ids:
         view = views.get(stage_id) or _pending_view(stage_id, version, PENDING_NOTE)
         nodes.append(_node(conn, stage_id, version, view, members, effective, resume=resume,
-                           rerun=is_daily and not running, resets_ready=resets_ready, summary=summary))
+                           rerun=is_daily and not locked, resets_ready=resets_ready, summary=summary))
     trigger = rows[0]['trigger'] if rows else (first_report or {}).get('trigger_source')
     return {**base, 'kind': 'daily' if is_daily else 'batch',
             'graph_version': workflow.DAILY_GRAPH_VERSION if is_daily else None, 'stages_version': version,

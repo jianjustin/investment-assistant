@@ -236,6 +236,7 @@ def test_rerun_400_from_the_real_service_checks(client, monkeypatch, change):
 @pytest.mark.parametrize('exc, status, error', [
     (LookupError('NVDA 2026-10-22 没有候选，不是决策单元'), 404, 'NVDA 2026-10-22 没有候选，不是决策单元'),
     (service.AgentConflict('not_needed'), 409, 'not_needed'),
+    (daily.DailyBusy(), 409, 'daily_running'),
     (ValueError('NVDA 2026-10-22 不是无冲突的买入单元'), 400, 'NVDA 2026-10-22 不是无冲突的买入单元'),
     (service.Unavailable('数据库不可达'), 503, '数据库不可达'),
     (psycopg.errors.UndefinedTable('relation "agent_attempt_resets" does not exist'), 503, 'migration_028_missing'),

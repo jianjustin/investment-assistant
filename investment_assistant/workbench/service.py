@@ -39,6 +39,7 @@ NY = ZoneInfo('America/New_York')
 BENCHMARK = 'SPY'
 ETF_TICKERS = pool_module.SECTOR_ETFS
 AGENT_DEADLINE_S = 1500     # no new agent unit starts after this many seconds since the agent node started (§8.1, v2.8 D24)
+CONNECTION_LOST = ('not_connected', 'model_unavailable')    # a unit proving the connection / model unusable stops the node (§8.8)
 AGENT_MAX_ATTEMPTS = 3      # a failed unit runs at most this many times per batch re-run cycle
 HISTORY_DAYS = 420          # calendar days fetched; covers MA200 plus look-backs
 FILING_LOOKBACK_DAYS = 10
@@ -2404,9 +2405,10 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
     briefs: dict[str, str] = {}
     tokens = {'input': 0, 'output': 0}
     quota_exhausted = False
+    connection_lost: str | None = None     # §8.8: set by the first unit that finds the connection / model unusable
 
     def record(unit: dict, run: dict) -> None:
-        nonlocal quota_exhausted
+        nonlocal quota_exhausted, connection_lost
         if run.get('mode', 'propose') == 'propose':    # 7.3: runs only records propose
             runs[unit['ticker']] = run['status'] if run['status'] in ('ok', 'pass') else (
                 f"{run['status']}: {run['reason']}")
@@ -2431,6 +2433,8 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
             summary['sources']['agent'].append(unit['ticker'])
             if run['reason'] == 'quota_exhausted':
                 quota_exhausted = True
+            elif run['reason'] in CONNECTION_LOST:
+                connection_lost = run['reason']
 
     def brief_status(run: dict) -> str:
         mode, status = run.get('mode', 'propose'), run['status']
@@ -2469,6 +2473,8 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
                 run = _skip(unit, unavailable, now=now, settings=settings, attempt=attempt, mode=mode)
             elif quota_exhausted:
                 run = _skip(unit, 'quota_exhausted', now=now, settings=settings, attempt=attempt, mode=mode)
+            elif connection_lost:       # the rest of the node is skipped for the same reason as the unit that found out
+                run = _skip(unit, connection_lost, now=now, settings=settings, attempt=attempt, mode=mode)
             elif len(prior) >= AGENT_MAX_ATTEMPTS:
                 run = _skip(unit, 'max_attempts', now=now, settings=settings, attempt=attempt, mode=mode)
             elif settings.daily_tokens is not None:
@@ -2516,6 +2522,8 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
 
     summary['agent'] = {'runs': runs, 'briefs': briefs, 'tokens': tokens,
                        'quota_exhausted': quota_exhausted}
+    if connection_lost:
+        summary['agent']['connection_lost'] = connection_lost      # the review stage after this one honours it
     summary['timings']['agent'] = round(clock() - t_agent, 1)
     if acc is not None:
         acc.detail['tokens'] = dict(tokens)
@@ -2578,7 +2586,8 @@ def rerun_agent(ticker: str, signal_date: date, mode: str, *, request_id: str, o
 
     ``ValueError``: bad mode / origin / request id, or a ``propose`` unit that is not a conflict-free buy;
     ``LookupError``: no such unit; ``AgentConflict('not_needed')``: the unit's latest run of this mode is neither
-    ``skipped / max_attempts`` nor ``error``."""
+    ``skipped / max_attempts`` nor ``error``; ``tasks.daily.DailyBusy`` (``propose`` only): a ``daily`` execution holds
+    the lock and may be working on this very unit."""
     if mode not in RERUN_MODES:
         raise ValueError(f'mode 必须是 {" / ".join(RERUN_MODES)}')
     if origin not in RERUN_ORIGINS:
@@ -2588,6 +2597,15 @@ def rerun_agent(ticker: str, signal_date: date, mode: str, *, request_id: str, o
     except ValueError:
         raise ValueError('request_id 必须是 UUID') from None
     ticker = ticker.upper()
+    if mode == 'propose':
+        from investment_assistant.tasks import daily       # late: the task shell imports this module
+
+        try:
+            busy = daily.is_running()
+        except Exception:      # noqa: BLE001 - no database to ask: the checks below report what is wrong
+            busy = False
+        if busy:               # the node being re-run may be working on this very unit
+            raise daily.DailyBusy()
     with _tx() as conn:
         group = repository.unit_candidates(conn, ticker, signal_date)
         if not group:

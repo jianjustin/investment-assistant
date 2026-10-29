@@ -445,6 +445,8 @@ def _review_chain(obj: dict, *, session: date, now: datetime, trigger: str, run_
         reason, error_detail = failure
         if reason == 'quota_exhausted':
             quota['exhausted'] = True
+        elif reason in service.CONNECTION_LOST:
+            quota['lost'] = reason                    # §8.8: the rest of the node is skipped for the same reason
 
         def failed(conn, attempt: int) -> dict:
             repository.insert_agent_run(conn, run_row(review_id, 'review', 'error', attempt, reason=reason,
@@ -499,6 +501,8 @@ def _review_chain(obj: dict, *, session: date, now: datetime, trigger: str, run_
         revised, failure = None, ('bars_missing', 'no bars through the review session')
     if failure is not None and failure[0] == 'quota_exhausted':
         quota['exhausted'] = True
+    elif failure is not None and failure[0] in service.CONNECTION_LOST:
+        quota['lost'] = failure[0]
     spent[revise_id] = ('revise', 0, 0) if revised is None else (
         'revise', revised['input_tokens'] or 0, revised['output_tokens'] or 0)
     return commit(lambda conn, attempt: _revision(
@@ -516,6 +520,8 @@ def _gate(settings, *, started: float, clock: Callable[[], float], quota: dict, 
         return unavailable
     if quota.get('exhausted'):
         return 'quota_exhausted'
+    if quota.get('lost'):
+        return quota['lost']
     if settings.daily_tokens is not None:
         with service._tx() as conn:
             used = repository.agent_tokens_on(conn, now.astimezone(service.NY).date())
@@ -693,7 +699,8 @@ def run_stage(session: date, *, now: datetime, deps, summary: dict[str, Any], st
             acc.duration_ms += (clock() - t_stage) * 1000
         return f'agent_unavailable: {unavailable}'
 
-    quota = {'exhausted': bool((summary.get('agent') or {}).get('quota_exhausted'))}
+    quota = {'exhausted': bool((summary.get('agent') or {}).get('quota_exhausted')),
+             'lost': (summary.get('agent') or {}).get('connection_lost')}
     sec_known = not (isinstance(summary.get('filings'), dict) and 'error' in summary['filings'])
     for obj in objects:
         try:

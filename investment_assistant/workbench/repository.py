@@ -1038,13 +1038,15 @@ def job_reports_for_run(conn, run_id: str) -> list[dict[str, Any]]:
                       'target_start_date FROM job_reports WHERE run_id = %s ORDER BY started_at, id', (run_id,))
 
 
-def previous_daily_report(conn, *, before: datetime) -> dict[str, Any] | None:
-    """The latest real `daily` execution (a graph ran: `summary.graph_version`) that started before `before`:
-    `{'started_at', 'finished_at', 'summary'}`; refused executions (`daily_running`, `migration_028_missing`, ...) are
-    not executions in this sense. The base of the once-per-episode connection notice (v2.8 §8.8)."""
-    return _one(conn, "SELECT started_at, finished_at, summary FROM job_reports WHERE task = 'daily' "
-                      "AND started_at < %s AND summary ? 'graph_version' ORDER BY started_at DESC, id DESC LIMIT 1",
-                (before,))
+def last_connection_notice_at(conn) -> datetime | None:
+    """When the `daily` execution that last *sent* the connection-lost notice checked the connection
+    (`summary.connection_notice.checked_at`); None when no execution did. The base of the once-per-episode notice
+    (v2.8 §8.8): a failure at or after it has not been told yet."""
+    row = conn.execute("SELECT summary->'connection_notice'->>'checked_at' FROM job_reports WHERE task = 'daily' "
+                       "AND summary->'connection_notice'->>'sent' = 'true' "
+                       "AND summary->'connection_notice' ? 'checked_at' ORDER BY started_at DESC, id DESC "
+                       'LIMIT 1').fetchone()
+    return datetime.fromisoformat(row[0]) if row and row[0] else None
 
 
 def fetch_runs_by_ids(conn, ids) -> list[dict[str, Any]]:

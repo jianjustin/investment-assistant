@@ -201,11 +201,12 @@ def test_is_running_only_looks_at_the_lock(daily_db):
 # ---------------------------------------------------------------- connection-lost notice (v2.8 §8.8, §13.2)
 
 class Episode:
-    """``agent_connection.first_failure_since_ok`` with one failure at ``failure_at``: true for a run whose base is not
-    after it (the real rule, minus the events table)."""
+    """``agent_connection.first_failure_since_ok`` with one failure at ``failure_at``: true for a look whose base is not
+    after it (the real rule, minus the events table); ``status`` is what ``status_view`` says."""
 
     def __init__(self):
         self.failure_at = datetime(2000, 1, 1, tzinfo=UTC)
+        self.status = 'needs_login'
         self.calls: list = []
 
     def __call__(self, *, since=None):
@@ -219,57 +220,96 @@ def episode(monkeypatch):
 
     fake = Episode()
     monkeypatch.setattr(agent_connection, 'first_failure_since_ok', fake)
+    monkeypatch.setattr(agent_connection, 'status_view', lambda **kw: {'status': fake.status})
     return fake
 
 
-def run_with_connection(clock, number, connection):
+def run_with_connection(clock, number, connection, *, now=NOW, trigger_source='manual'):
     d = world(clk=clock, agent=True)
     d.agent_settings = _agent_settings(connection=connection)
-    return daily.run(daily_config(), now=NOW, deps=d, run_id=f'daily-2026102300000{number}-aaaaaaa{number}',
+    return daily.run(daily_config(), now=now, deps=d, run_id=f'daily-2026102300000{number}-aaaaaaa{number}',
                      checkpointer_factory=shared_saver()[1], sleep=clock.sleep, notify_cfg=NotifyCfg(),
-                     trigger_source='manual')
+                     trigger_source=trigger_source)
 
 
 def lost_titles(notices):
     return [t for t in notices.titles('workbench') if t == '⚠️ ChatGPT 连接已失效']
 
 
-def times(daily_db):
-    return daily_db.execute('SELECT started_at, finished_at FROM job_reports ORDER BY id').fetchall()
+def checked(out):
+    return datetime.fromisoformat(out['summary']['connection_notice']['checked_at'])
 
 
 def test_not_connected_notifies_once_per_episode(daily_db, clock, notices, job_reports, episode):
+    """A failure during run 1 is told by run 1 and not again by run 2; a failure after that (reconnected, lost again)
+    is a new episode told by the next execution."""
     seed_watchlist(daily_db, [('NVDA', ['core'])])
+    episode.failure_at = datetime.now(UTC)                                # it happens while run 1 is going
     first = run_with_connection(clock, 1, 'needs_login')
     assert first['status'] == 'degraded'                                  # the agent being unavailable never fails the run
     eff = effective(daily_db, 'daily-20261023000001-aaaaaaa1')
     assert eff['agent']['status'] == 'skipped' and eff['agent']['reason'] == 'agent_unavailable: not_connected'
-    assert len(lost_titles(notices)) == 1 and episode.calls == [None]    # no earlier daily execution: any failure counts
-    assert first['summary']['connection_notice'] == {'sent': True, 'reason': None}
+    assert len(lost_titles(notices)) == 1 and episode.calls == [None]    # nothing was ever sent: any failure counts
+    assert first['summary']['connection_notice']['sent'] is True and first['summary']['connection_notice']['reason'] is None
     [fields] = [n.fields for t, items in notices.calls for n in items if n.title == '⚠️ ChatGPT 连接已失效']
     assert [(f.name, f.value) for f in fields] == [('影响', '今天的 Agent 建议与复查已跳过'),
                                                   ('处理', '到「设置 → Agent 连接」重新连接')]
-    # the next run is still not connected, but the failure was told already: its base is the end of the run that sent it
-    second = run_with_connection(clock, 2, 'needs_login')
-    assert len(lost_titles(notices)) == 1 and episode.calls[-1] == times(daily_db)[0][1]
-    assert second['summary']['connection_notice'] == {'sent': False, 'reason': 'already_reported'}
-    # a new failure after that run (reconnected, then lost again) is a new episode
-    episode.failure_at = datetime.now(UTC) + timedelta(hours=1)
+    second = run_with_connection(clock, 2, 'needs_login')                 # still lost, already told
+    assert len(lost_titles(notices)) == 1 and episode.calls[-1] == checked(first)
+    assert second['summary']['connection_notice'] == {'sent': False, 'reason': 'already_reported',
+                                                      'checked_at': second['summary']['connection_notice']['checked_at']}
+    episode.failure_at = datetime.now(UTC)                                # reconnected, then lost again after run 2
     third = run_with_connection(clock, 3, 'needs_login')
     assert len(lost_titles(notices)) == 2 and third['summary']['connection_notice']['sent'] is True
-    assert episode.calls[-1] == times(daily_db)[1][0]                     # run 2 sent nothing: its start is the base
+    assert episode.calls[-1] == checked(first)                            # the base is the last notice actually sent
+    fourth = run_with_connection(clock, 4, 'needs_login')
+    assert len(lost_titles(notices)) == 2 and episode.calls[-1] == checked(third)
+    assert fourth['summary']['connection_notice']['reason'] == 'already_reported'
+
+
+def test_an_execution_that_does_not_hit_in_between_does_not_hide_the_failure(daily_db, clock, notices, job_reports,
+                                                                           episode, monkeypatch):
+    """Lost -> an execution that never reaches the Agent (connection fine as far as it can tell, or stopped before
+    ``agent``) -> the execution that hits: exactly one notice, the in-between ones never moved the base."""
+    seed_watchlist(daily_db, [('NVDA', ['core'])])
+    ok = run_with_connection(clock, 1, 'connected')                       # the failure is not known to this execution
+    assert 'connection_notice' not in ok['summary']
+    flaky('collect', monkeypatch, fail_times=2)                           # a run that stops before ``agent``
+    stopped = run_with_connection(clock, 2, 'needs_login')
+    assert stopped['run_status'] == 'failed' and 'connection_notice' not in stopped['summary']
+    holiday = run_with_connection(clock, 3, 'needs_login', now=datetime(2026, 10, 24, 22, 30, tzinfo=UTC),
+                                  trigger_source='scheduled')
+    assert 'connection_notice' not in holiday['summary']                  # a closed market: ``agent`` is skipped for that
+    assert episode.calls == [] and lost_titles(notices) == []
+    hit = run_with_connection(clock, 4, 'needs_login')
+    assert lost_titles(notices) == ['⚠️ ChatGPT 连接已失效'] and episode.calls == [None]
+    assert hit['summary']['connection_notice']['sent'] is True
+    again = run_with_connection(clock, 5, 'needs_login')
+    assert len(lost_titles(notices)) == 1 and again['summary']['connection_notice']['reason'] == 'already_reported'
+
+
+def test_a_look_that_finds_the_connection_fine_again_says_not_failed(daily_db, clock, notices, job_reports, episode):
+    seed_watchlist(daily_db, [('NVDA', ['core'])])
+    episode.failure_at = datetime(2000, 1, 1, tzinfo=UTC)
+    first = run_with_connection(clock, 1, 'needs_login')
+    episode.status = 'connected'                                          # reconnected before the next look
+    second = run_with_connection(clock, 2, 'needs_login')
+    assert first['summary']['connection_notice']['sent'] is True
+    assert second['summary']['connection_notice']['reason'] == 'not_failed' and len(lost_titles(notices)) == 1
 
 
 def test_connection_notice_is_retried_until_it_was_sent(daily_db, clock, notices, job_reports, episode):
     seed_watchlist(daily_db, [('NVDA', ['core'])])
     notices.result = {'sent': False, 'messages': 0, 'reason': 'discord_disabled'}
     first = run_with_connection(clock, 1, 'needs_login')
-    assert first['summary']['connection_notice'] == {'sent': False, 'reason': 'discord_disabled'}
+    assert first['summary']['connection_notice']['sent'] is False
+    assert first['summary']['connection_notice']['reason'] == 'discord_disabled'
     notices.result = {'sent': True, 'messages': 1}
-    episode.failure_at = datetime.now(UTC)                                # the failure is older than run 2's start
     second = run_with_connection(clock, 2, 'needs_login')
-    assert second['summary']['connection_notice']['sent'] is True         # run 1 sent nothing: its start is the base
-    assert episode.calls[-1] == times(daily_db)[0][0]
+    assert second['summary']['connection_notice']['sent'] is True         # nothing was sent: the base is still None
+    assert episode.calls == [None, None]
+    third = run_with_connection(clock, 3, 'needs_login')
+    assert episode.calls[-1] == checked(second) and third['summary']['connection_notice']['reason'] == 'already_reported'
 
 
 def test_no_connection_notice_without_not_connected(daily_db, clock, notices, job_reports, episode):
@@ -290,8 +330,8 @@ def test_connection_notice_failure_never_changes_the_run(daily_db, clock, notice
     monkeypatch.setattr(agent_connection, 'first_failure_since_ok', broken)
     seed_watchlist(daily_db, [('NVDA', ['core'])])
     out = run_with_connection(clock, 1, 'needs_login')
-    assert out['status'] == 'degraded' and out['summary']['connection_notice'] == {
-        'sent': False, 'reason': 'notice_failed: ChatGPTError'}
+    notice = out['summary']['connection_notice']
+    assert out['status'] == 'degraded' and (notice['sent'], notice['reason']) == (False, 'notice_failed: ChatGPTError')
     assert lost_titles(notices) == []
 
 

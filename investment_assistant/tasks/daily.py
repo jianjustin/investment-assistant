@@ -183,41 +183,40 @@ def _hit_not_connected(rows: list[dict[str, Any]], attempt: int) -> bool:
     return False
 
 
-def _episode_base(previous: dict[str, Any] | None) -> datetime | None:
-    """Where this execution's look for a connection failure starts: the previous real ``daily`` execution's start —
-    or its end, when that execution already sent the notice (a failure that happened *during* it was then reported by
-    it, and starting at its start would report the same failure a second time)."""
-    if previous is None:
-        return None
-    sent = ((previous.get('summary') or {}).get('connection_notice') or {}).get('sent')
-    return previous['finished_at'] if sent else previous['started_at']
-
-
-def _notify_connection(config: AssistantConfig, result: dict[str, Any], started_at: datetime,
-                       notify_cfg: Any) -> dict[str, Any] | None:
+def _notify_connection(config: AssistantConfig, result: dict[str, Any], notify_cfg: Any) -> dict[str, Any] | None:
     """The once-per-episode "ChatGPT connection lost" notice (v2.8 §8.8, §13.2): None when this execution's Agent nodes
-    did not hit ``not_connected``; otherwise the notice result (``sent`` false with ``already_reported`` when an earlier
-    execution told the user about this failure). Never raises: a notice that cannot be sent is in the summary."""
+    did not hit ``not_connected``; otherwise ``{sent, reason, checked_at}``. A failure is told exactly once: the base of
+    the look is the check time of the last execution that *sent* the notice (``connection_notice.checked_at``), so an
+    execution in between that did not hit (a holiday, a run that stopped before ``agent``, a resume from ``push``)
+    cannot move it past an untold failure, and a failure during an execution is not told again by the next one.
+    ``reason`` is ``not_failed`` (the connection is not lost any more) or ``already_reported`` when nothing is sent. A
+    notice that could not be sent is retried by the next execution. Never raises."""
     from investment_assistant.notify import notifier, templates
     from investment_assistant.workbench import agent_connection
 
     attempt = result.get('attempt')
     if not attempt:
         return None                                  # an execution that never started a graph has no Agent nodes
+    checked_at = datetime.now(UTC)
     try:
         with service.read_only_tx() as conn:
             rows = repository.stage_rows_for_run(conn, result['run_id'])
-            previous = repository.previous_daily_report(conn, before=started_at)
+            base = repository.last_connection_notice_at(conn)
         if not _hit_not_connected(rows, int(attempt)):
             return None
-        if not agent_connection.first_failure_since_ok(since=_episode_base(previous)):
-            return {'sent': False, 'reason': 'already_reported'}
+        stamp = checked_at.isoformat()
+        if not agent_connection.first_failure_since_ok(since=base):
+            try:
+                lost = agent_connection.status_view().get('status') == 'needs_login'
+            except Exception:    # noqa: BLE001 - only the wording of the reason depends on it
+                lost = True
+            return {'sent': False, 'reason': 'already_reported' if lost else 'not_failed', 'checked_at': stamp}
         cfg = notify_cfg if notify_cfg is not None else _effective_notify(config)
         out = notifier.send_notifications('workbench', templates.agent_not_connected({'run_id': result['run_id']}), cfg)
-        return {'sent': bool(out.get('sent')), 'reason': out.get('reason')}
+        return {'sent': bool(out.get('sent')), 'reason': out.get('reason'), 'checked_at': stamp}
     except Exception as exc:    # noqa: BLE001 - reported in the summary, never raised (and never the exception text)
         logger.warning('agent connection notice not sent: %s', type(exc).__name__)
-        return {'sent': False, 'reason': f'notice_failed: {type(exc).__name__}'}
+        return {'sent': False, 'reason': f'notice_failed: {type(exc).__name__}', 'checked_at': checked_at.isoformat()}
 
 
 def _report(result: dict[str, Any], *, started_at: datetime, trigger_source: str, config: AssistantConfig,
@@ -228,7 +227,7 @@ def _report(result: dict[str, Any], *, started_at: datetime, trigger_source: str
     summary = result['summary']
     if result['status'] == 'failed':
         summary['failure_notice'] = _notify_failure(config, result, notify_cfg)
-    connection_notice = _notify_connection(config, result, started_at, notify_cfg)
+    connection_notice = _notify_connection(config, result, notify_cfg)
     if connection_notice is not None:
         summary['connection_notice'] = connection_notice
     session = result.get('session')
