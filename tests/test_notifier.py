@@ -238,3 +238,86 @@ def test_plan_updates_respect_field_and_message_limits():
     total = len(updates.title) + sum(len(f.name) + len(f.value) for f in updates.fields) + len(updates.footer)
     assert total <= 6000
     assert updates.fields[-1].name == '溢出'
+
+
+# --- v2.7 §10: the weekly learning field goes out inside the 1024-char Discord limit ---
+
+def _weekly_with_learning(cards):
+    from investment_assistant.workbench import review_digest
+
+    learning = {'discipline': {'cards': len(cards), 'chase': 0, 'early_take': 0, 'held_loser': 0, 'unplanned': 0,
+                               'pending': 0},
+                'cards': cards, 'counts': {'total': len(cards), 'reviewed': 0, 'to_review': len(cards),
+                                           'drafting': 0, 'draft_failed': 0},
+                'knowledge': []}
+    review = {'id': 1, 'week_start': date(2026, 10, 19), 'calc_version': 'review-7',
+              'stats': {'units': {'decided': 0, 'undecided': 0}, 'unsignaled_trades': [], 'closed_trades': [],
+                        'tracks': None, 'by_pool': {}, 'discipline': None, 'learning': learning}}
+    return review_digest.weekly(review, public_url='http://localhost:8787')
+
+
+def test_weekly_learning_truncated():
+    cards = [{'card_id': n, 'ticker': 'NVDA', 'end_kind': 'stop', 'end_text': '止损', 'actual_r': -1.0,
+              'decision_text': '很长的决定文案' * 40, 'rule_r': None, 'agent_r': None, 'flags': [],
+              'status': 'to_review', 'headline': None} for n in range(5)]
+    messages = templates.workbench_weekly(_weekly_with_learning(cards))
+    sent = FakeClient()
+    out = notifier.send_notifications('workbench', messages, NotifyConfig(), client=sent)
+    assert out['sent'] is True and len(sent.sent) == 1
+    fields = messages[0].fields
+    assert max(len(f.value) for f in fields) <= 1024                       # Discord's per-field limit
+    learning = next(f for f in fields if f.name == '你学到了什么')
+    assert len(learning.value) == 1024 and learning.value.endswith('…')
+    assert learning.value.startswith('纪律（本周结束的 5 笔）')
+
+
+def _learning_card(n, **over):
+    card = {'card_id': n, 'ticker': 'NVDA', 'end_kind': 'stop', 'end_text': '止损', 'actual_r': -1.0,
+            'decision_text': '采纳（照规则计划）', 'rule_r': None, 'agent_r': None, 'flags': [],
+            'status': 'to_review', 'headline': None}
+    card.update(over)
+    return card
+
+
+def _sent_text(payload):
+    sent = FakeClient()
+    out = notifier.send_notifications('workbench', templates.workbench_weekly(payload), NotifyConfig(), client=sent)
+    assert out['sent'] is True
+    return templates.workbench_weekly(payload)[0]
+
+
+def test_weekly_learning_field_lines():
+    payload = _weekly_with_learning([_learning_card(1), _learning_card(2, ticker='AMD', actual_r=None,
+                                                                     end_text='过期未成交', decision_text='降为观察')])
+    payload['learning']['knowledge'] = [{'ref': 'know:7@2', 'title': '回踩不追', 'new_outcomes': 1,
+                                         'sample': {'count': 6, 'determined': 5, 'expired': 1, 'r_mean': 0.4,
+                                                    'r_median': 0.3}}]
+    message = _sent_text(payload)
+    names = [f.name for f in message.fields]
+    assert names.index('纪律') + 1 == names.index('你学到了什么') == names.index('说明') - 1
+    learning = next(f for f in message.fields if f.name == '你学到了什么')
+    assert learning.value.split('\n') == [
+        '纪律（本周结束的 2 笔）：追高 0 · 过早止盈 0 · 死扛亏损 0 · 计划外 0 · 待定 0',
+        '复盘卡 2 张（已审定 0 · 待审定 2）',
+        'NVDA 止损 · 实际 -1.00R · 采纳（照规则计划）',
+        'AMD 过期未成交 · 实际 未成交 · 降为观察',
+        '被检验的知识 1 条',
+        'know:7@2 回踩不追 · 样本 6（均值 +0.40R）']
+
+
+def test_weekly_learning_all_empty_one_line():
+    message = _sent_text(_weekly_with_learning([]))
+    learning = next(f for f in message.fields if f.name == '你学到了什么')
+    assert learning.value == '本周没有结束的交易，也没有被检验的知识'
+
+
+def test_old_snapshot_has_no_learning_field():
+    from investment_assistant.workbench import review_digest
+
+    review = {'id': 1, 'week_start': date(2026, 10, 12), 'calc_version': 'review-6',
+              'stats': {'units': {'decided': 0, 'undecided': 0}, 'unsignaled_trades': [], 'closed_trades': [],
+                        'tracks': None, 'by_pool': {}, 'discipline': None}}
+    payload = review_digest.weekly(review, public_url='http://localhost:8787')
+    assert payload['learning'] is None
+    message = _sent_text(payload)
+    assert '你学到了什么' not in [f.name for f in message.fields]

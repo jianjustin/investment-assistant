@@ -41,9 +41,9 @@ REQUIRED_IDS = (
     'system.gate_hold', 'system.cutoff', 'system.append_only', 'system.stages', 'system.stage_status',
     'system.pool_tiers', 'system.screen', 'system.decision_unit', 'system.conflict', 'system.decision',
     'system.push', 'system.versions', 'system.concept_card',
-    # v2.7 growth loop (6 of 7; review.weekly_learning arrives with the orchestration task)
+    # v2.7 growth loop (7)
     'review.retro_card', 'review.retro_end', 'system.my_knowledge', 'review.knowledge_performance',
-    'agent.knowledge_citation', 'system.discussion',
+    'agent.knowledge_citation', 'system.discussion', 'review.weekly_learning',
 )
 
 STAGE_STATUSES = ('success', 'partial', 'degraded', 'failed', 'skipped')
@@ -87,7 +87,7 @@ def body_of(catalog, card_id: str) -> str:
 
 
 def test_catalog_loads_and_matches_required_ids(catalog):
-    assert len(REQUIRED_IDS) == 94 and len(set(REQUIRED_IDS)) == 94
+    assert len(REQUIRED_IDS) == 95 and len(set(REQUIRED_IDS)) == 95
     assert set(catalog.concepts) == set(REQUIRED_IDS)
 
 
@@ -140,12 +140,14 @@ def test_principles_structure(catalog):
     principles = catalog.principles
     assert principles is not None
     headings = [section.heading for section in principles.sections]
-    assert len(headings) == 12
+    assert len(headings) == 13
     assert headings[0] == '系统做什么、不做什么'
     assert headings[-1] == '怎么在系统里核对'
     staged = [section for section in principles.sections if section.stage]
     assert [section.stage for section in staged] == list(stages.STAGE_IDS)
-    assert len({section.stage for section in staged}) == len(staged) == 8
+    assert len({section.stage for section in staged}) == len(staged) == 9      # one section per stage, retro included
     for section in staged:
         assert section.concepts, f'{section.heading}: 阶段小节没有链任何概念卡'
-    assert [section.heading for section in principles.sections[9:11]] == ['你做什么：决定与成交', '复盘口径']
+    assert [section.heading for section in principles.sections[10:12]] == ['你做什么：决定与成交', '复盘口径']
+    assert principles.sections[8].stage == 'retro' and principles.sections[8].heading == '⑧ 复盘卡'
+    assert set(principles.sections[8].concepts) == {'review.retro_card', 'review.retro_end'}

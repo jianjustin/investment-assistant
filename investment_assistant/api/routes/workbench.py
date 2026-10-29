@@ -4,8 +4,8 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException
 
 from investment_assistant.tasks import runner
-from investment_assistant.workbench import (derivation_view, ledger, plan_review, reasoning, run_overview, service,
-                                            user_inputs)
+from investment_assistant.workbench import (derivation_view, discussion, ledger, my_knowledge, plan_review, reasoning,
+                                            retro_cards, run_overview, service, user_inputs)
 
 router = APIRouter()
 
@@ -308,3 +308,111 @@ def list_user_inputs(ticker: str | None = None, signal_date: str | None = None):
 @router.post('/api/workbench/user-inputs')
 def add_user_input(payload: dict[str, Any] = Body(default_factory=dict)):
     return _call(user_inputs.add, payload, now=_now())
+
+
+# --- v2.7 growth loop (spec §12): review cards, my knowledge, plan discussions ---
+# The routes only parse parameters and map errors (400 ValueError, 404 LookupError, 409 Conflict, 503 Unavailable);
+# transactions live in retro_cards / my_knowledge / discussion.
+
+@router.get('/api/workbench/review-cards')
+def review_cards(status: str | None = None, ticker: str | None = None, since: str | None = None):
+    return _call(retro_cards.list_view, status=status or None, ticker=ticker.upper() if ticker else None,
+                 since=_date(since, 'since'))
+
+
+@router.get('/api/workbench/review-cards/{card_id}')
+def review_card(card_id: int):
+    return _call(retro_cards.card_view, card_id, now=_now())
+
+
+@router.post('/api/workbench/review-cards/{card_id}/verdict')
+def review_card_verdict(card_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
+    return _call(retro_cards.verdict, card_id, payload, now=_now())
+
+
+@router.post('/api/workbench/review-cards/{card_id}/redraft')
+def review_card_redraft(card_id: int):
+    """Preconditions run here (503 / 404 / 409, nothing written); the draft runs in the background and the page
+    polls ``/api/runs/<run_id>`` like a recheck."""
+    now = _now()
+    _call(retro_cards.redraft_check, card_id, now=now)
+    run_id = runner.submit('retro_draft', lambda run_id: retro_cards.redraft(card_id, now=now, run_id=run_id),
+                           with_run_id=True)
+    return {'run_id': run_id, 'status': 'pending'}
+
+
+@router.get('/api/workbench/my-knowledge')
+def my_knowledge_list(ticker: str | None = None, concept: str | None = None, status: str = 'active'):
+    return _call(my_knowledge.list_view, ticker=ticker or None, concept=concept or None, status=status)
+
+
+@router.post('/api/workbench/my-knowledge')
+def my_knowledge_create(payload: dict[str, Any] = Body(default_factory=dict)):
+    return _call(my_knowledge.create, payload, now=_now())
+
+
+@router.get('/api/workbench/my-knowledge/{knowledge_id}')
+def my_knowledge_item(knowledge_id: int, version: int | None = None):
+    return _call(my_knowledge.item_view, knowledge_id, version=version)
+
+
+@router.post('/api/workbench/my-knowledge/{knowledge_id}/versions')
+def my_knowledge_revise(knowledge_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
+    return _call(my_knowledge.revise, knowledge_id, payload, now=_now())
+
+
+@router.post('/api/workbench/my-knowledge/{knowledge_id}/status')
+def my_knowledge_status(knowledge_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
+    return _call(my_knowledge.set_status, knowledge_id, payload, now=_now())
+
+
+@router.get('/api/workbench/my-knowledge/{knowledge_id}/performance')
+def my_knowledge_performance(knowledge_id: int):
+    return _call(my_knowledge.performance, knowledge_id, now=_now())
+
+
+@router.get('/api/workbench/my-knowledge-drafts')
+def my_knowledge_drafts(status: str = 'open'):
+    if status not in ('open', 'all'):
+        raise HTTPException(status_code=400, detail='status must be open or all')
+    return _call(my_knowledge.drafts_view, open_only=status == 'open')
+
+
+@router.post('/api/workbench/my-knowledge-drafts/{draft_id}/verdict')
+def my_knowledge_draft_verdict(draft_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
+    return _call(my_knowledge.draft_verdict, draft_id, payload, now=_now())
+
+
+@router.post('/api/workbench/discussions')
+def discussion_create(payload: dict[str, Any] = Body(default_factory=dict)):
+    return _call(discussion.create, payload, now=_now())
+
+
+@router.get('/api/workbench/discussions')
+def discussion_list(plan_id: str | None = None, card_id: int | None = None):
+    if (plan_id is None) == (card_id is None):
+        raise HTTPException(status_code=400, detail='plan_id 或 card_id 必须给一个')
+    return {'discussions': _call(discussion.list_for, plan_id=plan_id, card_id=card_id)}
+
+
+@router.get('/api/workbench/discussions/{discussion_id}')
+def discussion_view(discussion_id: int):
+    return _call(discussion.view, discussion_id)
+
+
+@router.post('/api/workbench/discussions/{discussion_id}/turns', status_code=202)
+def discussion_turn(discussion_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
+    """The checks and your turn are written here (503 / 404 / 409, 400 for a bad body); the answer is produced in
+    the background and the page reads the discussion until it arrives (spec §8.2)."""
+    now = _now()
+    asked = _call(discussion.ask_check, discussion_id, payload, now=now)
+    if asked['replayed']:
+        return {'turn_id': asked['turn_id'], 'run_id': asked['run_id'], 'status': 'replayed'}
+    try:
+        run_id = runner.submit('discuss', lambda run_id: discussion.answer(discussion_id, asked['turn_id'], now=now,
+                                                                          run_id=run_id), with_run_id=True)
+    except Exception:
+        discussion.release(asked['run_id'])
+        raise
+    discussion.track(asked['run_id'], run_id)
+    return {'turn_id': asked['turn_id'], 'run_id': run_id, 'status': 'pending'}

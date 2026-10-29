@@ -34,7 +34,7 @@ from typing import Any, Callable, Iterable
 
 from investment_assistant.data import identity
 from investment_assistant.workbench import bars as bars_module
-from investment_assistant.workbench import families, repository, service, timeline, user_inputs
+from investment_assistant.workbench import families, my_knowledge, repository, service, timeline, user_inputs
 from investment_assistant.workbench import plan_shadow as plan_shadow_module
 from investment_assistant.workbench import stages as stages_module
 from investment_assistant.workbench.agent import conditions as condition_registry
@@ -856,7 +856,8 @@ def chain_view(ticker: str, signal_date: date, *, now: datetime) -> dict:
     """One chain read at S = the latest closed trading day at ``now`` (spec §12 GET chains): ``state``
     (``{state, mode, basis}`` of ``timeline.chain_state``), every version (plan row, the generating run's
     output and counter, ``changes``, host ``diff``, the ``plan-shadow-1`` simulation of that version's own
-    levels), every review row, and the user inputs that apply to the chain. Read-only, no external source.
+    levels), every review row, and the user inputs that apply to the chain. v2.7 adds ``knowledge_refs`` to each version:
+    the knowledge versions it cited. Read-only, no external source.
     ValueError for a bad ticker, LookupError without an agent-2 chain, Unavailable without migration 026."""
     ticker = _ticker(ticker)
     session = bars_module.latest_closed_session(now)
@@ -888,6 +889,9 @@ def chain_view(ticker: str, signal_date: date, *, now: datetime) -> dict:
                            if plan is not None else None)})
         reviews = [_review_row(row, numbers) for row in status['reviews']]
         inputs = user_inputs.view(user_inputs.ticker_rows(conn, ticker), signal_date)
+        refs = my_knowledge.refs_for_plans(conn, [v['plan_id'] for v in versions])      # v2.7 §6.2
+        for version in versions:
+            version['knowledge_refs'] = refs.get(version['plan_id'], [])
     return {'ticker': ticker, 'signal_date': signal_date, 'session': session,
             'state': status['state'], 'head_plan_id': head_id,
             'version_no': status['head']['version']['version_no'],

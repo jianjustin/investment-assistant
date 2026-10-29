@@ -148,7 +148,7 @@ def test_weekly_review2_has_plans_and_discipline():
             'immature': {'early_take': 0, 'held_loser': 0}, 'planned_buys': 1, 'compliance_rate': 1.0}
     stats = review.weekly_stats(week, [], {}, [], segments=[], undecided=0, entry_opens={},
                                 plan_outcomes=plan_outcomes, discipline=disc)
-    assert stats['calc_version'] == 'review-6'   # P4 起带 tracks 键；v2.5 起 plans 分首版与最新版
+    assert stats['calc_version'] == 'review-7'   # P4 起带 tracks 键；v2.5 起 plans 分首版与最新版；v2.7 起可带 learning
     assert stats['plans']['rule'] == {'count': 2, 'expired': 1, 'r_mean': 2.0, 'r_median': 2.0}
     assert stats['plans']['own'] == {'count': 1, 'expired': 0, 'r_mean': 1.0, 'r_median': 1.0}
     assert stats['discipline'] == disc
@@ -176,8 +176,8 @@ def test_pool_of_three_way():
     assert review.pool_of({'pool_tier': 'core', 'source': 'watchlist'}, None) == 'core'
 
 
-def test_calc_version_is_review_6():
-    assert review.CALC_VERSION == 'review-6'
+def test_calc_version_review_7():
+    assert review.CALC_VERSION == 'review-7'
 
 
 def test_pool_summary_groups_three_pools():
@@ -256,8 +256,9 @@ def test_pool_summary_ignores_agent_plans():
 
 def test_weekly_stats_without_tracks_keeps_shape():
     stats = review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], undecided=0, entry_opens={})
-    assert stats['calc_version'] == 'review-6'
+    assert stats['calc_version'] == 'review-7'
     assert stats['tracks'] is None            # 旧调用方仍可用，无对比数据时为空
+    assert 'learning' not in stats            # 没传 learning 的旧调用方，快照里没有这一键
     assert 'by_rule' in stats and 'plans' in stats and 'note' in stats
 
 
@@ -318,7 +319,7 @@ def test_generate_weekly_counts_first_and_latest(workbench_db, monkeypatch):
             'schema_version': 'agent-2'})
         previous = plan['id']
     out = service.generate_weekly(date(2026, 10, 19), now=NOW)
-    assert out['calc_version'] == 'review-6' and out['stats']['calc_version'] == 'review-6'
+    assert out['calc_version'] == 'review-7' and out['stats']['calc_version'] == 'review-7'
     assert out['stats']['plans']['agent']['count'] == 1
     assert out['stats']['plans']['agent_latest']['count'] == 1
     agent = out['stats']['tracks']['units'][0]['agent']
@@ -347,3 +348,68 @@ def test_shadow_block_matches_previous_summary():
     assert review.shadow_block([{'status': 'closed', 'r': 1.0}] * 4) \
         == {'count': 4, 'determined': 4, 'expired': 0, 'r_mean': None, 'r_median': None}
     assert review.shadow_block([]) == {'count': 0, 'determined': 0, 'expired': 0, 'r_mean': None, 'r_median': None}
+
+
+# --- v2.7 §10: the weekly 「你学到了什么」 ---
+
+WEEK = date(2026, 10, 19)           # Monday
+WEEK_END = date(2026, 10, 25)
+
+
+def _card(card_id, *, ticker='NVDA', end_session=date(2026, 10, 21), end_kind='position_closed', status='to_review',
+          flags=None, pending=0, actual_r=1.5, rule_r=2.0, agent_r=None, headline='一句话', decision_text='采纳（照规则计划）'):
+    totals = {'chase': 0, 'early_take': 0, 'held_loser': 0, 'unplanned': 0, 'pending': pending}
+    for flag in flags or []:
+        totals[flag] += 1
+    return {'card_id': card_id, 'ticker': ticker, 'end_kind': end_kind, 'end_text': {'position_closed': '平仓',
+            'stop': '止损'}[end_kind], 'end_session': end_session, 'decision_text': decision_text,
+            'actual_r': actual_r, 'rule_r': rule_r, 'agent_r': agent_r, 'status': status, 'headline': headline,
+            'discipline': totals}
+
+
+def _perf(ref, title, rows, *, count=None, determined=None, r_mean=None):
+    return {'ref': ref, 'title': title, 'summary': {
+        'rows': rows, 'sample': {'count': count if count is not None else len(rows),
+                                 'determined': determined if determined is not None else len(rows),
+                                 'expired': 0, 'r_mean': r_mean, 'r_median': r_mean}}}
+
+
+def test_learning_stats_three_keys():
+    cards = [_card(1, end_session=date(2026, 10, 20), flags=['chase'], pending=1),
+             _card(2, end_session=date(2026, 10, 22), ticker='AMD', end_kind='stop', status='reviewed',
+                   flags=['early_take', 'unplanned'], actual_r=None, rule_r=-1.0, agent_r=-1.0),
+             _card(3, end_session=date(2026, 10, 18)),              # 上周结束：不算
+             _card(4, end_session=date(2026, 10, 26))]              # 下周结束：不算
+    perf = {7: _perf('know:7@2', '回踩不追', [{'outcome_date': '2026-10-21'}, {'outcome_date': '2026-10-23'},
+                                              {'outcome_date': '2026-10-10'}], r_mean=0.4),
+            8: _perf('know:8@1', '没有本周结果', [{'outcome_date': '2026-10-10'}, {'outcome_date': None}])}
+    out = review.learning_stats(week_start=WEEK, week_end=WEEK_END, cards=cards, perf_by_item=perf)
+    assert set(out) == {'discipline', 'cards', 'counts', 'knowledge'}
+    assert out['discipline'] == {'cards': 2, 'chase': 1, 'early_take': 1, 'held_loser': 0, 'unplanned': 1,
+                                 'pending': 1}
+    assert [c['card_id'] for c in out['cards']] == [1, 2]                  # 按结束日
+    assert set(out['cards'][0]) == {'card_id', 'ticker', 'end_kind', 'end_text', 'decision_text', 'actual_r',
+                                    'rule_r', 'agent_r', 'flags', 'status', 'headline'}
+    assert out['cards'][0]['flags'] == ['chase'] and out['cards'][1]['flags'] == ['early_take', 'unplanned']
+    assert out['cards'][1]['actual_r'] is None and out['cards'][1]['agent_r'] == -1.0
+    assert out['counts'] == {'total': 2, 'reviewed': 1, 'to_review': 1, 'drafting': 0, 'draft_failed': 0}
+    assert out['knowledge'] == [{'ref': 'know:7@2', 'title': '回踩不追', 'new_outcomes': 2,
+                                 'sample': {'count': 3, 'determined': 3, 'expired': 0, 'r_mean': 0.4,
+                                            'r_median': 0.4}}]
+
+
+def test_learning_stats_empty_and_json_safe():
+    out = review.learning_stats(week_start=WEEK, week_end=WEEK_END, cards=[], perf_by_item={})
+    assert out == {'discipline': {'cards': 0, 'chase': 0, 'early_take': 0, 'held_loser': 0, 'unplanned': 0,
+                                  'pending': 0},
+                   'cards': [], 'counts': {'total': 0, 'reviewed': 0, 'to_review': 0, 'drafting': 0,
+                                           'draft_failed': 0},
+                   'knowledge': []}
+    import json
+    json.dumps(review.learning_stats(week_start=WEEK, week_end=WEEK_END, cards=[_card(1)], perf_by_item={}))
+
+
+def test_weekly_stats_carries_learning_when_given():
+    learning = review.learning_stats(week_start=WEEK, week_end=WEEK_END, cards=[], perf_by_item={})
+    stats = review.weekly_stats(WEEK, [], {}, [], segments=[], undecided=0, entry_opens={}, learning=learning)
+    assert stats['learning'] == learning and stats['calc_version'] == 'review-7'

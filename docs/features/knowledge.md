@@ -1,6 +1,6 @@
 # 知识层：概念卡与原理页
 
-v2.6 新增（知识层 `knowledge-1`）：把「系统里每个概念是什么意思、系统每天怎么跑」写成随代码版本走的概念卡与一页原理说明，由后端加载、校验、渲染，再经只读接口、命令行和 Agent 工具交给界面与 Agent。设计见 [v2.6 看懂系统 spec](../specs/2026-10-28-v2.6-understanding-the-system-design.md)（§4、§5.2、§10、§11）。本篇先写知识层本身；「知识」菜单页面与就地展开由后续任务接入，届时在这里追加一节「页面」。
+v2.6 新增（知识层 `knowledge-1`）：把「系统里每个概念是什么意思、系统每天怎么跑」写成随代码版本走的概念卡与一页原理说明，由后端加载、校验、渲染，再经只读接口、命令行和 Agent 工具交给界面与 Agent。设计见 [v2.6 看懂系统 spec](../specs/2026-10-28-v2.6-understanding-the-system-design.md)（§4、§5.2、§10、§11）。本篇先写知识层本身，再写页面，最后是 v2.7 的「我的知识」。
 
 ## 做什么
 
@@ -92,3 +92,20 @@ v2.6 起前端接入知识层（设计见 [v2.6 §5、§6、§12](../specs/2026-
 - **原理页 `#knowledge/principles`**：顶部日期选择（默认最近已收盘交易日）；逐节渲染，对应某个批处理阶段的节在正文下方有一个框「当天这一步（<交易日>）」，里面是[运行一览](daily-plan.md)里这一阶段的那一行，并附「在『今日』看完整运行一览」；改日期只重新请求运行一览，不重新加载原理页。原理页不存在显示「还没有原理页」。
 - **加载失败（503）**：概念页与卡片页都显示「概念卡加载失败」与后端给的问题清单前 10 条；`ConceptTerm` 照常显示文字和「ⓘ」，点开写「概念卡暂不可用：<原因>」；批处理、运行一览、推理视图、「标的」页不受影响。
 - **`ConceptTerm`**：见 [数据菜单 · 就地展开概念](data-menu.md#就地展开概念)；挂载位置在「数据」菜单、推导视图、计划卡、规则基线、版本链、「今日」决定表单、「标的」页、运行一览与推理阅读视图，详见 [每日计划](daily-plan.md)。
+
+## 我的知识
+
+v2.7 新增（`my-knowledge-1`，设计见 [v2.7 spec §5、§6、§7](../specs/2026-10-28-v2.7-growth-loop-design.md)）：**你审定过的经验**。概念卡讲「系统里的东西是什么意思」，我的知识记「你从自己的交易里学到了什么」，只追加、带版本、挂在概念卡或标的上，Agent 生成或复查计划时用工具 `get_knowledge` 读取（[Agent 轨道](agent-track.md)）。所有经验都**未经验证**，表现回看只是描述性统计。
+
+- **条目与版本**：一条知识 = `knowledge_items` 一行 + 第 1 版起连续编号的 `knowledge_versions`，新版 `supersedes_id` 指向上一版。字段：标题（1–60 字）、正文（1–4000 字，纯文本，按段落显示，不渲染 Markdown）、适用范围（1–500 字，必填）、反例（0–1000 字，你手写时可空）、挂靠（`concept:<id>@<版本>` 与标的合计 1–10 处，写入时概念取卡的当前版，标的过 `identity.stock_id`）。`created_at` 是数据库写入时刻，不能补登。来源 `origin`：`manual`（你写的）、`review_card`（复盘卡审定采纳的）、`discussion`（讨论草稿审定采纳的）。
+- **归档与恢复**：`knowledge_status` 里的一行记录（`archived` / `active`，带 0–300 字理由），不出新版本；当前状态 = 最后一条，没有记录就是有效。已归档的条目不能出新版（409 `knowledge_archived`，先恢复）。
+- **改版的并发**：新版必须带 `base_version`（页面加载时的最高版本），否则 409 `knowledge_stale: 这条知识已更新到第 n 版，请刷新后再改`；写入时持 advisory lock `knowledge:<id>`，两个并发改版只有一个成功。所有写入带 `request_id`：同内容再提交返回原行（`status: replayed`），不同内容 409 `request_id_conflict`。
+- **引用**：`know:<id>@<版本>`（正则 `^know:([1-9][0-9]*)(?:@([1-9][0-9]*))?$`），Agent 引用必须带版本，页面地址 `#knowledge/mine/<id>[@<版本>]`。
+- **截止时间可见性**：`knowledge_items.visible(versions, statuses, cutoff=…)` 是唯一的判定函数——取 `created_at ≤ cutoff` 的最高版本，截止时间时已归档的不返回，之后写的版本、之后的归档都看不到；`get_knowledge`、页面和 `my_knowledge check-cutoff` 都用它。
+- **草稿不可被 Agent 读到**：复盘卡的教训草稿和讨论里的经验草稿存在 `knowledge_drafts`，没有任何 Agent 工具查询它们；只有你审定通过才在 `knowledge_versions` 写第 1 版。讨论草稿在「我的知识 → 草稿」审定，卡的草稿只能在卡上审定（409 `review_on_card`）；采纳有 `target` 的草稿 = 目标条目的新版（`base_version` 规则同上，缺省取 `target_version`）。
+- **被引用与表现回看**：计划（首版、修订）和复查通过校验后，引用的知识版本按字段写进 `knowledge_citations`（与计划同一事务）。回看（`knowledge-perf-1`，`my_knowledge.performance`）的样本单位是单元：同一条链修订三次都引用它只算一个样本，取最早引用的那一版，用 `plan-shadow-1` 模拟，汇总用 `review.shadow_block`（与「计划影子」的 `agent_summary` 同一函数、同一阈值）；有结果的不足 5 个不给均值；只在复查里被引用的次数单列。
+- **页面**：「知识」菜单的第三项「我的知识」（`#knowledge/mine`，列表与筛选、`mine/new` 写一条、`mine/drafts` 草稿、`mine/<id>[@<版本>]` 条目页：全文、版本历史、被引用、表现回看，旧版有提示）；概念卡页多一段「挂在这张卡上的我的知识」；「标的」页「我的知识」一段。
+- **接口**：`GET/POST /api/workbench/my-knowledge`（列表 `?ticker=&concept=&status=active|archived|all`、新条目）、`GET /api/workbench/my-knowledge/{id}[?version=]`（`item`、`versions`、`status_history`、`citations`、`current`）、`POST …/{id}/versions`、`POST …/{id}/status`（body `{request_id, status, reason}`，状态不变 409 `status_unchanged`）、`GET …/{id}/performance`、`GET /api/workbench/my-knowledge-drafts?status=open|all`、`POST /api/workbench/my-knowledge-drafts/{id}/verdict`；`GET /api/workbench/instruments/{ticker}` 多一个 `knowledge`；`GET /api/workbench/chains/…` 每个版本与 `GET /api/workbench/today` 单元的 `agent` 块多一个 `knowledge_refs`（`[{ref, title, fields, current_version}]`）。迁移 027 未执行 503「迁移 027 未执行」（`today` / 链视图的 `knowledge_refs` 为空列表，「标的」页的 `knowledge` 为 `null` 并在 `errors.knowledge` 说明）。挂概念时概念卡目录读不出 → 503「概念卡不可用：…」，只挂标的的照常。
+- **命令行** `python -m investment_assistant.workbench.my_knowledge`：`show --id N [--version V]`（只读，没有这条知识退出码 1）；`check-cutoff --since D`（只读）：对 `since` 之后每个成功的 `get_knowledge` 调用，按它所属运行的 `cutoff_at` 用 `visible` 重算一次，返回的每条都必须可见、条数是截止时间下应有的数；对 `knowledge_citations` 每一行，所属运行里必须有一次 `get_knowledge` 返回过这个 `know:<id>@<版本>`，且该版本写于运行截止时间之前；有问题退出码 1，数据库不可用或迁移 027 未执行退出码 2。
+- **怎么验证一次**：手写一条挂到一个概念和一个标的 → 改一版（第 2 版指向第 1 版）→ 归档 → 恢复；对挂了知识的标的的一条有效链点「重新复查」，推理视图里能看到 `get_knowledge` 的调用与返回的版本；`my_knowledge check-cutoff --since <上线日>` 通过。
+- **已知限制**：知识正文是纯文本；概念卡改版后，知识上挂的 `concept:<id>@<旧版>` 不自动更新（条目页提示挂的是第几版）；表现回看只看影子，不区分你是否真的照做；样本小且不同单元常同日重叠。

@@ -3,9 +3,9 @@ id: review.weekly
 title: "周度复盘"
 group: review
 version: 1
-applies_to: [review-6]
+applies_to: [review-6, review-7]
 summary: "每周冻结一份快照：按规则、按决定、执行偏差、无信号交易、计划影子、纪律、分池多个视角统计，并冻结当期三方对比；更正要重新生成。"
-related: [review.control_group, review.tracks, review.first_latest, review.monthly_return, system.push]
+related: [review.control_group, review.tracks, review.first_latest, review.monthly_return, system.push, review.weekly_learning]
 sources: [investment_assistant/workbench/review.py, investment_assistant/workbench/review_digest.py, investment_assistant/tasks/workbench_review.py]
 ---
 
@@ -23,11 +23,12 @@ sources: [investment_assistant/workbench/review.py, investment_assistant/workben
 - **纪律**：追高进场、过早止盈、死扛亏损、计划外交易四项与遵守率。
 - **分池**：核心（`core`）、筛选（`screen`）、扩展（`extended`）三类。
 - **三方对比**：当期冻结一份。
+- **你学到了什么**（`review-7` 起）：本周结束的交易的纪律四项、本周的复盘卡摘要、本周被检验的知识，见[你学到了什么](review.weekly_learning.md)；`review-6` 及更早的快照没有这一段，不重算。
 
 **冻结与更正**：快照生成后不再改动；要更正就对同一周重新生成，新快照指向旧快照。**推送**：任务 `workbench_review` 每天北京时间 08:00 检查一次，每周最后一个交易日收盘后的首次运行会冻结并推送该周快照。
 
 ## 在系统里哪里看到
-「复盘 → 周度复盘」，卡片上有"推送到 Discord"按钮。
+「复盘 → 周度复盘」，卡片上有"推送到 Discord"按钮；推送里多一个"你学到了什么"字段。
 
 ## 注意
 所有数字是描述性统计，样本小且互相重叠，快照里也写明"不代表规则有效"。

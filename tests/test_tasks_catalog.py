@@ -12,3 +12,11 @@ def test_every_registered_job_is_described():
 
 def test_unknown_job_has_no_description():
     assert catalog.describe('nope') is None
+
+
+def test_workbench_description_mentions_review_cards():
+    """v2.7 §9: the batch now has a retro stage (复盘卡)."""
+    info = catalog.describe('workbench')
+    text = ' '.join(info['details'])
+    assert '复盘卡' in text and 'retro' in text
+    assert text.index('复盘卡') < text.index('推送 Discord')

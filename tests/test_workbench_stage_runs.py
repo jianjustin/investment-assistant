@@ -1,5 +1,6 @@
-"""run_batch 的阶段记账（v2.4 §4；v2.5 §7.1 起 stages-2 八个阶段）：计数与四族 fetch 行、筛选与区制的产出引用对得上；
-非交易日推送之外的阶段整段跳过；信号、计划、Agent、推送的计数与产出引用；每次运行恰好 8 行（未执行 026 时 7 行）。
+"""run_batch 的阶段记账（v2.4 §4；v2.5 §7.1 起 stages-2 八个阶段；v2.7 §9 起 stages-3 九个阶段）：计数与四族 fetch 行、
+筛选与区制的产出引用对得上；非交易日推送之外的阶段整段跳过；信号、计划、Agent、推送的计数与产出引用；每次运行恰好 9 行
+（未执行 027 时 8 行，未执行 026 时 7 行）。
 复用 characterization 的假 fetcher，recorder 用默认写入，行落在一次性库的 stage_runs 里再读回。"""
 from datetime import UTC, date, datetime, timedelta
 
@@ -153,8 +154,8 @@ def _job_run_id(db) -> str:
                       'ORDER BY id DESC LIMIT 1').fetchone()[0]
 
 
-def test_every_run_writes_exactly_eight(wired, monkeypatch):
-    """定时、手动、非交易日、显式池、中途异常：每个 run_id 恰好 8 行（stages-2）。"""
+def test_stage_runs_nine_rows(wired, monkeypatch):
+    """定时、手动、非交易日、显式池、中途异常：每个 run_id 恰好 9 行（stages-3）。"""
     seed_watchlist(wired, [('NVDA', ['core'])])
     _sent(monkeypatch)
     saturday = datetime(2026, 10, 24, 22, 30, tzinfo=UTC)
@@ -166,34 +167,68 @@ def test_every_run_writes_exactly_eight(wired, monkeypatch):
         assert run_id == result['run_id']
         rows = repository.stage_runs_for_run(wired, run_id)
         assert [r['stage'] for r in rows].count('push') == 1
-        assert {r['stage'] for r in rows} == set(stages_module.STAGE_IDS) and len(rows) == 8
+        assert {r['stage'] for r in rows} == set(stages_module.STAGE_IDS) and len(rows) == 9
         assert {r['run_id'] for r in rows} == {run_id}
-        assert {r['stages_version'] for r in rows} == {'stages-2'}
-        assert result['summary']['stage_status'] == {'written': 8, 'error': None}
+        assert {r['stages_version'] for r in rows} == {'stages-3'}
+        assert result['summary']['stage_status'] == {'written': 9, 'error': None}
         seen.append(rows)
     assert {r['trigger'] for r in seen[0]} == {'scheduled'}
     assert {r['trigger'] for r in seen[1]} == {'manual_batch'}
     assert {r['status'] for r in seen[2] if r['stage'] != 'push'} == {'skipped'}
-    assert [r['status'] for r in seen[2] if r['stage'] == 'review'] == ['skipped']
+    assert [r['status'] for r in seen[2] if r['stage'] in ('review', 'retro')] == ['skipped', 'skipped']
+    retro_rows = [next(r for r in rows if r['stage'] == 'retro') for rows in seen[:2]]
+    assert [(r['status'], r['input_count'], r['output_count']) for r in retro_rows] == [('success', 0, 0)] * 2
+    assert retro_rows[0]['detail']['events'] == 0 and retro_rows[0]['detail']['by_end_kind'] == {
+        'position_closed': 0, 'stop': 0, 'target': 0, 'expired': 0, 'invalidated': 0}
 
     # 显式池：直接调 run_batch，再 close
     recorder = _recorder('run-explicit-pool')
     service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()), stages=recorder)
-    assert recorder.close() == {'written': 8, 'error': None}
+    assert recorder.close() == {'written': 9, 'error': None}
     rows = _rows(wired, 'run-explicit-pool')
     assert set(rows) == set(stages_module.STAGE_IDS)
     assert rows['screen']['reason'] == 'explicit_pool'
     assert (rows['push']['status'], rows['push']['reason']) == ('skipped', 'not_reached')
 
-    # 中途异常：已写的阶段保留，其余（含 review）记 failed / aborted，仍是 8 行
+    # 中途异常：已写的阶段保留，其余（含 review、retro）记 failed / aborted，仍是 9 行
     def boom(**_):
         raise service.Unavailable('boom')
 
     monkeypatch.setattr(regime_module, 'snapshot', boom)
     result = _task_run('scheduled', moment=NOW + timedelta(minutes=10))
     rows = repository.stage_runs_for_run(wired, result['run_id'])
-    assert len(rows) == 8 and {r['stage'] for r in rows} == set(stages_module.STAGE_IDS)
-    assert {r['status'] for r in rows if r['stage'] in ('review', 'push')} == {'failed'}
+    assert len(rows) == 9 and {r['stage'] for r in rows} == set(stages_module.STAGE_IDS)
+    assert {r['status'] for r in rows if r['stage'] in ('review', 'retro', 'push')} == {'failed'}
+
+
+GROWTH_DROP = ('knowledge_citations, knowledge_draft_verdicts, review_card_verdicts, knowledge_drafts, '
+               'knowledge_versions, knowledge_status, discussion_turns, knowledge_items, discussions, '
+               'review_card_drafts, review_cards')
+
+
+def test_without_migration_027_stages_2(wired, monkeypatch):
+    """D29: 删掉 027 的十一张表 → 任务层按 stages-2 记账，每个 run_id 8 行，没有 retro 行；
+    summary['errors'] 恰有一条 growth: migration_027_missing，其余阶段照常。"""
+    seed_watchlist(wired, [('NVDA', ['core'])])
+    _sent(monkeypatch)
+    clean = _task_run('scheduled', moment=NOW - timedelta(days=1))
+    wired.execute(f'DROP TABLE {GROWTH_DROP} CASCADE')
+    wired.commit()
+    for trigger, moment in (('scheduled', NOW), ('manual', NOW + timedelta(minutes=5)),
+                            ('scheduled', datetime(2026, 10, 24, 22, 30, tzinfo=UTC))):
+        result = _task_run(trigger, moment=moment)
+        rows = repository.stage_runs_for_run(wired, result['run_id'])
+        assert len(rows) == 8 and [r['stage'] for r in rows].count('retro') == 0
+        assert {r['stage'] for r in rows} == set(stages_module.STAGE_IDS_V2)
+        assert {r['stages_version'] for r in rows} == {'stages-2'}
+        assert result['summary']['stage_status'] == {'written': 8, 'error': None}
+        if trigger == 'scheduled' and moment == NOW:
+            assert result['summary']['errors'].count('growth: migration_027_missing') == 1
+            assert 'retro' not in result['summary']
+            by_stage = {r['stage']: r for r in rows}
+            assert {by_stage[name]['status'] for name in ('collect', 'screen', 'regime', 'signals', 'plan', 'agent',
+                                                          'review')} <= {'success', 'partial', 'degraded', 'skipped'}
+    assert 'growth: migration_027_missing' not in clean['summary']['errors']
 
 
 def test_without_migration_026_runs_record_stages_1(wired, monkeypatch):
@@ -371,14 +406,14 @@ def test_abort_marks_remaining_failed(wired, monkeypatch):
     assert rows['collect']['status'] in ('success', 'partial')
     assert rows['screen']['status'] == 'success'
     assert (rows['regime']['status'], rows['regime']['reason']) == ('failed', 'aborted: boom')
-    for stage in ('signals', 'plan', 'agent', 'review', 'push'):
+    for stage in ('signals', 'plan', 'agent', 'review', 'retro', 'push'):
         assert (rows[stage]['status'], rows[stage]['reason']) == ('failed', 'aborted: boom')
 
 
 def test_missing_stage_runs_table_does_not_fail_batch(wired):
     seed_watchlist(wired, [('NVDA', ['core'])])
     with_table = _task_run('manual')
-    assert with_table['summary']['stage_status'] == {'written': 8, 'error': None}
+    assert with_table['summary']['stage_status'] == {'written': 9, 'error': None}
 
     wired.execute('DROP TABLE stage_runs')
     wired.commit()

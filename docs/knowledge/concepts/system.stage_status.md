@@ -3,7 +3,7 @@ id: system.stage_status
 title: "阶段状态"
 group: system
 version: 1
-applies_to: [stages-2]
+applies_to: [stages-3, stages-2]
 summary: "每个阶段的状态五选一：success、partial、degraded、failed、skipped，优先级 skipped > failed > partial > degraded > success。"
 related: [system.stages, agent.reject_reasons, system.push]
 sources: [investment_assistant/workbench/stages.py]

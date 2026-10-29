@@ -5,7 +5,7 @@ group: review
 version: 1
 applies_to: [review-6]
 summary: "买入成交价高于所关联计划的入场区间上限，就记为追高进场；在成交当时判定。"
-related: [review.discipline_unplanned, review.discipline_early_take, review.discipline_held_loser, plan.entry_zone]
+related: [review.discipline_unplanned, review.discipline_early_take, review.discipline_held_loser, plan.entry_zone, review.retro_card]
 sources: [investment_assistant/workbench/discipline.py]
 ---
 
@@ -19,6 +19,8 @@ sources: [investment_assistant/workbench/discipline.py]
 
 ## 在系统里哪里看到
 「复盘」的纪律明细：每笔成交带标记，另有各项计数和遵守率（有计划的买入中没有被标记的比例）。
+
+[复盘卡](review.retro_card.md)上的"你的决定与纪律"也显示这一项：卡页同时给出检测当时（冻结）和现在的判定，待定的项写明还要等什么；周度复盘的"你学到了什么"汇总本周结束的卡上的合计。
 
 ## 注意
 这是对执行的描述，不是对错的判决：计划被你自定调整过时，以你采纳的那份计划为准。

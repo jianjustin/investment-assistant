@@ -20,7 +20,7 @@ STAGE_TITLES = {s.id: s for s in stages_module.STAGES}
 
 
 def row(stage, *, run_id='run-1', status='success', reason=None, i=0, o=0, skips=(), failures=(),
-        degradations=(), outputs=None, detail=None, trigger='scheduled', version='stages-2',
+        degradations=(), outputs=None, detail=None, trigger='scheduled', version='stages-3',
         started=T0, seconds=2, duration_ms=1234):
     return {'run_id': run_id, 'job': 'workbench', 'trigger': trigger, 'session': SESSION, 'stage': stage,
             'stages_version': version, 'status': status, 'reason': reason, 'input_count': i, 'output_count': o,
@@ -54,12 +54,18 @@ TEMPLATE_CASES = [
                             'holdings_without_chain': ['AAPL', 'MSFT']}),
      '复查 4 份 Agent 计划：维持 2 · 修订 1（出新版 1）· 作废 1；系统规则判定 1 · Agent 判定 3；'
      '已结束的链：过期 1 · 否决 0 · 平仓 2；无 Agent 计划的持仓：AAPL, MSFT'),
+    ('retro', dict(i=3, o=2, detail={'events': 3, 'new_cards': 3, 'to_review': 2,
+                                    'by_end_kind': {'position_closed': 1, 'stop': 1, 'target': 0, 'expired': 1,
+                                                    'invalidated': 0}}),
+     '新结束 3 笔（平仓 1 · 止损 1 · 过期 1），新建复盘卡 3 张；起草 2/3 张；待审定 2 张'),
+    ('retro', dict(i=0, o=0, detail={'events': 0, 'new_cards': 0, 'to_review': 0, 'by_end_kind': {}}),
+     '没有新结束的计划或平仓；待审定 0 张'),
     ('push', dict(i=3, o=3, outputs={'push': {'sent': True, 'messages': 3, 'reason': None}}, ),
      '发送 3 条消息'),
 ]
 
 
-@pytest.mark.parametrize('stage,kwargs,sentence', TEMPLATE_CASES, ids=[c[0] for c in TEMPLATE_CASES])
+@pytest.mark.parametrize('stage,kwargs,sentence', TEMPLATE_CASES, ids=[f'{c[0]}-{n}' for n, c in enumerate(TEMPLATE_CASES)])
 def test_describe_templates(stage, kwargs, sentence):
     out = describe(row(stage, **kwargs))
     assert out['sentence'] == sentence
@@ -74,6 +80,24 @@ def test_describe_review_all_zero_ended_and_no_holdings_omitted():
         'ended': {'expired': 0, 'closed_by_decision': 0, 'position_closed': 0}, 'holdings_without_chain': []}))
     assert '已结束的链' not in out['sentence'] and '无 Agent 计划的持仓' not in out['sentence']
     assert out['sentence'] == '复查 1 份 Agent 计划：维持 1 · 修订 0（出新版 0）· 作废 0；系统规则判定 1 · Agent 判定 0'
+
+
+def test_describe_retro():
+    """v2.7 §9 的两句模板；分项只列非零项，无事件但有待起草的旧卡也走第一句，缺键按 0。"""
+    out = describe(row('retro', i=3, o=2, detail={'events': 3, 'new_cards': 3, 'to_review': 2, 'by_end_kind': {
+        'position_closed': 1, 'stop': 1, 'target': 0, 'expired': 1, 'invalidated': 0}}))
+    assert out['sentence'] == '新结束 3 笔（平仓 1 · 止损 1 · 过期 1），新建复盘卡 3 张；起草 2/3 张；待审定 2 张'
+    assert out['concepts'] == ['review.retro_card', 'review.retro_end']
+    quiet = describe(row('retro', i=0, o=0, detail={'events': 0, 'new_cards': 0, 'to_review': 0, 'by_end_kind': {}}))
+    assert quiet['sentence'] == '没有新结束的计划或平仓；待审定 0 张'
+    older = describe(row('retro', i=2, o=1, detail={'events': 0, 'new_cards': 0, 'to_review': 4}))
+    assert older['sentence'] == '新结束 0 笔，新建复盘卡 0 张；起草 1/2 张；待审定 4 张'
+    assert describe(row('retro'))['sentence'] == '没有新结束的计划或平仓；待审定 0 张'
+    assert describe(row('retro', status='skipped', reason='not_trading_day'))['sentence'] == '跳过：纽约休市'
+    capped = describe(row('retro', status='degraded', i=7, o=4, detail={'events': 1, 'new_cards': 1, 'to_review': 4},
+                          skips=[{'reason': 'draft_cap', 'count': 2, 'samples': ['AAPL']}],
+                          degradations=[{'kind': 'draft_rejected', 'detail': 'AMD'}]))
+    assert capped['sentence'].endswith('；降级：草稿未通过校验；跳过 2（超出每次起草上限 5 张 × 2）')
 
 
 def test_describe_push_variants():
@@ -182,7 +206,7 @@ def test_stage_concepts_cover_registry():
 @pytest.mark.parametrize('stage', stages_module.STAGE_IDS)
 def test_describe_tolerates_missing_detail_keys(stage):
     out = describe(row(stage, detail={}, outputs={}))
-    assert out['sentence'] and '；' not in out['sentence'] or stage == 'push'
+    assert out['sentence'] and '；' not in out['sentence'] or stage in ('push', 'retro')
     assert out['concepts'] == list(run_overview.STAGE_CONCEPTS[stage])
     # an old row whose detail holds unrelated keys is fine too
     assert describe(row(stage, detail={'weird': 1}, outputs={'x': 1}))['sentence']
@@ -190,7 +214,7 @@ def test_describe_tolerates_missing_detail_keys(stage):
 
 # ---------------------------------------------------------------- build: real recorder rows
 
-def _recorded_rows(version='stages-2', run_id='run-rec', trigger='scheduled'):
+def _recorded_rows(version='stages-3', run_id='run-rec', trigger='scheduled'):
     rows: list[dict] = []
     tick = iter(range(1000))
     wall = lambda: T0 + timedelta(seconds=next(tick))          # noqa: E731
@@ -222,7 +246,7 @@ def _recorded_rows(version='stages-2', run_id='run-rec', trigger='scheduled'):
 
 def test_overview_counts_equal_recorder_rows():
     rows = _recorded_rows()
-    assert len(rows) == 8
+    assert len(rows) == 9
     view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
     assert view['ready'] is True and view['note'] is None and view['session'] == '2026-10-27'
     assert [s['id'] for s in view['stages']] == list(stages_module.STAGE_IDS)
@@ -247,7 +271,7 @@ def test_overview_counts_equal_recorder_rows():
     # run bookkeeping
     [run] = view['runs']
     assert run['run_id'] == 'run-rec' and run['trigger'] == 'scheduled' and run['trigger_text'] == '定时'
-    assert run['stages_version'] == 'stages-2' and run['rows'] == 8 and run['closed'] is False
+    assert run['stages_version'] == 'stages-3' and run['rows'] == 9 and run['closed'] is False
     assert view['selected_run_id'] == 'run-rec'
 
 
@@ -256,15 +280,31 @@ def test_overview_stages_1_placeholder():
     assert len(rows) == 7
     view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
     assert [s['id'] for s in view['stages']] == list(stages_module.STAGE_IDS)
-    assert len(view['stages']) == 8
+    assert len(view['stages']) == 9
     placeholder = view['stages'][6]
     assert placeholder['id'] == 'review' and placeholder['status'] == 'not_recorded'
     assert placeholder['status_text'] == '未记录'
     assert placeholder['sentence'] == '这次运行按 stages-1 记账（早于 v2.5 或迁移 026 未执行），没有每日复查阶段'
     assert placeholder['input_count'] is None and placeholder['output_count'] is None
     assert placeholder['duration_ms'] is None and placeholder['skips'] == []
-    assert view['stages'][7]['id'] == 'push'
+    retro = view['stages'][7]
+    assert retro['id'] == 'retro' and retro['status'] == 'not_recorded'
+    assert retro['sentence'] == '这次运行按 stages-2 记账（早于 v2.7 或迁移 027 未执行），没有复盘卡阶段'
+    assert view['stages'][8]['id'] == 'push'
     assert view['runs'][0]['stages_version'] == 'stages-1' and view['runs'][0]['rows'] == 7
+
+
+def test_overview_stages_2_placeholder():
+    """A stages-2 run (before v2.7, or migration 027 missing) has eight rows; retro is "not recorded", not "missing"."""
+    rows = _recorded_rows(version='stages-2')
+    assert len(rows) == 8
+    view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
+    assert [s['id'] for s in view['stages']] == list(stages_module.STAGE_IDS) and len(view['stages']) == 9
+    review, retro = view['stages'][6], view['stages'][7]
+    assert review['status'] == 'skipped' and retro['status'] == 'not_recorded' and retro['status_text'] == '未记录'
+    assert retro['sentence'] == '这次运行按 stages-2 记账（早于 v2.7 或迁移 027 未执行），没有复盘卡阶段'
+    assert retro['concepts'] == ['review.retro_card', 'review.retro_end']
+    assert '可能仍在运行' not in view['headline'] and view['runs'][0]['rows'] == 8
 
 
 def test_missing_and_unknown_stage():
@@ -272,7 +312,7 @@ def test_missing_and_unknown_stage():
     rows.append(row('mystery', status='success', i=1, o=1))
     view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
     ids = [s['id'] for s in view['stages']]
-    assert ids[:8] == list(stages_module.STAGE_IDS) and ids[-1] == 'mystery' and len(ids) == 9
+    assert ids[:9] == list(stages_module.STAGE_IDS) and ids[-1] == 'mystery' and len(ids) == 10
     missing = view['stages'][2]
     assert missing['id'] == 'regime' and missing['status'] == 'missing' and missing['status_text'] == '缺证据'
     assert missing['sentence'] == '这一阶段没有证据行（记账失败，见运行报告）'
@@ -285,11 +325,11 @@ def test_missing_and_unknown_stage():
 def test_unfinished_run_is_not_an_accounting_failure():
     rows = [row('collect', i=10, o=10), row('screen', i=100, o=7)]
     view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
-    assert [s['status'] for s in view['stages']] == ['success', 'success'] + ['missing'] * 6
+    assert [s['status'] for s in view['stages']] == ['success', 'success'] + ['missing'] * 7
     for stage in view['stages'][2:]:
         assert stage['sentence'] == '还没有这一阶段的记录：运行可能仍在进行，或中途被终止'
         assert stage['status_text'] == '缺证据'
-    assert view['headline'].endswith('成功 2 · 缺证据 6（可能仍在运行）')
+    assert view['headline'].endswith('成功 2 · 缺证据 7（可能仍在运行）')
 
 
 def test_gap_before_a_recorded_stage_stays_an_accounting_failure():
@@ -307,11 +347,11 @@ def test_gap_before_a_recorded_stage_stays_an_accounting_failure():
 def test_unfinished_run_is_not_an_accounting_failure():
     rows = [row('collect', i=10, o=10), row('screen', i=100, o=7)]
     view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
-    assert [s['status'] for s in view['stages']] == ['success', 'success'] + ['missing'] * 6
+    assert [s['status'] for s in view['stages']] == ['success', 'success'] + ['missing'] * 7
     for stage in view['stages'][2:]:
         assert stage['sentence'] == '还没有这一阶段的记录：运行可能仍在进行，或中途被终止'
         assert stage['status_text'] == '缺证据'
-    assert view['headline'].endswith('成功 2 · 缺证据 6（可能仍在运行）')
+    assert view['headline'].endswith('成功 2 · 缺证据 7（可能仍在运行）')
 
 
 def test_gap_before_a_recorded_stage_stays_an_accounting_failure():
@@ -330,7 +370,7 @@ def test_cli_exit_code_for_an_unfinished_run(monkeypatch, capsys):
     monkeypatch.setattr(run_overview, 'overview', lambda **kwargs: view)
     assert run_overview.main(['--session', '2026-10-27']) == 0
     out = capsys.readouterr().out.strip().splitlines()
-    assert out[0].endswith('（可能仍在运行）') and len(out) == 9
+    assert out[0].endswith('（可能仍在运行）') and len(out) == 10
     assert '运行可能仍在进行' in out[3]
 
 
@@ -361,7 +401,7 @@ def test_non_trading_day_headline():
     view = run_overview.build(closed_run(), session=SESSION, run_id=None, ready=True)
     assert view['headline'] == '纽约休市，未运行（只推送一行休市说明）'
     assert view['runs'][0]['closed'] is True and view['runs'][0]['trigger_text'] == '休市'
-    assert len(view['stages']) == 8
+    assert len(view['stages']) == 9
     assert view['stages'][0]['sentence'] == '跳过：纽约休市'
     assert view['stages'][-1]['sentence'] == '纽约休市，发送休市说明 1 条'
 
@@ -370,9 +410,9 @@ def test_headline_counts():
     rows = real_run(statuses={'regime': 'degraded', 'screen': 'skipped'})
     rows[0] = row('collect', run_id='run-real', started=T0, seconds=192)             # run spans 3 min 12 s via the collect row
     view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
-    assert view['headline'] == '定时运行 · 06:30 开始 · 用时 3 分 12 秒 · 8 个阶段：成功 6 · 降级 1 · 跳过 1'
+    assert view['headline'] == '定时运行 · 06:30 开始 · 用时 3 分 12 秒 · 9 个阶段：成功 7 · 降级 1 · 跳过 1'
     short = run_overview.build(real_run(), session=SESSION, run_id=None, ready=True)['headline']
-    assert short == '定时运行 · 06:30 开始 · 用时 2 秒 · 8 个阶段：成功 8'
+    assert short == '定时运行 · 06:30 开始 · 用时 2 秒 · 9 个阶段：成功 9'
     manual = run_overview.build([r | {'trigger': 'manual_batch'} for r in real_run()], session=SESSION,
                                 run_id=None, ready=True)
     assert manual['headline'].startswith('手动运行 · 06:30 开始')
@@ -462,7 +502,7 @@ def test_cli_output_and_exit_codes(db, capsys):
     _insert(db, real_run('run-a'))
     assert run_overview.main(['--session', '2026-10-27']) == 0
     out = capsys.readouterr().out.strip().splitlines()
-    assert len(out) == 8 + 1                                           # headline + 8 stage lines
+    assert len(out) == 9 + 1                                           # headline + 9 stage lines
     assert out[0].startswith('定时运行')
     collect = out[1]
     assert collect.startswith(f'{STAGE_TITLES["collect"].title} · 成功 · ') and collect.endswith(' · 0/0')

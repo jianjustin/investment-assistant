@@ -40,12 +40,12 @@ def holding(ticker='NVDA', **over):
 
 
 def build(units=(), holdings=(), summary=None, last_push_failed=False, extended_plans=0, market=None,
-          agent_summary=None, screen=None, plan_updates=None):
+          agent_summary=None, screen=None, plan_updates=None, retro=None):
     return digest.build(session=SESSION, units=list(units), holdings=list(holdings),
                         summary=summary or {'errors': [], 'earnings': {}},
                         last_push_failed=last_push_failed, public_url=URL,
                         extended_plans=extended_plans, market=market, agent_summary=agent_summary,
-                        screen=screen, plan_updates=plan_updates)
+                        screen=screen, plan_updates=plan_updates, retro=retro)
 
 
 def agent_ok(ticker='NVDA', summary='回踩修复放量', first_risk='财报临近'):
@@ -613,3 +613,17 @@ def test_invalidated_chain_says_so_before_baseline():
     agent['chain'].update(state='invalidated', latest_review={'outcome': 'invalidate', 'reason': '失效条件成立：收盘跌破 95'})
     value = plan_field(build(units=[unit(plan=plan_row(), agent=agent)]))
     assert value.startswith('Agent 已作废此计划（第 1 版）：失效条件成立：收盘跌破 95；规则基线：')
+
+
+# --- v2.7 §9: 「复盘卡 新增 a · 待审定 b」 ---
+
+def test_overview_retro_line():
+    shown = build(retro={'new_cards': 2, 'drafts': 1, 'to_review': 3})
+    assert shown['overview']['retro'] == {'new_cards': 2, 'to_review': 3}
+    lines = templates.workbench_digest(shown)[0].fields[0].value.split('\n')
+    assert lines[-1] == '复盘卡 新增 2 · 待审定 3'
+    only_pending = build(retro={'new_cards': 0, 'drafts': 0, 'to_review': 4})
+    assert '复盘卡 新增 0 · 待审定 4' in all_text(templates.workbench_digest(only_pending))
+    for quiet in (build(retro={'new_cards': 0, 'drafts': 0, 'to_review': 0}), build(retro=None), build()):
+        assert '复盘卡' not in all_text(templates.workbench_digest(quiet))
+    assert 'retro' not in build()['overview']

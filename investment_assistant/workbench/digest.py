@@ -50,10 +50,13 @@ def _agent_field(agent: dict[str, Any] | None) -> dict[str, Any] | None:
 def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str, Any]], summary: dict[str, Any],
           last_push_failed: bool, public_url: str, extended_plans: int = 0,
           market: dict[str, Any] | None = None, agent_summary: dict[str, Any] | None = None,
-          screen: dict[str, Any] | None = None, plan_updates: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+          screen: dict[str, Any] | None = None, plan_updates: list[dict[str, Any]] | None = None,
+          retro: dict[str, Any] | None = None) -> dict[str, Any]:
     """{'session', 'overview', 'plans', 'plan_updates', 'holdings', 'pending', 'errors', 'errors_by_source'}
     for the day's push. `plan_updates` are the review rows of the D25 window, each with its chain's
-    `pool`, `from_version` / `to_version`, `changes` (texts), the new version's `levels` and `valid_until`."""
+    `pool`, `from_version` / `to_version`, `changes` (texts), the new version's `levels` and `valid_until`.
+    `retro` (v2.7 §9, the batch summary's ``retro`` = ``{new_cards, drafts, to_review}``) feeds the overview's
+    「复盘卡 新增 a · 待审定 b」 line; None (no retro stage ran) keeps the overview as before."""
     plans = []
     expiring = []
     tomorrow = add_trading_days(session, 1)
@@ -137,7 +140,9 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
                      'market': market,
                      'agent': _agent_counts(units, session),
                      'agent_quota_exhausted': bool((agent_summary or {}).get('quota_exhausted')),
-                     **({'plan_updates': update_counts} if update_counts is not None else {})},
+                     **({'plan_updates': update_counts} if update_counts is not None else {}),
+                     **({'retro': {'new_cards': int(retro.get('new_cards') or 0),
+                                   'to_review': int(retro.get('to_review') or 0)}} if retro is not None else {})},
         'plans': plans,
         'plan_updates': updates,
         'holdings': holdings_out,

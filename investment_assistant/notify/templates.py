@@ -133,6 +133,9 @@ def workbench_digest(digest: dict) -> list[Notification]:
         lines.append('核心池为空，只推送持仓')
     if overview.get('last_push_failed'):
         lines.append('⚠️ 上次推送失败，请核对')
+    retro = overview.get('retro') or {}
+    if retro.get('new_cards') or retro.get('to_review'):
+        lines.append(f"复盘卡 新增 {retro.get('new_cards', 0)} · 待审定 {retro.get('to_review', 0)}")
     overview_fields = [NotifyField('概览', '\n'.join(lines)),
                        NotifyField('市场环境', _market_environment(overview.get('market')))]
     overview_msg = _fit_message(f"📊 工作台 · {session}", overview_fields, _footer())
@@ -368,6 +371,35 @@ def _discipline_line(discipline):
             f" · 合规率 {rate_text}")
 
 
+LEARNING_CARD_LINES = 5          # v2.7 §10: at most five card lines, then 「…另有 n 张」
+LEARNING_KNOWLEDGE_LINES = 3
+
+
+def _learning_text(learning: dict) -> str:
+    """The 「你学到了什么」 field text (v2.7 §10, verbatim lines): discipline, card counts, up to five cards, the
+    tested knowledge; all three empty -> one line."""
+    discipline, counts = learning.get('discipline') or {}, learning.get('counts') or {}
+    cards, knowledge = learning.get('cards') or [], learning.get('knowledge') or []
+    if not discipline.get('cards') and not counts.get('total') and not cards and not knowledge:
+        return '本周没有结束的交易，也没有被检验的知识'
+    lines = [f"纪律（本周结束的 {discipline.get('cards', 0)} 笔）：追高 {discipline.get('chase', 0)}"
+             f" · 过早止盈 {discipline.get('early_take', 0)} · 死扛亏损 {discipline.get('held_loser', 0)}"
+             f" · 计划外 {discipline.get('unplanned', 0)} · 待定 {discipline.get('pending', 0)}",
+             f"复盘卡 {counts.get('total', 0)} 张（已审定 {counts.get('reviewed', 0)}"
+             f" · 待审定 {counts.get('to_review', 0)}）"]
+    for card in cards[:LEARNING_CARD_LINES]:
+        actual = '未成交' if card.get('actual_r') is None else _r(card['actual_r'])
+        lines.append(f"{card['ticker']} {card['end_text']} · 实际 {actual} · {card['decision_text']}")
+    if len(cards) > LEARNING_CARD_LINES:
+        lines.append(f'…另有 {len(cards) - LEARNING_CARD_LINES} 张')
+    lines.append(f'被检验的知识 {len(knowledge)} 条')
+    for item in knowledge[:LEARNING_KNOWLEDGE_LINES]:
+        sample = item.get('sample') or {}
+        mean = '少于 5 个不给均值' if sample.get('r_mean') is None else f"均值 {_r(sample['r_mean'])}"
+        lines.append(f"{item['ref']} {item['title']} · 样本 {sample.get('count', 0)}（{mean}）")
+    return chr(10).join(lines)
+
+
 def _review_footer(payload):
     return NotifyField("说明", f"""{payload["note"]} {payload["evidence"]}{chr(10)}{payload["url"]}""")
 
@@ -389,6 +421,8 @@ def workbench_weekly(payload):
     rule_text = chr(10).join(rule_lines) or "本周无计划"
     _clip_field(fields, "规则", rule_text)
     _clip_field(fields, "纪律", _discipline_line(payload.get("discipline")))
+    if payload.get("learning") is not None:       # review-6 及更早的快照没有这一段（v2.7 §10）
+        _clip_field(fields, "你学到了什么", _learning_text(payload["learning"]))
     fields.append(_review_footer(payload))
     title = f"""📅 周度复盘 · {payload["start"]} – {payload["end"]}"""
     return [_fit_message(title, fields, _footer())]

@@ -130,6 +130,96 @@ def test_weekly_mean_none_renders_dash():
     assert '均值 —' in text
 
 
+# --- v2.7 §10: 「你学到了什么」 ---
+
+def _learning(*, cards=2, knowledge=1, extra_cards=0):
+    rows = [{'card_id': 1, 'ticker': 'NVDA', 'end_kind': 'position_closed', 'end_text': '平仓（按止损）',
+             'decision_text': '采纳（照规则计划）', 'actual_r': -1.0, 'rule_r': -1.0, 'agent_r': None,
+             'flags': ['chase'], 'status': 'to_review', 'headline': 'h'},
+            {'card_id': 2, 'ticker': 'AMD', 'end_kind': 'expired', 'end_text': '过期未成交',
+             'decision_text': '降为观察', 'actual_r': None, 'rule_r': None, 'agent_r': None, 'flags': [],
+             'status': 'reviewed', 'headline': None}][:cards]
+    rows += [{**rows[0], 'card_id': 10 + n, 'ticker': f'T{n}'} for n in range(extra_cards)]
+    return {'discipline': {'cards': len(rows), 'chase': 1, 'early_take': 0, 'held_loser': 0, 'unplanned': 1,
+                           'pending': 2},
+            'cards': rows,
+            'counts': {'total': len(rows), 'reviewed': 1, 'to_review': len(rows) - 1, 'drafting': 0,
+                       'draft_failed': 0},
+            'knowledge': [{'ref': 'know:7@2', 'title': '回踩不追', 'new_outcomes': 1,
+                           'sample': {'count': 3, 'determined': 3, 'expired': 0, 'r_mean': None,
+                                      'r_median': None}}][:knowledge]}
+
+
+def _learning_field(learning):
+    review = {**WEEKLY_REVIEW, 'stats': {**WEEKLY_REVIEW['stats'], 'learning': learning}}
+    messages = templates.workbench_weekly(review_digest.weekly(review, public_url=URL))
+    names = [f.name for f in messages[0].fields]
+    return messages[0], names, next((f for f in messages[0].fields if f.name == '你学到了什么'), None)
+
+
+def test_weekly_payload_carries_learning():
+    learning = _learning()
+    assert review_digest.weekly({**WEEKLY_REVIEW, 'stats': {**WEEKLY_REVIEW['stats'], 'learning': learning}},
+                                public_url=URL)['learning'] == learning
+
+
+def test_weekly_learning_field_lines():
+    message, names, field = _learning_field(_learning())
+    assert names.index('纪律') + 1 == names.index('你学到了什么') == names.index('说明') - 1
+    assert field.value.split(chr(10)) == [
+        '纪律（本周结束的 2 笔）：追高 1 · 过早止盈 0 · 死扛亏损 0 · 计划外 1 · 待定 2',
+        '复盘卡 2 张（已审定 1 · 待审定 1）',
+        'NVDA 平仓（按止损） · 实际 -1.00R · 采纳（照规则计划）',
+        'AMD 过期未成交 · 实际 未成交 · 降为观察',
+        '被检验的知识 1 条',
+        'know:7@2 回踩不追 · 样本 3（少于 5 个不给均值）']
+    with_mean = _learning()
+    with_mean['knowledge'][0]['sample'] = {'count': 6, 'determined': 5, 'expired': 1, 'r_mean': 0.4, 'r_median': 0.3}
+    assert _learning_field(with_mean)[2].value.split(chr(10))[-1] == 'know:7@2 回踩不追 · 样本 6（均值 +0.40R）'
+
+
+def test_weekly_learning_caps_cards_and_knowledge_lines():
+    learning = _learning(extra_cards=5)                       # 7 cards: five lines + 「…另有 2 张」
+    more = {**learning['knowledge'][0]}
+    learning['knowledge'] = [{**more, 'ref': f'know:{n}@1', 'title': f'k{n}'} for n in range(1, 6)]
+    lines = _learning_field(learning)[2].value.split(chr(10))
+    assert len([line for line in lines if ' · 实际 ' in line]) == 5
+    assert '…另有 2 张' in lines
+    assert '被检验的知识 5 条' in lines
+    assert [line for line in lines if line.startswith('know:')] == [f'know:{n}@1 k{n} · 样本 3（少于 5 个不给均值）'
+                                                          for n in (1, 2, 3)]
+
+
+def test_weekly_learning_truncated():
+    learning = _learning(extra_cards=0)
+    learning['cards'] = [{**learning['cards'][0], 'card_id': n, 'ticker': 'T' * 10,
+                          'decision_text': '很长的决定文案' * 40} for n in range(5)]
+    learning['counts'] = {'total': 5, 'reviewed': 0, 'to_review': 5, 'drafting': 0, 'draft_failed': 0}
+    learning['discipline']['cards'] = 5
+    learning['knowledge'] = [{'ref': f'know:{n}@1', 'title': '题' * 40, 'new_outcomes': 1,
+                              'sample': {'count': 9, 'determined': 9, 'expired': 0, 'r_mean': 0.1, 'r_median': 0.1}}
+                             for n in range(3)]
+    message, _, field = _learning_field(learning)
+    assert len(field.value) == 1024 and field.value.endswith('…')
+    assert field.value.startswith('纪律（本周结束的 5 笔）')                 # 第 1、2 项完整，从第 3、4 项的末尾截断
+    assert '复盘卡 5 张（已审定 0 · 待审定 5）' in field.value
+    assert len(message.title) + sum(len(f.name) + len(f.value) for f in message.fields) + len(message.footer) < 6000
+
+
+def test_weekly_learning_all_empty_one_line():
+    empty = {'discipline': {'cards': 0, 'chase': 0, 'early_take': 0, 'held_loser': 0, 'unplanned': 0, 'pending': 0},
+             'cards': [], 'counts': {'total': 0, 'reviewed': 0, 'to_review': 0, 'drafting': 0, 'draft_failed': 0},
+             'knowledge': []}
+    assert _learning_field(empty)[2].value == '本周没有结束的交易，也没有被检验的知识'
+
+
+def test_old_snapshot_has_no_learning_field():
+    payload = _weekly_payload()                                # review-4 快照：stats 里没有 learning
+    assert payload['learning'] is None
+    names = [f.name for f in templates.workbench_weekly(payload)[0].fields]
+    assert '你学到了什么' not in names and names[-1] == '说明'
+
+
 # --- monthly payload and template ---
 
 MONTHLY_REVIEW = {

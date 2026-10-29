@@ -640,7 +640,7 @@ from investment_assistant.api.routes import workbench as workbench_routes  # noq
 
 OLD_KEYS = {'ticker', 'session', 'bars', 'chart', 'filings', 'news', 'candidates', 'decisions', 'trades',
             'position', 'closed'}
-NEW_KEYS = {'focus', 'key_data', 'context', 'plans', 'holding', 'errors'}
+NEW_KEYS = {'focus', 'key_data', 'context', 'plans', 'holding', 'errors'}   # v2.7 adds 'knowledge' (checked beside)
 
 
 @pytest.fixture
@@ -782,3 +782,342 @@ def test_instrument_holding_failure_is_isolated(seeded, client, monkeypatch):
     assert body['holding'] is None and body['errors']['holding'] == '止损算坏了'
     assert body['focus'] is None and 'holding' in body['errors']['focus']       # no silent "无计划" line
     assert body['plans'] and body['key_data'] and body['position']['quantity'] is not None
+
+
+# ---------------------------------------------------------------- v2.7 growth loop (spec §12), use cases mocked
+
+from investment_assistant.workbench import discussion, my_knowledge, retro_cards  # noqa: E402
+
+CARD_BODY = {'request_id': 'r1', 'note': '', 'lessons': []}
+GROWTH_CALLS = [
+    ('get', '/api/workbench/review-cards', None, retro_cards, 'list_view'),
+    ('get', '/api/workbench/review-cards/7', None, retro_cards, 'card_view'),
+    ('post', '/api/workbench/review-cards/7/verdict', CARD_BODY, retro_cards, 'verdict'),
+    ('get', '/api/workbench/my-knowledge', None, my_knowledge, 'list_view'),
+    ('post', '/api/workbench/my-knowledge', {'request_id': 'r2'}, my_knowledge, 'create'),
+    ('get', '/api/workbench/my-knowledge/3', None, my_knowledge, 'item_view'),
+    ('post', '/api/workbench/my-knowledge/3/versions', {'request_id': 'r3', 'base_version': 1}, my_knowledge, 'revise'),
+    ('post', '/api/workbench/my-knowledge/3/status', {'request_id': 'r4'}, my_knowledge, 'set_status'),
+    ('get', '/api/workbench/my-knowledge/3/performance', None, my_knowledge, 'performance'),
+    ('get', '/api/workbench/my-knowledge-drafts', None, my_knowledge, 'drafts_view'),
+    ('post', '/api/workbench/my-knowledge-drafts/4/verdict', {'request_id': 'r5', 'action': 'dismiss'},
+     my_knowledge, 'draft_verdict'),
+    ('post', '/api/workbench/discussions', {'request_id': 'r6', 'context': {}}, discussion, 'create'),
+    ('get', '/api/workbench/discussions?card_id=2', None, discussion, 'list_for'),
+    ('get', '/api/workbench/discussions/5', None, discussion, 'view'),
+    ('post', '/api/workbench/discussions/5/turns', {'request_id': 'r7', 'body': '问'}, discussion, 'ask_check'),
+    ('post', '/api/workbench/review-cards/7/redraft', None, retro_cards, 'redraft_check'),
+]
+
+
+@pytest.mark.parametrize('exc, code, message', [
+    (ValueError('字段不对'), 400, '字段不对'),
+    (LookupError('不存在'), 404, '不存在'),
+    (ledger.Conflict('card_reviewed'), 409, 'card_reviewed'),
+    (ledger.Conflict('knowledge_stale: 这条知识已更新到第 2 版，请刷新后再改'), 409,
+     'knowledge_stale: 这条知识已更新到第 2 版，请刷新后再改'),
+    (service.Unavailable('迁移 027 未执行'), 503, '迁移 027 未执行'),
+])
+@pytest.mark.parametrize('method, path, body, module, target', GROWTH_CALLS,
+                         ids=[f'{c[0]}-{c[1].split("/api/workbench/")[1]}' for c in GROWTH_CALLS])
+def test_growth_routes_map_errors(client, monkeypatch, method, path, body, module, target, exc, code, message):
+    monkeypatch.setattr(module, target, raiser(exc))
+    resp = getattr(client, method)(path, **({'json': body} if body is not None else {}))
+    assert resp.status_code == code and resp.json() == {'error': message}
+
+
+def test_review_card_routes_delegate(client, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(retro_cards, 'list_view', lambda **kw: seen.update(list=kw) or {'cards': [], 'counts': {}})
+    monkeypatch.setattr(retro_cards, 'card_view', lambda card_id, *, now: seen.update(card=(card_id, now)) or {'ok': 1})
+    monkeypatch.setattr(retro_cards, 'verdict', lambda card_id, payload, *, now: seen.update(
+        verdict=(card_id, payload, now)) or {'status': 'created'})
+    assert client.get('/api/workbench/review-cards?status=to_review&ticker=nvda&since=2026-10-01').status_code == 200
+    assert seen['list'] == {'status': 'to_review', 'ticker': 'NVDA', 'since': date(2026, 10, 1)}
+    client.get('/api/workbench/review-cards')
+    assert seen['list'] == {'status': None, 'ticker': None, 'since': None}
+    assert client.get('/api/workbench/review-cards?since=nope').status_code == 400
+    assert client.get('/api/workbench/review-cards/abc').status_code == 400
+    assert client.get('/api/workbench/review-cards/7').json() == {'ok': 1} and seen['card'][0] == 7
+    assert seen['card'][1].tzinfo is not None
+    resp = client.post('/api/workbench/review-cards/7/verdict', json=CARD_BODY)
+    assert resp.json() == {'status': 'created'} and seen['verdict'][:2] == (7, CARD_BODY)
+
+
+def test_redraft_route_checks_then_submits_with_request_time(client, monkeypatch):
+    from investment_assistant.tasks import runner
+    t0 = datetime(2026, 10, 29, 10, 0, tzinfo=UTC)
+    monkeypatch.setattr(workbench_routes, '_now', lambda: t0)
+    checked, ran, submitted = [], [], []
+    monkeypatch.setattr(retro_cards, 'redraft_check', lambda card_id, *, now=None: checked.append((card_id, now)))
+    monkeypatch.setattr(retro_cards, 'redraft', lambda card_id, *, now, deps=None, run_id=None:
+                        ran.append((card_id, now, run_id)) or {'status': 'ok'})
+    monkeypatch.setattr(runner, 'submit', lambda kind, fn, *, with_run_id=False:
+                        submitted.append((kind, fn, with_run_id)) or 'retro_draft-1')
+    resp = client.post('/api/workbench/review-cards/7/redraft')
+    assert resp.status_code == 200 and resp.json() == {'run_id': 'retro_draft-1', 'status': 'pending'}
+    assert checked == [(7, t0)]
+    [(kind, fn, with_run_id)] = submitted
+    assert kind == 'retro_draft' and with_run_id is True and ran == []
+    fn('retro_draft-1')
+    assert ran == [(7, t0, 'retro_draft-1')]
+
+
+@pytest.mark.parametrize('exc, code, message', [
+    (ledger.Conflict('draft_exists'), 409, 'draft_exists'),
+    (ledger.Conflict('card_reviewed'), 409, 'card_reviewed'),
+    (ledger.Conflict('agent_unavailable: not_configured'), 409, 'agent_unavailable: not_configured'),
+    (ledger.Conflict('token_budget'), 409, 'token_budget'),
+    (LookupError('复盘卡 7 不存在'), 404, '复盘卡 7 不存在'),
+    (service.Unavailable('迁移 027 未执行'), 503, '迁移 027 未执行'),
+])
+def test_redraft_route_errors_do_not_submit(client, monkeypatch, exc, code, message):
+    from investment_assistant.tasks import runner
+    monkeypatch.setattr(retro_cards, 'redraft_check', raiser(exc))
+    submitted = []
+    monkeypatch.setattr(runner, 'submit', lambda *a, **k: submitted.append(a) or 'x')
+    resp = client.post('/api/workbench/review-cards/7/redraft')
+    assert (resp.status_code, resp.json()['error']) == (code, message) and submitted == []
+
+
+def test_my_knowledge_routes_delegate(client, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(my_knowledge, 'list_view', lambda **kw: seen.update(list=kw) or {'items': []})
+    monkeypatch.setattr(my_knowledge, 'item_view', lambda knowledge_id, *, version=None:
+                        seen.update(item=(knowledge_id, version)) or {'ok': 1})
+    monkeypatch.setattr(my_knowledge, 'drafts_view', lambda *, open_only: seen.update(open=open_only) or {'drafts': []})
+    monkeypatch.setattr(my_knowledge, 'revise', lambda knowledge_id, payload, *, now: seen.update(
+        revise=(knowledge_id, payload)) or {'status': 'created'})
+    client.get('/api/workbench/my-knowledge')
+    assert seen['list'] == {'ticker': None, 'concept': None, 'status': 'active'}
+    client.get('/api/workbench/my-knowledge?ticker=AMD&concept=plan.stop&status=all')
+    assert seen['list'] == {'ticker': 'AMD', 'concept': 'plan.stop', 'status': 'all'}
+    client.get('/api/workbench/my-knowledge/3')
+    assert seen['item'] == (3, None)
+    client.get('/api/workbench/my-knowledge/3?version=2')
+    assert seen['item'] == (3, 2)
+    assert client.get('/api/workbench/my-knowledge/3?version=x').status_code == 400
+    assert client.get('/api/workbench/my-knowledge-drafts').json() == {'drafts': []} and seen['open'] is True
+    client.get('/api/workbench/my-knowledge-drafts?status=all')
+    assert seen['open'] is False
+    assert client.get('/api/workbench/my-knowledge-drafts?status=closed').status_code == 400
+    client.post('/api/workbench/my-knowledge/3/versions', json={'request_id': 'r', 'base_version': 4})
+    assert seen['revise'] == (3, {'request_id': 'r', 'base_version': 4})
+
+
+def test_discussion_routes_delegate(client, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(discussion, 'list_for', lambda *, plan_id=None, card_id=None: seen.update(
+        list=(plan_id, card_id)) or [{'id': 1}])
+    assert client.get('/api/workbench/discussions?card_id=2').json() == {'discussions': [{'id': 1}]}
+    assert seen['list'] == (None, 2)
+    client.get('/api/workbench/discussions?plan_id=abc')
+    assert seen['list'] == ('abc', None)
+    assert client.get('/api/workbench/discussions').status_code == 400                    # exactly one of the two
+    assert client.get('/api/workbench/discussions?plan_id=abc&card_id=2').status_code == 400
+
+
+def test_discussion_turn_route_checks_submits_and_tracks(client, monkeypatch):
+    from investment_assistant.tasks import runner
+    t0 = datetime(2026, 10, 29, 10, 0, tzinfo=UTC)
+    monkeypatch.setattr(workbench_routes, '_now', lambda: t0)
+    asked, ran, submitted, tracked = [], [], [], []
+    monkeypatch.setattr(discussion, 'ask_check', lambda discussion_id, payload, *, now: asked.append(
+        (discussion_id, payload, now)) or {'turn_id': 11, 'run_id': 'uuid-1', 'replayed': False})
+    monkeypatch.setattr(discussion, 'answer', lambda discussion_id, turn_id, *, now, deps=None, run_id:
+                        ran.append((discussion_id, turn_id, now, run_id)) or {'status': 'ok'})
+    monkeypatch.setattr(discussion, 'track', lambda key, runner_id: tracked.append((key, runner_id)))
+    monkeypatch.setattr(runner, 'submit', lambda kind, fn, *, with_run_id=False:
+                        submitted.append((kind, fn, with_run_id)) or 'discuss-1')
+    body = {'request_id': 'r', 'body': '这个止损怎么来的？'}
+    resp = client.post('/api/workbench/discussions/5/turns', json=body)
+    assert resp.status_code == 202 and resp.json() == {'turn_id': 11, 'run_id': 'discuss-1', 'status': 'pending'}
+    assert asked == [(5, body, t0)] and tracked == [('uuid-1', 'discuss-1')]
+    [(kind, fn, with_run_id)] = submitted
+    assert kind == 'discuss' and with_run_id is True and ran == []
+    fn('discuss-1')
+    assert ran == [(5, 11, t0, 'discuss-1')]
+
+
+def test_discussion_turn_replay_and_failed_submit(client, monkeypatch):
+    from investment_assistant.tasks import runner
+    monkeypatch.setattr(discussion, 'ask_check', lambda *a, **k: {'turn_id': 11, 'run_id': 'uuid-1', 'replayed': True})
+    monkeypatch.setattr(runner, 'submit', lambda *a, **k: pytest.fail('a replay does not start another run'))
+    resp = client.post('/api/workbench/discussions/5/turns', json={'request_id': 'r', 'body': 'x'})
+    assert resp.status_code == 202 and resp.json() == {'turn_id': 11, 'run_id': 'uuid-1', 'status': 'replayed'}
+    released = []
+    monkeypatch.setattr(discussion, 'ask_check', lambda *a, **k: {'turn_id': 12, 'run_id': 'uuid-2', 'replayed': False})
+    monkeypatch.setattr(discussion, 'release', released.append)
+
+    def broken(*a, **k):
+        raise RuntimeError('no threads')
+
+    monkeypatch.setattr(runner, 'submit', broken)
+    with pytest.raises(RuntimeError):
+        client.post('/api/workbench/discussions/5/turns', json={'request_id': 'r2', 'body': 'x'})
+    assert released == ['uuid-2']                                  # the turn does not stay "pending" forever
+
+
+# ---------------------------------------------------------------- v2.7 growth loop, real database
+
+def _grow(client, path, body):
+    resp = client.post(path, json=body)
+    return resp
+
+
+def test_growth_http_flow(seeded, client, monkeypatch, scripted_model):
+    """Knowledge written, revised, archived and read back over HTTP; a discussion asked and answered; the
+    error bodies are `{error: <code>}` as the page expects."""
+    import json
+    import uuid
+    from langchain_core.messages import AIMessage
+    from investment_assistant.tasks import runner
+    from test_workbench_retro_cards import stage_deps
+
+    monkeypatch.setenv('ZHIPU_API_KEY', 'sk-test')
+    made = _grow(client, '/api/workbench/my-knowledge', {
+        'request_id': str(uuid.uuid4()), 'title': '回踩不追', 'body': '正文', 'scope': '范围', 'counter_examples': '',
+        'concepts': ['plan.stop'], 'tickers': ['AAA']})
+    assert made.status_code == 200 and made.json()['status'] == 'created'
+    kid = made.json()['record']['knowledge_id']
+    listed = client.get('/api/workbench/my-knowledge').json()['items']
+    assert [(i['id'], i['title'], i['current_version'], i['status']) for i in listed] == [(kid, '回踩不追', 1, 'active')]
+    assert client.get('/api/workbench/my-knowledge?ticker=AAA').json()['items'][0]['id'] == kid
+    assert client.get('/api/workbench/my-knowledge?ticker=MU').json() == {'items': []}
+    revised = _grow(client, f'/api/workbench/my-knowledge/{kid}/versions', {
+        'request_id': str(uuid.uuid4()), 'base_version': 1, 'title': '回踩不追二', 'body': '正文二', 'scope': '范围',
+        'counter_examples': '反例', 'concepts': ['plan.stop'], 'tickers': ['AAA']})
+    assert revised.json()['record']['version'] == 2
+    stale = _grow(client, f'/api/workbench/my-knowledge/{kid}/versions', {
+        'request_id': str(uuid.uuid4()), 'base_version': 1, 'title': 'x', 'body': 'x', 'scope': 'x', 'tickers': ['AAA']})
+    assert stale.status_code == 409 and stale.json() == {'error': 'knowledge_stale: 这条知识已更新到第 2 版，请刷新后再改'}
+    flip = {'request_id': str(uuid.uuid4()), 'status': 'archived', 'reason': '过时'}
+    assert _grow(client, f'/api/workbench/my-knowledge/{kid}/status', flip).status_code == 200
+    again = _grow(client, f'/api/workbench/my-knowledge/{kid}/status', {**flip, 'request_id': str(uuid.uuid4())})
+    assert again.status_code == 409 and again.json() == {'error': 'status_unchanged'}
+    item = client.get(f'/api/workbench/my-knowledge/{kid}?version=1').json()
+    assert item['current']['version'] == 1 and len(item['versions']) == 2 and item['item']['status'] == 'archived'
+    assert client.get(f'/api/workbench/my-knowledge/{kid}/performance').json()['sample']['count'] == 0
+    assert client.get('/api/workbench/my-knowledge/999').status_code == 404
+    bad = _grow(client, '/api/workbench/my-knowledge', {'request_id': str(uuid.uuid4()), 'title': ''})
+    assert bad.status_code == 400 and 'title' in bad.json()['error']
+
+    from investment_assistant.workbench import repository as repo
+    plan_id = str(repo.chain_head(seeded, 'AAA', BATCH_SESSION)['plan']['id'])
+    created = _grow(client, '/api/workbench/discussions', {'request_id': str(uuid.uuid4()),
+                                                            'context': {'kind': 'plan', 'plan_id': plan_id}})
+    discussion_id = created.json()['record']['id']
+    d = stage_deps(scripted_model, [AIMessage(content=json.dumps(
+        {'answer': '止损来自 ATR。', 'refs': ['fact:context'], 'knowledge_draft': None}, ensure_ascii=False))])
+    real_answer = discussion.answer
+    monkeypatch.setattr(discussion, 'answer', lambda *a, **k: real_answer(*a, **{**k, 'deps': d}))
+    submitted = []
+
+    def inline(kind, fn, *, with_run_id=False):
+        submitted.append(kind)
+        run_id = f'{kind}-inline'
+        discussion.track(next(iter(discussion._RUNNERS)), run_id)
+        fn(run_id)
+        return run_id
+
+    monkeypatch.setattr(runner, 'submit', inline)
+    asked = _grow(client, f'/api/workbench/discussions/{discussion_id}/turns', {
+        'request_id': str(uuid.uuid4()), 'body': '这个止损怎么来的？'})
+    assert asked.status_code == 202 and asked.json()['status'] == 'pending' and submitted == ['discuss']
+    view = client.get(f'/api/workbench/discussions/{discussion_id}').json()
+    assert [t['role'] for t in view['turns']] == ['user', 'assistant'] and view['turns'][1]['status'] == 'ok'
+    assert client.get(f'/api/workbench/discussions?plan_id={plan_id}').json()['discussions'][0]['turn_count'] == 1
+    assert client.get('/api/workbench/discussions/999').status_code == 404
+
+
+def test_growth_routes_503_without_migration_027(seeded, client):
+    seeded.execute('DROP TABLE knowledge_citations, knowledge_draft_verdicts, review_card_verdicts, knowledge_drafts, '
+                   'knowledge_versions, knowledge_status, discussion_turns, knowledge_items, discussions, '
+                   'review_card_drafts, review_cards CASCADE')
+    seeded.commit()
+    for method, path in (('get', '/api/workbench/review-cards'), ('get', '/api/workbench/my-knowledge'),
+                         ('get', '/api/workbench/my-knowledge-drafts'), ('get', '/api/workbench/discussions/1'),
+                         ('get', '/api/workbench/discussions?card_id=1')):
+        resp = getattr(client, method)(path)
+        assert resp.status_code == 503 and '迁移 027' in resp.json()['error'], path
+    assert client.post('/api/workbench/my-knowledge', json={'request_id': 'x'}).status_code in (400, 503)
+    body = client.get('/api/workbench/instruments/AAA').json()
+    assert body['knowledge'] is None and body['errors'] == {'knowledge': '迁移 027 未执行'}
+    assert client.get('/api/workbench/today').status_code == 200
+    unit = next(u for u in client.get('/api/workbench/today').json()['units'] if u['ticker'] == 'AAA')
+    assert unit['agent']['knowledge_refs'] == []
+    chain = client.get(f'/api/workbench/chains/AAA/{BATCH_SESSION.isoformat()}').json()
+    assert [v['knowledge_refs'] for v in chain['versions']] == [[]]
+
+
+def _cite_head_plan(seeded, title='引用过的经验'):
+    from investment_assistant.workbench import repository as repo
+    kid = my_knowledge.create({'request_id': '6f1d1c1e-6666-4444-8888-000000000009', 'title': title, 'body': '正文',
+                               'scope': '范围', 'counter_examples': '', 'concepts': [], 'tickers': ['AAA']},
+                              now=BATCH_NOW)['record']['knowledge_id']
+    head = repo.chain_head(seeded, 'AAA', BATCH_SESSION)
+    repo.insert_knowledge_citations(seeded, [
+        {'agent_run_id': head['version']['agent_run_id'], 'plan_id': head['plan']['id'], 'knowledge_id': kid,
+         'version': 1, 'field': 'thesis', 'call_seq': 1},
+        {'agent_run_id': head['version']['agent_run_id'], 'plan_id': head['plan']['id'], 'knowledge_id': kid,
+         'version': 1, 'field': 'counter', 'call_seq': 1}])
+    seeded.commit()
+    return kid, str(head['plan']['id'])
+
+
+def test_today_and_chain_knowledge_refs(seeded, client):
+    body = client.get('/api/workbench/today').json()
+    unit = next(u for u in body['units'] if u['ticker'] == 'AAA')
+    assert unit['agent']['knowledge_refs'] == []                       # a plan that cited nothing
+    kid, plan_id = _cite_head_plan(seeded)
+    my_knowledge.revise(kid, {'request_id': '6f1d1c1e-6666-4444-8888-00000000000a', 'base_version': 1,
+                              'title': '第二版标题', 'body': '正文', 'scope': '范围', 'tickers': ['AAA']},
+                        now=BATCH_NOW)
+    expected = [{'ref': f'know:{kid}@1', 'title': '引用过的经验', 'fields': ['thesis', 'counter'], 'current_version': 2}]
+    unit = next(u for u in client.get('/api/workbench/today').json()['units'] if u['ticker'] == 'AAA')
+    assert unit['agent']['knowledge_refs'] == expected
+    chain = client.get(f'/api/workbench/chains/AAA/{BATCH_SESSION.isoformat()}').json()
+    assert [v['knowledge_refs'] for v in chain['versions']] == [expected]
+    assert [v['plan_id'] for v in chain['versions']] == [plan_id]
+    assert {'ticker', 'signal_date', 'session', 'state', 'head_plan_id', 'version_no', 'latest_review',
+            'shadow_version', 'versions', 'reviews', 'inputs'} == set(chain)
+    # every block that shows a plan carries the key; status-only blocks (error, skipped, rejected) keep their shape
+    assert all(('knowledge_refs' in u['agent']) == ('plan' in u['agent'])
+               for u in client.get('/api/workbench/today').json()['units'] if u.get('agent'))
+
+
+def test_instrument_knowledge_key(seeded, client):
+    body = client.get('/api/workbench/instruments/AAA').json()
+    assert body['knowledge'] == [] and body['errors'] == {}
+    kid, _ = _cite_head_plan(seeded)
+    body = client.get('/api/workbench/instruments/AAA').json()
+    [entry] = body['knowledge']
+    assert (entry['id'], entry['title'], entry['current_version'], entry['status'], entry['citation_count'],
+            entry['sample_count']) == (kid, '引用过的经验', 1, 'active', 2, 1)
+    assert client.get('/api/workbench/instruments/MU').json()['knowledge'] == []
+    my_knowledge.set_status(kid, {'request_id': '6f1d1c1e-6666-4444-8888-00000000000b', 'status': 'archived',
+                                  'reason': ''}, now=BATCH_NOW)
+    assert client.get('/api/workbench/instruments/AAA').json()['knowledge'] == []      # archived: not on the page
+
+
+def test_instrument_knowledge_failure_is_isolated(seeded, client, monkeypatch):
+    def broken(conn, ticker):
+        raise RuntimeError('知识读坏了')
+
+    monkeypatch.setattr(my_knowledge, 'for_ticker', broken)
+    body = client.get('/api/workbench/instruments/AAA').json()
+    assert body['knowledge'] is None and body['errors'] == {'knowledge': '知识读坏了'}
+    assert OLD_KEYS <= set(body) and body['focus'] and body['plans']
+
+
+def test_existing_keys_unchanged(seeded, client):
+    """v2.7 only adds keys: the instrument page, today and the chain view keep every earlier key."""
+    instrument = client.get('/api/workbench/instruments/AAA').json()
+    assert OLD_KEYS | NEW_KEYS <= set(instrument) and set(instrument) == OLD_KEYS | NEW_KEYS | {'knowledge'}
+    today = client.get('/api/workbench/today').json()
+    assert {'session', 'units', 'extended_units', 'holdings', 'market', 'screen', 'chains', 'timeline_ready'} == set(today)
+    unit = next(u for u in today['units'] if u['ticker'] == 'AAA')
+    assert {'id', 'status', 'model', 'agent_version', 'output', 'counter', 'plan', 'input_tokens', 'output_tokens',
+            'created_at', 'chain'} <= set(unit['agent'])
+    assert set(unit['agent']) - {'id', 'status', 'model', 'agent_version', 'output', 'counter', 'plan', 'input_tokens',
+                                 'output_tokens', 'created_at', 'chain', 'legacy'} == {'knowledge_refs'}

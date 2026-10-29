@@ -24,32 +24,51 @@ def _check_ids(migration: str) -> tuple[str, ...]:
 
 def test_stage_ids_match_migration_check():
     assert stages.STAGE_IDS_V1 == _check_ids('025_stage_runs.sql')       # stages-1：025 的七个阶段
-    assert stages.STAGE_IDS_BY_VERSION == {'stages-1': stages.STAGE_IDS_V1, 'stages-2': stages.STAGE_IDS}
+    assert stages.STAGE_IDS_V2 == _check_ids('026_plan_timeline.sql')    # stages-2：026 的八个阶段
+    assert stages.STAGE_IDS == _check_ids('027_growth_loop.sql')         # stages-3：027 的九个阶段
+    assert stages.STAGE_IDS_BY_VERSION == {'stages-1': stages.STAGE_IDS_V1, 'stages-2': stages.STAGE_IDS_V2,
+                                           'stages-3': stages.STAGE_IDS}
 
 
-def test_stages_registry_eight():
-    """v2.5 §7.1: stages-2 inserts review between agent and push; ids equal 026's stage_runs CHECK."""
-    assert stages.STAGES_VERSION == 'stages-2'
-    assert stages.STAGE_IDS == _check_ids('026_plan_timeline.sql')
-    assert stages.STAGE_IDS == ('collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'review', 'push')
+def test_stages_registry_nine():
+    """v2.7 §9: stages-3 inserts retro between review and push; ids equal 027's stage_runs CHECK."""
+    assert stages.STAGES_VERSION == 'stages-3'
+    assert stages.STAGE_IDS == ('collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'review', 'retro', 'push')
+    assert stages.STAGE_IDS_V2 == ('collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'review', 'push')
     assert stages.STAGE_IDS_V1 == ('collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'push')
     assert [s.title for s in stages.STAGES] == [
         '数据采集', '筛选 `screen-1`', '市场环境 `regime-2`', '信号与候选', '规则计划 `plan-1`',
-        'Agent 建议', '每日复查', '复核与推送']
-    review = stages.STAGES[6]
+        'Agent 建议', '每日复查', '复盘卡', '复核与推送']
+    review, retro = stages.STAGES[6], stages.STAGES[7]
     assert review.purpose == '对每份有效 Agent 计划做一次复查：维持、修订或作废；系统信号与你的输入触发认真复查。'
+    assert retro == stages.StageDef('retro', '复盘卡', '检测已结束的计划与平仓，冻结复盘事实并起草复盘卡')
     assert all(s.purpose for s in stages.STAGES)
     rows = []
     rec = _recorder(rows)
     with rec.stage('collect'):
         pass
-    assert rec.close(None) == {'written': 8, 'error': None}
+    assert rec.close(None) == {'written': 9, 'error': None}
     assert [row['stage'] for row in rows] == list(stages.STAGE_IDS)
+    assert {row['stages_version'] for row in rows} == {'stages-3'}
+
+
+def test_stages_2_recorder_writes_eight_and_ignores_retro():
+    """D29: without migration 027 the run is booked as stages-2 — eight rows, retro never written."""
+    rows = []
+    rec = stages.StageRecorder('run-v2', 'scheduled', SESSION, writer=rows.append, wall_now=lambda: WALL,
+                               clock=lambda: 0.0, version='stages-2')
+    acc = rec.open('retro')
+    acc.input(3)
+    rec.finish('retro')
+    rec.skip('retro', 'migration_027_missing')
+    assert rows == []
+    assert rec.close(None) == {'written': 8, 'error': None}
+    assert [row['stage'] for row in rows] == list(stages.STAGE_IDS_V2)
     assert {row['stages_version'] for row in rows} == {'stages-2'}
 
 
 def test_stages_1_recorder_writes_seven_and_ignores_review():
-    """D22: without migration 026 the run is booked as stages-1 — seven rows, review never written."""
+    """D22: without migration 026 the run is booked as stages-1 — seven rows, review and retro never written."""
     rows = []
     rec = stages.StageRecorder('run-v1', 'scheduled', SESSION, writer=rows.append, wall_now=lambda: WALL,
                                clock=lambda: 0.0, version='stages-1')
@@ -59,6 +78,7 @@ def test_stages_1_recorder_writes_seven_and_ignores_review():
     rec.skip('review', 'migration_026_missing')
     with rec.stage('review'):
         pass
+    rec.skip('retro', 'migration_027_missing')
     assert rows == []
     assert rec.close(None) == {'written': 7, 'error': None}
     assert [row['stage'] for row in rows] == list(stages.STAGE_IDS_V1)
@@ -110,7 +130,7 @@ def test_row_shape():
                         'outputs', 'detail', 'started_at', 'finished_at', 'duration_ms'}
     assert row['run_id'] == 'run-1' and row['job'] == 'workbench'
     assert row['trigger'] == 'manual_batch' and row['session'] == SESSION
-    assert row['stage'] == 'collect' and row['stages_version'] == 'stages-2'
+    assert row['stage'] == 'collect' and row['stages_version'] == 'stages-3'
     assert row['status'] == 'partial' and row['reason'] is None
     assert row['input_count'] == 20 and row['output_count'] == 18
     assert row['skips'] == [{'reason': 'trend_reclaim:insufficient_history', 'count': 1, 'samples': ['MU']}]
@@ -139,8 +159,8 @@ def test_close_fills_remaining_stages():
     rec = _recorder(rows, run_id='r-skip')
     with rec.stage('collect') as acc:
         acc.input(3)
-    assert rec.close(None) == {'written': 8, 'error': None}
-    assert len(rows) == 8
+    assert rec.close(None) == {'written': 9, 'error': None}
+    assert len(rows) == 9
     assert rows[0]['stage'] == 'collect' and rows[0]['status'] == 'success'
     rest = [row for row in rows if row['stage'] != 'collect']
     assert {row['stage'] for row in rest} == set(stages.STAGE_IDS) - {'collect'}

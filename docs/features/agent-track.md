@@ -44,6 +44,20 @@
   - 用户输入的时间以数据库写入时刻为准，不能补登更早的时间；更正、撤回只对之后的复查生效，不回填旧版。
   - `GET /api/workbench/user-inputs` 不带 `signal_date` 时，按该标的的候选日逐个读取各链的输入，候选日很多时较慢。
 
+## 就此计划讨论
+
+从计划卡、「标的」页的计划行、复盘卡进入，问「这个止损怎么来的」「为什么这版放宽了入场区间」：Agent 只读这份计划（或这张卡）的推导链、运行记录、概念卡和你的经验，给带引用的解释，**不改任何东西**；需要时可以起草一条经验（落为草稿，等你审定）。设计：[v2.7 §8](../specs/2026-10-28-v2.7-growth-loop-design.md#8-就此计划讨论)，版本 `agent-discuss-1`，模块 `workbench/discussion.py`（用例）、`agent/discuss_tools.py` 与 `agent/growth_check.py`（工具与校验）。
+
+- **新建与提问**：`POST /api/workbench/discussions`（body `{request_id, context: {kind: 'plan', plan_id} | {kind: 'card', card_id}}`）新建一次讨论（同一上下文可以有多次），再 `POST /api/workbench/discussions/{id}/turns`（body `{request_id, body, attachment?: {kind: 'draft' | 'knowledge', id, version?}}`，`body` 1–4000 字）提问。提问的前置检查同步执行并按顺序：参数 400，迁移 027 未执行 503，讨论不存在 404，同一 `request_id` 同内容返回原行（`status: replayed`）、不同内容 409 `request_id_conflict`，Agent 不可用 409 `agent_unavailable: <原因>`，当日 token 达上限 409 `token_budget`，上一个问题还在回答 409 `discussion_busy`；通过后写下你的这一轮，在后台调用模型，返回 **202** `{turn_id, run_id, status: pending}`。
+- **读取与等待**：`GET /api/workbench/discussions/{id}` 返回上下文与按顺序排列的全部轮次，回答紧跟在它的提问后面；没有回答的提问带 `state`：`pending`（后台还在跑）或 `interrupted`（服务重启过或后台出错，页面写「没有收到回答（服务可能重启过），可以再问一次」，不算忙）。页面每 2 秒读一次，最长 600 秒。`GET /api/workbench/discussions?plan_id=|card_id=` 列出某个上下文的讨论。
+- **截止时间 = 提问时刻**：回答的 `cutoff_at` 就是你那一轮的 `created_at`，工具读到的是截至这一刻的数据；提示词同时给出「计划当时的截止时间」，要求区分「当时看到的」与「之后发生的」（这靠提示词，机制上保证不了模型的措辞）。
+- **工具**：十个批处理工具加三个讨论专用工具（见上），模型**没有任何写工具**；工具全部在 `service.read_only_tx()` 的真实只读事务里执行（宿主传入 `DiscussContext.read`，不是 `service._read_only`）。讨论只写四类行：你的一轮与回答（`discussion_turns`）、这次回答的运行与工具调用（`agent_runs`，`mode = discuss`；`agent_tool_calls`，`phase = discuss`）、可选的一条经验草稿（`knowledge_drafts`），测试比对一轮前后全库各表行数。讨论的 token 计入每日上限。
+- **提示词与校验**：输入是上下文摘要（`[fact:context]`，含你输入过的 `user:<id>`）、最近 10 轮合计不超过 12000 字的问与答、你这一轮；附件原文另起一块，标「用户提供，非证据，不可引用」。回答校验（`check_answer`）：形状与长度 `answer_malformed`；`refs` 非空且每项是本次 `call:N`、本次返回过的 `concept:` / `know:`、上下文里的 `user:<id>` 或 `fact:context`，否则 `invalid_citation`，这一轮记 `rejected`，页面写「这次回答没有通过引用校验：<原因>」，原文折叠在「仍要看原文（未通过校验）」后面。经验草稿另校验（适用范围、反例必填，`target` 必须是附件里那条知识或本次返回过的），不合格只丢弃草稿、回答照常，轮次 `detail.draft_dropped` 记原因。
+- **「存为补充信息」与「就这条改写」**：前者把你这一轮的原文按 `POST /api/workbench/user-inputs` 存为用户输入，`request_id = uuid5(NAMESPACE_URL, 'discussion-turn:' + <这一轮的 request_id>)`（前后端同一算法，`discussion.user_input_request_id`），重复点击幂等，讨论视图按它查出这一轮对应的 `user:<id>`，之后的问题里它可被引用；讨论本身不触发复查，要进计划得点「重新复查」。后者把一条草稿或知识的原文作为你这一轮的附件交给模型，改写结果仍是草稿，要在「我的知识 → 草稿」审定。
+- **出错**：后台任何异常都会写一条 `status = error` 的回答（原因脱敏），不留无回答的悬空轮；额度用尽记 `error / quota_exhausted`。
+- **怎么验证一次**：从计划卡问「这个止损怎么来的」，回答带引用，「看这次回答读了什么」打开推理视图可读；抽查全库，除上面四类行外没有变化；让它起草一条经验，草稿出现在「我的知识 → 草稿」，采纳后成为新条目。
+- **已知限制**：不做流式输出，一次回答可能要一两分钟；服务重启会中断正在进行的回答；`get_trigger`、`get_position` 不按截止时间过滤（沿用现状）；`get_agent_run` 不读复盘卡的起草运行与讨论运行。
+
 ## 推理阅读视图
 
 `GET /api/workbench/agent-runs/{run_id}/reasoning`（v2.6，`workbench/reasoning.py`，只读事务、不调用外部数据源）把**一次 Agent 运行**按阅读顺序摊开：`run_id` 不是 UUID → 400，不存在 → 404，数据库不可用 → 503。覆盖 `propose`（首版）、`revise`（修订）、`review`（单阶段复查）、`interpret`（解读）、`retro`（复盘卡起草）、`discuss`（讨论回答）六种 `mode`，计划卡、版本链每版与复查记录各自链到生成它的运行。返回 `{run, legacy, version, review, steps, notes}`：

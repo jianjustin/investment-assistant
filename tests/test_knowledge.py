@@ -345,11 +345,12 @@ def test_known_versions_cover_code_constants():
                plan_shadow.SHADOW_VERSION, tracks.TRACKS_VERSION, review.CALC_VERSION, monthly.MONTHLY_VERSION,
                stages.STAGES_VERSION, backcheck.CALC_VERSION, 'rules-' + rules.RULE_VERSION,
                knowledge.KNOWLEDGE_VERSION, retro.RETRO_VERSION, knowledge_items.MY_KNOWLEDGE_VERSION,
-               knowledge_perf.KNOWLEDGE_PERF_VERSION}
+               knowledge_perf.KNOWLEDGE_PERF_VERSION, graph.RETRO_AGENT_VERSION, graph.DISCUSS_AGENT_VERSION}
     assert current <= knowledge.KNOWN_VERSIONS
-    # v2.7 versions whose code constants arrive in later tasks (stages.py, graph.py, review.py) are literal here
     assert {'stages-3', 'retro-1', 'agent-retro-1', 'agent-discuss-1', 'my-knowledge-1', 'knowledge-perf-1',
-            'review-7'} <= knowledge.KNOWN_VERSIONS
+            'review-7'} == {stages.STAGES_VERSION, retro.RETRO_VERSION, graph.RETRO_AGENT_VERSION,
+                            graph.DISCUSS_AGENT_VERSION, knowledge_items.MY_KNOWLEDGE_VERSION,
+                            knowledge_perf.KNOWLEDGE_PERF_VERSION, review.CALC_VERSION}
     assert {'stages-1', 'review-5', 'monthly-2', 'regime-1', 'context-1', 'backcheck-1'} <= knowledge.KNOWN_VERSIONS
     assert isinstance(knowledge.KNOWN_VERSIONS, frozenset) and len(knowledge.KNOWN_VERSIONS) == 32
 

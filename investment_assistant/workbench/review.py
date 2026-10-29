@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from investment_assistant.data.calendar import add_trading_days, trading_days_between
 from investment_assistant.workbench import ledger, repository
 
-CALC_VERSION = 'review-6'          # v2.5 D17: plans.agent = first versions, plans.agent_latest = heads
+CALC_VERSION = 'review-7'          # v2.7 D28: stats.learning (review-6: plans.agent = first versions, agent_latest = heads)
 SHADOW_MIN_SAMPLE = 5              # v2.5 §9.1: agent_summary gives no mean / median below this
 WINDOWS = (5, 10, 20)
 NY = ZoneInfo('America/New_York')
@@ -226,8 +226,10 @@ def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[A
                  trades: list[dict[str, Any]], *, segments: list[dict[str, Any]], undecided: int,
                  entry_opens: dict[Any, float], plan_outcomes: list[dict[str, Any]] | None = None,
                  discipline: dict[str, Any] | None = None, by_pool: dict | None = None,
-                 tracks: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Snapshot for units whose signal_date falls in the week; values are excess returns vs SPY."""
+                 tracks: dict[str, Any] | None = None,
+                 learning: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Snapshot for units whose signal_date falls in the week; values are excess returns vs SPY.
+    ``learning`` (review-7, ``learning_stats``) is frozen under ``stats['learning']``; without it the key is absent."""
     week_end = week_start + timedelta(days=6)
     by_rule: dict[str, list] = {}
     by_decision: dict[str, list] = {}
@@ -249,7 +251,7 @@ def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[A
                           'delay_hours': (t['executed_at'] - u['decided_at']).total_seconds() / 3600})
     unsignaled = [str(t['id']) for t in live
                   if t.get('decision_id') is None and week_start <= _session(t['executed_at']) <= week_end]
-    return {
+    stats = {
         'calc_version': CALC_VERSION,
         'week': {'start': week_start.isoformat(), 'end': week_end.isoformat()},
         'units': {'decided': len(units), 'undecided': undecided},
@@ -264,6 +266,56 @@ def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[A
         'tracks': tracks,
         'note': '描述性统计，样本小且重叠，不代表规则有效。',
     }
+    if learning is not None:
+        stats['learning'] = learning
+    return stats
+
+
+def learning_stats(*, week_start: date, week_end: date, cards: list[dict[str, Any]],
+                   perf_by_item: dict[int, dict[str, Any]]) -> dict[str, Any]:
+    """The weekly 「你学到了什么」 (v2.7 spec §10, ``review-7``), pure.
+
+    ``cards``: one dict per review card with ``card_id, ticker, end_kind, end_text, end_session, decision_text,
+    actual_r, rule_r, agent_r, status, headline`` and ``discipline`` (the frozen ``facts.discipline`` totals);
+    only those whose ``end_session`` falls in the week count, ordered by end day. ``perf_by_item``: knowledge
+    id -> ``{ref (newest version), title, summary}`` where ``summary`` is ``knowledge_perf.summarize`` over all of
+    the item's samples; an item is "tested this week" when at least one sample row's ``outcome_date`` lies in the
+    week, ``new_outcomes`` counts those rows and ``sample`` is the whole item's block."""
+    flag_order = ('chase', 'early_take', 'held_loser', 'unplanned')
+    in_week = sorted((c for c in cards if week_start <= _day(c['end_session']) <= week_end),
+                     key=lambda c: (_day(c['end_session']), c['card_id']))
+    discipline = {'cards': len(in_week), **{flag: 0 for flag in flag_order}, 'pending': 0}
+    out_cards = []
+    for card in in_week:
+        totals = card.get('discipline') or {}
+        for flag in flag_order:
+            discipline[flag] += int(totals.get(flag) or 0)
+        discipline['pending'] += int(totals.get('pending') or 0)
+        out_cards.append({'card_id': card['card_id'], 'ticker': card['ticker'], 'end_kind': card['end_kind'],
+                          'end_text': card['end_text'], 'decision_text': card['decision_text'],
+                          'actual_r': card.get('actual_r'), 'rule_r': card.get('rule_r'),
+                          'agent_r': card.get('agent_r'),
+                          'flags': [flag for flag in flag_order if totals.get(flag)],
+                          'status': card['status'], 'headline': card.get('headline')})
+    counts = {'total': len(in_week), **{status: sum(1 for c in in_week if c['status'] == status)
+                                        for status in ('reviewed', 'to_review', 'drafting', 'draft_failed')}}
+    knowledge = []
+    for knowledge_id in sorted(perf_by_item):
+        item = perf_by_item[knowledge_id]
+        rows = (item.get('summary') or {}).get('rows') or []
+        new = sum(1 for row in rows if row.get('outcome_date') and week_start <= _day(row['outcome_date']) <= week_end)
+        if new:
+            knowledge.append({'ref': item['ref'], 'title': item['title'], 'new_outcomes': new,
+                              'sample': item['summary']['sample']})
+    return {'discipline': discipline, 'cards': out_cards, 'counts': counts, 'knowledge': knowledge}
+
+
+def _day(value: Any) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
 
 
 def save_weekly(conn, week_start: date, stats: dict[str, Any], *, notes: str, supersedes_id) -> dict[str, Any]:

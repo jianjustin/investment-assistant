@@ -936,7 +936,7 @@ def derive_unit(candidates: list[dict[str, Any]]) -> dict[str, Any]:
 
 NY = ZoneInfo('America/New_York')
 PLAN_KINDS = ('rule', 'own', 'agent')
-RUN_STAGE_COUNT = {'stages-1': 7, 'stages-2': 8}     # stage rows per run, by stages_version (v2.5 §7.1)
+RUN_STAGE_COUNT = {'stages-1': 7, 'stages-2': 8, 'stages-3': 9}     # stage rows per run, by stages_version (v2.5 §7.1, v2.7 §9)
 
 
 def session_window(session: date) -> tuple[datetime, datetime]:

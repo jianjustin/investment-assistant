@@ -46,13 +46,13 @@ tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、�
 
 | 模块 | 做什么 | 依赖 |
 | --- | --- | --- |
-| `workbench/service.py` | 批处理编排（采集 → 筛选 → 环境 → 规则 → 计划 → Agent → 每日复查 → 推送）与全部用例 | 下列模块、`repository` |
+| `workbench/service.py` | 批处理编排（采集 → 筛选 → 环境 → 规则 → 计划 → Agent → 每日复查 → 复盘卡 → 推送）与全部用例 | 下列模块、`repository` |
 | `workbench/repository.py` | 工作台全部 SQL，只追加 | `db.py` |
 | `workbench/bars.py`、`news.py`、`earnings.py`、`macro.py` | 采集：日线、资讯标题、财报日、FRED | yfinance、SEC、FRED |
 | `workbench/universe.py`、`screen.py` | 纳指 100 范围文件；`screen-1` 过滤、排序、成员轮换（纯函数） | 纯函数 |
 | `workbench/screening.py` | 筛选阶段编排：采集范围日线、写 `screen_runs` / `screen_results`、成员并池 | `service`、`repository` |
 | `workbench/collect.py` | 共用逐只采集函数（批处理、筛选与「数据」菜单手动拉取共用）、`Tally` 记账与每族 advisory lock | `service`、采集模块 |
-| `workbench/stages.py` | 八个阶段注册表（`stages-2`；迁移 026 未执行时按 `stages-1` 的七个阶段记账）与 `StageRecorder`：批处理每阶段一行 `stage_runs` 证据（计数、原因、产出引用、耗时） | `families`、`collect`、`repository` |
+| `workbench/stages.py` | 九个阶段注册表（`stages-3`；迁移 027 未执行时按 `stages-2` 的八个阶段、迁移 026 未执行时按 `stages-1` 的七个阶段记账）与 `StageRecorder`：批处理每阶段一行 `stage_runs` 证据（计数、原因、产出引用、耗时） | `families`、`collect`、`repository` |
 | `workbench/families.py` | 六个数据族注册表：用途、状态判定、原因脱敏、覆盖口径、目标清单（目标清单读数据库与范围文件，其余为纯函数） | `repository`、`pool`、`universe` |
 | `workbench/pool.py`、`regime.py` | 观察池分层与来源；范围 ∪ 手动池的广度、区制、行业强弱 | 纯函数 |
 | `workbench/rules.py`、`synthesis.py` | 规则 v1 候选；合成每股每日一个决策单元 | 纯函数 |
@@ -65,12 +65,20 @@ tasks/*           定时任务入口，统一走 tasks/_harness.py（run_id、�
 | `workbench/reasoning.py` | Agent 推理阅读视图（v2.6）：把一次 Agent 运行（`propose` / `revise` / `review` / `interpret`）按阅读步骤摊开——读了什么、提议、校验、反方、回应、生成的计划；`TOOL_CONCEPTS`（工具结果字段 → 概念卡）、`CHECKS`（校验项与作废原因）；纯函数 `build` 与只读用例 `reasoning`（同一只读事务里复用 `derivation_view` 的推导） | `agent/conditions`、`labels`、`derivation_view`、`repository`、`service` |
 | `workbench/chart.py` | 「标的」页的 K 线数据：拆股调整日线（保留 250 根，MA20 / 50 / 200 用全部读到的历史算）；v2.6 起 `annotate`（纯函数）从已有表组装图上标注——候选信号日的箭头（同日多条合成一条，文字取 `labels.RULE_SHORT`）、每份计划在有效期与图上日期交集内的入场上沿 / 下沿 / 止损 / T1 四条短线段（有效期最近的 `MAX_PLANS = 12` 份，其余记 `omitted`）、你的未作废成交（落在纽约日期那根日线，非交易日落到之后最近一根），标记按时间升序 | `labels` |
 | `workbench/instrument_view.py` | 「标的」页的纯函数（v2.6）：「今天该关注什么」`focus`（持仓 → 进行中的 Agent 计划 → 今日触发 → 临近财报）、`key_data`（与 Agent 工具同一个 `tools.indicators`，请求时现算不入库）、`context_view`（下次财报日、区制、行业强弱） | `agent/tools`、`reasoning`、`labels` |
-| `workbench/agent/` | Agent 轨道：工具层（九个工具，含不受截止时间约束的 `get_concept`）、LangGraph 图（提议 + 反方 / 解读）、引用校验、模型接入 | LangGraph、智谱、PostgresSaver |
+| `workbench/agent/` | Agent 轨道：工具层（十个工具，含不受截止时间约束的 `get_concept` 与按截止时间读的 `get_knowledge`）、LangGraph 图（提议 + 反方 / 解读 / 复盘卡起草 / 讨论回答）、引用校验、模型接入 | LangGraph、智谱、PostgresSaver |
 | `workbench/agent/conditions.py` | 失效条件与下次复查条件的注册表 `condition-1`：参数校验、按事实判定 `met` / `not_met` / `unknown`（数据缺失不当作成立）、条件文案 | 纯函数（只依赖交易日历） |
 | `workbench/agent/plan_check.py` | `agent-2` 计划、反证与复查结论的校验（论点条数、条件、修订 `changes` 与宿主差异、`user:<id>` 引用），宿主差异 `diff` | `citations`、`conditions` |
 | `workbench/timeline.py` | 计划时间线 `timeline-1`：链状态、版本有效期与版本计划行、「上次复查之后」窗口、七项系统信号、条件判定结果、宿主结论（失效作废 / 无事维持）、截止时间之前的有效用户输入、复查与修订提示词的证据块 | 纯函数（复用 `plans` 的计算函数） |
 | `workbench/plan_review.py` | 每日复查阶段 `review`：复查对象与排序、链标的（只采集不跑规则）、逐链复查 `review_chain`（全程在一条不经连接池的专用连接（autocommit，用完即关）上持会话级锁 `review-run:<标的>:<信号日>`；短事务持锁读取 → 无事务调模型 → 一个写事务写入复查运行、修订运行、新版计划与版本、复查记录）、阶段记账（含逐链 `detail.excluded`）与新版推导核对；重新复查（`recheck_check` 同步前置检查、`recheck` 后台执行，截止时间 = 请求时刻）；只读视图（链视图 `chain_view`、某日复查 `reviews_view`、标的的链列表 `ticker_chains`）；命令行 `python -m investment_assistant.workbench.plan_review chain / recheck / check` | `service`、`timeline`、`user_inputs`、`agent/`、`repository` |
 | `workbench/user_inputs.py` | 用户输入（研报要点、新闻、你的判断、其他、撤回）：校验、按 `request_id` 幂等写入（只追加，更正与撤回指向旧行）、按标的 / 链列出并标记已更正 / 已撤回；只作为复查与修订提示词的证据 | `ledger`（`request_hash`）、`repository` |
+| `workbench/agent/growth_check.py` | 复盘卡草稿、教训、讨论回答的校验（`check_draft` / `check_lesson` / `check_answer`，引用允许 `fact:` / `call:N` / `concept:` / `know:` / `user:`）与 `knowledge_citations` 抽取（只取通过校验后保留下来的字段） | `retro`、`agent/citations` |
+| `workbench/agent/discuss_tools.py` | 就此计划讨论专用的三个只读工具（`get_plan_context`、`get_derivation`、`get_agent_run`）与 `DiscussContext`：只接受本单元的计划与运行，越界返回错误信封，不读任何草稿，不写任何表 | `reasoning`、`derivation_view`、`repository` |
+| `workbench/retro.py` | 复盘卡的纯函数（`retro-1`）：结束事件 `end_event`（含检测窗口 `window_start`、`event_key`、平仓方式）、参考计划、冻结事实 `build_facts`（十个键 `FACT_KEYS`）、决定文案、纪律摘要、起草用的事实文本与卡状态 | `discipline`、`tracks`（只复用判定） |
+| `workbench/retro_cards.py` | 复盘卡用例：阶段 `run_stage`（只读事务检测 → 一个写事务建卡 → 每张卡一个写事务起草）、`detect` / `draft_card` / `redraft`、审定 `verdict`（草稿全部出现，一个事务写审定、决定与知识第 1 版）、列表与卡页视图（含 `discipline_now`）、命令行 `retro_cards detect / draft / show / check` | `service`、`retro`、`knowledge_items`、`my_knowledge`、`agent/graph`、`repository` |
+| `workbench/knowledge_items.py` | 「我的知识」的纯函数（`my-knowledge-1`）：字段与挂靠校验、`know:` 引用解析、截止时间可见性 `visible`、改了哪些字段 | `knowledge`（概念 id 格式） |
+| `workbench/my_knowledge.py` | 「我的知识」用例：写 / 改版 / 归档恢复（`base_version` 与 advisory lock、`request_id` 幂等）、列表与条目视图、表现回看 `performance`、讨论草稿的审定、`refs_for_plans`（计划卡与链视图的「引用的知识」）、命令行 `my_knowledge show / check-cutoff` | `service`、`knowledge_items`、`knowledge_perf`、`plan_shadow`、`repository` |
+| `workbench/knowledge_perf.py` | 知识表现回看的纯函数（`knowledge-perf-1`）：每个单元取最早引用的一版，汇总复用 `review.shadow_block`，样本不足 5 个不给均值 | `review` |
+| `workbench/discussion.py` | 就此计划讨论用例（`agent-discuss-1`）：建讨论、提问的同步检查（前置检查与你的这一轮）、后台回答 `answer`（模型没有写工具，宿主只写你的一轮、回答、运行与工具调用、可选的一条经验草稿）、讨论视图（`pending` / `interrupted` 在读取时判定） | `service`、`agent/graph`、`discuss_tools`、`my_knowledge`、`repository` |
 | `workbench/briefs.py` | 由 Agent 运行构造决策单元的解读 | 纯函数 |
 | `workbench/ledger.py`、`positions.py`、`exits.py`、`account.py` | 决定与成交（只追加）、FIFO 持仓、持仓止损、资金快照与出入金 | 纯函数 + SQL |
 | `workbench/plan_shadow.py`、`review.py`、`discipline.py`、`tracks.py`、`monthly.py`、`backcheck.py` | 影子跟踪、周度复盘、纪律、三方对比、月度收益与敏感性、上线前检查 | 纯函数 |
@@ -110,10 +118,12 @@ flowchart TD
         C --> D["⑤ 计划 plan<br/>plan-1：ATR 止损 · 2R 目标 · 按风险定仓 · 超限作废"]
         D --> E["⑥ Agent 轨道 agent<br/>提议 + 反方 · 引用校验 · token 预算；解读"]
         E --> R["⑦ 每日复查 review<br/>每条有效 Agent 计划链：失效作废 / 无事维持（宿主）· 复查调用 · 修订出新版"]
-        R --> F["⑧ 复核与推送 push<br/>今日视图 + 推送 Discord（核心池 + 持仓）"]
+        R --> RC["⑧ 复盘卡 retro<br/>结束事件（平仓 / 止损 / 到 T1 / 过期 / 作废）→ 冻结十个事实建卡 → Agent 起草叙述与教训"]
+        RC --> F["⑨ 复核与推送 push<br/>今日视图 + 推送 Discord（核心池 + 持仓）"]
     end
     F --> G["你：「今日」采纳 / 否决 / 降级<br/>选执行依据：规则 / Agent / 自定"]
     G --> H["你：录入成交 → 持仓与止损"]
+    RC --> V["你：审定复盘卡 → 我的知识（只追加、带版本）<br/>Agent 用 get_knowledge 读 · 引用记入 knowledge_citations · 表现回看"]
     subgraph review["08:00 北京（每天）· 任务 workbench_review"]
         I["影子跟踪：规则与 Agent 各按自己的价位"] --> J["三方对比：规则 / Agent / 实际"]
         J --> K["纪律指标 · 周度复盘 · 月度收益"]
@@ -127,7 +137,7 @@ flowchart TD
 
 时点纪律：规则、计划和 Agent 工具只读运行截止时间之前已入库的数据；所有业务记录只追加，更正用新记录指向旧记录。手动运行批处理不推送。
 
-八个阶段（`collect`、`screen`、`regime`、`signals`、`plan`、`agent`、`review`、`push`）按 `workbench/stages.py` 注册表（`stages-2`）的定义展示，每次运行每阶段向 `stage_runs` 追加一行证据（计数、原因、产出引用、耗时）；迁移 026 未执行时本次按 `stages-1` 记七个阶段（没有 `review`）。`review` 只复查已有的 `agent-2` 链；链的标的若已离开观察池与持仓，只在采集阶段补采数据，不进规则循环。`collect` 的时间窗口包住 `screen`（筛选自己采集范围日线，这部分记在 `collect` 的 `bars` 计数里），信号与计划在同一个逐只循环里交替执行；展示顺序以注册表为准，不以时间戳为准。
+九个阶段（`collect`、`screen`、`regime`、`signals`、`plan`、`agent`、`review`、`retro`、`push`）按 `workbench/stages.py` 注册表（`stages-3`）的定义展示，每次运行每阶段向 `stage_runs` 追加一行证据（计数、原因、产出引用、耗时）；迁移 027 未执行时本次按 `stages-2` 记八个阶段（没有 `retro`），迁移 026 未执行时按 `stages-1` 记七个阶段（没有 `review`、`retro`）。`review` 只复查已有的 `agent-2` 链；`retro` 只对你参与过的单元与你的成交建卡，检测、建卡、起草分三类事务（只读检测、一次写入新卡、每张卡一个写事务），Agent 不可用时照常建卡；链的标的若已离开观察池与持仓，只在采集阶段补采数据，不进规则循环。`collect` 的时间窗口包住 `screen`（筛选自己采集范围日线，这部分记在 `collect` 的 `bars` 计数里），信号与计划在同一个逐只循环里交替执行；展示顺序以注册表为准，不以时间戳为准。
 
 ---
 
@@ -142,6 +152,7 @@ flowchart TD
 | 工作台 · 计划与执行 | `trade_plans`、`signal_decisions`、`trades`、`account_snapshots`、`cash_flows` |
 | 工作台 · Agent | `agent_runs`、`agent_tool_calls`；LangGraph 检查点表由 `python -m investment_assistant.workbench.agent setup` 创建，不在迁移里 |
 | 工作台 · 计划时间线 | `agent_plan_versions`（每版 Agent 计划一行，链关系与截止时间）、`plan_reviews`（每次复查一行：信号、条件判定、结论、新版）、`user_inputs`（你贴入的材料，更正与撤回指向旧行）；迁移 026，只追加，不在 `WORKBENCH_TABLES` 里，缺表时按 `timeline_ready` 降级 |
+| 成长闭环 | `review_cards`（复盘卡，冻结事实，`event_key` 唯一）、`review_card_drafts`（每次起草一行，每卡至多一份成功草稿）、`review_card_verdicts`（一卡一审定）、`discussions`、`discussion_turns`（就此计划讨论）、`knowledge_items`、`knowledge_versions`、`knowledge_status`（我的知识：版本连续不分叉，归档是状态记录）、`knowledge_drafts`、`knowledge_draft_verdicts`（教训草稿及其决定，一稿一决定）、`knowledge_citations`（计划与复查引用了哪一版知识）；迁移 027，十一张都只追加（`repository` 对它们只有 `INSERT` / `SELECT`），不在 `WORKBENCH_TABLES` 里，缺表时按 `growth_ready` 降级 |
 | 工作台 · 复盘 | `weekly_reviews`、`monthly_reviews`、`rule_backchecks`、`review_pushes` |
 | 主线 · 基本面 | `us_research_observations`、`us_research_collection_state`（`us_research/`；迁移 022 删除 v1 遗留的 6 张表，见 operations） |
 

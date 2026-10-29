@@ -985,7 +985,8 @@ def test_today_unit_has_agent_ok_view(db, scripted_model):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
     unit = service.today(now=NOW)['units'][0]
     assert set(unit['agent']) == {'id', 'status', 'model', 'agent_version', 'output', 'counter', 'plan',
-                                  'input_tokens', 'output_tokens', 'created_at', 'chain'}
+                                  'input_tokens', 'output_tokens', 'created_at', 'chain', 'knowledge_refs'}
+    assert unit['agent']['knowledge_refs'] == []                       # v2.7 §6.2: nothing cited by this plan
     assert unit['agent']['status'] == 'ok' and unit['agent']['model'] == 'glm-5.3'
     assert unit['agent']['plan']['kind'] == 'agent' and unit['agent']['agent_version'] == 'agent-2'
     assert unit['agent']['output']['levels']['entry_low']['value'] == '98.50'
@@ -1317,7 +1318,7 @@ def test_weekly_snapshot_has_tracks(db, scripted_model):
     off = agent_deps(scripted_model, [], settings=_agent_settings(provider='off'))
     service.run_batch(tickers=['NVDA', 'MU'], now=NOW, deps=off)
     record = service.generate_weekly(SESSION - timedelta(days=SESSION.weekday()), now=NOW)
-    assert record['calc_version'] == 'review-6'
+    assert record['calc_version'] == 'review-7'
     stats = record['stats']
     assert stats['tracks']['summary']['all']['actual']['units'] == 2
     assert all('ticker' in row and row['rule'] and row['agent'] and row['actual']

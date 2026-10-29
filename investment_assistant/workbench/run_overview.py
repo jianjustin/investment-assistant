@@ -40,6 +40,7 @@ REASON_TEXT: dict[str, str] = {
     'fresh_version': '当天刚生成，不复查',
     'object_cap': '超出复查对象上限 20',
     'atr_unavailable': 'ATR 无法计算',
+    'draft_cap': '超出每次起草上限 5 张',
     # degradation kinds
     'fred_not_configured': 'FRED 未配置',
     'label_insufficient': '广度样本不足',
@@ -51,6 +52,7 @@ REASON_TEXT: dict[str, str] = {
     'derivation_check_error': '推导核对出错',
     'revision_failed': '修订未通过校验',
     'agent_unavailable': 'Agent 不可用',
+    'draft_rejected': '草稿未通过校验',
     # rule skip reasons
     'missing_signal_bar': '缺信号日日线',
     'insufficient_history': '日线不足 200 根',
@@ -70,12 +72,14 @@ STAGE_CONCEPTS: dict[str, tuple[str, ...]] = {
     'plan': ('plan.entry_zone', 'plan.stop', 'plan.target1', 'plan.status', 'plan.derivation'),
     'agent': ('agent.action_levels', 'agent.thesis', 'agent.counter', 'agent.reject_reasons'),
     'review': ('agent.review_outcome', 'agent.signals', 'review.chain_state'),
+    'retro': ('review.retro_card', 'review.retro_end'),
     'push': ('system.push',),
 }
 
 NOT_READY_NOTE = '迁移 025 未执行，暂无阶段证据'
 NO_ROWS_NOTE = '这一天没有阶段证据：当天没有运行，或运行早于 v2.4（2026-10-27 起才记录）'
 STAGES_1_NOTE = '这次运行按 stages-1 记账（早于 v2.5 或迁移 026 未执行），没有每日复查阶段'
+STAGES_2_NOTE = '这次运行按 stages-2 记账（早于 v2.7 或迁移 027 未执行），没有复盘卡阶段'
 MISSING_NOTE = '这一阶段没有证据行（记账失败，见运行报告）'
 UNFINISHED_NOTE = '还没有这一阶段的记录：运行可能仍在进行，或中途被终止'
 RUNNING_SUFFIX = '（可能仍在运行）'
@@ -209,6 +213,24 @@ def _review(r: dict) -> str:
     return text
 
 
+RETRO_KIND_TEXT = (('position_closed', '平仓'), ('stop', '止损'), ('target', '到 T1'), ('expired', '过期'),
+                   ('invalidated', '作废'))
+
+
+def _retro(r: dict) -> str:
+    """v2.7 §9 的两句模板；数字都是该行自己的值（detail 缺键按 0）。"""
+    detail = r['detail'] if isinstance(r['detail'], dict) else {}
+    events, new_cards = int(detail.get('events') or 0), int(detail.get('new_cards') or 0)
+    to_review = int(detail.get('to_review') or 0)
+    if not events and not new_cards and not r['input_count']:
+        return f'没有新结束的计划或平仓；待审定 {to_review} 张'
+    kinds = detail.get('by_end_kind') if isinstance(detail.get('by_end_kind'), dict) else {}
+    parts = [f'{text} {kinds[key]}' for key, text in RETRO_KIND_TEXT if kinds.get(key)]
+    shown = f'（{" · ".join(parts)}）' if parts else ''
+    return (f"新结束 {events} 笔{shown}，新建复盘卡 {new_cards} 张；"
+            f"起草 {r['output_count']}/{r['input_count']} 张；待审定 {to_review} 张")
+
+
 def _push(r: dict) -> str:
     messages = _get(r['outputs'], 'push', 'messages')
     messages = r['output_count'] if messages is None else messages
@@ -220,7 +242,7 @@ def _push(r: dict) -> str:
 
 
 TEMPLATES = {'collect': _collect, 'screen': _screen, 'regime': _regime, 'signals': _signals, 'plan': _plan,
-             'agent': _agent, 'review': _review, 'push': _push}
+             'agent': _agent, 'review': _review, 'retro': _retro, 'push': _push}
 
 
 def _suffixes(skips: list[dict], failures: list[dict], degradations: list[dict]) -> str:
@@ -347,9 +369,10 @@ def _stage_views(run: dict) -> list[dict]:
     for stage in stages_module.STAGES:
         if stage.id in members:
             views.append(describe(members[stage.id], title=stage.title, purpose=stage.purpose))
-        elif stage.id not in ids and run['stages_version'] == stages_module.STAGES_VERSION_V1:
-            views.append(_placeholder(stage.id, stage.title, stage.purpose, status='not_recorded',
-                                      sentence=STAGES_1_NOTE))
+        elif stage.id not in ids and run['stages_version'] in (stages_module.STAGES_VERSION_V1,
+                                                                 stages_module.STAGES_VERSION_V2):
+            note = STAGES_1_NOTE if stage.id == 'review' else STAGES_2_NOTE
+            views.append(_placeholder(stage.id, stage.title, stage.purpose, status='not_recorded', sentence=note))
         else:
             views.append(_placeholder(stage.id, stage.title, stage.purpose, status='missing', sentence=missing_note))
     for stage_id, r in members.items():

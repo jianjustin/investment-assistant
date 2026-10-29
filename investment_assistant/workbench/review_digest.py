@@ -85,7 +85,8 @@ def weekly(review: dict[str, Any], *, public_url: str) -> dict[str, Any]:
                          'unsignaled': len(stats.get('unsignaled_trades') or []),
                          'closed': len(stats.get('closed_trades') or [])},
             'tracks': _tracks_of(stats), 'rules': _rules_of(stats),
-            'discipline': _discipline_of(stats), 'note': NOTE_TEXT, 'evidence': EVIDENCE_TEXT,
+            'discipline': _discipline_of(stats), 'learning': stats.get('learning'),
+            'note': NOTE_TEXT, 'evidence': EVIDENCE_TEXT,
             'url': public_url.rstrip('/') + '/#review/weekly'}
 
 

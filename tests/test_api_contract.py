@@ -157,3 +157,107 @@ def test_run_overview_and_reasoning_without_db_are_503(client):
     assert client.get("/api/workbench/run-overview?session=2026-10-27").status_code == 503
     assert client.get(
         "/api/workbench/agent-runs/6f1d1c1e-6666-4444-8888-000000000001/reasoning").status_code == 503
+
+
+# --- v2.7 growth loop (spec §12): every new path and its methods, error bodies and the 503 text ---
+
+GROWTH_ROUTES = {
+    "/api/workbench/review-cards": {"get"},
+    "/api/workbench/review-cards/{card_id}": {"get"},
+    "/api/workbench/review-cards/{card_id}/verdict": {"post"},
+    "/api/workbench/review-cards/{card_id}/redraft": {"post"},
+    "/api/workbench/my-knowledge": {"get", "post"},
+    "/api/workbench/my-knowledge/{knowledge_id}": {"get"},
+    "/api/workbench/my-knowledge/{knowledge_id}/versions": {"post"},
+    "/api/workbench/my-knowledge/{knowledge_id}/status": {"post"},
+    "/api/workbench/my-knowledge/{knowledge_id}/performance": {"get"},
+    "/api/workbench/my-knowledge-drafts": {"get"},
+    "/api/workbench/my-knowledge-drafts/{draft_id}/verdict": {"post"},
+    "/api/workbench/discussions": {"get", "post"},
+    "/api/workbench/discussions/{discussion_id}": {"get"},
+    "/api/workbench/discussions/{discussion_id}/turns": {"post"},
+}
+
+
+def test_growth_routes_in_openapi(client):
+    spec = client.get("/openapi.json").json()
+    for path, methods in GROWTH_ROUTES.items():
+        assert path in spec["paths"], path
+        assert set(spec["paths"][path].keys()) == methods, path
+
+
+def test_growth_turn_route_answers_202(client):
+    spec = client.get("/openapi.json").json()
+    assert "202" in spec["paths"]["/api/workbench/discussions/{discussion_id}/turns"]["post"]["responses"]
+
+
+GROWTH_WITHOUT_DB = [
+    ("get", "/api/workbench/review-cards"),
+    ("get", "/api/workbench/review-cards/1"),
+    ("post", "/api/workbench/review-cards/1/verdict"),
+    ("post", "/api/workbench/review-cards/1/redraft"),
+    ("get", "/api/workbench/my-knowledge"),
+    ("post", "/api/workbench/my-knowledge"),
+    ("get", "/api/workbench/my-knowledge/1"),
+    ("post", "/api/workbench/my-knowledge/1/versions"),
+    ("post", "/api/workbench/my-knowledge/1/status"),
+    ("get", "/api/workbench/my-knowledge/1/performance"),
+    ("get", "/api/workbench/my-knowledge-drafts"),
+    ("post", "/api/workbench/my-knowledge-drafts/1/verdict"),
+    ("get", "/api/workbench/discussions?card_id=1"),
+    ("get", "/api/workbench/discussions/1"),
+]
+
+BODIES = {
+    "/api/workbench/review-cards/1/verdict": {"request_id": "6f1d1c1e-6666-4444-8888-000000000001", "note": "",
+                                             "lessons": []},
+    "/api/workbench/my-knowledge": {"request_id": "6f1d1c1e-6666-4444-8888-000000000001", "title": "t", "body": "b",
+                                    "scope": "s", "counter_examples": "", "concepts": [], "tickers": ["NVDA"]},
+    "/api/workbench/my-knowledge/1/versions": {"request_id": "6f1d1c1e-6666-4444-8888-000000000001",
+                                               "base_version": 1, "title": "t", "body": "b", "scope": "s",
+                                               "tickers": ["NVDA"]},
+    "/api/workbench/my-knowledge/1/status": {"request_id": "6f1d1c1e-6666-4444-8888-000000000001",
+                                             "status": "archived", "reason": ""},
+    "/api/workbench/my-knowledge-drafts/1/verdict": {"request_id": "6f1d1c1e-6666-4444-8888-000000000001",
+                                                     "action": "dismiss"},
+}
+
+
+def test_growth_routes_without_db_are_503(client):
+    for method, path in GROWTH_WITHOUT_DB:
+        resp = getattr(client, method)(path, **({"json": BODIES[path]} if method == "post" and path in BODIES else {}))
+        assert resp.status_code == 503, path
+        assert "数据库未配置" in resp.json()["error"], path
+    post = client.post("/api/workbench/discussions",
+                       json={"request_id": "6f1d1c1e-6666-4444-8888-000000000001",
+                             "context": {"kind": "card", "card_id": 1}})
+    assert post.status_code == 503
+    turn = client.post("/api/workbench/discussions/1/turns",
+                       json={"request_id": "6f1d1c1e-6666-4444-8888-000000000001", "body": "问"})
+    assert turn.status_code == 503
+
+
+def test_growth_response_shapes_stay_stable(client, monkeypatch):
+    from investment_assistant.workbench import discussion, my_knowledge, retro_cards
+    monkeypatch.setattr(retro_cards, "list_view", lambda **kw: {"cards": [], "counts": {}})
+    monkeypatch.setattr(retro_cards, "card_view", lambda card_id, *, now: {
+        "card": {}, "facts": {}, "status": "to_review", "drafts": [], "lesson_drafts": [], "verdict": None,
+        "discipline_now": {}, "discussions": []})
+    monkeypatch.setattr(my_knowledge, "list_view", lambda **kw: {"items": []})
+    monkeypatch.setattr(my_knowledge, "item_view", lambda knowledge_id, *, version=None: {
+        "item": {}, "versions": [], "status_history": [], "citations": [], "current": {}})
+    monkeypatch.setattr(my_knowledge, "drafts_view", lambda *, open_only: {"drafts": []})
+    monkeypatch.setattr(discussion, "list_for", lambda **kw: [])
+    monkeypatch.setattr(discussion, "view", lambda discussion_id: {
+        "id": discussion_id, "context_kind": "plan", "ticker": "NVDA", "signal_date": "2026-10-20", "plan_id": "p",
+        "card_id": None, "created_at": "x", "context": {}, "turns": []})
+    assert set(client.get("/api/workbench/review-cards").json()) == {"cards", "counts"}
+    assert set(client.get("/api/workbench/review-cards/1").json()) == {
+        "card", "facts", "status", "drafts", "lesson_drafts", "verdict", "discipline_now", "discussions"}
+    assert set(client.get("/api/workbench/my-knowledge").json()) == {"items"}
+    assert set(client.get("/api/workbench/my-knowledge/1").json()) == {
+        "item", "versions", "status_history", "citations", "current"}
+    assert set(client.get("/api/workbench/my-knowledge-drafts").json()) == {"drafts"}
+    assert client.get("/api/workbench/discussions?card_id=1").json() == {"discussions": []}
+    assert set(client.get("/api/workbench/discussions/5").json()) == {
+        "id", "context_kind", "ticker", "signal_date", "plan_id", "card_id", "created_at", "context", "turns"}

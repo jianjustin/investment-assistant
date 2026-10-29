@@ -6,9 +6,10 @@ stage, each in its own transaction, so a later stage's failure cannot lose an
 earlier stage's evidence. Write failures are swallowed into ``close``'s report —
 bookkeeping must never fail the batch.
 
-``stages-2`` (v2.5) has eight stages, ``review`` between ``agent`` and ``push``.
-A run against a database without migration 026 is booked as ``stages-1`` (D22):
-the recorder then knows only the seven v2.4 stages and ignores ``review``.
+``stages-2`` (v2.5) has eight stages, ``review`` between ``agent`` and ``push``; ``stages-3`` (v2.7) has nine,
+``retro`` between ``review`` and ``push``. A run against a database without migration 026 is booked as
+``stages-1`` (D22): the recorder then knows only the seven v2.4 stages and ignores ``review`` and ``retro``;
+without migration 027 as ``stages-2`` (v2.7 D29), which ignores ``retro``.
 """
 from __future__ import annotations
 
@@ -21,7 +22,8 @@ from typing import Any
 
 from investment_assistant.workbench import collect, families, repository
 
-STAGES_VERSION = 'stages-2'
+STAGES_VERSION = 'stages-3'
+STAGES_VERSION_V2 = 'stages-2'
 STAGES_VERSION_V1 = 'stages-1'
 SAMPLES_MAX = 10                      # per skip-reason sample cap (spec §5.1)
 
@@ -70,6 +72,11 @@ STAGES: tuple[StageDef, ...] = (
         purpose='对每份有效 Agent 计划做一次复查：维持、修订或作废；系统信号与你的输入触发认真复查。',
     ),
     StageDef(
+        id='retro',
+        title='复盘卡',
+        purpose='检测已结束的计划与平仓，冻结复盘事实并起草复盘卡',
+    ),
+    StageDef(
         id='push',
         title='复核与推送',
         purpose='组装今日视图并把摘要推送 Discord；手动运行不推送。',
@@ -77,8 +84,10 @@ STAGES: tuple[StageDef, ...] = (
 )
 
 STAGE_IDS: tuple[str, ...] = tuple(stage.id for stage in STAGES)
-STAGE_IDS_V1: tuple[str, ...] = tuple(stage_id for stage_id in STAGE_IDS if stage_id != 'review')
-STAGE_IDS_BY_VERSION: dict[str, tuple[str, ...]] = {STAGES_VERSION_V1: STAGE_IDS_V1, STAGES_VERSION: STAGE_IDS}
+STAGE_IDS_V2: tuple[str, ...] = tuple(stage_id for stage_id in STAGE_IDS if stage_id != 'retro')
+STAGE_IDS_V1: tuple[str, ...] = tuple(stage_id for stage_id in STAGE_IDS_V2 if stage_id != 'review')
+STAGE_IDS_BY_VERSION: dict[str, tuple[str, ...]] = {STAGES_VERSION_V1: STAGE_IDS_V1, STAGES_VERSION_V2: STAGE_IDS_V2,
+                                                    STAGES_VERSION: STAGE_IDS}
 
 
 def classify(*, executed: bool, failed_reason: str | None, failures: list,
@@ -167,8 +176,9 @@ class StageRecorder:
     transaction via ``write_stage_row``); any write error is swallowed into the
     first ``error`` and never raised, so accounting cannot fail the batch.
 
-    ``version`` picks the stage set: ``stages-2`` (default, eight rows) or ``stages-1`` (seven rows,
-    migration 026 missing): a stage outside the set is ignored by ``open`` / ``finish`` / ``skip``."""
+    ``version`` picks the stage set: ``stages-3`` (default, nine rows), ``stages-2`` (eight rows, migration 027
+    missing) or ``stages-1`` (seven rows, migration 026 missing): a stage outside the set is ignored by
+    ``open`` / ``finish`` / ``skip``."""
 
     def __init__(self, run_id: str, trigger: str, session: date | None, *,
                  writer: Callable[[dict], None] | None = None,
@@ -248,7 +258,7 @@ class StageRecorder:
 
         With ``exc`` the leftovers are failed/``aborted: …``, without it
         skipped/``not_reached`` — each run_id ends up with exactly one row per stage of its version
-        (eight for stages-2, seven for stages-1)."""
+        (nine for stages-3, eight for stages-2, seven for stages-1)."""
         for stage_id in self.stage_ids:
             if stage_id in self._written:
                 continue

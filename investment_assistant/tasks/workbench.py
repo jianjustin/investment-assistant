@@ -19,6 +19,15 @@ def _timeline_ready() -> bool:
         return False
 
 
+def _growth_ready() -> bool:
+    """Migration 027 present (v2.7 D29), read on a read-only transaction; any failure counts as not ready."""
+    try:
+        with service.read_only_tx() as conn:
+            return repository.growth_ready(conn)
+    except Exception:  # noqa: BLE001 - an unreadable database is booked as the older version; the batch reports it
+        return False
+
+
 def _account_push(recorder: stages_module.StageRecorder, acc: stages_module.StageAcc,
                   out: dict[str, Any]) -> None:
     """Close the push stage from the notifier's result (v2.4 §4): a skip for the three
@@ -48,11 +57,14 @@ def run(config: AssistantConfig | None = None, *, trigger_source: str = 'schedul
     # Scheduled runs skip New York holidays; a manual run always targets the latest settled session.
     def batch(run_id: str) -> dict:
         # 阶段证据（v2.4 §4，v2.5 §7.1）：任务层建记录器，批处理记推送之前的阶段，推送阶段在这里记。
-        # 迁移 026 未执行（D22）→ 本次按 stages-1 记 7 行；就绪 → stages-2 记 8 行。
+        # 迁移 026 未执行（D22）→ 本次按 stages-1 记 7 行；026 就绪、027 未执行（v2.7 D29）→ stages-2 记 8 行；
+        # 都就绪 → stages-3 记 9 行。
         ready = _timeline_ready()
+        growth = ready and _growth_ready()
         recorder = stages_module.StageRecorder(run_id, 'scheduled' if scheduled else 'manual_batch',
                                                bars.latest_closed_session(moment),
-                                               version=stages_module.STAGES_VERSION if ready
+                                               version=stages_module.STAGES_VERSION if growth
+                                               else stages_module.STAGES_VERSION_V2 if ready
                                                else stages_module.STAGES_VERSION_V1)
         failure: BaseException | None = None
         summary: dict | None = None
@@ -62,7 +74,7 @@ def run(config: AssistantConfig | None = None, *, trigger_source: str = 'schedul
             summary = service.run_batch(now=moment, deps=deps, run_id=run_id,
                                         skip_non_trading=scheduled,
                                         record_trigger='scheduled' if scheduled else 'manual_batch',
-                                        stages=recorder, timeline_ready=ready)
+                                        stages=recorder, timeline_ready=ready, growth_ready=growth)
             if not scheduled:
                 recorder.skip('push', 'manual_run')
                 return summary  # 手动运行不推送

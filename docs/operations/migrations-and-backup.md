@@ -31,6 +31,7 @@
 | 024 | v2.3：`data_fetch_runs`：每次某族被拉取一次追加一行记录成败与原因；只建表与索引，不动旧表（2026-10-27 已在真实库执行，见下文） | 主线 |
 | 025 | v2.4：`stage_runs`：每次 `workbench` 任务、每个阶段追加一行证据（计数、原因、产出引用、耗时）；只建表与索引，不动旧表（2026-10-27 已在真实库手动执行，见下文） | 主线 |
 | 026 | v2.5：计划时间线。新建只追加的 `agent_plan_versions`（版本链）、`plan_reviews`（每日复查记录，每条链每个交易日至多一条有效批处理复查）、`user_inputs`（用户输入）；`signal_decisions` 加可空列 `agent_plan_id`、`review_view`；放宽 `agent_runs.mode`（加 `review`、`revise`）及两条相关 CHECK、`agent_tool_calls.phase`（加 `review`）、`stage_runs.stage`（加 `review`）；`idx_trade_plans_agent_unique` 只管 `agent-1`。不改旧行、可重跑；三张新表不进 `WORKBENCH_TABLES`，就绪与否由 `repository.timeline_ready` 判定。对旧代码无害（只新增表 / 列、放宽约束）。必须先于重启执行（spec D19）；2026-10-28 已在真实库手动执行，见下文 | 主线 |
+| 027 | v2.7：我的成长闭环。新建十一张只追加的表：`review_cards`、`review_card_drafts`、`review_card_verdicts`（复盘卡及其起草与审定）、`discussions`、`discussion_turns`（就此计划讨论）、`knowledge_items`、`knowledge_versions`、`knowledge_status`（我的知识）、`knowledge_drafts`、`knowledge_draft_verdicts`（教训草稿及其决定）、`knowledge_citations`（计划与复查引用了哪一版知识）；放宽 `agent_runs.mode`（加 `retro`、`discuss`）、`agent_tool_calls.phase`（加 `retro`、`discuss`）、`stage_runs.stage`（加 `retro`）。约束名查不到时按定义找出后删除（同 026 的 `DO` 块），不改旧行、不加种子行、可重跑；十一张新表不进 `WORKBENCH_TABLES`，就绪与否由 `repository.growth_ready` 判定。对 v2.6 代码无害（只新增表、放宽约束）。必须先于重启执行（spec D29）；真实库执行需单独授权，见下文 | 主线 |
 
 另需一次：`python -m investment_assistant.workbench.agent setup` 由 LangGraph `PostgresSaver.setup()` 建检查点表，不进本项目迁移。
 
@@ -160,6 +161,18 @@ psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=
 | 5. 重启服务 | 16:31:08 +0800 `launchctl kickstart -k`，新进程 pid 8923 启动于 16:31:38；`/api/health`：数据库、调度线程（轮询运行中）、Filings 存储、Discord、FRED up，SEC 与 Yahoo 经代理时有 SSL 中断（复查时交替 up / down，与 v2.4 验收日相同），3 项 `systemctl` 检查在 macOS 上为 down（与本次无关）；`/api/workbench/today`（`timeline_ready: true`）、`/api/jobs/scheduled`、`/api/status`、`/api/workbench/plan-reviews`、`/api/workbench/chains?ticker=QCOM`、`/api/workbench/user-inputs?ticker=QCOM` 均 200 |
 
 回滚：`pg_restore --clean -d "$INVESTMENT_ASSISTANT_DATABASE_URL" <上面的 dump>`，再重启到 v2.4 代码。
+
+### 027 的真实库执行（逐步手动，每一步单独授权）
+
+027 只新增表并放宽三处约束，对 v2.6 代码无害；v2.7 代码在缺表时降级：批处理按 `stages-2` 记 8 行（没有 `retro` 行，`summary.errors` 有 `growth: migration_027_missing`）、`get_knowledge` 返回错误信封、新接口 503「迁移 027 未执行」、`today` / 链视图的 `knowledge_refs` 为空列表。与 026 一样**必须先迁移、后重启**（spec D29）：
+
+1. **只读预检**：十一张表都不存在（`to_regclass` 为 null）；`job_reports` 没有 `running` 行；记下 `public` 表数与 `agent_runs`、`stage_runs` 的行数。
+2. **全库备份**：`pg_dump -Fc "$INVESTMENT_ASSISTANT_DATABASE_URL" -f .local/us-workbench/backups/investment_assistant-before-027-<时间戳>.dump`，`shasum -a 256` 记下，`pg_restore --list` 确认可读。
+3. **执行**：`psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=1 -f migrations/027_growth_loop.sql`；首次执行时 `DROP CONSTRAINT IF EXISTS` 找不到具名约束的 `NOTICE` 属预期；`schema_migrations` 仍只到 `017`。
+4. **验证**：十一张新表各 0 行；`agent_runs_mode_check` 含 `retro`、`discuss`，`agent_runs_mode_plan_check`、`agent_runs_interpret_no_pass_check` 不变；`agent_tool_calls_phase_check` 含 `retro`、`discuss`；`stage_runs_stage_check` 为 9 个阶段；`public` 表数 +11；旧表行数与预检相同。
+5. **重启服务**（[本机服务](local-service.md)）：新进程起来后手动跑一次批处理，`stage_runs` 该 `run_id` 有 9 行；`python -m investment_assistant.workbench.retro_cards check --since <上线前第 5 个交易日>` 与 `python -m investment_assistant.workbench.my_knowledge check-cutoff --since <上线日>` 通过。
+
+回滚：`pg_restore --clean -d "$INVESTMENT_ASSISTANT_DATABASE_URL" <上面的 dump>`，再重启到 v2.6 代码。执行记录写进 `docs/roadmap/v2.7-acceptance.md` 的「迁移 027 执行记录」一节。
 
 ## 一次性测试库
 

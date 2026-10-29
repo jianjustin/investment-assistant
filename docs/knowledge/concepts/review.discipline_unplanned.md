@@ -5,7 +5,7 @@ group: review
 version: 1
 applies_to: [review-6]
 summary: "买入成交没有关联任何决定的计划（没有决定，或决定没选计划），记为计划外交易；它不进入遵守率的分母。"
-related: [review.discipline_chase, review.position, system.decision]
+related: [review.discipline_chase, review.position, system.decision, review.retro_card]
 sources: [investment_assistant/workbench/discipline.py, investment_assistant/workbench/ledger.py]
 ---
 
@@ -19,6 +19,8 @@ sources: [investment_assistant/workbench/discipline.py, investment_assistant/wor
 
 ## 在系统里哪里看到
 「复盘」纪律明细的"计划外交易"计数；周度复盘里单独列出"无信号交易"。录入成交时选择关联的决定，可以避免被记为计划外。
+
+[复盘卡](review.retro_card.md)上的"你的决定与纪律"也显示这一项：卡页同时给出检测当时（冻结）和现在的判定，待定的项写明还要等什么；周度复盘的"你学到了什么"汇总本周结束的卡上的合计。
 
 ## 注意
 计划外并不一定是坏事（也许是你自己的研究），只是系统无法用计划对它复盘。

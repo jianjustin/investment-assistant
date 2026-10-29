@@ -5,7 +5,7 @@ version: 1
 
 ## 系统做什么、不做什么
 
-系统每个交易日收盘后（定时任务在北京时间周二至周六 06:30）对你的观察池和持仓跑一遍固定流程：采集数据、筛选、判断市场环境、按规则找出候选、生成价位计划、让 Agent 提议并每天复查，最后把摘要推送给你。下面按这个顺序一步一步讲。
+系统每个交易日收盘后（定时任务在北京时间周二至周六 06:30）对你的观察池和持仓跑一遍固定流程：采集数据、筛选、判断市场环境、按规则找出候选、生成价位计划、让 Agent 提议并每天复查，检测已结束的交易并起草复盘卡，最后把摘要推送给你。下面按这个顺序一步一步讲。
 
 **做什么**：出研究候选和计划，每个价位都能追溯到规则、数据和它的输入。**你决定、你下单、你录入成交**：系统不接券商，不会替你买卖，也不会自动调整你的持仓。
 
@@ -126,7 +126,17 @@ version: 1
 
 [当天这一步](#stage-review)
 
-## ⑧ 复核与推送
+## ⑧ 复盘卡
+
+**做什么**：检测最近 5 个交易日内结束的交易：持仓全部平掉，或你做过决定的计划止损、到 T1、过期未成交、作废（有持仓的计划不因过期或作废而结束，只看平仓），见[结束事件](concepts/review.retro_end.md)。每个结束事件只建一张[复盘卡](concepts/review.retro_card.md)：程序把当时各版本的价位、之后的日线、三条轨道的 R、你的决定和纪律判定冻结成十个事实，Agent 只负责把这些事实讲成一段话并起草 0–3 条教训，数字它不能改。每次批处理最多起草 5 张，起草不出来的卡之后再试，最多三次。
+
+**读什么、写什么**：读决定、成交、计划、日线和复查记录；写复盘卡和起草记录。教训草稿要你在卡页审定后才进入「我的知识」，审定之前任何 Agent 都读不到。
+
+**怎么失败与降级**：Agent 不可用、超出时限、额度或 token 上限时，卡照常建好，起草留到下一次；某个标的读数出错只影响它自己，下次批处理再试。
+
+[当天这一步](#stage-retro)
+
+## ⑨ 复核与推送
 
 **做什么**：组装今日视图，把摘要推送到 Discord。消息按顺序是：概览、新计划、计划更新（有更新时才发）、持仓、待处理与异常、筛选报告，平常五条，有计划更新时六条，细节见[每日推送](concepts/system.push.md)。推送范围是核心池、持仓和可决定的筛选单元，扩展池不推送，见[观察池分层](concepts/system.pool_tiers.md)。
 
@@ -151,7 +161,8 @@ version: 1
 - **纪律四项**：[追高进场](concepts/review.discipline_chase.md)、[过早止盈](concepts/review.discipline_early_take.md)、[死扛亏损](concepts/review.discipline_held_loser.md)、[计划外交易](concepts/review.discipline_unplanned.md)；
 - **三方对比**：规则、Agent、实际三条轨道并列，见[三方对比](concepts/review.tracks.md)与[状态含义](concepts/review.track_status.md)；Agent 轨道取你[决定时看到的那一版](concepts/review.version_basis.md)，不拿事后修订美化；
 - **首版与最新版**：每条 Agent 链分别只算首版和只算最新版，避免样本被修订次数放大，见[首版与最新版汇总](concepts/review.first_latest.md)；
-- **周度与月度复盘**：[周度复盘](concepts/review.weekly.md)冻结当期快照；[月度收益与分档](concepts/review.monthly_return.md)、[流程复查触发](concepts/review.process_check.md)和[风险敏感性表](concepts/review.sensitivity.md)看账户层面；
+- **周度与月度复盘**：[周度复盘](concepts/review.weekly.md)冻结当期快照，其中"[你学到了什么](concepts/review.weekly_learning.md)"汇总本周的复盘卡和被检验的知识；[月度收益与分档](concepts/review.monthly_return.md)、[流程复查触发](concepts/review.process_check.md)和[风险敏感性表](concepts/review.sensitivity.md)看账户层面；
+- **复盘卡与我的知识**：每笔结束的交易有一张[复盘卡](concepts/review.retro_card.md)，你审定的教训进入[我的知识](concepts/system.my_knowledge.md)，被引用后可以按计划影子回看[表现](concepts/review.knowledge_performance.md)；
 - **上线前检查**：新规则上线前用库内已有数据回看，见[上线前检查](concepts/review.backcheck.md)。
 
 这些都是描述性统计：样本小、信号同日重叠，只给计数、均值、中位数和分布，不宣称任何规则或 Agent 有效。
@@ -160,7 +171,7 @@ version: 1
 
 不用读仓库文档，下面几个页面各回答一类问题：
 
-- **今天批处理跑了什么**：「今日」顶部的运行一览，八个阶段各一句话，附计数、状态和跳过原因，可以选日期看往日。状态含义见[阶段状态](concepts/system.stage_status.md)，阶段定义见[批处理八个阶段](concepts/system.stages.md)。
+- **今天批处理跑了什么**：「今日」顶部的运行一览，九个阶段各一句话，附计数、状态和跳过原因，可以选日期看往日。状态含义见[阶段状态](concepts/system.stage_status.md)，阶段定义见[批处理九个阶段](concepts/system.stages.md)。
 - **一份计划的价位怎么来的**：计划卡上的"展开推导"，顺着触发条件、输入快照、逐项计算和校验看一遍，并告诉你推导是否一致。
 - **一份 Agent 计划的每个字段和数字从哪来**：计划卡展开后的推理阅读视图，按时间顺序看提议者读了什么、论点与价位、反方提了什么反证、之后的复查与修订，以及校验结果。
 - **采集到了什么数据**：「数据」菜单，看六个数据族的覆盖、拉取记录和原始值。
