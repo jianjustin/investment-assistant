@@ -1,7 +1,6 @@
 import time
 from collections.abc import Mapping
 from enum import Enum
-import requests
 
 from investment_assistant.data import fetch_policy
 from investment_assistant.notify.message import Notification
@@ -30,7 +29,8 @@ class DiscordClient:
         url = self._urls[channel]
 
         def attempt() -> None:
-            resp = requests.post(url, json=payload, timeout=(self._policy.connect_s, self._policy.total_s))
+            with fetch_policy.policy_session(self._policy) as session:
+                resp = session.post(url, json=payload)
             if resp.status_code not in (200, 204):
                 headers = getattr(resp, "headers", None)
                 retry_after = headers.get("Retry-After") if isinstance(headers, Mapping) else None

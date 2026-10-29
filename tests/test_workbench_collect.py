@@ -154,7 +154,7 @@ def test_tally_legacy_ok_fail_delegate_to_record():
     row = _row(tally)
     assert row['detail']['targets'] == [
         {'target': 'A', 'ok': True, 'attempts': None, 'error_kind': None, 'http_status': None, 'reason': None,
-         'rows': None, 'latest': None, 'elapsed_ms': 0},
+         'rows': None, 'latest': None, 'elapsed_ms': None},
         {'target': 'B', 'ok': False, 'attempts': None, 'error_kind': 'other', 'http_status': None,
          'reason': 'provider down', 'rows': None, 'latest': None, 'elapsed_ms': None}]
     assert row['failures'] == [{'target': 'B', 'reason': 'provider down'}]

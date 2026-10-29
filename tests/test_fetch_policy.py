@@ -394,3 +394,105 @@ def test_errors_sanitized(monkeypatch, server):
     data, meta = http.get_json(server.url('/echo'), params={'api_key': secret}, policy=FAST,
                                sleep=lambda s: None, redact=redact)
     assert meta['error_kind'] == 'http_5xx' and secret not in meta['error'] and '***' in meta['error']
+
+
+# ---------------------------------------------------------------- fix round 1: hard per-attempt deadline
+
+def stall_after_headers(handler, *, first_byte_after=0.0, then=3.0):
+    """200 with Content-Length 100, one byte after `first_byte_after` s, then silence for `then` s."""
+    handler.send_response(200)
+    handler.send_header('Content-Length', '100')
+    handler.end_headers()
+    try:
+        time.sleep(first_byte_after)
+        handler.wfile.write(b'x')
+        handler.wfile.flush()
+        time.sleep(then)
+    except OSError:
+        pass
+
+
+def test_body_stalls_after_headers_is_a_retried_timeout(server):
+    server.routes['/stall'] = stall_after_headers
+    policy = fp.FetchPolicy(connect_s=0.5, total_s=0.6, backoff_s=(0.01, 0.02))
+    started = time.monotonic()
+    _, sleeps, err = run_get(server.url('/stall'), policy)
+    elapsed = time.monotonic() - started
+    assert err.kind == 'timeout' and len(err.attempts) == 3 and server.hits['/stall'] == 3
+    # worst case per target: 3 x total + the backoff waits, plus scheduling slack
+    assert elapsed <= 3 * policy.total_s + sum(policy.backoff_s) + 0.6
+    assert all(a['elapsed_ms'] <= policy.total_s * 1000 + 300 for a in err.attempts)
+
+
+def test_total_is_one_budget_for_headers_and_body(server):
+    """Headers after 0.45 s, first byte another 0.45 s later: each wait is inside the read timeout, the sum is not."""
+    server.routes['/two'] = lambda h: (time.sleep(0.45), stall_after_headers(h, first_byte_after=0.45))
+    policy = fp.FetchPolicy(connect_s=0.5, total_s=0.7, backoff_s=())
+    started = time.monotonic()
+    _, _, err = run_get(server.url('/two'), policy)
+    assert err.kind == 'timeout' and time.monotonic() - started < policy.total_s + 0.4
+
+
+def test_body_disconnect_is_a_retried_network_error(server):
+    def cut(handler):
+        handler.send_response(200)
+        handler.send_header('Content-Length', '100')
+        handler.end_headers()
+        handler.wfile.write(b'0123456789')
+        handler.wfile.flush()
+        handler.connection.close()
+
+    server.routes['/cut'] = cut
+    _, sleeps, err = run_get(server.url('/cut'))
+    assert err.kind == 'network' and len(err.attempts) == 3 and server.hits['/cut'] == 3 and len(sleeps) == 2
+    # the same through get_json
+    data, meta = http.get_json(server.url('/cut'), policy=FAST, sleep=lambda s: None)
+    assert data is None and meta['error_kind'] == 'network' and len(meta['attempts']) == 3
+
+
+def test_chunked_body_cut_midway_is_network(server):
+    def cut(handler):
+        handler.send_response(200)
+        handler.send_header('Transfer-Encoding', 'chunked')
+        handler.end_headers()
+        handler.wfile.write(b'5\r\nhello\r\n')
+        handler.wfile.flush()
+        handler.connection.close()
+
+    server.routes['/chunk'] = cut
+    _, _, err = run_get(server.url('/chunk'))
+    assert err.kind == 'network' and len(err.attempts) == 3
+
+
+def test_urllib3_errors_classify_like_requests_ones():
+    import urllib3.exceptions as u3
+    assert fp.classify_exception(u3.ReadTimeoutError(None, '/x', 'slow')) == ('timeout', None)
+    assert fp.classify_exception(u3.ProtocolError('cut')) == ('network', None)
+    assert fp.classify_exception(u3.IncompleteRead(10, 90)) == ('network', None)
+
+
+def test_error_carries_wall_clock_total_including_backoff():
+    policy = fp.FetchPolicy(backoff_s=(0.05, 0.05))
+    with pytest.raises(fp.FetchError) as caught:
+        fp.fetch('t', lambda: (_ for _ in ()).throw(requests.ReadTimeout('x')), policy=policy, sleep=time.sleep)
+    err = caught.value
+    assert err.total_ms >= 95 and err.elapsed_ms == err.total_ms
+    assert err.elapsed_ms > sum(a['elapsed_ms'] for a in err.attempts) + 80      # the waits are in it
+    assert fp.FetchError('x', attempts=[{'elapsed_ms': 5}, {'elapsed_ms': 7}]).elapsed_ms == 12   # built by hand
+
+
+def test_worst_case_bound_matches_the_session_deadline():
+    policy = fp.FetchPolicy()
+    # one attempt can no longer take more than total_s (connect + headers + body share one budget)
+    assert fp.worst_case_s(policy) == 3 * policy.total_s + sum(policy.backoff_s) < 120
+
+
+def test_shared_yf_session_is_one_thread_safe_object():
+    import threading
+    seen = []
+    threads = [threading.Thread(target=lambda: seen.append(fp.shared_yf_session())) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len({id(s) for s in seen}) == 1 and seen[0] is fp.shared_yf_session()

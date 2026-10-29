@@ -143,7 +143,11 @@ def test_rows1_to_3_yfinance_fetchers_use_own_session_and_35s_deadline(monkeypat
     assert news._yfinance_fetcher('NVDA')[0]['title'] == 't'
     assert earnings._yfinance_fetcher('NVDA') == {'Earnings Date': [date(2026, 11, 20)]}
     assert len(fake.sessions) == 3 and all(_is_curl_session(s) for s in fake.sessions)
+    # one process-wide session, so yfinance's cookie / crumb stay with it (a new session per call orphans them)
+    assert all(s is fp.shared_yf_session() for s in fake.sessions)
     assert fake.timeouts == [30, 30] and fake.deadlines == [35, 35, 35]
+    bars._yfinance_fetcher('MU', date(2026, 10, 1), date(2026, 10, 29))
+    assert fake.sessions[-1] is fake.sessions[0]
 
 
 # ---------------------------------------------------------------- row 2: news
@@ -557,6 +561,31 @@ def test_row9_discord_webhook_retries_429_and_connection_failure(server):
     with pytest.raises(fp.FetchError) as caught:
         client.send(DiscordChannel.EARNINGS, {'content': 'x'})
     assert caught.value.kind == 'network' and len(caught.value.attempts) == 3
+
+
+def test_webhook_token_not_in_error(monkeypatch):
+    """A refused connection's exception text repeats the URL; the webhook token must not reach the error, the
+    attempt records or the notifier's summary."""
+    from investment_assistant.config import NotifyConfig
+    from investment_assistant.notify import notifier
+
+    token = 'test-webhook-token-abcdefghijklmnopqrstuvwxyz0123456789'
+    url = f'http://127.0.0.1:{closed_port()}/api/webhooks/123456789012345678/{token}'
+    waits = []
+    client = DiscordClient(url, url, policy=FAST_POST, sleep=waits.append)
+    with pytest.raises(fp.FetchError) as caught:
+        client.send(DiscordChannel.EARNINGS, {'content': 'x'})
+    assert caught.value.kind == 'network' and len(caught.value.attempts) == 3
+    assert token not in str(caught.value) and token not in repr(caught.value.attempts)
+    assert '123456789012345678' not in str(caught.value)
+    out = notifier.dispatch('filings', 'success', {'downloaded_count': 0, 'filings': []},
+                            NotifyConfig(webhooks={'earnings': url}), client=client)
+    assert out['sent'] is False and out['reason'].startswith('send_failed: network error')
+    assert token not in repr(out)
+    # an HTTP error message built by a caller that did include the URL is scrubbed too
+    with pytest.raises(fp.FetchError) as caught:
+        fp.fetch('t', lambda: (_ for _ in ()).throw(RuntimeError(f'POST {url} failed')), sleep=lambda s: None)
+    assert token not in str(caught.value)
 
 
 def test_row9_discord_webhook_success(server):

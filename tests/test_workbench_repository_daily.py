@@ -78,8 +78,10 @@ def test_daily_ready_needs_each_piece(db):
 def test_insert_stage_run_writes_attempt_and_job(db):
     first = repository.insert_stage_run(db, _row())
     second = repository.insert_stage_run(db, _row(attempt=2))
-    assert (first['attempt'] if 'attempt' in first else 1, first['job']) == (1, 'daily')
+    assert (first['attempt'], first['job']) == (1, 'daily')              # a daily row always carries its attempt
     assert second['attempt'] == 2 and second['job'] == 'daily'
+    legacy = repository.insert_stage_run(db, _row(run_id='legacy', job='workbench', stages_version='stages-3'))
+    assert 'attempt' not in legacy and legacy['job'] == 'workbench'      # the v2.7 first attempt keeps its column set
     assert [r['attempt'] for r in repository.stage_rows_for_run(db, 'run-1')] == [1, 2]
     # the older reader keeps its column set (no attempt), so it works before 028 as well
     assert 'attempt' not in repository.stage_runs_for_run(db, 'run-1')[0]

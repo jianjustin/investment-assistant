@@ -20,9 +20,9 @@ FETCH_SLEEP = time.sleep
 def _yfinance_fetcher(ticker: str) -> dict:
     import yfinance as yf
 
-    # The calendar request was the 17.5-minute hang: own session with libcurl timeouts plus a thread backstop.
+    # The calendar request was the 17.5-minute hang: the shared session with libcurl timeouts plus a thread backstop.
     def call() -> dict:
-        return yf.Ticker(ticker, session=fetch_policy.yf_session()).calendar
+        return yf.Ticker(ticker, session=fetch_policy.shared_yf_session()).calendar
 
     return fetch_policy.hard_deadline(call, seconds=fetch_policy.YF_HARD_DEADLINE_S)
 

@@ -145,7 +145,8 @@ def test_monitor_collect_continues_after_one_ticker_fails(cfg):
     assert out["errors"] == {"MU": "SEC HTTP 503 (3 attempts)"}
     assert out["coverage"] == "partial_for_declared_universe"
     assert any("】NVDA 8-K" in text for text in client.sent)
-    assert any("采集失败" in text and "MU" in text for text in client.sent)
+    partial = [text for text in client.sent if "部分股票查源失败" in text]
+    assert partial and "MU" in partial[0] and "其余股票已正常处理" in partial[0] and "采集失败" not in partial[0]
     assert not any("无新符合规则" in text for text in client.sent)
     assert "last_complete_scan" not in json.loads((Path(cfg.sec_monitor.state_dir) / "state.json").read_text())
 

@@ -6,7 +6,7 @@ v2.3.0 新增：让每类数据看得见。六个数据族（日线、SEC 申报
 
 - **六张卡**：每个数据族一张——用途、类型（采集 / 派生 / 手动维护）、覆盖 `covered / targets`（滞后目标点名，附各族覆盖口径的一句话说明）、最新时点、最近一次**全族**拉取（状态、触发来源、实际任务路径、成败计数、失败原因前 5 条、skipped 原因）；比它更新的单只拉取另起一行「最近单只拉取」（标的、状态、时间、失败原因），下一次全族拉取后自动收起，单只试探不会冒充整族状态；最近一次成功时间（只算全族记录）、所属任务（开关与下次运行；仍是注册任务，如 SEC 申报卡为 `filings`——注意 `workbench` 批处理也会按「当前池 + 持仓」采集 SEC 申报列表，两路目标不同，见拉取记录的 `job` 与 `targets_source`）。覆盖与最新时点在读取时从数据表实算，不另存状态。
 - **只追加的拉取记录**：每次拉取（定时批处理、手动批处理、数据菜单手动拉取、`filings` 任务）向 `data_fetch_runs` 追加一行，记录成败与逐只原因；失败原因截断 300 字，并去掉 `FRED_API_KEY` 等凭据。整次调用失败记一条 `{"target": "*"}` 哨兵，`*` 不是目标、不进分母，只作用于该行自己的范围。
-- **外部请求策略 `fetch-1`（v2.8）**：所有外部请求走 `data/fetch_policy.py`：连接 10 秒、总共 30 秒，可重试的失败（超时、连接错误、`429`、`500` / `502` / `503` / `504`）再试 2 次（隔 2 秒、8 秒），`4xx`、空结果、解析失败不重试；Yahoo（yfinance）用自建的 `curl_cffi` 会话并外加 35 秒线程截止；推送只在请求未发出与 `429` 时重试。单个目标最坏约 100 秒。概念卡：`system.fetch_policy`。
+- **外部请求策略 `fetch-1`（v2.8）**：所有外部请求走 `data/fetch_policy.py`：连接 10 秒、总共 30 秒，可重试的失败（超时、连接错误、`429`、`500` / `502` / `503` / `504`）再试 2 次（隔 2 秒、8 秒），`4xx`、空结果、解析失败不重试；Yahoo（yfinance）用自建的 `curl_cffi` 会话并外加 35 秒线程截止；推送只在请求未发出与 `429` 时重试。单个目标最坏约 100 秒（`requests` 一路每次尝试的连接、响应头与正文共用 30 秒的硬截止）；正文读到一半的超时或断连同样按 `timeout` / `network` 重试；错误文本里不出现 URL 与 webhook 令牌。共用同一个进程级 yfinance 会话。概念卡：`system.fetch_policy`。
 - **目标级明细（`detail.targets`）**：每个数据族的拉取记录（`data_fetch_runs.detail`）新增 `targets`，每个目标一项 `{target, ok, attempts, error_kind, http_status, reason, rows, latest, elapsed_ms}`，按目标名排序，一族至多 600 项（超出记 `detail.targets_truncated` = 被截掉的条数），并带 `detail.policy = 'fetch-1'`。`rows`：日线 = 本次新写入行数、资讯 = 新写入条数、SEC = 发现的申报数、FRED = 新写入观测数；`latest`：日线最新 `trade_date`、资讯最新发布时间、SEC 最新申报日、FRED 最新观测日。`failures` 列照旧只列失败项，族状态的判定没有变。SEC 申报列表改为逐只采集（一只缺 CIK 或断连只失败它自己，整族 `*` 失败只在 `company_tickers.json` 都取不到时出现）。旧记录没有 `targets`，页面只按 `failures` 显示失败项、成功项只显示计数。
 - **单族手动拉取**：共用批处理的同一组采集函数，可全族或单只（`bars`、`news`、`sec_filings` 支持单只）；不跑规则、不生成计划或候选、不改池、不推送。同族并发用 advisory lock 互斥：正在采集时接口返回 409。提交前会先检查数据库可用、工作台旧表与迁移 024，缺任一返回 503 且不启动后台任务；`ticker` 必须是字符串，否则 400。
 - **原始值浏览**（窗口固定）：日线最近 120 个交易日，附每日修订次数，OHLC 拆股调整、未分红调整，`adj_close` 全调整；ATR 现算最近 60 个（与 `plan-1` 同一函数，不入库）；资讯近 60 天（窗口内完整读取，SQL 先按来源过滤，没有第二个静默条数上限）；SEC 申报近 180 天（`filings` 行 + 未入库的 `sec_8k`；无接收时间的条目标注「申报日未知」，不把采集时间当申报日期）；FRED 每条序列最近 120 个观测；范围文件的元数据与成员表。
@@ -62,7 +62,7 @@ curl -s "localhost:8787/api/data/browse/bars?ticker=MU"
 
 ## 已知限制
 
-- `detail.targets` 里没有传递尝试信息的旧调用（`Tally.ok` / `Tally.fail`）记 `attempts = null`、`elapsed_ms = null`（失败项 `error_kind = 'other'`）；成功项的 `http_status` 记 200（一次成功的取数按定义是 2xx）。`detail.targets` 只对改用 `Tally.record` 的采集路径有尝试次数与耗时。
+- 旧调用 `Tally.ok` / `Tally.fail`（没有取数记录可传）写进 `detail.targets` 的项：`ok` 的 `attempts`、`http_status`、`elapsed_ms` 都是 `null`；`fail` 的 `attempts`、`http_status`、`elapsed_ms` 是 `null`、`error_kind` 是 `other`（传入的是 `FetchError` 时保留它自己的类别与次数）。只有改用 `Tally.record` 的采集路径才有尝试次数与耗时；`record` 的成功项 `http_status` 记 200（一次成功的取数按定义是 2xx），失败项的 `elapsed_ms` 是含重试等待的墙钟总耗时。
 - 卡片「最近拉取」与 spec §8 的口径不同（2026-10-27 验收后用户决定）：spec 取该族最新一行，现在主行只取全族记录，单只拉取只在比它更新时另列一行，「最近成功」也只算全族记录。原因：验收时单拉一只不存在的代码，日线卡就整张显示 `failed`，而覆盖是 106/106。接口上 `last_run` 为最新全族记录，新增 `last_ticker_run`；详情页的最近 20 次记录不变，单只记录照常列出。
 - 与 spec 的两处实现偏差（如实记录）：
   1. 批处理写的拉取记录 `run_id` 为空：记录在采集阶段末尾写入，此时拿不到任务的 `run_id`，靠 `job` + `started_at` 对照「工具 → 运行记录」里的运行报告（`started_at` 为采集阶段的真实墙钟，是个对照线索而非精确外键；`filings` 任务在任务返回后写记录，能带上 `run_id`）。

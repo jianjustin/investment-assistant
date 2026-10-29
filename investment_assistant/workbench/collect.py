@@ -265,9 +265,11 @@ class Tally:
         it saw (date or datetime, stored as ISO text). The last record per target wins. ``'*'`` (the whole-call
         failure) books the failure but is not a target."""
         if isinstance(outcome, Fetched):
+            known = bool(outcome.attempts)          # a legacy ok() carries no fetch data: attempts / elapsed null
             item = {'ok': True, 'attempts': len(outcome.attempts) or None, 'error_kind': None,
-                    'http_status': (outcome.attempts[-1].get('status') if outcome.attempts else None),
-                    'reason': None, 'rows': rows, 'latest': _iso(latest), 'elapsed_ms': outcome.elapsed_ms}
+                    'http_status': (outcome.attempts[-1].get('status') if known else None),
+                    'reason': None, 'rows': rows, 'latest': _iso(latest),
+                    'elapsed_ms': outcome.elapsed_ms if known else None}
             reason = None
         else:
             reason = families.sanitize_reason(outcome)

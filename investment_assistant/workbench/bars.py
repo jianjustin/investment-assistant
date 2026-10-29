@@ -28,10 +28,10 @@ class BarsUnavailable(RuntimeError):
 def _yfinance_fetcher(ticker: str, start: date, end: date) -> pd.DataFrame:
     import yfinance as yf
 
-    # A session of our own so libcurl's total / connect timeouts apply to every request yfinance makes (cookie,
-    # crumb, history), plus a thread-level backstop (fetch-1 spec §6.2 row 1, §6.3).
+    # The shared curl_cffi session, so libcurl's total / connect timeouts apply to every request yfinance makes
+    # (cookie, crumb, history), plus a thread-level backstop (fetch-1 spec §6.2 row 1, §6.3).
     def call() -> pd.DataFrame:
-        return yf.Ticker(ticker, session=fetch_policy.yf_session()).history(
+        return yf.Ticker(ticker, session=fetch_policy.shared_yf_session()).history(
             start=start.isoformat(), end=end.isoformat(), auto_adjust=False, actions=True,
             timeout=fetch_policy.TOTAL_TIMEOUT_S)
 

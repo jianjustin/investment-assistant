@@ -188,11 +188,16 @@ def scan_and_notify(config, start: date, end: date, *, source=None, client=None,
         today = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
         scan_key = f"{today}:{start}:{end}"
         if result["errors"]:
-            reason = result["errors"].get("collection") or "; ".join(
-                f"{ticker}: {error}" for ticker, error in sorted(result["errors"].items()))
-            content = (f"【SEC 采集失败】本地投研工作台 · {today}\n范围 {start} 至 {end}（美东申报日期）\n"
-                       f"{str(reason)[:800]}\n未能完成查源/归档，不能判断为零命中。"
-                       "成功查找记录未前移。运行记录：http://127.0.0.1:8787/")
+            if "collection" in result["errors"]:
+                detail = (f"{str(result['errors']['collection'])[:800]}\n未能完成查源/归档，不能判断为零命中。"
+                          "成功查找记录未前移。")
+            else:
+                failed = "; ".join(f"{ticker}: {error}" for ticker, error in sorted(result["errors"].items()))
+                detail = (f"部分股票查源失败：{failed[:700]}\n其余股票已正常处理（归档与通知照常）；覆盖不完整，"
+                          "不能判断为零命中，成功查找记录未前移。")
+            title = "SEC 采集失败" if "collection" in result["errors"] else "SEC 采集部分失败"
+            content = (f"【{title}】本地投研工作台 · {today}\n范围 {start} 至 {end}（美东申报日期）\n"
+                       f"{detail}运行记录：http://127.0.0.1:8787/")
             result["event_ids"].append(_event(state, "failure:" + today + ":" + content, content))
         elif (not state.get("notified_scans", {}).get(scan_key)
               and not any(state["events"][i]["status"] != "sent" for i in result["event_ids"])):

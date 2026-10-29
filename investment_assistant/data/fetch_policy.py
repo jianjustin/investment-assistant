@@ -12,6 +12,7 @@ DNS failure, connect timeout) or the server said 429.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -53,16 +54,21 @@ class FetchError(RuntimeError):
 
     def __init__(self, message: str, *, kind: str = 'other', status: int | None = None,
                  attempts: list[dict] | None = None, target: str | None = None,
-                 retry_after: float | None = None):
+                 retry_after: float | None = None, total_ms: int | None = None):
         super().__init__(message)
         self.kind = kind
         self.status = status
         self.attempts = list(attempts or [])
         self.target = target
         self.retry_after = retry_after
+        self.total_ms = total_ms          # wall clock of the whole fetch, backoff waits included
 
     @property
     def elapsed_ms(self) -> int:
+        """Wall-clock total including backoff waits (spec §6.4: 3 x 30 s + 10 s = 100412 ms); the sum of the
+        attempts when the error was built by hand."""
+        if self.total_ms is not None:
+            return self.total_ms
         return sum(int(a.get('elapsed_ms') or 0) for a in self.attempts)
 
 
@@ -141,6 +147,13 @@ def classify_exception(exc: BaseException) -> tuple[str, int | None]:
         return 'http_429', 429
     if isinstance(exc, requests.Timeout):
         return 'timeout', None
+    # urllib3 errors raised while the body is read are not wrapped by requests
+    import urllib3.exceptions as u3
+    if isinstance(exc, (u3.TimeoutError, u3.ReadTimeoutError)):
+        return 'timeout', None
+    if isinstance(exc, (u3.ProtocolError, u3.NewConnectionError, u3.NameResolutionError, u3.SSLError,
+                        u3.ProxyError, u3.DecodeError, u3.IncompleteRead)):
+        return 'network', None
     cffi = _curl_exceptions()
     if cffi is not None and isinstance(exc, cffi.Timeout):
         return 'timeout', None
@@ -200,9 +213,13 @@ def _retryable(kind: str, status: int | None, exc: BaseException, policy: FetchP
     return True
 
 
+_WEBHOOK = re.compile(r'/api/webhooks/\d+/[\w-]+')
+
+
 def _clean(text: str, redact: Callable[[str], str] | None) -> str:
     if redact is not None:
         text = redact(text)
+    text = _WEBHOOK.sub('/api/webhooks/<redacted>', text)       # a Discord webhook token is a credential
     try:
         from investment_assistant.workbench import families
         return families.sanitize_reason(text)
@@ -217,10 +234,11 @@ def _message(kind: str, status: int | None, exc: BaseException, policy: FetchPol
     elif kind == 'timeout':
         base = f'timeout after {policy.total_s:g}s'
     elif kind == 'network':
-        base = f'network error: {type(exc).__name__}'
-        detail = _clean(str(exc), redact)[:160]
-        if detail:
-            base = f'{base}: {detail}'
+        # Exception texts of connection errors repeat the full request URL (webhook tokens, API keys): keep only
+        # the exception type names, the way EdgarSource does.
+        names = [type(item).__name__ for item in _chain(exc)
+                 if item is exc or type(item).__module__.split('.')[0] in ('requests', 'urllib3', 'curl_cffi')]
+        base = 'network error: ' + ' / '.join(dict.fromkeys(names))
     elif kind in ('http_4xx', 'http_5xx', 'http_429'):
         base = f'HTTP {status}'
     else:
@@ -265,7 +283,8 @@ def fetch(target: str, fn: Callable[[], T], *, policy: FetchPolicy = FetchPolicy
                 sleep(delay)
                 continue
             raise FetchError(_message(kind, status, exc, policy, n, redact), kind=kind, status=status,
-                             attempts=attempts, target=target, retry_after=_retry_after_of(exc)) from None
+                             attempts=attempts, target=target, retry_after=_retry_after_of(exc),
+                             total_ms=round((time.monotonic() - started) * 1000)) from None
         attempts.append({'n': n, 'kind': None, 'status': 200, 'elapsed_ms': round((time.monotonic() - t0) * 1000)})
         return Fetched(value, attempts, round((time.monotonic() - started) * 1000))
 
@@ -301,10 +320,13 @@ def hard_deadline(fn: Callable[[], T], *, seconds: float) -> T:
 
 
 class _PolicySession(requests.Session):
-    """``requests`` session with ``(connect, total)`` timeouts, no automatic retry and a total-time cap on the body.
+    """``requests`` session with a hard per-attempt deadline: connect + headers + body together take at most
+    ``policy.total_s`` (spec D19, the ``(connect, total)`` timeouts only bound single socket operations).
 
-    ``requests`` only has per-read timeouts, so a server trickling bytes could hold a call forever: the body is
-    read in chunks and abandoned once ``policy.total_s`` has passed since the request started."""
+    The request runs in a daemon thread the caller waits on for ``total_s``; on expiry the caller gets
+    ``requests.ReadTimeout`` and the abandoned thread stops at its next chunk or socket timeout. Errors urllib3
+    raises while the body is read (``ReadTimeoutError``, ``ProtocolError``) are turned into the matching
+    ``requests`` exceptions, so they classify as timeout / network and are retried."""
 
     def __init__(self, policy: FetchPolicy):
         super().__init__()
@@ -316,34 +338,55 @@ class _PolicySession(requests.Session):
     def request(self, method, url, **kwargs):          # noqa: D102
         policy = self.policy
         kwargs.setdefault('timeout', (policy.connect_s, policy.total_s))
-        wants_stream = bool(kwargs.get('stream'))
+        if kwargs.get('stream'):
+            return super().request(method, url, **kwargs)
         deadline = time.monotonic() + policy.total_s
-        kwargs['stream'] = True
-        response = super().request(method, url, **kwargs)
-        if wants_stream:
+        abandoned = threading.Event()
+
+        def run() -> requests.Response:
+            kwargs['stream'] = True
+            response = super(_PolicySession, self).request(method, url, **kwargs)
+            try:
+                response._content = _read_body(response, deadline, abandoned)
+            except BaseException:
+                response.close()
+                raise
+            response._content_consumed = True
             return response
-        chunks: list[bytes] = []
-        raw = response.raw
+
         try:
-            if hasattr(raw, 'read1'):     # returns as soon as some bytes arrive, so a trickle cannot hide the clock
-                while True:
-                    chunk = raw.read1(65536, decode_content=True)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    if time.monotonic() > deadline:
-                        raise requests.exceptions.ReadTimeout(f'total timeout of {policy.total_s:g}s exceeded')
-            else:
-                for chunk in response.iter_content(chunk_size=65536):
-                    chunks.append(chunk)
-                    if time.monotonic() > deadline:
-                        raise requests.exceptions.ReadTimeout(f'total timeout of {policy.total_s:g}s exceeded')
-        except BaseException:
-            response.close()
-            raise
-        response._content = b''.join(chunks)
-        response._content_consumed = True
-        return response
+            return hard_deadline(run, seconds=policy.total_s)
+        except FetchError:
+            abandoned.set()
+            raise requests.exceptions.ReadTimeout(f'total timeout of {policy.total_s:g}s exceeded') from None
+
+
+def _read_body(response: requests.Response, deadline: float, abandoned: threading.Event) -> bytes:
+    import urllib3.exceptions as u3
+
+    def check() -> None:
+        if abandoned.is_set() or time.monotonic() > deadline:
+            raise requests.exceptions.ReadTimeout('total timeout exceeded')
+
+    chunks: list[bytes] = []
+    raw = response.raw
+    try:
+        if hasattr(raw, 'read1'):     # returns as soon as some bytes arrive, so a trickle cannot hide the clock
+            while True:
+                chunk = raw.read1(65536, decode_content=True)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                check()
+        else:
+            for chunk in response.iter_content(chunk_size=65536):
+                chunks.append(chunk)
+                check()
+    except (u3.TimeoutError, u3.ReadTimeoutError) as exc:
+        raise requests.exceptions.ReadTimeout(type(exc).__name__) from None
+    except (u3.ProtocolError, u3.DecodeError, u3.HTTPError) as exc:
+        raise requests.exceptions.ChunkedEncodingError(type(exc).__name__) from None
+    return b''.join(chunks)
 
 
 def policy_session(policy: FetchPolicy = FetchPolicy()) -> requests.Session:
@@ -360,3 +403,18 @@ def yf_session(policy: FetchPolicy = FetchPolicy()):
 
     return cffi_requests.Session(impersonate='chrome', timeout=policy.total_s,
                                  curl_options={CurlOpt.CONNECTTIMEOUT_MS: max(1, round(policy.connect_s * 1000))})
+
+
+_SHARED_YF: list = []
+_SHARED_YF_LOCK = threading.Lock()
+
+
+def shared_yf_session():
+    """The one process-wide ``yf_session()`` the yfinance fetchers use (lazily created, thread-safe).
+
+    yfinance keeps a single cookie / crumb per process; handing it a fresh session per call would orphan the cookie
+    jar each time and make Yahoo's crumb check fail and refetch. Built with the default ``fetch-1`` numbers."""
+    with _SHARED_YF_LOCK:
+        if not _SHARED_YF:
+            _SHARED_YF.append(yf_session())
+        return _SHARED_YF[0]

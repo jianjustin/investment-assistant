@@ -15,10 +15,10 @@ def _yfinance_fetcher(ticker: str) -> list:
     # into an empty list. The search endpoint still returns news, tagged with relatedTickers.
     import yfinance as yf
 
-    # Own session + timeout + thread backstop (fetch-1 spec §6.2 row 2).
+    # Shared session + timeout + thread backstop (fetch-1 spec §6.2 row 2).
     def call() -> list:
         return yf.Search(ticker, news_count=NEWS_COUNT, max_results=0, enable_fuzzy_query=False,
-                         session=fetch_policy.yf_session(), timeout=fetch_policy.TOTAL_TIMEOUT_S).news
+                         session=fetch_policy.shared_yf_session(), timeout=fetch_policy.TOTAL_TIMEOUT_S).news
 
     return fetch_policy.hard_deadline(call, seconds=fetch_policy.YF_HARD_DEADLINE_S)
 

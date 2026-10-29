@@ -1,6 +1,17 @@
+import contextlib
+
 import pytest
 from unittest.mock import patch, MagicMock
 from investment_assistant.notify.discord import DiscordClient, DiscordChannel
+
+
+@contextlib.contextmanager
+def patched_post():
+    """The webhook client posts through fetch-1's policy_session; swap in a session whose post() is a mock."""
+    session = MagicMock()
+    session.__enter__.return_value = session
+    with patch("investment_assistant.notify.discord.fetch_policy.policy_session", return_value=session):
+        yield session.post
 
 
 def test_send_earnings_calls_correct_webhook():
@@ -8,7 +19,7 @@ def test_send_earnings_calls_correct_webhook():
         earnings_url="https://discord.com/api/webhooks/test/earnings",
         signals_url="https://discord.com/api/webhooks/test/signals",
     )
-    with patch("investment_assistant.notify.discord.requests.post") as mock_post:
+    with patched_post() as mock_post:
         mock_post.return_value = MagicMock(status_code=204)
         client.send(DiscordChannel.EARNINGS, {"content": "test"})
         mock_post.assert_called_once()
@@ -21,7 +32,7 @@ def test_send_raises_on_non_204():
         earnings_url="https://discord.com/api/webhooks/test/earnings",
         signals_url="",
     )
-    with patch("investment_assistant.notify.discord.requests.post") as mock_post:
+    with patched_post() as mock_post:
         mock_post.return_value = MagicMock(status_code=400, text="Bad Request")
         with pytest.raises(RuntimeError, match="Discord send failed"):
             client.send(DiscordChannel.EARNINGS, {"content": "test"})
@@ -32,7 +43,7 @@ def test_send_signals_calls_signals_webhook():
         earnings_url="https://discord.com/api/webhooks/test/earnings",
         signals_url="https://discord.com/api/webhooks/test/signals",
     )
-    with patch("investment_assistant.notify.discord.requests.post") as mock_post:
+    with patched_post() as mock_post:
         mock_post.return_value = MagicMock(status_code=204)
         client.send(DiscordChannel.SIGNALS, {"content": "test"})
         call_url = mock_post.call_args[0][0]

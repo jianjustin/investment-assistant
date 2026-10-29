@@ -5,8 +5,6 @@ import os
 import time
 from collections.abc import Mapping
 
-import requests
-
 from investment_assistant.data import fetch_policy
 from investment_assistant.data.fetch_policy import FetchError
 
@@ -56,8 +54,6 @@ class DiscordBotClient:
                 raise DeliveryError("Discord HTTP 429", uncertain=False) from None
             # Never serialize request headers or token-bearing exceptions: only the error category is kept.
             raise DeliveryError(f"Discord {exc.kind}; 投递待核验", uncertain=True) from None
-        except requests.RequestException as exc:
-            raise DeliveryError(f"Discord {type(exc).__name__}; 投递待核验", uncertain=True) from None
         if response.status_code != 200:
             raise DeliveryError(f"Discord HTTP {response.status_code}", uncertain=response.status_code >= 500)
         try:

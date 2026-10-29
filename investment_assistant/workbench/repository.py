@@ -917,23 +917,25 @@ def insert_stage_run(conn, row: dict[str, Any]) -> dict[str, Any]:
     """Append one stage-run row; the five JSONB columns arrive as Python objects, encoded here.
 
     `row` keys are the table columns except `id`/`created_at`, which the database sets. `job` is written as given
-    ('workbench' or, since migration 028, 'daily'). `attempt` (default 1) is written only when it is not 1, so a
-    first attempt still lands in a database that has not run migration 028 (the column default is 1)."""
+    ('workbench' or, since migration 028, 'daily'). `attempt` (default 1) is written, and returned, for every
+    `daily` row and for any attempt above 1; a v2.7 `workbench` first attempt omits the column so it still lands
+    in a database that has not run migration 028 (the column default is 1)."""
     attempt = int(row.get('attempt') or 1)
+    with_attempt = attempt != 1 or row['job'] == 'daily'
     columns = ', '.join(['run_id', 'job', 'trigger', 'session', 'stage', 'stages_version', 'status', 'reason',
                          'input_count', 'output_count', 'skips', 'failures', 'degradations', 'outputs', 'detail',
-                         'started_at', 'finished_at', 'duration_ms'] + (['attempt'] if attempt != 1 else []))
-    marks = ('%s, ' * 10 + '%s::jsonb, ' * 5 + '%s, %s, %s') + (', %s' if attempt != 1 else '')
+                         'started_at', 'finished_at', 'duration_ms'] + (['attempt'] if with_attempt else []))
+    marks = ('%s, ' * 10 + '%s::jsonb, ' * 5 + '%s, %s, %s') + (', %s' if with_attempt else '')
     return _one(conn,
                 f'INSERT INTO stage_runs ({columns}) VALUES ({marks}) '
-                f"RETURNING {_STAGE_RUN_COLUMNS}{', attempt' if attempt != 1 else ''}",
+                f"RETURNING {_STAGE_RUN_COLUMNS}{', attempt' if with_attempt else ''}",
                 (row['run_id'], row['job'], row['trigger'], row.get('session'), row['stage'],
                  row['stages_version'], row['status'], row.get('reason'), row['input_count'],
                  row['output_count'], _plan_json(row.get('skips') or []),
                  _plan_json(row.get('failures') or []), _plan_json(row.get('degradations') or []),
                  _plan_json(row.get('outputs') or {}), _plan_json(row.get('detail') or {}),
                  row['started_at'], row['finished_at'], row['duration_ms'],
-                 *([attempt] if attempt != 1 else [])))
+                 *([attempt] if with_attempt else [])))
 
 
 def stage_runs_ready(conn) -> bool:
