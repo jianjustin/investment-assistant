@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -36,6 +37,30 @@ class DailyBusy(RuntimeError):
 
     def __init__(self, message: str = 'daily_running'):
         super().__init__(message)
+
+
+_ACTIVE: set[str] = set()                    # run ids this process is executing right now (run or resume)
+_ACTIVE_LOCK = threading.Lock()
+
+
+@contextmanager
+def _active(run_id: str):
+    """Mark ``run_id`` as executing in this process while the ``with`` block runs, so the run detail can call a run
+    that holds the lock *running* before its next node has written a row (the scheduler thread and the manual and
+    resume entries all execute inside the API process; a command-line run in another process is only seen by the
+    lock itself)."""
+    with _ACTIVE_LOCK:
+        _ACTIVE.add(run_id)
+    try:
+        yield
+    finally:
+        with _ACTIVE_LOCK:
+            _ACTIVE.discard(run_id)
+
+
+def executing(run_id: str) -> bool:
+    with _ACTIVE_LOCK:
+        return run_id in _ACTIVE
 
 
 def new_run_id() -> str:
@@ -259,7 +284,7 @@ def run(config: AssistantConfig | None = None, *, trigger_source: str = 'schedul
     started_at = datetime.now(UTC)
     scheduled = trigger_source == 'scheduled'
     try:
-        with exclusive():
+        with exclusive(), _active(rid):
             if not _ready():            # D36: no half-new, half-old runs
                 return _refused(rid, 'migration_028_missing', started_at=started_at, trigger_source=trigger_source,
                                 config=effective, notify_cfg=notify_cfg)
@@ -290,7 +315,7 @@ def resume(run_id: str, node: str, *, now: datetime | None = None, deps: service
     ``service.Unavailable`` propagate before anything is written."""
     effective = config if config is not None else load_config()
     started_at = datetime.now(UTC)
-    with exclusive():
+    with exclusive(), _active(run_id):
         try:
             result = workflow.resume(run_id, node, now=now or datetime.now(UTC), deps=deps,
                                      checkpointer_factory=checkpointer_factory, sleep=sleep, notify_cfg=notify_cfg,

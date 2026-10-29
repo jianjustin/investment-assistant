@@ -48,6 +48,14 @@ def _text(value: Any) -> str | None:
     return None if value is None else str(value)
 
 
+def _executing(run_id: str) -> bool:
+    """Whether this process is executing the run right now (a resume that holds the lock but has not yet written its
+    first new row)."""
+    from investment_assistant.tasks import daily
+
+    return daily.executing(run_id)
+
+
 def _locked() -> bool:
     """Whether some execution holds the ``daily:run`` lock (it is only looked at, never taken)."""
     from investment_assistant.tasks import daily          # imported late: the task shell imports this package
@@ -351,15 +359,16 @@ def detail(run_id: str, *, now: datetime, checkpointer_factory=None) -> dict:
                 else repository.stage_runs_for_run(conn, run_id))
         reports = repository.job_reports_for_run(conn, run_id)
         daily_rows = bool(rows) and rows[0]['stages_version'] == stages_module.STAGES_VERSION
+        busy = _executing(run_id)
         locked = _locked() if (daily_rows or (not rows and not reports and _fresh(run_id, now))) else False
-        if not rows and not reports and not (locked and _fresh(run_id, now)):
+        if not rows and not reports and not (busy or (locked and _fresh(run_id, now))):
             raise LookupError(f'没有这次运行：{run_id}')
-        return _assemble(conn, run_id, rows, reports, now=now, locked=locked, modern=modern,
+        return _assemble(conn, run_id, rows, reports, now=now, locked=locked or busy, busy=busy, modern=modern,
                          checkpointer_factory=checkpointer_factory)
 
 
-def _assemble(conn, run_id: str, rows: list[dict], reports: list[dict], *, now: datetime, locked: bool, modern: bool,
-              checkpointer_factory) -> dict:
+def _assemble(conn, run_id: str, rows: list[dict], reports: list[dict], *, now: datetime, locked: bool, busy: bool,
+              modern: bool, checkpointer_factory) -> dict:
     latest = reports[-1] if reports else None
     summary = (latest or {}).get('summary') or {}
     version = rows[0]['stages_version'] if rows else None
@@ -381,7 +390,7 @@ def _assemble(conn, run_id: str, rows: list[dict], reports: list[dict], *, now: 
     effective = workflow.effective_rows(rows)
     attempts_seen = max((int(r.get('attempt') or 1) for r in rows), default=0)
     unfinished = bool(rows) and (len(effective) < len(ids) or len(reports) < attempts_seen)
-    running = locked and (unfinished or not rows)
+    running = busy or (locked and (unfinished or not rows))
     # Interrupted: a node never wrote its row, or a node is still "upstream failed" although nothing failed any more
     # (a resume died after fixing the failed node but before reaching it).
     stale = (bool(rows) and not any(r['status'] == 'failed' for r in effective.values())

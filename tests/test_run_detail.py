@@ -272,6 +272,40 @@ def test_resume_in_progress_is_running(daily_db):
     assert node(detail, 'screen')['attempt'] == 2 and node(detail, 'regime')['attempt'] == 1
 
 
+def test_a_run_this_process_executes_is_running_before_its_next_row(daily_db, clock, notices, job_reports,
+                                                                   monkeypatch):
+    """A resume holds the lock but writes its first new row only when its node ends: the page must not say ``failed``."""
+    seed_watchlist(daily_db, [('NVDA', ['core'])])
+    saver, factory = shared_saver()
+    flaky('regime', monkeypatch, fail_times=2)
+    run(clock, factory=factory)
+    daily_db.commit()
+    assert view(factory=factory)['status'] == 'failed'
+    seen = []
+    real = workflow.resume
+
+    def resuming(*args, **kwargs):
+        daily_db.commit()
+        detail = view(factory=factory)
+        seen.append((daily.executing(RUN_ID), detail['status'], detail['resume']['reason'],
+                     len(detail['executions'])))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(workflow, 'resume', resuming)
+    assert resume(clock, factory, 'regime')['run_status'] in ('success', 'degraded')
+    assert seen == [(True, 'running', 'daily_running', 1)]
+    assert not daily.executing(RUN_ID)                              # released with the lock
+    daily_db.commit()
+    assert view(factory=factory)['status'] in ('success', 'degraded')
+
+
+def test_executing_run_without_any_row_is_a_skeleton_whatever_its_age(daily_db):
+    old = 'daily-20200101000000-0c0c0c0c'
+    with daily._active(old):
+        detail = view(old, now=NOW)
+    assert detail['status'] == 'running' and [n['status'] for n in detail['nodes']] == ['pending'] * 10
+
+
 def test_just_started_run_is_a_running_skeleton(daily_db):
     fresh = 'daily-' + NOW.strftime('%Y%m%d%H%M%S') + '-0c0c0c0c'
     with pytest.raises(LookupError):
