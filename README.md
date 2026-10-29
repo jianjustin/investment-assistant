@@ -6,7 +6,7 @@
 
 当前版本：**v2.7.0**（2026-10-29），见 [CHANGELOG](CHANGELOG.md)。
 
-v2.7 状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`（迁移 027 尚未在真实库执行，服务尚未重启跑 v2.7 代码，没有真实浏览器验收；复盘卡、我的知识、就此计划讨论与周度「你学到了什么」的手动验收见 spec §16.2，尚未做）。实现偏差与已知限制见 [CHANGELOG](CHANGELOG.md)。
+v2.7 状态：`engineering_done`、`user_acceptance_pending`（迁移 027 已于 2026-10-29 在真实库执行，服务已以 v2.7 代码重启；手动验收与定时验收进度见 [v2.7 验收记录](docs/roadmap/v2.7-acceptance.md)）。实现偏差与已知限制见 [CHANGELOG](CHANGELOG.md)。
 
 v2.6 状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`（没有迁移；代码已合入 `main`，服务尚未重启跑 v2.6 代码，没有真实浏览器验收）。实现偏差与已知限制见 [CHANGELOG](CHANGELOG.md)。
 

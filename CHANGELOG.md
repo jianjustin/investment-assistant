@@ -4,7 +4,7 @@
 
 ## v2.7.0 — 2026-10-29
 
-我的成长闭环（[spec](docs/specs/2026-10-28-v2.7-growth-loop-design.md)、[实施 plan](docs/plans/2026-10-28-v2.7-growth-loop.md)）：每笔结束的交易有一张复盘卡（事实冻结、Agent 只讲不算、你审定后教训才进「我的知识」）；「我的知识」只追加、带版本，Agent 用 `get_knowledge` 按截止时间读、用 `know:<id>@<版本>` 引用，引用记入 `knowledge_citations`；每条知识有表现回看；计划卡与「标的」页有「就此计划讨论」；周度复盘多一段「你学到了什么」。**有迁移 027**（十一张新表、放宽三处约束），规则、`plans.py`、`tracks.py`、`discipline.py` 等口径一字未动。状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`（代码已合入 `main`；迁移 027 尚未在真实库执行、服务尚未重启跑 v2.7 代码，§16.2 手动验收尚未做）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。
+我的成长闭环（[spec](docs/specs/2026-10-28-v2.7-growth-loop-design.md)、[实施 plan](docs/plans/2026-10-28-v2.7-growth-loop.md)）：每笔结束的交易有一张复盘卡（事实冻结、Agent 只讲不算、你审定后教训才进「我的知识」）；「我的知识」只追加、带版本，Agent 用 `get_knowledge` 按截止时间读、用 `know:<id>@<版本>` 引用，引用记入 `knowledge_citations`；每条知识有表现回看；计划卡与「标的」页有「就此计划讨论」；周度复盘多一段「你学到了什么」。**有迁移 027**（十一张新表、放宽三处约束），规则、`plans.py`、`tracks.py`、`discipline.py` 等口径一字未动。状态：`engineering_done`、`user_acceptance_pending`（迁移 027 已于 2026-10-29 在真实库执行、服务已以 v2.7 代码重启；手动验收与定时验收进度见 [v2.7 验收记录](docs/roadmap/v2.7-acceptance.md)）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。
 
 ### 新增
 
@@ -86,7 +86,7 @@
 ### 验收
 
 - 测试：离线 pytest 1863 passed / 616 skipped；一次性库 pytest 2479 passed；前端 `npm test` 586 passed（45 个文件），`npm run build` 通过；`knowledge check` 通过（95 张卡、原理页 13 节）。
-- **验收未完成**：只有自动化测试。迁移 027 尚未在真实库执行（执行前先 `pg_dump`）、服务尚未重启、§16.2 手动触发验收与 §16.3 定时观察尚未做；不宣称用户验收已过。执行 027、重启服务、打 tag `v2.7.0`、推送 `origin` 不在本轮执行，各自先征得用户同意。
+- **验收未完成**：2026-10-29 经用户授权，先 `pg_dump` 全库备份，再在真实库执行迁移 027 并以 v2.7 代码重启服务；§16.2 手动验收第 1 条通过、第 5 条部分通过，其余待出现或待你决定，§16.3 定时观察待积累（[v2.7 验收记录](docs/roadmap/v2.7-acceptance.md)）；不宣称用户验收已过。
 
 ## v2.6.0 — 2026-10-28
 

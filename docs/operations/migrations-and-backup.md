@@ -174,6 +174,8 @@ psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=
 
 回滚：`pg_restore --clean -d "$INVESTMENT_ASSISTANT_DATABASE_URL" <上面的 dump>`，再重启到 v2.6 代码。执行记录写进 `docs/roadmap/v2.7-acceptance.md` 的「迁移 027 执行记录」一节。
 
+2026-10-29 已在真实库执行（13:39 备份、执行，13:40 重启），记录见 [v2.7 验收记录](../roadmap/v2.7-acceptance.md)。
+
 ## 一次性测试库
 
 数据库测试只在设置了 `INVESTMENT_ASSISTANT_TEST_DATABASE_URL` 时运行，每个测试在独立 schema 中建表、结束后删除。永远不要把它指向真实库。
