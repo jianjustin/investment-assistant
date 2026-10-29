@@ -175,9 +175,22 @@ describe('Plan', () => {
       await fireEvent.click(button)
       expect(rerun).toHaveBeenCalledWith({
         ticker: 'NVDA', signal_date: '2026-10-22', mode: 'propose',
-        request_id: expect.stringMatching(/^[0-9a-f-]{36}$/), origin: 'plan',
+        request_id: expect.stringMatching(/^[0-9a-f-]{36}$/), origin: 'plan_page',
       })
       expect(await screen.findByText('已重置尝试次数，并已在后台重新运行')).toBeInTheDocument()
+      // 成功后这一行的按钮不再出现：不会再点出第二次重置
+      expect(within(section).queryByRole('button', { name: '重新运行 Agent' })).toBeNull()
+      expect(rerun).toHaveBeenCalledTimes(1)
+    })
+
+    it('a 409 without the not_needed code shows what the backend said', async () => {
+      vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation())
+      vi.spyOn(api, 'getAgentRuns').mockResolvedValue({ runs: [run({ status: 'error', reason: 'model_error' })] })
+      vi.spyOn(api, 'rerunAgent').mockRejectedValue(new api.ApiError('这个单元不需要重跑（后端原文）', 409))
+      render(Plan, { sub: 'p1' })
+      await fireEvent.click(await screen.findByRole('button', { name: '重新运行 Agent' }))
+      expect(await screen.findByText('这个单元不需要重跑（后端原文）')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '重新运行 Agent' })).toBeEnabled()     // 失败：按钮留着，可重试
     })
 
     it('shows the error text of the latest error run, and the 409 text on rerun', async () => {

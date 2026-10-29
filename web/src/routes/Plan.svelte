@@ -32,6 +32,7 @@
   let rerunRows = $state<RerunRow[]>([])
   let rerunBusy = $state<Record<string, boolean>>({})
   let rerunText = $state<Record<string, string>>({})
+  let rerunDone = $state<Record<string, boolean>>({})
   const rerunIds: Record<string, string> = {}
   const RERUN_MODE_TEXT: Record<string, string> = { propose: 'Agent 建议', interpret: 'Agent 简报解读' }
   const RERUN_STATUS_TEXT: Record<string, string> = { error: '出错', skipped: '跳过' }
@@ -48,6 +49,7 @@
     rerunUnit = null
     rerunRows = []
     rerunText = {}
+    rerunDone = {}
     void api.getDiscussions({ plan_id: id })
       .then(res => { if (alive) discussions = Array.isArray(res?.discussions) ? res.discussions : [] })
       .catch((e: unknown) => { if (alive) discussionsError = growthError(e) })
@@ -92,12 +94,14 @@
     rerunIds[row.mode] ??= newRequestId()   // 失败后重试沿用同一个 request_id
     try {
       const res = await api.rerunAgent({
-        ticker: rerunUnit.ticker, signal_date: rerunUnit.signal_date, mode: row.mode, request_id: rerunIds[row.mode], origin: 'plan',
+        ticker: rerunUnit.ticker, signal_date: rerunUnit.signal_date, mode: row.mode, request_id: rerunIds[row.mode], origin: 'plan_page',
       })
       delete rerunIds[row.mode]
+      rerunDone[row.mode] = true
       rerunText[row.mode] = res.run_id ? '已重置尝试次数，并已在后台重新运行' : '已重置尝试次数，下一次运行或续跑时执行'
     } catch (e) {
-      rerunText[row.mode] = e instanceof api.ApiError && e.code === 'not_needed' ? '这个单元不需要重跑' : describeError(e)
+      rerunText[row.mode] = e instanceof api.ApiError && e.status === 409
+        ? (e.code === 'not_needed' ? '这个单元不需要重跑' : e.message) : describeError(e)
     } finally { rerunBusy[row.mode] = false }
   }
 
@@ -120,8 +124,10 @@
         {#each rerunRows as row (row.mode)}
           <p class="flex flex-wrap items-center gap-2">
             <span>{RERUN_MODE_TEXT[row.mode]}：最近一次{RERUN_STATUS_TEXT[row.status] ?? row.status}{row.reason ? `（${AGENT_REASON_TEXT[row.reason] ?? row.reason}）` : ''}</span>
-            <button type="button" class="rounded border border-accent/40 px-2 py-0.5 text-xs text-accent disabled:opacity-50"
-                    disabled={rerunBusy[row.mode]} onclick={() => rerun(row)}>重新运行 Agent</button>
+            {#if !rerunDone[row.mode]}
+              <button type="button" class="rounded border border-accent/40 px-2 py-0.5 text-xs text-accent disabled:opacity-50"
+                      disabled={rerunBusy[row.mode]} onclick={() => rerun(row)}>重新运行 Agent</button>
+            {/if}
             {#if rerunText[row.mode]}<span class="text-xs text-muted">{rerunText[row.mode]}</span>{/if}
           </p>
         {/each}

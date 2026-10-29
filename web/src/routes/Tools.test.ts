@@ -17,6 +17,13 @@ function scheduledJobs(scheduler = runningScheduler) {
   }
 }
 
+// the backend appends manual-only registry jobs to the scheduled list (Task 2, services/jobs.scheduled_jobs)
+const MANUAL_ONLY_BACKFILL = {
+  name: 'sec_backfill', manual_only: true, enabled: false, next_run_at: null, last_run_at: null,
+  time_local: null, weekday_mask: null, timezone: null,
+  description: { title: 'SEC 回补', goal: '按日期回补观察名单的 SEC 申报（只手动运行）。', details: ['日期范围上限 92 天。'], manual_note: '必须指定日期或日期范围。' },
+}
+
 const scheduledReport = {
   task: 'metrics', status: 'success', trigger_source: 'scheduled', run_id: 'scheduled-1',
   started_at: '2026-10-16T00:00:00+00:00', finished_at: '2026-10-16T00:00:12+00:00',
@@ -105,7 +112,7 @@ describe('Tools 任务中心', () => {
 
   it('dated run via modal passes date range to runJob', async () => {
     vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
-      jobs: [{ name: 'sec_backfill', time_local: '08:00', enabled: true, next_run_at: null, last_run_at: null }],
+      jobs: [MANUAL_ONLY_BACKFILL],
       degraded: false,
     })
     const spy = vi.spyOn(api, 'runJob').mockResolvedValue({ run_id: 'r1', status: 'pending' })
@@ -120,7 +127,7 @@ describe('Tools 任务中心', () => {
 
   it('dated run modal rejects ranges over 92 days', async () => {
     vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
-      jobs: [{ name: 'sec_backfill', time_local: '09:00', enabled: true, next_run_at: null, last_run_at: null }],
+      jobs: [MANUAL_ONLY_BACKFILL],
       degraded: false,
     })
     const spy = vi.spyOn(api, 'runJob').mockResolvedValue({ run_id: 'r1', status: 'pending' })
@@ -191,7 +198,7 @@ describe('Tools 任务中心', () => {
     vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
       jobs: [
         { name: 'daily', time_local: '11:30', weekday_mask: '2-6', timezone: 'Asia/Shanghai', enabled: true, next_run_at: null, last_run_at: null },
-        { name: 'sec_backfill', time_local: '', enabled: false, next_run_at: null, last_run_at: null },
+        MANUAL_ONLY_BACKFILL,
       ],
       degraded: false,
     })
@@ -204,6 +211,40 @@ describe('Tools 任务中心', () => {
     const dailyRow = screen.getByText('daily').closest('tr')!
     expect(within(dailyRow).queryByRole('button', { name: '按日期运行' })).toBeNull()
     expect(within(dailyRow).getByRole('button', { name: '立即运行' })).toBeTruthy()
+  })
+
+  it('manual_only rows show 只手动, no schedule and no 立即运行', async () => {
+    vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
+      jobs: [
+        { name: 'daily', time_local: '11:30', weekday_mask: '2-6', timezone: 'Asia/Shanghai', enabled: true, next_run_at: null, last_run_at: null },
+        MANUAL_ONLY_BACKFILL,
+      ],
+      degraded: false,
+    })
+    render(Tools, { props: { sub: 'tasks' } })
+    await screen.findByText('11:30 北京 · 周二至周六')
+    const row = screen.getByText('sec_backfill').closest('tr')!
+    expect(within(row).getAllByText('只手动')).toHaveLength(2)          // 计划列、状态列
+    expect(row.textContent).not.toContain('时区未配置')
+    expect(within(row).queryByText('任务停用')).toBeNull()
+    expect(within(row).queryByRole('button', { name: '立即运行' })).toBeNull()
+    expect(within(row).getByRole('button', { name: '按日期运行' })).toBeTruthy()
+    expect(within(screen.getByText('daily').closest('tr')!).getByText('任务启用')).toBeTruthy()
+  })
+
+  it('daily run-now keeps its request_id for a retry after a failure', async () => {
+    vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
+      jobs: [{ name: 'daily', time_local: '11:30', weekday_mask: '2-6', timezone: 'Asia/Shanghai', enabled: true, next_run_at: null, last_run_at: null }],
+      degraded: false,
+    })
+    const run = vi.spyOn(api, 'runDaily').mockRejectedValueOnce(new Error('HTTP 503'))
+      .mockResolvedValue({ run_id: 'r1', daily_run_id: 'daily-20261030033000-1a2b3c4d', status: 'pending' })
+    render(Tools, { props: { sub: 'tasks' } })
+    await fireEvent.click(await screen.findByRole('button', { name: '立即运行' }))
+    await screen.findByText(/提交失败/)
+    await fireEvent.click(screen.getByRole('button', { name: '立即运行' }))
+    await screen.findByText(/daily 已提交/)
+    expect(run.mock.calls[1][0]).toBe(run.mock.calls[0][0])
   })
 
   it('daily run-now goes through runDaily and links to the new run', async () => {

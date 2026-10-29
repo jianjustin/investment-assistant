@@ -356,6 +356,55 @@ describe('RunDetail · resume', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(text)
   })
 
+  it('keeps the 409 text visible after the detail is re-read and resume is no longer allowed', async () => {
+    const get = vi.mocked(api.getRunDetail)
+    get.mockResolvedValueOnce(failedRun())
+    get.mockResolvedValue(failedRun({
+      resume: { allowed: false, node: 'collect', deadline_at: '2026-10-30T21:00:00Z', reason: 'resume_window_closed' },
+      nodes: failedRun().nodes.map(n => ({ ...n, actions: { resume: false, rerun_agent: [] } })),
+    }))
+    vi.spyOn(api, 'resumeDaily').mockRejectedValue(new api.ApiError('resume_window_closed', 409, 'resume_window_closed'))
+    render(RunDetail, { runId: RID })
+    await click('从此节点继续')
+    await click('确认继续')
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByRole('button', { name: '从此节点继续' })).toBeNull())
+    expect(screen.getByRole('alert')).toHaveTextContent('已过 2026-10-30 纽约 17:00，只能整次重新运行')
+    // not_failed: the re-read says the run succeeded in the meantime
+    cleanup()
+    get.mockReset()
+    get.mockResolvedValueOnce(failedRun())
+    get.mockResolvedValue(successRun())
+    vi.mocked(api.resumeDaily).mockRejectedValue(new api.ApiError('not_failed', 409, 'not_failed'))
+    render(RunDetail, { runId: RID })
+    await click('从此节点继续')
+    await click('确认继续')
+    await waitFor(() => expect(screen.getByTestId('headline')).toHaveTextContent('运行成功'))
+    expect(screen.getByRole('alert')).toHaveTextContent('这次运行没有失败的节点')
+  })
+
+  it('the reason line names the node by title, like the 409 text', async () => {
+    vi.mocked(api.getRunDetail).mockResolvedValue(failedRun({
+      resume: { allowed: false, node: 'collect', deadline_at: null, reason: 'node_mismatch' },
+      nodes: failedRun().nodes.map(n => ({ ...n, actions: { resume: false, rerun_agent: [] } })),
+    }))
+    render(RunDetail, { runId: RID })
+    expect(await screen.findByText('只能从失败的节点 数据采集 继续')).toBeInTheDocument()
+  })
+
+  it('says so when the resume never shows up as running', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    vi.spyOn(api, 'resumeDaily').mockResolvedValue({ run_id: RID, node: 'collect', status: 'pending', attempt: 2, runner_id: 'x' })
+    vi.mocked(api.getRunDetail).mockResolvedValue(failedRun())          // always the old state
+    render(RunDetail, { runId: RID })
+    await act(() => vi.advanceTimersByTimeAsync(0))
+    await click('从此节点继续')
+    await click('确认继续')
+    await act(() => vi.advanceTimersByTimeAsync(15_000))
+    expect(screen.getByText('未看到续跑开始，请稍后刷新')).toBeInTheDocument()
+    expect(screen.queryByText(/页面每 5 秒刷新/)).toBeNull()
+  })
+
   it('keeps the request_id for a retry after a network failure', async () => {
     const resume = vi.spyOn(api, 'resumeDaily')
       .mockRejectedValueOnce(new api.ApiError('HTTP 503', 503))
@@ -409,6 +458,25 @@ describe('RunDetail · rerun agent', () => {
     await click('重新运行 Agent')
     expect(await screen.findByText('这个单元不需要重跑')).toBeInTheDocument()
     expect(rerun.mock.calls[1][0].request_id).toBe(rerun.mock.calls[0][0].request_id)
+  })
+
+  it('hides the rerun button of a unit after it succeeded', async () => {
+    vi.spyOn(api, 'rerunAgent').mockResolvedValue({ reset_id: 7, run_id: null, replayed: false })
+    vi.mocked(api.getRunDetail).mockResolvedValue(agentRun())      // the re-read still says can_rerun
+    render(RunDetail, { runId: RID })
+    await click('Agent：部分成功')
+    await click('重新运行 Agent')
+    expect(await screen.findByText('已重置尝试次数，下一次运行或续跑时执行')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '重新运行 Agent' })).toBeNull()
+  })
+
+  it('a 409 without the not_needed code shows what the backend said', async () => {
+    vi.spyOn(api, 'rerunAgent').mockRejectedValue(new api.ApiError('这个单元不需要重跑（后端原文）', 409))
+    vi.mocked(api.getRunDetail).mockResolvedValue(agentRun())
+    render(RunDetail, { runId: RID })
+    await click('Agent：部分成功')
+    await click('重新运行 Agent')
+    expect(await screen.findByText('这个单元不需要重跑（后端原文）')).toBeInTheDocument()
   })
 
   it('old runs never offer rerun', async () => {

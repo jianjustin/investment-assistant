@@ -217,21 +217,26 @@
           {#each jobs as j}
             <tr class="border-t border-border">
               <td class="px-4 py-2">{j.name}</td>
-              <td class="px-4 py-2">
-                <input
-                  value={j.time_local}
-                  class="border border-border rounded px-2 py-1 w-24 bg-bg text-sm"
-                  onchange={(e) => saveTime(j.name, (e.target as HTMLInputElement).value)}
-                />
-                <span class="text-xs text-muted ml-2">{j.timezone === 'Asia/Shanghai' ? '北京' : j.timezone}</span>
-              </td>
-              <td class="px-4 py-2">
-                <input
-                  type="checkbox"
-                  checked={j.enabled}
-                  onchange={(e) => toggleJob(j.name, (e.target as HTMLInputElement).checked)}
-                />
-              </td>
+              {#if j.manual_only}
+                <!-- 只能手动运行的任务不在 scheduled_jobs 里：没有时间，也没有启用开关 -->
+                <td class="px-4 py-2 text-xs text-muted" colspan="2">只手动运行，不参与定时调度</td>
+              {:else}
+                <td class="px-4 py-2">
+                  <input
+                    value={j.time_local}
+                    class="border border-border rounded px-2 py-1 w-24 bg-bg text-sm"
+                    onchange={(e) => saveTime(j.name, (e.target as HTMLInputElement).value)}
+                  />
+                  <span class="text-xs text-muted ml-2">{j.timezone === 'Asia/Shanghai' ? '北京' : j.timezone}</span>
+                </td>
+                <td class="px-4 py-2">
+                  <input
+                    type="checkbox"
+                    checked={j.enabled}
+                    onchange={(e) => toggleJob(j.name, (e.target as HTMLInputElement).checked)}
+                  />
+                </td>
+              {/if}
             </tr>
           {/each}
         </tbody>

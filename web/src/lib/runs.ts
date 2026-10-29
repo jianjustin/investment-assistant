@@ -84,7 +84,7 @@ export interface RunDetail {
 }
 export interface ResumeAccepted { run_id: string; node: string; status: string; attempt: number; runner_id: string }
 export interface RerunAgentBody {
-  ticker: string; signal_date: string; mode: 'propose' | 'interpret'; request_id: string; origin: 'run_detail' | 'plan'
+  ticker: string; signal_date: string; mode: 'propose' | 'interpret'; request_id: string; origin: 'run_detail' | 'plan_page'
 }
 export interface RerunAgentResult { reset_id: number | string; run_id: string | null; replayed: boolean }
 

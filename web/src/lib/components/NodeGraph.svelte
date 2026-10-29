@@ -31,9 +31,9 @@
     degraded: 'border-warn text-warn',
     partial: 'border-warn text-warn',
     failed: 'border-danger text-danger',
-    skipped: 'border-border text-muted bg-surface-2',
+    skipped: 'border-border text-muted',
     pending: 'border-dashed border-border text-muted',
-    running: 'border-accent text-accent animate-pulse',
+    running: 'border-accent text-accent node-running',
   }
   const statusText = (status: string) => NODE_STATUS_TEXT[status] ?? status
   const showArrow = (index: number) =>
@@ -69,3 +69,9 @@
     </li>
   {/each}
 </ol>
+
+<style>
+  /* 闪烁的是边框，不是整个格子（spec §7.3） */
+  :global(.node-running) { animation: node-border-blink 1.2s ease-in-out infinite; }
+  @keyframes node-border-blink { 50% { border-color: transparent; } }
+</style>

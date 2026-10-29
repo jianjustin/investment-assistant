@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from 'svelte'
   import * as api from '../api'
   import { fmtBeijing } from '../format'
+  import { newRequestId } from '../workbench'
   import { LOGIN_POLL_MAX_MS, LOGIN_POLL_MS } from '../runs'
   import type { AgentConnectionView, AgentModel } from '../runs'
 
@@ -18,6 +19,9 @@
   let notice = $state('')
   let modelSaved = $state('')
   let now = $state(Date.now())
+  // 失败后重试沿用同一个 request_id，成功后清掉
+  let loginRequestId: string | null = null
+  const modelRequestIds: Record<string, string> = {}
 
   let timer: ReturnType<typeof setTimeout> | null = null
   let pollStart = 0
@@ -91,7 +95,9 @@
     if (busy) return
     busy = true; actionError = ''; notice = ''
     try {
-      const res = await api.startAgentLogin()
+      loginRequestId ??= newRequestId()
+      const res = await api.startAgentLogin(loginRequestId)
+      loginRequestId = null
       if (destroyed) return
       window.open(res.authorize_url, '_blank', 'noopener')
       view = { ...(view as AgentConnectionView), status: 'pending', pending: { expires_at: res.expires_at } }
@@ -125,14 +131,19 @@
     } catch (e) { actionError = agentError(e) } finally { busy = false }
   }
 
-  async function chooseModel(slug: string) {
+  async function chooseModel(slug: string, select: HTMLSelectElement) {
     if (!slug || busy) return
     busy = true; actionError = ''; modelSaved = ''
     try {
-      const res = await api.setAgentModel(slug)
+      modelRequestIds[slug] ??= newRequestId()
+      const res = await api.setAgentModel(slug, modelRequestIds[slug])
+      delete modelRequestIds[slug]
       if (view) view = { ...view, model: res.model, model_display_name: res.model_display_name }
       modelSaved = '已保存，下一次运行生效'
-    } catch (e) { actionError = agentError(e) } finally { busy = false }
+    } catch (e) {
+      actionError = agentError(e)
+      select.value = view?.model ?? ''     // 没保存成功：下拉框回到当前生效的模型
+    } finally { busy = false }
   }
 
   const remainingMinutes = $derived(view?.pending
@@ -198,7 +209,7 @@
         <span>模型</span>
         {#if models !== null}
           <select aria-label="模型" class="rounded border border-border bg-surface px-2 py-1 text-sm"
-                  value={view.model ?? ''} disabled={busy} onchange={e => chooseModel((e.currentTarget as HTMLSelectElement).value)}>
+                  value={view.model ?? ''} disabled={busy} onchange={e => chooseModel((e.currentTarget as HTMLSelectElement).value, e.currentTarget as HTMLSelectElement)}>
             {#if !view.model}<option value="" disabled>请选择模型</option>{/if}
             {#if modelMissing}<option value={view.model}>{view.model}（已不在可用清单里）</option>{/if}
             {#each models as m (m.slug)}<option value={m.slug}>{m.display_name}</option>{/each}

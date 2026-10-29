@@ -39,6 +39,7 @@
   // rerun agent, per unit row
   let rerunBusy = $state<Record<string, boolean>>({})
   let rerunText = $state<Record<string, string>>({})
+  let rerunDone = $state<Record<string, boolean>>({})
   const rerunIds: Record<string, string> = {}
   let reasoningOpen = $state<Record<string, boolean>>({})
 
@@ -84,7 +85,7 @@
     stopPolling()
     detail = null; error = ''; selected = null; touched = false
     confirming = false; resumeError = ''; resumeNotice = ''; resumeRequestId = null
-    reasoningOpen = {}; rerunText = {}
+    reasoningOpen = {}; rerunText = {}; rerunDone = {}
     void load(token)
     return () => { generation++; stopPolling() }
   })
@@ -110,7 +111,7 @@
         // The first reads after a resume can still show the old state: stop only after we saw it run,
         // saw a new execution, or three reads in a row said it is not running.
         else if (seen || (next.executions?.length ?? 0) > baseline || ++misses >= 3) {
-          resumeNotice = ''
+          resumeNotice = seen || (next.executions?.length ?? 0) > baseline ? '' : '未看到续跑开始，请稍后刷新'
           return
         }
       } catch { /* a missed read is retried on the next tick */ }
@@ -126,11 +127,13 @@
   const resumeText = $derived(resumeNode && detail
     ? `从「${resumeNode.title}」继续这次运行？已完成的 ${resumeIndex} 个节点不会重跑；截止时间仍是 ${fmtBeijing(detail.cutoff_at)}。` : '')
 
+  const nodeTitle = (id: string | null | undefined) => detail?.nodes.find(n => n.id === id)?.title ?? id ?? null
+
   function resumeFailText(e: unknown): string {
     if (e instanceof api.ApiError) {
       if (e.status === 409) {
         const known = e.code ? resumeErrorText(e.code, {
-          next: resumeNode?.title ?? detail?.resume?.node, day: nyDay(detail?.resume?.deadline_at),
+          next: nodeTitle(detail?.resume?.node), day: nyDay(detail?.resume?.deadline_at),
         }) : null
         return known ?? `不能继续：${e.message}`
       }
@@ -158,6 +161,12 @@
   }
 
   // ---- rerun agent ----
+  /** not_needed -> the spec text; any other 409 shows what the backend said (it may already be Chinese). */
+  function rerunFailText(e: unknown): string {
+    if (e instanceof api.ApiError && e.status === 409)
+      return e.code === 'not_needed' ? '这个单元不需要重跑' : e.message
+    return describeError(e)
+  }
   const unitKey = (item: any) => `${item.ticker}|${item.signal_date}|${item.mode}`
   async function rerun(item: any) {
     const key = unitKey(item)
@@ -172,10 +181,11 @@
       if (destroyed) return
       delete rerunIds[key]
       rerunText[key] = res.run_id ? '已重置尝试次数，并已在后台重新运行' : '已重置尝试次数，下一次运行或续跑时执行'
+      rerunDone[key] = true
       void load(generation)
     } catch (e) {
       if (destroyed) return
-      rerunText[key] = e instanceof api.ApiError && e.code === 'not_needed' ? '这个单元不需要重跑' : describeError(e)
+      rerunText[key] = rerunFailText(e)
     } finally { rerunBusy[key] = false }
   }
 
@@ -236,9 +246,10 @@
     {:else}
       <NodeGraph nodes={detail.nodes} {selected} onselect={select} />
       {#if canAct && detail.status === 'failed' && detail.resume && !detail.resume.allowed && detail.resume.reason}
-        <p class="text-xs text-muted">{resumeErrorText(detail.resume.reason, { next: detail.resume.node, day: nyDay(detail.resume.deadline_at) }) ?? detail.resume.reason}</p>
+        <p class="text-xs text-muted">{resumeErrorText(detail.resume.reason, { next: nodeTitle(detail.resume.node), day: nyDay(detail.resume.deadline_at) }) ?? detail.resume.reason}</p>
       {/if}
       {#if resumeNotice}<p class="text-xs text-muted" role="status">{resumeNotice}</p>{/if}
+      {#if resumeError}<p role="alert" class="text-xs text-danger">{resumeError}</p>{/if}
 
       {#if selectedNode}
         {@const node = selectedNode}
@@ -289,7 +300,6 @@
                 <button type="button" class="rounded border border-accent/40 px-3 py-1 text-accent"
                         onclick={() => { confirming = true; resumeError = '' }}>从此节点继续</button>
               {/if}
-              {#if resumeError}<p role="alert" class="text-xs text-danger">{resumeError}</p>{/if}
             {/if}
           </div>
 
@@ -342,7 +352,7 @@
                             <button type="button" class="text-accent underline" aria-expanded={!!reasoningOpen[item.run_id]}
                                     onclick={() => reasoningOpen[item.run_id] = !reasoningOpen[item.run_id]}>看推理过程</button>
                           {/if}
-                          {#if canAct && item.can_rerun}
+                          {#if canAct && item.can_rerun && !rerunDone[key]}
                             <button type="button" class="rounded border border-accent/40 px-2 py-0.5 text-accent disabled:opacity-50"
                                     disabled={rerunBusy[key]} onclick={() => rerun(item)}>重新运行 Agent</button>
                           {/if}

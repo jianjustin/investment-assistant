@@ -57,7 +57,7 @@
               </tr>
             </thead>
             <tbody>
-              {#each shown(family) as t (t.target)}
+              {#each shown(family) as t, i (`${t.target}#${i}`)}
                 <tr class="border-t border-border align-top">
                   <td class="py-1 pr-3 font-mono">{t.target}</td>
                   <td class="pr-3 {t.ok ? 'text-success' : 'text-danger'}">{resultText(t)}</td>
@@ -72,6 +72,9 @@
         </div>
       {:else if !family.legacy && total > 0}
         <p class="text-xs text-muted">没有失败的目标</p>
+      {/if}
+      {#if !family.legacy && family.target_count > total}
+        <p class="text-xs text-muted">共 {family.target_count} 个目标，明细只记录了前 {total} 个</p>
       {/if}
       {#if !family.legacy && total > 0 && total > shown(family).length}
         <button type="button" class="text-xs text-accent underline"

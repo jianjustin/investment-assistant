@@ -187,7 +187,7 @@ describe('run detail, resume, rerun and agent connection wrappers (v2.8 §11.1)'
 
   it('rerunAgent sends the body as given', async () => {
     respond(200, { reset_id: 1, run_id: null, replayed: false })
-    const body = { ticker: 'NVDA', signal_date: '2026-10-29', mode: 'interpret' as const, request_id: 'r1', origin: 'plan' as const }
+    const body = { ticker: 'NVDA', signal_date: '2026-10-29', mode: 'interpret' as const, request_id: 'r1', origin: 'plan_page' as const }
     expect(await api.rerunAgent(body)).toEqual({ reset_id: 1, run_id: null, replayed: false })
     expect(calls[0].body).toEqual(body)
   })

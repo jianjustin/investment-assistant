@@ -58,7 +58,7 @@ describe('NodeGraph', () => {
     // 颜色取主题变量，不写死色值
     expect(screen.getByRole('button', { name: '信号：失败' }).className).toContain('border-danger')
     expect(screen.getByRole('button', { name: 'Agent：未开始' }).className).toContain('border-dashed')
-    expect(screen.getByRole('button', { name: '每日复查：运行中' }).className).toContain('animate-pulse')
+    expect(screen.getByRole('button', { name: '每日复查：运行中' }).className).toContain('node-running')
   })
 
   it('attempt badge ×2', () => {

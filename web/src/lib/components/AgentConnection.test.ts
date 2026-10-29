@@ -144,7 +144,7 @@ describe('AgentConnection', () => {
     expect([...select.options].map(o => o.textContent)).toEqual(['GPT X', 'GPT Y'])
     expect(select.value).toBe('gpt-x')
     await fireEvent.change(select, { target: { value: 'gpt-y' } })
-    expect(set).toHaveBeenCalledWith('gpt-y')
+    expect(set).toHaveBeenCalledWith('gpt-y', expect.stringMatching(/^[0-9a-f-]{36}$/))
     expect(await screen.findByText('已保存，下一次运行生效')).toBeInTheDocument()
     cleanup()
 
@@ -155,6 +155,35 @@ describe('AgentConnection', () => {
     expect([...stale.options].map(o => o.textContent)).toContain('gpt-old（已不在可用清单里）')
     expect(stale.value).toBe('gpt-old')
     expect(screen.getByText('当前所选模型已不在可用清单里，请重新选择')).toBeInTheDocument()
+  })
+
+  it('a failed model save puts the select back and the retry keeps its request_id', async () => {
+    vi.spyOn(api, 'getAgentConnection').mockResolvedValue(view())
+    const set = vi.spyOn(api, 'setAgentModel').mockRejectedValueOnce(new Error('HTTP 502'))
+      .mockResolvedValue({ model: 'gpt-y', model_display_name: 'GPT Y' })
+    render(AgentConnection)
+    const select = (await screen.findByLabelText('模型')) as HTMLSelectElement
+    await waitFor(() => expect(select.options).toHaveLength(2))
+    await fireEvent.change(select, { target: { value: 'gpt-y' } })
+    expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 502')
+    expect(select.value).toBe('gpt-x')
+    await fireEvent.change(select, { target: { value: 'gpt-y' } })
+    await waitFor(() => expect(set).toHaveBeenCalledTimes(2))
+    expect(set.mock.calls[1][1]).toBe(set.mock.calls[0][1])
+  })
+
+  it('login retry keeps the request_id after a failure', async () => {
+    vi.spyOn(api, 'getAgentConnection').mockResolvedValue(view({ status: 'disconnected', email_masked: null, model: null, model_display_name: null }))
+    const start = vi.spyOn(api, 'startAgentLogin').mockRejectedValueOnce(new Error('HTTP 503'))
+      .mockResolvedValue({ authorize_url: 'https://auth.example.test/a', expires_at: '2099-01-01T00:00:00Z' })
+    vi.spyOn(window, 'open').mockReturnValue(null)
+    render(AgentConnection)
+    await fireEvent.click(await screen.findByRole('button', { name: '连接 ChatGPT' }))
+    await screen.findByRole('alert')
+    await fireEvent.click(screen.getByRole('button', { name: '连接 ChatGPT' }))
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(2))
+    expect(start.mock.calls[1][0]).toBe(start.mock.calls[0][0])
+    expect(start.mock.calls[0][0]).toMatch(/^[0-9a-f-]{36}$/)
   })
 
   it('provider off note', async () => {

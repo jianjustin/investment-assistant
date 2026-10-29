@@ -70,6 +70,19 @@ describe('FetchTable', () => {
     expect(screen.getAllByRole('row').slice(1)).toHaveLength(2)
   })
 
+  it('duplicate target names in a legacy row do not break the list', () => {
+    render(FetchTable, { families: [family({
+      legacy: true, targets: undefined, target_count: 5, ok_count: 3,
+      failures: [{ target: 'NVDA', reason: 'first' }, { target: 'NVDA', reason: 'second' }],
+    })] })
+    expect(screen.getAllByRole('row').slice(1)).toHaveLength(2)
+  })
+
+  it('says when the target list is cut short', () => {
+    render(FetchTable, { families: [family({ target_count: 700, ok_count: 699 })] })
+    expect(screen.getByText('共 700 个目标，明细只记录了前 3 个')).toBeInTheDocument()
+  })
+
   it('legacy family lists failures only, with the note', () => {
     render(FetchTable, { families: [family({
       legacy: true, targets: undefined, failures: [{ target: 'NVDA', reason: 'old failure text' }], target_count: 131, ok_count: 130,

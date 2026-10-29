@@ -8,6 +8,7 @@
   import FetchDateModal from '../lib/components/FetchDateModal.svelte'
   import FilingRecords from '../lib/components/FilingRecords.svelte'
   import RunDetail from '../lib/components/RunDetail.svelte'
+  import { newRequestId } from '../lib/workbench'
   import { RUN_ID_RE, RESUME_ERROR_TEXT, TRIGGER_TEXT, runHref } from '../lib/runs'
 
   const taskName = (name:string) => name === 'us-research' ? '美股研究' : name
@@ -43,6 +44,7 @@
   let filterTask = $state<string>('')
   let actionMsg = $state('')
   let dailyRunId = $state<string | null>(null)
+  let dailyRequestId: string | null = null     // 失败后重试沿用同一个 request_id
   let scheduler = $state<api.SchedulerStatus | null>(null)
   let loadError = $state('')
   let refreshing = $state(false)
@@ -116,7 +118,9 @@
     actionMsg = ''
     try {
       if (name === 'daily') {
-        const r = await api.runDaily()
+        dailyRequestId ??= newRequestId()
+        const r = await api.runDaily(dailyRequestId)
+        dailyRequestId = null
         const id = r.daily_run_id ?? r.run_id
         actionMsg = `daily 已提交（${id}），进度见「运行记录」`
         dailyRunId = id
@@ -218,7 +222,9 @@
               {/if}
             </td>
             <td>
-              {#if j.timezone === 'Asia/Shanghai'}
+              {#if j.manual_only}
+                只手动
+              {:else if j.timezone === 'Asia/Shanghai'}
                 {j.time_local} 北京 · {weekdayText(j.weekday_mask)}
               {:else}
                 {j.time_local} · {weekdayText(j.weekday_mask)} · {j.timezone ?? '时区未配置'}（非北京时区）
@@ -226,11 +232,11 @@
             </td>
             <td>{fmtBeijing(j.next_run_at)}</td>
             <td>{fmtBeijing(j.last_run_at)}</td>
-            <td>{j.enabled ? '任务启用' : '任务停用'}</td>
+            <td>{j.manual_only ? '只手动' : j.enabled ? '任务启用' : '任务停用'}</td>
             <td class="whitespace-nowrap text-right space-x-3">
               {#if DATE_FETCH[j.name]}
                 <button class="text-accent text-xs" onclick={() => dateJob = j.name}>按日期运行</button>
-              {:else}
+              {:else if !j.manual_only}
                 <button class="text-accent text-xs" disabled={runningName === j.name} onclick={() => runNow(j.name)}>立即运行</button>
               {/if}
             </td>

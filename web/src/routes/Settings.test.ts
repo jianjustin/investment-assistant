@@ -166,6 +166,21 @@ describe('Settings · Agent 连接', () => {
     expect(conn).toHaveBeenCalledTimes(1)
   })
 
+  it('manual-only jobs have no time input and no enable toggle on the schedule page', async () => {
+    vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
+      jobs: [
+        { name: 'daily', time_local: '11:30', weekday_mask: '2-6', timezone: 'Asia/Shanghai', enabled: true, next_run_at: null, last_run_at: null },
+        { name: 'sec_backfill', manual_only: true, enabled: false, next_run_at: null, time_local: null, weekday_mask: null, timezone: null, description: null },
+      ],
+      degraded: false,
+    })
+    render(Settings, { props: { sub: 'jobs' } })
+    const row = (await screen.findByText('sec_backfill')).closest('tr')!
+    expect(row.querySelector('input')).toBeNull()
+    expect(row).toHaveTextContent('只手动运行，不参与定时调度')
+    expect(screen.getByText('daily').closest('tr')!.querySelectorAll('input')).toHaveLength(2)
+  })
+
   it('other settings pages do not load the connection', async () => {
     vi.spyOn(api, 'getEnvStatus').mockResolvedValue({ WORKBENCH_AGENT_PROVIDER: true } as any)
     const conn = vi.spyOn(api, 'getAgentConnection')
