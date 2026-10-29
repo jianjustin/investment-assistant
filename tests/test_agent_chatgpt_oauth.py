@@ -211,6 +211,11 @@ def test_grant_post_retries_429_within_the_cap(auth):
     assert len(auth.calls('/oauth/token')) == 2 and auth.sleeps == [1]
 
 
+def test_conftest_keeps_chatgpt_http_on_the_loopback():
+    with pytest.raises(pytest.fail.Exception):
+        chatgpt._http('GET', 'https://auth.openai.com/.well-known/openid-configuration', None, None, chatgpt.STANDARD_POLICY)
+
+
 def test_redirects_are_errors_not_followed(auth):
     status, body = chatgpt._call('redirect', 'GET', f'{auth.base}/redirect')
     assert status == 302 and body is None and not auth.calls('/elsewhere')
@@ -416,8 +421,11 @@ def test_token_response_other_shapes(auth):
     with pytest.raises(ChatGPTError) as caught:
         exchange(auth)
     assert caught.value.code == 'invalid_grant' and 'spent' not in str(caught.value)
-    auth.tokens = [(200, token_body(auth.base, scope='openid profile', refresh_token=None))]   # no offline_access
-    assert exchange(auth)['refresh_token'] is None
+    # the code exchange must return a refresh token whatever the scope says (spec §8.1 step 4)
+    auth.tokens = [(200, token_body(auth.base, scope='openid profile', refresh_token=None))]
+    with pytest.raises(ChatGPTError) as caught:
+        exchange(auth)
+    assert caught.value.code == 'invalid_token_response'
 
 
 def test_id_token_claims():
@@ -459,6 +467,11 @@ def test_refresh_grant(auth):
                     'resource': auth.base + '/v1'}
     assert fields['scopes'] == ['openid', 'chatgpt.tokens.use.direct']        # scope omitted: the previous one stays
     assert fields['earliest_refresh_at'] is None and fields['refresh_token'] == 'test-refresh-bbbb2222'
+
+    auth.tokens = [(200, {**token_body(auth.base, id_token=id_token(auth.base)), 'scope': None})]   # null = omitted
+    fields = chatgpt.refresh(discovery=chatgpt.discover(), client_id='client-1', refresh_token='x',
+                             previous_scope='openid chatgpt.tokens.use.direct', subject='user-1', now=NOW)
+    assert fields['scopes'] == ['openid', 'chatgpt.tokens.use.direct']
 
     auth.tokens = [(200, token_body(auth.base, refresh_token=None))]
     with pytest.raises(ChatGPTError) as caught:                                # a refresh must return a refresh token

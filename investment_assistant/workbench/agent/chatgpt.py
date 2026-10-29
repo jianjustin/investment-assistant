@@ -586,7 +586,7 @@ def _token_fields(body: Any, *, previous_scope: str | None = None, require_refre
     bad = error_for('invalid_token_response')
     if not isinstance(body, dict):
         raise bad
-    scope = body.get('scope', previous_scope)
+    scope = body.get('scope') if body.get('scope') is not None else previous_scope      # null = omitted
     if not isinstance(scope, str):
         raise bad
     scopes = scope.split()
@@ -622,7 +622,7 @@ def exchange_code(*, discovery: Mapping, client_id: str, code: str, verifier: st
     body = _token_request(discovery, {
         'grant_type': 'authorization_code', 'client_id': client_id, 'code': code, 'code_verifier': verifier,
         'redirect_uri': redirect_uri, 'resource': RESOURCE}, fetcher)
-    fields = _token_fields(body, require_refresh=False)
+    fields = _token_fields(body, require_refresh=True)
     if not isinstance(fields['id_token'], str) or not fields['id_token']:
         raise error_for('invalid_id_token')
     fields.update(check_id_token(fields.pop('id_token'), client_id=client_id, nonce=nonce, subject=subject, now=now))

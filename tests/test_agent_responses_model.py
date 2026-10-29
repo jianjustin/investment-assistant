@@ -120,6 +120,7 @@ def test_request_body_is_rewritten_for_the_direct_route(monkeypatch):
     (request,), (body,) = wire.requests, wire.bodies()
     assert str(request.url) == 'https://api.openai.com/v1/responses'
     assert request.headers['authorization'] == f'Bearer {TOKEN}'
+    assert request.headers['accept'] == 'text/event-stream'
     assert 'openai-organization' not in request.headers and 'openai-project' not in request.headers
     assert body['model'] == 'gpt-test' and body['store'] is False and body['stream'] is True
     assert body['instructions'] == '你是投研助手。'
@@ -145,6 +146,12 @@ def test_client_has_no_hidden_retry_and_the_documented_timeout():
     assert m.output_version == 'v0' and m.temperature is None
     assert m.request_timeout == httpx.Timeout(180, connect=10)
     assert str(m.root_client.base_url).rstrip('/') == chatgpt.RESOURCE
+
+
+def test_conftest_keeps_the_model_client_off_real_hosts():
+    m = model.chat_model(SETTINGS, token_provider=lambda: TOKEN)          # no transport: the real client, blocked here
+    with pytest.raises(pytest.fail.Exception):
+        m.invoke(MESSAGES)
 
 
 def test_chat_model_asks_for_a_token_every_time():

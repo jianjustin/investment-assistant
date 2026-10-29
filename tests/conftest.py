@@ -25,6 +25,27 @@ def isolate_unit_tests_from_local_database(monkeypatch):
     from investment_assistant.workbench import agent_connection
     monkeypatch.setattr(agent_connection, 'read_for_settings',
                         lambda: {'status': 'disconnected', 'scopes_ok': False, 'model': None, 'secret': None})
+    # ... and the ChatGPT HTTP layer can only reach the loopback (fake authorization servers), never a real host.
+    from urllib.parse import urlsplit
+
+    import httpx
+
+    from investment_assistant.workbench.agent import chatgpt, model as agent_model
+
+    real_http, real_client = chatgpt._http, agent_model._http_client
+
+    def loopback_only_http(method, url, *args, **kwargs):
+        if urlsplit(url).hostname not in ('127.0.0.1', 'localhost', '::1'):
+            pytest.fail(f'a test tried to reach a real host through chatgpt._http: {urlsplit(url).hostname}')
+        return real_http(method, url, *args, **kwargs)
+
+    class NoRealHost(httpx.BaseTransport):
+        def handle_request(self, request):
+            pytest.fail(f'a test tried to reach a real host through the model client: {request.url.host}')
+
+    monkeypatch.setattr(chatgpt, '_http', loopback_only_http)
+    monkeypatch.setattr(agent_model, '_http_client',
+                        lambda transport: real_client(transport if transport is not None else NoRealHost()))
 
 
 @pytest.fixture()

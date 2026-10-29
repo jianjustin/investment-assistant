@@ -15,13 +15,17 @@ from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import httpx
+import openai
 import pytest
 import requests
+from langchain_core.messages import HumanMessage
 
 from investment_assistant.workbench import agent_connection, service
 from investment_assistant.workbench.agent import chatgpt, model
 from investment_assistant.workbench.agent.chatgpt import ChatGPTError
 from test_agent_chatgpt_oauth import NOW, _get, auth, id_token, token_body  # noqa: F401  (auth is a fixture)
+from test_agent_responses_model import _sse, failed_events
 
 REAL_READ = agent_connection.read_for_settings        # conftest replaces it for every test; the SQL tests want the real one
 MIGRATION = Path('migrations/028_daily_workflow.sql')
@@ -320,29 +324,73 @@ def test_not_connected_without_a_usable_connection(db):
 
 
 def test_not_connected_notifies_once(db):
-    """first_failure_since_ok: true for the first re-login failure after the last success, false for the rest."""
-    def add(kind, code=None, **detail):
-        db.execute("INSERT INTO agent_connection_events (kind, code, detail) VALUES (%s, %s, %s::jsonb)",
-                   (kind, code, json.dumps(detail)))
+    """first_failure_since_ok(since=): true once per failure episode, for the first run that starts after it."""
+    def add(kind, at, code=None, **detail):
+        db.execute("INSERT INTO agent_connection_events (kind, code, detail, created_at) VALUES (%s, %s, %s::jsonb, %s)",
+                   (kind, code, json.dumps(detail), at))
         db.commit()
 
-    assert agent_connection.first_failure_since_ok() is False         # no events
-    add('connected')
-    assert agent_connection.first_failure_since_ok() is False         # connected and fine
-    add('refresh_failed', 'refresh_token_reused', reauth=True)
-    assert agent_connection.first_failure_since_ok() is True          # the first failure of this outage
-    add('refresh_failed', 'invalid_grant', reauth=True)
-    assert agent_connection.first_failure_since_ok() is False         # a second one before any success: already told
-    add('connected')
-    assert agent_connection.first_failure_since_ok() is False
-    add('refresh_failed', 'invalid_grant', reauth=True)
-    assert agent_connection.first_failure_since_ok() is True          # a new outage after a success
-    add('refreshed')
-    add('refresh_failed', 'network_error', reauth=False)
-    assert agent_connection.first_failure_since_ok() is False         # a transient failure is not a re-login failure
-    add('model_selected', model='x')
-    add('disconnected', revoked=True)
-    assert agent_connection.first_failure_since_ok() is False
+    def status(value):
+        db.execute('DELETE FROM agent_connections')
+        db.commit()
+        seed(db, value)
+
+    t = lambda hours: NOW + timedelta(hours=hours)                       # noqa: E731
+    assert agent_connection.first_failure_since_ok() is False            # no row, no events
+    status('connected')
+    add('connected', t(0))
+    assert agent_connection.first_failure_since_ok(since=t(-1)) is False  # healthy
+
+    # a failure at t+1h: the connection is needs_login now
+    status('needs_login')
+    add('refresh_failed', t(1), 'refresh_token_reused', reauth=True)
+    run_1_start, run_2_start = t(2), t(26)                               # two consecutive daily runs after it
+    assert agent_connection.first_failure_since_ok(since=t(-24)) is True  # run 1 (previous run started earlier)
+    assert agent_connection.first_failure_since_ok(since=run_1_start) is False   # run 2: already reported
+    assert agent_connection.first_failure_since_ok(since=run_2_start) is False
+    assert agent_connection.first_failure_since_ok() is True             # without a window: any failure counts
+
+    # a transient failure in between changes nothing
+    add('refresh_failed', t(3), 'network_error', reauth=False)
+    assert agent_connection.first_failure_since_ok(since=run_1_start) is False
+    assert agent_connection.first_failure_since_ok(since=t(0.5)) is True
+
+    # reconnect, then a new failure: a new episode, reported by the first run after it
+    status('connected')
+    add('connected', t(30))
+    assert agent_connection.first_failure_since_ok(since=t(26)) is False
+    status('needs_login')
+    add('refresh_failed', t(40), 'invalid_grant', reauth=True)
+    assert agent_connection.first_failure_since_ok(since=t(26)) is True
+    assert agent_connection.first_failure_since_ok(since=t(50)) is False
+
+    # a success after the failure while the row still says needs_login (cannot happen, but the rule is explicit)
+    add('refreshed', t(41))
+    assert agent_connection.first_failure_since_ok(since=t(26)) is False
+    status('disconnected')
+    assert agent_connection.first_failure_since_ok(since=t(-100)) is False    # disconnected on purpose: nothing to report
+
+
+def test_failure_episode_through_the_real_paths(db, auth):
+    """Two daily runs after a refresh failure: only the first one is told; a reconnect starts a new episode."""
+    seed(db, expires_in=10)
+    auth.tokens = [(400, {'error': 'refresh_token_reused'})]
+    with pytest.raises(ChatGPTError):
+        agent_connection.access_token(now=NOW)
+    run_1_start = NOW - timedelta(hours=1)                               # the failure happened during run 1
+    assert agent_connection.first_failure_since_ok(since=run_1_start) is True
+    run_2_start = NOW + timedelta(hours=24)
+    with pytest.raises(ChatGPTError):                                    # run 2: node-level not_connected, no new event
+        agent_connection.access_token(now=run_2_start)
+    assert agent_connection.first_failure_since_ok(since=NOW + timedelta(seconds=1)) is False
+    browser_login(auth, db, with_client_id=False)
+    assert agent_connection.first_failure_since_ok(since=run_1_start) is False
+    db.execute('UPDATE agent_connections SET access_expires_at = %s', (NOW + timedelta(seconds=5),))
+    db.commit()
+    auth.tokens = [(400, {'error': 'invalid_grant'})]
+    with pytest.raises(ChatGPTError):
+        agent_connection.access_token(now=NOW + timedelta(seconds=1))
+    assert agent_connection.first_failure_since_ok(since=NOW - timedelta(minutes=5)) is True
 
 
 def test_mark_needs_login_after_a_model_call_proved_it_unusable(db):
@@ -365,8 +413,8 @@ def test_disconnect_revoked(db, auth):
     stored = row(db)
     assert stored['status'] == 'disconnected' and stored['access_token'] is None and stored['refresh_token'] is None
     assert stored['access_expires_at'] is None and stored['refresh_expires_at'] is None and stored['scopes'] == []
-    assert (stored['host_id'], stored['client_id'], stored['subject'], stored['model']) == (
-        HOST_ID, 'client-1', 'user-1', 'gpt-a')                       # kept for the next login
+    assert (stored['host_id'], stored['client_id'], stored['model']) == (HOST_ID, 'client-1', 'gpt-a')   # kept
+    assert stored['subject'] is None and stored['email'] is None      # the next login may be another account
     assert events(db) == [{'kind': 'disconnected', 'code': None, 'detail': {'protocol': 'siwc-1', 'revoked': True}}]
 
 
@@ -584,6 +632,157 @@ def test_login_needs_a_verifiable_discovery_document(db, auth):
     assert row(db) is None and agent_connection._PENDING is None       # nothing was started or stored
 
 
+# ---------------------------------------------------------------------------------------------- model failures
+
+def _client_for(handler, token=OLD_ACCESS):
+    return model.chat_model(SETTINGS_CONNECTED, token_provider=lambda: token, transport=httpx.MockTransport(handler),
+                            report_failures=True)
+
+
+SETTINGS_CONNECTED = model.AgentSettings(provider='chatgpt', model='gpt-test', api_key=None, daily_tokens=None,
+                                         config_error=None, connection='connected')
+MESSAGES = [HumanMessage(content='hi')]
+
+
+def _http_failure(status, code=None, **body):
+    payload = {'error': {'code': code, 'message': 'server text', **body}} if code else {'detail': 'x'}
+    return lambda request: httpx.Response(status, json=payload, request=request)
+
+
+def _sse_failure(code):
+    return lambda request: httpx.Response(200, headers={'content-type': 'text/event-stream'},
+                                          content=_sse(failed_events(code)), request=request)
+
+
+@pytest.mark.parametrize('code', sorted(model.RELOGIN_CODES))
+@pytest.mark.parametrize('how', ['http', 'stream'])
+def test_relogin_class_model_failure_marks_needs_login(db, auth, code, how):
+    seed(db)
+    handler = _http_failure(403, code) if how == 'http' else _sse_failure(code)
+    with pytest.raises((openai.APIStatusError, ChatGPTError)) as caught:
+        _client_for(handler).invoke(MESSAGES)
+    assert model.classify_error(caught.value, OLD_ACCESS)[0] == 'not_connected'    # the error still surfaces
+    stored = row(db)
+    assert stored['status'] == 'needs_login' and stored['access_token'] is None and stored['refresh_token'] is None
+    assert [(e['kind'], e['code'], e['detail']['reauth']) for e in events(db)] == [('refresh_failed', code, True)]
+    assert agent_connection.first_failure_since_ok(since=NOW - timedelta(minutes=1)) is True
+    assert OLD_ACCESS not in json.dumps(events(db)) and 'server text' not in (stored['last_error'] or '')
+
+
+def test_unauthorized_with_an_old_token_forces_a_refresh_first(db, auth):
+    seed(db)
+    db.execute('UPDATE agent_connections SET connected_at = %s, last_refresh_at = %s',
+               (NOW - timedelta(hours=5), NOW - timedelta(hours=2)))
+    db.commit()
+    with pytest.raises(openai.AuthenticationError):
+        _client_for(_http_failure(401)).invoke(MESSAGES)
+    stored = row(db)
+    assert stored['status'] == 'connected' and stored['access_token'] == OLD_ACCESS      # nothing is lost yet
+    assert stored['access_expires_at'] == NOW and kinds(db) == []
+    auth.tokens = [refresh_response(auth)]
+    assert agent_connection.access_token(now=NOW) == NEW_ACCESS                          # the next unit refreshes
+    assert row(db)['last_refresh_at'] == NOW and kinds(db) == ['refreshed']
+
+
+@pytest.mark.parametrize('code', [None, 'invalid_token', 'invalid_api_key'])
+def test_unauthorized_with_a_fresh_token_marks_needs_login(db, auth, code):
+    seed(db)
+    db.execute('UPDATE agent_connections SET last_refresh_at = %s', (NOW - timedelta(minutes=2),))
+    db.commit()
+    with pytest.raises(openai.AuthenticationError):
+        _client_for(_http_failure(401, code)).invoke(MESSAGES)
+    assert row(db)['status'] == 'needs_login'
+    assert [(e['kind'], e['code']) for e in events(db)] == [('refresh_failed', 'invalid_token')]
+
+
+def test_unauthorized_report_for_a_token_that_is_no_longer_stored_is_ignored(db, auth):
+    seed(db)
+    assert agent_connection.report_unauthorized('test-access-someone-else', now=NOW) == 'ignored'
+    assert row(db)['status'] == 'connected' and row(db)['access_expires_at'] == NOW + timedelta(hours=1)
+    db.execute('DELETE FROM agent_connections')
+    db.commit()
+    assert agent_connection.report_unauthorized(OLD_ACCESS, now=NOW) == 'ignored'
+
+
+@pytest.mark.parametrize('handler', [
+    _http_failure(429, 'subscription_sharing_usage_limit_exceeded'), _http_failure(404, 'model_not_found'),
+    _http_failure(400, 'invalid_request_error'), _http_failure(500), _http_failure(503, 'server_error'),
+    _http_failure(429, 'subscription_sharing_usage_unavailable'), _sse_failure('subscription_sharing_user_unavailable'),
+])
+def test_other_model_failures_leave_the_connection_alone(db, auth, handler):
+    seed(db)
+    with pytest.raises(Exception):
+        _client_for(handler).invoke(MESSAGES)
+    assert row(db)['status'] == 'connected' and row(db)['access_token'] == OLD_ACCESS and kinds(db) == []
+
+
+def test_models_with_an_injected_token_do_not_touch_the_connection(db, auth):
+    seed(db)
+    handler = _http_failure(403, 'subscription_sharing_invalid_user')
+    plain = model.chat_model(SETTINGS_CONNECTED, token_provider=lambda: OLD_ACCESS, transport=httpx.MockTransport(handler))
+    with pytest.raises(openai.PermissionDeniedError):
+        plain.invoke(MESSAGES)
+    assert row(db)['status'] == 'connected' and kinds(db) == []
+
+
+def test_a_failing_bookkeeping_never_hides_the_model_error(db, auth, monkeypatch):
+    seed(db)
+    monkeypatch.setattr(agent_connection, 'mark_needs_login', lambda *a, **k: (_ for _ in ()).throw(RuntimeError('db down')))
+    with pytest.raises(openai.PermissionDeniedError):
+        _client_for(_http_failure(403, 'subscription_sharing_invalid_user')).invoke(MESSAGES)
+    assert row(db)['status'] == 'connected'
+
+
+# ---------------------------------------------------------------------------------------------- accounts, edge cases
+
+def test_disconnect_then_another_account_can_log_in(db, auth):
+    seed(db, subject='user-1')
+    agent_connection.disconnect(now=NOW)
+    browser_login(auth, db, subject='user-2', with_client_id=False)
+    stored = row(db)
+    assert stored['status'] == 'connected' and stored['subject'] == 'user-2'
+    assert stored['host_id'] == HOST_ID and stored['client_id'] == 'client-1'      # the registration is reused
+
+
+def test_login_without_a_refresh_token_fails_cleanly(db, auth):
+    seed(db, 'needs_login')
+    browser_login(auth, db, with_client_id=False, refresh_token=None)
+    stored = row(db)
+    assert stored['status'] == 'needs_login' and stored['access_token'] is None     # not stuck in pending
+    assert events(db)[-1]['kind'] == 'login_failed' and events(db)[-1]['code'] == 'invalid_token_response'
+    assert agent_connection._PENDING is None
+
+
+def test_failed_start_closes_the_listener_and_forgets_the_login(db, auth, monkeypatch):
+    seen = {}
+
+    real_start = chatgpt.CallbackServer.start
+
+    def start(self, port=0):
+        seen['port'] = real_start(self, port)
+        return seen['port']
+
+    def boom(*args, **kwargs):
+        raise RuntimeError('commit failed')
+    monkeypatch.setattr(chatgpt.CallbackServer, 'start', start)
+    monkeypatch.setattr(agent_connection, '_event', boom)
+    with pytest.raises(RuntimeError):
+        agent_connection.start_login(now=NOW)
+    assert agent_connection._PENDING is None
+    assert row(db) is None or row(db)['status'] != 'pending'
+    with pytest.raises(OSError):
+        _get(seen['port'], '/auth/callback?state=x')                  # the listener is closed
+
+
+def test_stored_tokens_are_scrubbed_after_a_restart(db, auth):
+    seed(db)
+    with chatgpt._KNOWN_LOCK:
+        chatgpt._KNOWN_SECRETS.clear()                                  # a fresh process knows no token yet
+    agent_connection.status_view(now=NOW)
+    assert OLD_REFRESH not in chatgpt.redact(f'boom {OLD_REFRESH} {OLD_ACCESS}')
+    assert OLD_ACCESS not in model.classify_error(RuntimeError(f'x {OLD_ACCESS}'), None)[1]
+
+
 # ---------------------------------------------------------------------------------------------- models
 
 MODELS = {'models': [{'slug': 'gpt-a', 'display_name': 'GPT A', 'visibility': 'list'},
@@ -663,6 +862,9 @@ def test_status_view_shapes(db, auth, monkeypatch):
     db.commit()
     disconnected = agent_connection.status_view(now=NOW)
     assert disconnected['status'] == 'disconnected' and disconnected['email_masked'] == 's***@example.com'
+    db.execute("UPDATE agent_connections SET email = NULL")
+    db.commit()
+    assert agent_connection.status_view(now=NOW)['email_masked'] is None
     monkeypatch.setenv('WORKBENCH_AGENT_PROVIDER', 'off')
     assert agent_connection.status_view(now=NOW)['provider_setting'] == 'off'
 

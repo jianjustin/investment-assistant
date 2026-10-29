@@ -8,6 +8,7 @@ from every error detail; a quota error code stops the agent track for the rest o
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import threading
@@ -27,12 +28,20 @@ from investment_assistant.workbench.agent import chatgpt
 from investment_assistant.workbench.agent.chatgpt import ChatGPTError
 from investment_assistant.workbench.macro import redact
 
+log = logging.getLogger(__name__)
+
 PROVIDERS = ('chatgpt', 'off')
 TIMEOUT = httpx.Timeout(180, connect=10)
 
 # Responses error codes by outcome (spec §8.8)
 QUOTA_CODES = frozenset({'subscription_sharing_usage_limit_exceeded'})
 MODEL_UNAVAILABLE_CODES = frozenset({'model_not_found'})
+# §8.8 row 4 codes that prove the connection itself unusable (the model call is not retried after a fresh login):
+RELOGIN_CODES = frozenset({
+    'subscription_sharing_user_not_eligible', 'subscription_sharing_invalid_user', 'chatpass_v2_scope_not_authorized',
+    'chatpass_v2_invalid_authorization_context',
+})
+UNAUTHORIZED_CODES = frozenset({'invalid_token', 'invalid_api_key'})          # like an HTTP 401: refresh first
 NOT_CONNECTED_CODES = frozenset({
     'subscription_sharing_user_not_eligible', 'subscription_sharing_invalid_user', 'chatpass_v2_scope_not_authorized',
     'chatpass_v2_invalid_authorization_context', 'invalid_token', 'invalid_api_key',
@@ -123,10 +132,30 @@ def _failure_from(exc: ValueError) -> ChatGPTError | None:
 
 class SiwcChatOpenAI(ChatOpenAI):
     """``ChatOpenAI`` for the ChatGPT direct route (spec §8.5): the request body goes through
-    ``chatgpt.rewrite_payload``; the stream is read for failure and completion and its text blocks become one string."""
+    ``chatgpt.rewrite_payload``; the stream is read for failure and completion and its text blocks become one string.
+
+    With ``report_connection_failures`` (set for models built on the stored connection) a failure that proves the
+    connection unusable is also written back to it (spec §8.8 row 4); the error itself is always re-raised."""
+
+    report_connection_failures: bool = False
 
     def _get_request_payload(self, input_, *, stop: list[str] | None = None, **kwargs: Any) -> dict:
         return chatgpt.rewrite_payload(super()._get_request_payload(input_, stop=stop, **kwargs))
+
+    def _report_failure(self, exc: BaseException) -> None:
+        if not self.report_connection_failures:
+            return
+        try:
+            facts = _facts(exc)
+            if facts is None:
+                return
+            code = chatgpt.canonical_code(facts.code)
+            if code in RELOGIN_CODES:
+                agent_connection.mark_needs_login(code)
+            elif facts.status == 401 or code in UNAUTHORIZED_CODES:
+                agent_connection.report_unauthorized(self.openai_api_key.get_secret_value())
+        except Exception as inner:        # noqa: BLE001 - never hide the model error behind a bookkeeping failure
+            log.warning('recording a connection failure failed: %s', type(inner).__name__)
 
     def _stream(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None,
                 **kwargs: Any) -> Iterator[ChatGenerationChunk]:
@@ -145,7 +174,11 @@ class SiwcChatOpenAI(ChatOpenAI):
             failure = _failure_from(exc)
             if failure is None:
                 raise
+            self._report_failure(failure)
             raise failure from None
+        except Exception as exc:
+            self._report_failure(exc)
+            raise
         if not completed:
             raise chatgpt.error_for('stream_interrupted', retryable=True)
 
@@ -175,14 +208,20 @@ def _http_client(transport: httpx.BaseTransport | None) -> httpx.Client:
 
 
 def chat_model(s: AgentSettings, *, token_provider: Callable[[], str] | None = None,
-               transport: httpx.BaseTransport | None = None) -> BaseChatModel:
-    """A model bound to a fresh access token (refreshed when due). Built once per Agent unit (D32)."""
+               transport: httpx.BaseTransport | None = None, report_failures: bool | None = None) -> BaseChatModel:
+    """A model bound to a fresh access token (refreshed when due). Built once per Agent unit (D32).
+
+    ``report_failures`` (default: only when the token comes from the stored connection) lets a model error that proves
+    the connection unusable move it to ``needs_login`` (``agent_connection.mark_needs_login`` /
+    ``report_unauthorized``)."""
     token = (token_provider or agent_connection.access_token)()
     chatgpt.remember_secret(token)
     return SiwcChatOpenAI(
         model=s.model, api_key=token, base_url=chatgpt.RESOURCE,
         use_responses_api=True, output_version='v0', store=False, streaming=True, temperature=None,
         max_retries=0, timeout=TIMEOUT, http_client=_http_client(transport), http_socket_options=(),
+        default_headers={'Accept': 'text/event-stream'},          # every call streams (the devkit sends the same)
+        report_connection_failures=token_provider is None if report_failures is None else report_failures,
     )
 
 

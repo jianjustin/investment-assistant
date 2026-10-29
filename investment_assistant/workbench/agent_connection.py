@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 
 REFRESH_THRESHOLD_S = 300                       # refresh when less than this is left (spec §8.2)
 REFRESH_TTL = timedelta(days=30)                # the refresh token rolls forward by 30 days on every refresh
+FRESH_TOKEN_S = 600                             # a token this young that is still rejected means the connection is bad
 
 _COLUMNS = ('status', 'host_id', 'client_id', 'subject', 'email', 'scopes', 'access_token', 'access_expires_at',
             'refresh_token', 'refresh_expires_at', 'earliest_refresh_at', 'model', 'model_display_name',
@@ -75,7 +76,12 @@ def _tx() -> Iterator[Any]:
 def _load(conn, *, lock: bool = False) -> dict | None:
     row = conn.execute(f"SELECT {', '.join(_COLUMNS)} FROM agent_connections WHERE id = 1"
                        + (' FOR UPDATE' if lock else '')).fetchone()
-    return dict(zip(_COLUMNS, row)) if row else None
+    if not row:
+        return None
+    found = dict(zip(_COLUMNS, row))
+    for token in (found['access_token'], found['refresh_token']):
+        chatgpt.remember_secret(token)          # after a restart too: error texts must be scrubbed of stored tokens
+    return found
 
 
 def _ensure_row(conn) -> None:
@@ -199,13 +205,16 @@ def start_login(*, now: datetime, open_port: int | None = None) -> dict:
     cancel_login()
     pkce = chatgpt.new_pkce()
     port = open_port if open_port is not None else _callback_port()
-    with _TOKEN_LOCK:
-        with _tx() as conn:
-            _ensure_row(conn)
-            row = _load(conn, lock=True)
-            server = chatgpt.CallbackServer(pkce['state'], row['client_id'])
-            server.start(port)
-            try:
+    ttl = float(chatgpt.LOGIN_TTL_S)
+    server: chatgpt.CallbackServer | None = None
+    pending: _Pending | None = None
+    try:
+        with _TOKEN_LOCK:
+            with _tx() as conn:
+                _ensure_row(conn)
+                row = _load(conn, lock=True)
+                server = chatgpt.CallbackServer(pkce['state'], row['client_id'])
+                server.start(port)
                 url = chatgpt.authorize_url(
                     discovery=discovery, client_id=row['client_id'], redirect_uri=server.redirect_uri,
                     state=pkce['state'], nonce=pkce['nonce'], challenge=pkce['challenge'], host_id=row['host_id'],
@@ -215,15 +224,19 @@ def start_login(*, now: datetime, open_port: int | None = None) -> dict:
                     conn.execute("UPDATE agent_connections SET status = 'pending', last_error = NULL, updated_at = %s "
                                  'WHERE id = 1', (now,))
                 _event(conn, 'login_started', now, None, prior=prior)
-            except BaseException:
-                server.close()
-                raise
-    ttl = float(chatgpt.LOGIN_TTL_S)
-    pending = _Pending(verifier=pkce['verifier'], nonce=pkce['nonce'], redirect_uri=server.redirect_uri,
-                       server=server, prior=prior, expires_at=now + timedelta(seconds=ttl), ttl=ttl, started=now,
-                       mono0=time.monotonic())
-    with _PENDING_LOCK:
-        _PENDING = pending
+                # registered before the commit, so a concurrent read never mistakes the new 'pending' row for debris
+                pending = _Pending(verifier=pkce['verifier'], nonce=pkce['nonce'], redirect_uri=server.redirect_uri,
+                                   server=server, prior=prior, expires_at=now + timedelta(seconds=ttl), ttl=ttl,
+                                   started=now, mono0=time.monotonic())
+                with _PENDING_LOCK:
+                    _PENDING = pending
+    except BaseException:
+        with _PENDING_LOCK:
+            if pending is not None and _PENDING is pending:
+                _PENDING = None
+        if server is not None:
+            server.close()                   # also when the commit itself failed
+        raise
     threading.Thread(target=_watch, args=(pending,), name='chatgpt-login', daemon=True).start()
     return {'authorize_url': url, 'expires_at': pending.expires_at.isoformat()}
 
@@ -410,28 +423,54 @@ def mark_needs_login(code: str, *, now: datetime | None = None) -> bool:
     return True
 
 
-def first_failure_since_ok() -> bool:
-    """True when exactly one re-login-class ``refresh_failed`` event follows the last ``connected`` / ``refreshed``
-    event and nothing newer than it succeeded: the first failure of this outage (spec §8.8: notify once).
+def report_unauthorized(token: str, *, now: datetime | None = None) -> str:
+    """A model call with ``token`` was answered 401 / ``invalid_token`` (spec §8.8 row 4). Returns what was done:
 
-    Ask it right after a refresh failed (the ``ChatGPTError`` carries one of ``REAUTH_CODES``); while the row stays
-    ``needs_login`` no new event is written, so asking again later would still say True."""
+    - ``'marked'``: the token was obtained in the last ``FRESH_TOKEN_S`` seconds (login or refresh) and is still
+      rejected, so the connection is unusable: ``needs_login`` + a ``refresh_failed`` event (``invalid_token``);
+    - ``'refresh_forced'``: an older token: it is treated as expired, so the next ``access_token()`` refreshes it
+      (nothing else is written; if that token is rejected as well the next report marks the row);
+    - ``'ignored'``: the row no longer holds this token (already refreshed, disconnected, ...)."""
+    now = now or _utcnow()
+    with _TOKEN_LOCK:
+        with _tx() as conn:
+            row = _load(conn, lock=True)
+            if row is None or row['status'] != 'connected' or row['access_token'] != token:
+                return 'ignored'
+            issued = max([t for t in (row['last_refresh_at'], row['connected_at']) if t is not None], default=None)
+            if issued is not None and (now - issued).total_seconds() <= FRESH_TOKEN_S:
+                _invalidate(conn, 'invalid_token', now)
+                return 'marked'
+            conn.execute('UPDATE agent_connections SET access_expires_at = %s, updated_at = %s WHERE id = 1', (now, now))
+            return 'refresh_forced'
+
+
+def first_failure_since_ok(*, since: datetime | None = None) -> bool:
+    """True iff the connection is failed right now (``needs_login``), its latest re-login-class failure
+    (``refresh_failed`` with ``reauth``) is at or after ``since`` (any time when ``since`` is None), and no
+    ``connected`` / ``refreshed`` event came after that failure.
+
+    A caller passes the start time of its previous run: each failure episode is then reported once, by the first run
+    that starts after it. Transient refresh failures never count (they write no ``refresh_failed`` event)."""
     with _tx() as conn:
-        rows = conn.execute("SELECT kind, detail FROM agent_connection_events "
-                            "WHERE kind IN ('connected', 'refreshed', 'refresh_failed') ORDER BY id DESC").fetchall()
-    failures = 0
-    for kind, detail in rows:
+        row = _load(conn)
+        events = conn.execute("SELECT kind, detail, created_at FROM agent_connection_events "
+                              "WHERE kind IN ('connected', 'refreshed', 'refresh_failed') ORDER BY id DESC").fetchall()
+    if row is None or row['status'] != 'needs_login':
+        return False
+    for kind, detail, created_at in events:
         if kind in ('connected', 'refreshed'):
-            break
+            return False
         if (detail or {}).get('reauth'):
-            failures += 1
-    return failures == 1
+            return since is None or created_at >= since
+    return False
 
 
 def disconnect(*, now: datetime) -> dict:
     """Revoke the refresh token at the issuer (best effort) and clear the local credentials either way.
 
-    ``host_id``, ``client_id``, the account (subject / e-mail) and the chosen model stay. ``{'revoked': bool}``:
+    ``host_id``, ``client_id`` and the chosen model stay; the account (subject / e-mail) is cleared, so the next login
+    may use another ChatGPT account (spec §19: switching accounts = disconnect, then connect). ``{'revoked': bool}``:
     False when the issuer did not confirm, or when there was no token left to revoke."""
     global _PENDING
     with _PENDING_LOCK:
@@ -453,7 +492,7 @@ def disconnect(*, now: datetime) -> dict:
             conn.execute("UPDATE agent_connections SET status = 'disconnected', access_token = NULL, "
                          "refresh_token = NULL, access_expires_at = NULL, refresh_expires_at = NULL, "
                          "earliest_refresh_at = NULL, scopes = '{}', connected_at = NULL, last_refresh_at = NULL, "
-                         'last_error = NULL, updated_at = %s WHERE id = 1', (now,))
+                         'subject = NULL, email = NULL, last_error = NULL, updated_at = %s WHERE id = 1', (now,))
             _event(conn, 'disconnected', now, None, revoked=revoked)
     return {'revoked': revoked}
 
