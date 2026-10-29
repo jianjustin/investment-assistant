@@ -220,6 +220,18 @@ def test_old_snapshot_has_no_learning_field():
     assert '你学到了什么' not in names and names[-1] == '说明'
 
 
+def test_weekly_learning_actual_text_for_unfilled_and_filled_without_r():
+    """未成交 only when never bought; a filled trade without R (unplanned) reads 无 R（计划外）."""
+    learning = _learning(cards=2)
+    learning['cards'][0].update(actual_r=None, filled=True, ticker='UNP', end_text='平仓')
+    learning['cards'][1].update(actual_r=None, filled=False)
+    lines = _learning_field(learning)[2].value.split(chr(10))
+    assert 'UNP 平仓 · 实际 无 R（计划外） · 采纳（照规则计划）' in lines
+    assert 'AMD 过期未成交 · 实际 未成交 · 降为观察' in lines
+    learning['cards'][0].update(actual_r=-1.0)
+    assert 'UNP 平仓 · 实际 -1.00R · 采纳（照规则计划）' in _learning_field(learning)[2].value.split(chr(10))
+
+
 # --- monthly payload and template ---
 
 MONTHLY_REVIEW = {

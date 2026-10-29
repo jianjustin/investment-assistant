@@ -506,3 +506,31 @@ def test_unit_scope_of_the_tools(db, scripted_model):
     [call] = repository.agent_tool_calls(db, reply['agent_run_id'])
     assert call['result']['error'] == '只能查本次讨论的计划与运行'
     assert plan['id'] is not None
+
+
+def test_busy_marker_is_registered_inside_the_lock_before_the_turn_is_written(db, monkeypatch):
+    """A request waiting on the same lock must already see the question as running (never as interrupted), and a
+    failed write must not leave the marker behind."""
+    record, _, _ = make_discussion(db)
+    seen = {}
+    real = repository.insert_turn
+
+    def spy(conn, row):
+        seen['marker'] = discussion._RUNNERS.get(row['run_id'])
+        seen['turn_state'] = discussion.wait_state({'run_id': row['run_id']})
+        return real(conn, row)
+
+    monkeypatch.setattr(repository, 'insert_turn', spy)
+    asked = ask(record['id'], '第一问')
+    assert seen == {'marker': '', 'turn_state': 'pending'}
+    assert discussion._RUNNERS[asked['run_id']] == ''
+
+    def failing(conn, row):
+        seen['key'] = row['run_id']
+        raise RuntimeError('write failed')
+
+    monkeypatch.setattr(repository, 'insert_turn', failing)
+    discussion.release(asked['run_id'])
+    with pytest.raises(RuntimeError):
+        ask(record['id'], '第二问')
+    assert seen['key'] not in discussion._RUNNERS                     # released again

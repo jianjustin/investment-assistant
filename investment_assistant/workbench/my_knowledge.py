@@ -439,8 +439,9 @@ def draft_verdict(draft_id: int, payload: dict[str, Any], *, now: datetime) -> d
     action: 'approve' | 'dismiss', <edited fields>, base_version?}``. Approving a draft without a target creates a
     new item (origin ``discussion``); with a target it becomes the target's next version, ``base_version``
     defaulting to the draft's ``target_version`` (409 ``knowledge_stale`` / ``knowledge_archived``). A card's draft
-    is 409 ``review_on_card``; an already decided draft 409 ``draft_decided`` unless it is the same request
-    (``replayed``)."""
+    is 409 ``review_on_card``; a draft already decided by another request is 409 ``draft_decided`` (not in spec §12's
+    code list; the page shows its sentence); the same request again replays (``replayed``), the same ``request_id``
+    with other content is 409 ``request_id_conflict``."""
     request_id = _request_id(payload)
     action = payload.get('action')
     if action not in ('approve', 'dismiss'):
@@ -456,17 +457,26 @@ def draft_verdict(draft_id: int, payload: dict[str, Any], *, now: datetime) -> d
             raise ledger.Conflict('review_on_card')
         decided = conn.execute('SELECT request_id, action FROM knowledge_draft_verdicts WHERE draft_id = %s',
                                (draft_id,)).fetchone()
-        if decided is not None:
-            if decided[0] == request_id and decided[1] == action:
-                return {'status': 'replayed', 'record': _draft_views(conn, found)[0]['verdict'] | {'draft_id': draft_id}}
+        if decided is not None and decided[0] != request_id:
             raise ledger.Conflict('draft_decided: 这条草稿已经审定过了')
+        if decided is not None and decided[1] != action:
+            raise ledger.Conflict('request_id_conflict')            # the same id now says something else
+        merged = fields = digest = None
+        if action == 'approve':
+            merged = {key: payload[key] if key in payload else (list(draft[key]) if key in ('concepts', 'tickers')
+                                                                else draft[key]) for key in DRAFT_KEYS}
+            fields = _validated(merged, require_counter=True)
+            digest = ledger.request_hash({'op': 'draft', 'draft_id': draft_id, **fields})
+        if decided is not None:
+            if action == 'approve':                                   # compare the full content, as the other writes do
+                versions, _ = repository.knowledge_rows(conn, cutoff=None)
+                stored = next((v for v in versions if v['draft_id'] == draft_id), None)
+                if stored is None or stored['request_hash'] != digest:
+                    raise ledger.Conflict('request_id_conflict')
+            return {'status': 'replayed', 'record': _draft_views(conn, found)[0]['verdict'] | {'draft_id': draft_id}}
         if action == 'dismiss':
             repository.insert_draft_verdict(conn, {'draft_id': draft_id, 'action': 'dismiss', 'request_id': request_id})
             return {'status': 'created', 'record': {'draft_id': draft_id, 'action': 'dismiss', 'ref': None}}
-        merged = {key: payload[key] if key in payload else (list(draft[key]) if key in ('concepts', 'tickers')
-                                                            else draft[key]) for key in DRAFT_KEYS}
-        fields = _validated(merged, require_counter=True)
-        digest = ledger.request_hash({'op': 'draft', 'draft_id': draft_id, **fields})
         if draft['target_knowledge_id'] is not None:
             base = _base_version(payload, draft['target_version'])
             row = _new_version(conn, draft['target_knowledge_id'], fields, request_id=request_id, digest=digest,

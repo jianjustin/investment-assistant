@@ -357,13 +357,14 @@ WEEK_END = date(2026, 10, 25)
 
 
 def _card(card_id, *, ticker='NVDA', end_session=date(2026, 10, 21), end_kind='position_closed', status='to_review',
-          flags=None, pending=0, actual_r=1.5, rule_r=2.0, agent_r=None, headline='一句话', decision_text='采纳（照规则计划）'):
+          flags=None, pending=0, actual_r=1.5, rule_r=2.0, agent_r=None, headline='一句话', decision_text='采纳（照规则计划）',
+          filled=False):
     totals = {'chase': 0, 'early_take': 0, 'held_loser': 0, 'unplanned': 0, 'pending': pending}
     for flag in flags or []:
         totals[flag] += 1
     return {'card_id': card_id, 'ticker': ticker, 'end_kind': end_kind, 'end_text': {'position_closed': '平仓',
             'stop': '止损'}[end_kind], 'end_session': end_session, 'decision_text': decision_text,
-            'actual_r': actual_r, 'rule_r': rule_r, 'agent_r': agent_r, 'status': status, 'headline': headline,
+            'actual_r': actual_r, 'filled': filled, 'rule_r': rule_r, 'agent_r': agent_r, 'status': status, 'headline': headline,
             'discipline': totals}
 
 
@@ -377,7 +378,7 @@ def _perf(ref, title, rows, *, count=None, determined=None, r_mean=None):
 def test_learning_stats_three_keys():
     cards = [_card(1, end_session=date(2026, 10, 20), flags=['chase'], pending=1),
              _card(2, end_session=date(2026, 10, 22), ticker='AMD', end_kind='stop', status='reviewed',
-                   flags=['early_take', 'unplanned'], actual_r=None, rule_r=-1.0, agent_r=-1.0),
+                   flags=['early_take', 'unplanned'], actual_r=None, rule_r=-1.0, agent_r=-1.0, filled=True),
              _card(3, end_session=date(2026, 10, 18)),              # 上周结束：不算
              _card(4, end_session=date(2026, 10, 26))]              # 下周结束：不算
     perf = {7: _perf('know:7@2', '回踩不追', [{'outcome_date': '2026-10-21'}, {'outcome_date': '2026-10-23'},
@@ -389,7 +390,8 @@ def test_learning_stats_three_keys():
                                  'pending': 1}
     assert [c['card_id'] for c in out['cards']] == [1, 2]                  # 按结束日
     assert set(out['cards'][0]) == {'card_id', 'ticker', 'end_kind', 'end_text', 'decision_text', 'actual_r',
-                                    'rule_r', 'agent_r', 'flags', 'status', 'headline'}
+                                    'filled', 'rule_r', 'agent_r', 'flags', 'status', 'headline'}
+    assert [c['filled'] for c in out['cards']] == [False, True]          # card 2 was bought but has no R
     assert out['cards'][0]['flags'] == ['chase'] and out['cards'][1]['flags'] == ['early_take', 'unplanned']
     assert out['cards'][1]['actual_r'] is None and out['cards'][1]['agent_r'] == -1.0
     assert out['counts'] == {'total': 2, 'reviewed': 1, 'to_review': 1, 'drafting': 0, 'draft_failed': 0}

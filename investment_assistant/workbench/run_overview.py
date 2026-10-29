@@ -79,6 +79,7 @@ STAGE_CONCEPTS: dict[str, tuple[str, ...]] = {
 NOT_READY_NOTE = '迁移 025 未执行，暂无阶段证据'
 NO_ROWS_NOTE = '这一天没有阶段证据：当天没有运行，或运行早于 v2.4（2026-10-27 起才记录）'
 STAGES_1_NOTE = '这次运行按 stages-1 记账（早于 v2.5 或迁移 026 未执行），没有每日复查阶段'
+STAGES_1_RETRO_NOTE = '这次运行按 stages-1 记账（早于 v2.5 或迁移 026 未执行），没有每日复查和复盘卡阶段'
 STAGES_2_NOTE = '这次运行按 stages-2 记账（早于 v2.7 或迁移 027 未执行），没有复盘卡阶段'
 MISSING_NOTE = '这一阶段没有证据行（记账失败，见运行报告）'
 UNFINISHED_NOTE = '还没有这一阶段的记录：运行可能仍在进行，或中途被终止'
@@ -227,8 +228,11 @@ def _retro(r: dict) -> str:
     kinds = detail.get('by_end_kind') if isinstance(detail.get('by_end_kind'), dict) else {}
     parts = [f'{text} {kinds[key]}' for key, text in RETRO_KIND_TEXT if kinds.get(key)]
     shown = f'（{" · ".join(parts)}）' if parts else ''
+    counts = detail.get('drafts') if isinstance(detail.get('drafts'), dict) else None
+    attempted = (sum(int(counts.get(k) or 0) for k in ('ok', 'rejected', 'error')) if counts is not None
+                 else r['input_count'])                              # spec §9: {ok}/{attempted}; skipped are not attempts
     return (f"新结束 {events} 笔{shown}，新建复盘卡 {new_cards} 张；"
-            f"起草 {r['output_count']}/{r['input_count']} 张；待审定 {to_review} 张")
+            f"起草 {r['output_count']}/{attempted} 张；待审定 {to_review} 张")
 
 
 def _push(r: dict) -> str:
@@ -371,7 +375,10 @@ def _stage_views(run: dict) -> list[dict]:
             views.append(describe(members[stage.id], title=stage.title, purpose=stage.purpose))
         elif stage.id not in ids and run['stages_version'] in (stages_module.STAGES_VERSION_V1,
                                                                  stages_module.STAGES_VERSION_V2):
-            note = STAGES_1_NOTE if stage.id == 'review' else STAGES_2_NOTE
+            if stage.id == 'review':
+                note = STAGES_1_NOTE
+            else:                                  # retro: which note depends on the run's own version
+                note = STAGES_1_RETRO_NOTE if run['stages_version'] == stages_module.STAGES_VERSION_V1 else STAGES_2_NOTE
             views.append(_placeholder(stage.id, stage.title, stage.purpose, status='not_recorded', sentence=note))
         else:
             views.append(_placeholder(stage.id, stage.title, stage.purpose, status='missing', sentence=missing_note))

@@ -388,7 +388,10 @@ def _learning_text(learning: dict) -> str:
              f"复盘卡 {counts.get('total', 0)} 张（已审定 {counts.get('reviewed', 0)}"
              f" · 待审定 {counts.get('to_review', 0)}）"]
     for card in cards[:LEARNING_CARD_LINES]:
-        actual = '未成交' if card.get('actual_r') is None else _r(card['actual_r'])
+        if card.get('actual_r') is not None:
+            actual = _r(card['actual_r'])
+        else:                                     # bought but no R (unplanned: no stop to price the risk) vs not filled
+            actual = '无 R（计划外）' if card.get('filled') else '未成交'
         lines.append(f"{card['ticker']} {card['end_text']} · 实际 {actual} · {card['decision_text']}")
     if len(cards) > LEARNING_CARD_LINES:
         lines.append(f'…另有 {len(cards) - LEARNING_CARD_LINES} 张')

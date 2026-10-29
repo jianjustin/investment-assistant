@@ -23,8 +23,8 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 
-from investment_assistant.workbench import (bars as bars_module, discipline as discipline_module, knowledge_items,
-                                            ledger, my_knowledge, plan_shadow, repository, retro, service)
+from investment_assistant.workbench import (bars as bars_module, discipline as discipline_module, families,
+                                            knowledge_items, ledger, my_knowledge, plan_shadow, repository, retro, service)
 from investment_assistant.workbench import stages as stages_module
 from investment_assistant.workbench.agent import graph as agent_graph
 from investment_assistant.workbench.agent import model as agent_model
@@ -34,6 +34,7 @@ from investment_assistant.workbench.agent.growth_check import FIELDS as CITED_FI
 NY = ZoneInfo('America/New_York')
 MIGRATION_MISSING = '迁移 027 未执行'
 NOTE_MAX = 2000
+CARD_LOCK = 'review-card-verdict'      # advisory lock key prefix: verdict, draft writes and skip rows of one card
 LESSON_KEYS = ('title', 'body', 'scope', 'counter_examples', 'concepts', 'tickers')
 _EPOCH = date(2000, 1, 1)
 
@@ -296,7 +297,7 @@ def _scan(conn, *, session: date, now: datetime, window_start: date, with_facts:
         except service.Unavailable:
             raise
         except Exception as exc:                        # noqa: BLE001 - one subject never stops the scan (§9)
-            stats['failures'].append((target, str(exc) or type(exc).__name__))
+            stats['failures'].append((target, families.sanitize_reason(exc) or type(exc).__name__))
     return {'items': items, 'stats': stats}
 
 
@@ -351,11 +352,13 @@ def card_state(conn, card_id: int) -> dict[str, Any]:
 
 
 def _needing_draft(conn) -> list[dict[str, Any]]:
-    """Cards with no ok draft and no verdict, oldest end first: ``{card, drafts, failed}``."""
+    """Spec §4.4: cards with no ok draft, no verdict and fewer than ``RETRO_MAX_ATTEMPTS`` failed attempts (a card at
+    the cap is ``draft_failed`` and waits for a manual redraft or a verdict), oldest end first:
+    ``{card, drafts, failed}``."""
     out = []
     for card in sorted(repository.review_cards(conn), key=lambda c: (c['end_session'], c['id'])):
         state = card_state(conn, card['id'])
-        if state['verdict'] is None and state['ok'] is None:
+        if state['verdict'] is None and state['ok'] is None and state['failed'] < retro.RETRO_MAX_ATTEMPTS:
             out.append({'card': card, **state})
     return out
 
@@ -377,6 +380,7 @@ def _record_skip(card_id: int, reason: str, trigger: str) -> None:
     """Remember why a card was not drafted: one ``skipped`` draft row, but only when the card's latest row does not
     already say the same (the batch runs daily; the log records changes, not days)."""
     with service._tx() as conn:
+        repository.lock(conn, f'{CARD_LOCK}:{card_id}')            # the lock a verdict and every draft write take
         drafts = repository.card_drafts(conn, card_id)
         if drafts and drafts[-1]['status'] == 'skipped' and drafts[-1]['reason'] == reason:
             return
@@ -460,20 +464,31 @@ def draft_card(card_id: int, *, now: datetime, deps: service.Deps | None = None,
         output_tokens=result['output_tokens'], mode='retro')
     try:
         with service._tx() as conn:
+            repository.lock(conn, f'{CARD_LOCK}:{card_id}')
+            # the card may have moved while the model ran: recompute the attempt and look again (a verdict, or
+            # another draft that got there first, must not leave lesson drafts nobody can decide)
+            fresh = card_state(conn, card_id)
+            attempt = fresh['drafts'][-1]['attempt'] + 1 if fresh['drafts'] else 1
+            run_row['attempt'] = attempt
+            reason = None if status == 'ok' else result['reason']
+            stored = status
+            if fresh['verdict'] is not None:
+                stored, reason = 'rejected', 'card_reviewed'
+            elif status == 'ok' and fresh['ok'] is not None:
+                stored, reason = 'rejected', 'draft_exists'
             repository.insert_agent_run(conn, run_row, result['calls'])
             draft_id = repository.insert_card_draft(conn, {
-                'card_id': card_id, 'attempt': attempt, 'trigger': trigger, 'agent_run_id': run_id, 'status': status,
-                'reason': None if status == 'ok' else result['reason'],
-                'output': result['output'] if status == 'ok' else None})
-            if status == 'ok':
+                'card_id': card_id, 'attempt': attempt, 'trigger': trigger, 'agent_run_id': run_id, 'status': stored,
+                'reason': reason, 'output': result['output'] if stored == 'ok' else None})
+            if stored == 'ok':
                 for index, lesson in enumerate(result['output']['lessons']):
                     repository.insert_knowledge_draft(conn, {
                         'origin': 'review_card', 'card_draft_id': draft_id, 'lesson_index': index,
                         **{key: lesson[key] for key in LESSON_KEYS}, 'refs': lesson.get('refs') or []})
     except psycopg.errors.UniqueViolation:
         return {'status': 'conflict', 'reason': 'draft_exists', 'draft_id': None, 'agent_run_id': None}
-    return {'status': status, 'reason': None if status == 'ok' else result['reason'], 'draft_id': draft_id,
-            'agent_run_id': run_id, 'input_tokens': result['input_tokens'], 'output_tokens': result['output_tokens']}
+    return {'status': stored, 'reason': reason, 'draft_id': draft_id, 'agent_run_id': run_id,
+            'input_tokens': result['input_tokens'], 'output_tokens': result['output_tokens']}
 
 
 def redraft_check(card_id: int, *, now: datetime | None = None) -> None:
@@ -518,7 +533,7 @@ def run_stage(session: date, *, now: datetime, deps: service.Deps, summary: dict
     retro_summary = summary['retro'] = {'new_cards': 0, 'drafts': 0, 'to_review': 0}
     detected = detect_all(session, now=now, run_id=run_id)
     for target, reason in detected['failures']:
-        summary['errors'].append(f'{target} retro: {reason}')
+        summary['errors'].append(f'{target} retro: {families.sanitize_reason(reason)}')
         if acc is not None:
             acc.fail(target, reason)
     new_ids = detected['new_ids']
@@ -548,9 +563,7 @@ def run_stage(session: date, *, now: datetime, deps: service.Deps, summary: dict
     for entry in needing:
         card = entry['card']
         try:
-            if entry['failed'] >= retro.RETRO_MAX_ATTEMPTS:
-                skip(entry, 'max_attempts')
-            elif started_drafts >= retro.RETRO_MAX_DRAFTS:
+            if started_drafts >= retro.RETRO_MAX_DRAFTS:
                 skip(entry, 'draft_cap', record=False)
             elif clock() - started >= service.AGENT_DEADLINE_S:
                 skip(entry, 'stage_budget')
@@ -584,10 +597,13 @@ def run_stage(session: date, *, now: datetime, deps: service.Deps, summary: dict
                         quota_exhausted = True
                     if acc is not None:
                         acc.fail(card['ticker'], out['reason'])
+                if status in ('rejected', 'error') and entry['failed'] + 1 >= retro.RETRO_MAX_ATTEMPTS \
+                        and acc is not None:
+                    acc.skip('max_attempts', card['ticker'])      # reported once: the run whose attempt reached the cap
         except service.Unavailable:
             raise
         except Exception as exc:                   # noqa: BLE001 - one card's surprise only fails that card
-            reason = str(exc) or type(exc).__name__
+            reason = families.sanitize_reason(exc) or type(exc).__name__
             summary['errors'].append(f"{card['ticker']} retro: {reason}")
             if acc is not None:
                 acc.fail(card['ticker'], reason)
@@ -664,7 +680,7 @@ def verdict(card_id: int, payload: dict[str, Any], *, now: datetime) -> dict[str
     request_id = rec['request_id']
     with service._tx() as conn:
         require_ready(conn)
-        repository.lock(conn, f'review-card-verdict:{card_id}')
+        repository.lock(conn, f'{CARD_LOCK}:{card_id}')
         card = repository.review_card(conn, card_id)
         if card is None:
             raise LookupError(f'复盘卡 {card_id} 不存在')
@@ -774,6 +790,12 @@ def _facts_flags(facts: dict[str, Any]) -> tuple[list[str], list[str]]:
     return flags, immature
 
 
+def _filled(facts: dict[str, Any]) -> bool:
+    """Whether the subject was bought at all (a live buy in the frozen trades): tells 「未成交」 from a filled trade
+    that has no R (an unplanned trade has no stop to price the risk)."""
+    return any(t.get('side') == 'buy' for t in (facts.get('trades') or {}).get('trades') or [])
+
+
 def _row(card: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     facts = card['facts'] or {}
     tracks = facts.get('tracks') or {}
@@ -784,7 +806,7 @@ def _row(card: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
             'exit_basis': (facts.get('subject') or {}).get('exit_basis'), 'end_session': card['end_session'],
             'end_text': (facts.get('subject') or {}).get('end_text') or retro.end_text(card['end_kind'], None),
             'decision_text': (facts.get('decision') or {}).get('text'),
-            'actual_r': (facts.get('trades') or {}).get('actual_r'),
+            'actual_r': (facts.get('trades') or {}).get('actual_r'), 'filled': _filled(facts),
             'rule_r': (tracks.get('rule') or {}).get('r'), 'agent_r': (tracks.get('agent') or {}).get('r'),
             'flags': flags, 'immature': immature, 'status': state['status'],
             'headline': (ok['output'] or {}).get('headline') if ok else None, 'discipline': (facts.get('discipline') or {}).get('totals')}
@@ -851,7 +873,8 @@ def card_view(card_id: int, *, now: datetime) -> dict[str, Any]:
         return {
             'card': {'id': card['id'], 'event_key': card['event_key'], 'subject': card['subject'],
                      'ticker': card['ticker'], 'signal_date': card['signal_date'], 'end_kind': card['end_kind'],
-                     'end_session': card['end_session'], 'created_at': card['created_at']},
+                     'end_session': card['end_session'], 'created_at': card['created_at'],
+                     'filled': _filled(facts)},
             'facts': facts, 'status': state['status'],
             'drafts': [_draft_view(d) for d in state['drafts']],
             'lesson_drafts': [_lesson_view(d) for d in sorted(_lesson_rows(conn, state['ok']).values(),

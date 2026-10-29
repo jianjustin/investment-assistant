@@ -390,7 +390,8 @@ def test_discussion_draft_verdict_new_and_target(db):
     assert my_knowledge.drafts_view(open_only=True)['drafts'] == []
     decided = my_knowledge.drafts_view(open_only=False)['drafts'][0]
     assert decided['verdict'] == {'action': 'approve', 'ref': f'know:{kid}@1'}
-    replay = my_knowledge.draft_verdict(draft_id, {'request_id': request, 'action': 'approve'}, now=NOW)
+    replay = my_knowledge.draft_verdict(draft_id, {'request_id': request, 'action': 'approve', 'title': '改过的标题'},
+                                        now=NOW)
     assert replay['status'] == 'replayed'
     with pytest.raises(ledger.Conflict, match='^draft_decided'):
         my_knowledge.draft_verdict(draft_id, {'request_id': str(uuid.uuid4()), 'action': 'dismiss'}, now=NOW)
@@ -590,3 +591,23 @@ def test_generate_weekly_without_migration_027_has_empty_learning(db):
         'discipline': {'cards': 0, 'chase': 0, 'early_take': 0, 'held_loser': 0, 'unplanned': 0, 'pending': 0},
         'cards': [], 'counts': {'total': 0, 'reviewed': 0, 'to_review': 0, 'drafting': 0, 'draft_failed': 0},
         'knowledge': []}
+
+
+def test_draft_verdict_replay_compares_the_full_content(db):
+    _, _, draft_id = discussion_draft(db)
+    request = str(uuid.uuid4())
+    first = my_knowledge.draft_verdict(draft_id, {'request_id': request, 'action': 'approve', 'title': '改过的标题'}, now=NOW)
+    assert first['status'] == 'created'
+    same = my_knowledge.draft_verdict(draft_id, {'request_id': request, 'action': 'approve', 'title': '改过的标题'}, now=NOW)
+    assert same['status'] == 'replayed' and same['record']['ref'] == first['record']['ref']
+    with pytest.raises(ledger.Conflict, match='^request_id_conflict$'):            # same id, other content
+        my_knowledge.draft_verdict(draft_id, {'request_id': request, 'action': 'approve', 'title': '另一个标题'}, now=NOW)
+    with pytest.raises(ledger.Conflict, match='^request_id_conflict$'):            # same id, other action
+        my_knowledge.draft_verdict(draft_id, {'request_id': request, 'action': 'dismiss'}, now=NOW)
+    with pytest.raises(ledger.Conflict, match='^draft_decided'):                   # another request: already decided
+        my_knowledge.draft_verdict(draft_id, {'request_id': str(uuid.uuid4()), 'action': 'approve'}, now=NOW)
+    _, _, other = discussion_draft(db)
+    r2 = str(uuid.uuid4())
+    my_knowledge.draft_verdict(other, {'request_id': r2, 'action': 'dismiss'}, now=NOW)
+    assert my_knowledge.draft_verdict(other, {'request_id': r2, 'action': 'dismiss'}, now=NOW)['status'] == 'replayed'
+    assert db.execute('SELECT count(*) FROM knowledge_items').fetchone()[0] == 1

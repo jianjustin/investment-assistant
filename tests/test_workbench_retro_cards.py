@@ -394,8 +394,8 @@ def test_draft_cap_and_gates(db, scripted_model):
     out, summary, acc = run_stage(db, stage_deps(scripted_model, [], daily_tokens=1000))
     assert [(s['reason'], s['count']) for s in acc.skips] == [('token_budget', 7)]
 
-    # max_attempts: a card that already failed three times is not drafted again by the batch
-    first = min(cards(db), key=lambda c: c['id'])           # the oldest end is drafted first, so it shows the cap
+    # a card that already failed three times is no longer "needing a draft" (spec §4.4): not input, not skipped
+    first = min(cards(db), key=lambda c: c['id'])           # the oldest end is drafted first
     db.execute('DELETE FROM review_card_drafts')
     for attempt in (1, 2, 3):
         repository.insert_card_draft(db, {'card_id': first['id'], 'attempt': attempt, 'trigger': 'batch',
@@ -405,9 +405,134 @@ def test_draft_cap_and_gates(db, scripted_model):
     db.commit()
     assert retro.card_status(drafts=repository.card_drafts(db, first['id']), verdict=None) == 'draft_failed'
     out, summary, acc = run_stage(db, stage_deps(scripted_model, [draft_reply() for _ in range(6)]))
-    assert [(s['reason'], s['count']) for s in acc.skips] == [('max_attempts', 1), ('draft_cap', 1)]
-    assert acc.detail['drafts'] == {'ok': 5, 'rejected': 0, 'error': 0, 'skipped': 2}
+    assert acc.input_count == 6 and [(s['reason'], s['count']) for s in acc.skips] == [('draft_cap', 1)]
+    assert acc.detail['drafts'] == {'ok': 5, 'rejected': 0, 'error': 0, 'skipped': 1}
     assert summary['retro']['to_review'] == 5
+
+
+def test_max_attempts_is_reported_once_and_draft_failed_is_not_needing(db, scripted_model):
+    """Spec §4.4 / §9: the run whose attempt is the third failure reports `max_attempts`; afterwards the card is not
+    input, not a degradation when the agent is down, and a stage with nothing else to draft is a plain success."""
+    scenario(db, 'ZZZA')
+    bad = AIMessage(content='不是 JSON')
+    for attempt in (1, 2):
+        out, summary, acc = run_stage(db, stage_deps(scripted_model, [bad]), run_id=f'run-{attempt}')
+        assert acc.detail['drafts']['rejected'] == 1 and acc.skips == [] and acc.input_count == 1
+    out, summary, acc = run_stage(db, stage_deps(scripted_model, [bad]), run_id='run-3')
+    assert acc.input_count == 1 and [(s['reason'], s['count'], s['samples']) for s in acc.skips] == [
+        ('max_attempts', 1, ['ZZZA'])]
+    card = only_card(db)
+    assert retro_cards.card_state(db, card['id'])['status'] == 'draft_failed'
+    rows = []
+    recorder = stages_module.StageRecorder('run-4', 'manual_batch', SESSION, writer=rows.append, wall_now=lambda: NOW)
+    with recorder.stage('retro') as acc:
+        retro_cards.run_stage(SESSION, now=NOW, deps=stage_deps(scripted_model, [], api_key=None),
+                              summary={'errors': []}, started=0.0, clock=lambda: 0.0, run_id='run-4', acc=acc)
+    [row] = [r for r in rows if r['stage'] == 'retro']
+    assert (row['status'], row['input_count'], row['skips'], row['degradations']) == ('success', 0, [], [])
+    assert len(repository.card_drafts(db, card['id'])) == 3                # nothing written after the third failure
+
+
+def test_verdict_landing_while_the_model_runs_leaves_no_orphan_lessons(db, scripted_model):
+    """The verdict may land between the model call and the write: the run is kept, the draft row is a rejected
+    `card_reviewed`, and no lesson drafts are written (they could never be decided)."""
+    scenario(db, 'ZZZA')
+    run_stage(db, stage_deps(scripted_model, [], api_key=None))
+    card = only_card(db)
+    d = stage_deps(scripted_model, [draft_reply(lessons=2)])
+    real = d.agent_model.invoke
+
+    def verdict_then_answer(*args, **kwargs):
+        retro_cards.verdict(card['id'], {'request_id': str(uuid.uuid4()), 'note': '先审了', 'lessons': []}, now=NOW)
+        return real(*args, **kwargs)
+
+    d.agent_model = _Wrapped(d.agent_model, verdict_then_answer)
+    out = retro_cards.draft_card(card['id'], now=NOW, deps=d, trigger='manual')
+    db.commit()
+    assert (out['status'], out['reason']) == ('rejected', 'card_reviewed')
+    assert db.execute('SELECT count(*) FROM knowledge_drafts').fetchone()[0] == 0
+    last = repository.card_drafts(db, card['id'])[-1]
+    assert (last['status'], last['reason'], last['output']) == ('rejected', 'card_reviewed', None)
+    assert repository.agent_run_by_id(db, last['agent_run_id'])['mode'] == 'retro'      # the run (and its tokens) is kept
+    assert retro_cards.card_state(db, card['id'])['status'] == 'reviewed'
+    assert retro_cards.card_view(card['id'], now=NOW)['lesson_drafts'] == []
+
+
+class _Wrapped:
+    """A model whose invoke runs a hook first (another request landing while the model thinks)."""
+
+    def __init__(self, model, invoke):
+        self._model, self._invoke = model, invoke
+
+    def bind_tools(self, tools, **kwargs):
+        self._model.bind_tools(tools, **kwargs)
+        return self
+
+    def invoke(self, messages, *args, **kwargs):
+        return self._invoke(messages, *args, **kwargs)
+
+
+def test_two_drafts_in_a_row_get_distinct_attempts_and_the_second_is_draft_exists(db, scripted_model):
+    scenario(db, 'ZZZA')
+    run_stage(db, stage_deps(scripted_model, [], api_key=None))
+    card = only_card(db)
+    first_deps = stage_deps(scripted_model, [draft_reply()])
+    second_deps = stage_deps(scripted_model, [draft_reply()])
+    real = first_deps.agent_model.invoke
+
+    def other_draft_first(*args, **kwargs):             # a second draft finishes while the first model call runs
+        inner = retro_cards.draft_card(card['id'], now=NOW, deps=second_deps, trigger='manual')
+        assert inner['status'] == 'ok'
+        return real(*args, **kwargs)
+
+    first_deps.agent_model = _Wrapped(first_deps.agent_model, other_draft_first)
+    out = retro_cards.draft_card(card['id'], now=NOW, deps=first_deps, trigger='manual')
+    db.commit()
+    assert (out['status'], out['reason']) == ('rejected', 'draft_exists')            # no exception, the run is kept
+    drafts = repository.card_drafts(db, card['id'])
+    assert [(d['attempt'], d['status'], d['reason']) for d in drafts][-2:] == [(2, 'ok', None),
+                                                                               (3, 'rejected', 'draft_exists')]
+    assert db.execute('SELECT count(*) FROM knowledge_drafts').fetchone()[0] == 1
+    assert db.execute("SELECT count(*) FROM agent_runs WHERE mode = 'retro'").fetchone()[0] == 2
+
+
+def test_skip_rows_take_the_card_lock(db, scripted_model):
+    scenario(db, 'ZZZA')
+    run_stage(db, stage_deps(scripted_model, [], api_key=None))
+    card = only_card(db)
+    retro_cards._record_skip(card['id'], 'stage_budget', 'batch')
+    retro_cards._record_skip(card['id'], 'stage_budget', 'batch')
+    assert [(d['attempt'], d['reason']) for d in repository.card_drafts(db, card['id'])] == [
+        (1, 'agent_unavailable: not_configured'), (2, 'stage_budget')]
+
+
+def test_list_rows_and_card_view_say_whether_the_subject_was_filled(db, scripted_model):
+    scenario(db, 'ZZZU', 'unplanned')
+    scenario(db, 'ZZZB', 'stop')
+    scenario(db, 'ZZZA')
+    run_stage(db, stage_deps(scripted_model, [], api_key=None))
+    rows = {r['ticker']: r for r in retro_cards.list_view(status=None, ticker=None, since=None)['cards']}
+    assert (rows['ZZZU']['filled'], rows['ZZZU']['actual_r']) == (True, None)          # bought and sold, no R
+    assert (rows['ZZZB']['filled'], rows['ZZZB']['actual_r']) == (False, None)         # never bought: 未成交
+    assert rows['ZZZA']['filled'] is True and rows['ZZZA']['actual_r'] is not None
+    ids = {c['ticker']: c['id'] for c in cards(db)}
+    assert retro_cards.card_view(ids['ZZZU'], now=NOW)['card']['filled'] is True
+    assert retro_cards.card_view(ids['ZZZB'], now=NOW)['card']['filled'] is False
+    learning = retro_cards.learning_cards(db, SESSION - timedelta(days=3), SESSION)
+    assert {c['ticker']: c['filled'] for c in learning} == {'ZZZU': True, 'ZZZB': False, 'ZZZA': True}
+
+
+def test_stage_errors_are_sanitized(db, scripted_model, monkeypatch):
+    scenario(db, 'ZZZA')
+    monkeypatch.setenv('FRED_API_KEY', 'sekret-key-123')
+
+    def boom(*a, **k):
+        raise RuntimeError('provider said sekret-key-123 is bad')
+
+    monkeypatch.setattr(retro_cards, 'draft_card', boom)
+    out, summary, acc = run_stage(db, stage_deps(scripted_model, []))
+    assert summary['errors'] and all('sekret-key-123' not in e for e in summary['errors'])
+    assert all('sekret-key-123' not in f['reason'] for f in acc.failures)
 
 
 def test_agent_unavailable_still_creates_cards(db, scripted_model):

@@ -276,7 +276,7 @@ def learning_stats(*, week_start: date, week_end: date, cards: list[dict[str, An
     """The weekly 「你学到了什么」 (v2.7 spec §10, ``review-7``), pure.
 
     ``cards``: one dict per review card with ``card_id, ticker, end_kind, end_text, end_session, decision_text,
-    actual_r, rule_r, agent_r, status, headline`` and ``discipline`` (the frozen ``facts.discipline`` totals);
+    actual_r, filled, rule_r, agent_r, status, headline`` and ``discipline`` (the frozen ``facts.discipline`` totals);
     only those whose ``end_session`` falls in the week count, ordered by end day. ``perf_by_item``: knowledge
     id -> ``{ref (newest version), title, summary}`` where ``summary`` is ``knowledge_perf.summarize`` over all of
     the item's samples; an item is "tested this week" when at least one sample row's ``outcome_date`` lies in the
@@ -293,7 +293,8 @@ def learning_stats(*, week_start: date, week_end: date, cards: list[dict[str, An
         discipline['pending'] += int(totals.get('pending') or 0)
         out_cards.append({'card_id': card['card_id'], 'ticker': card['ticker'], 'end_kind': card['end_kind'],
                           'end_text': card['end_text'], 'decision_text': card['decision_text'],
-                          'actual_r': card.get('actual_r'), 'rule_r': card.get('rule_r'),
+                          'actual_r': card.get('actual_r'), 'filled': bool(card.get('filled')),
+                          'rule_r': card.get('rule_r'),
                           'agent_r': card.get('agent_r'),
                           'flags': [flag for flag in flag_order if totals.get(flag)],
                           'status': card['status'], 'headline': card.get('headline')})

@@ -55,6 +55,7 @@ TEMPLATE_CASES = [
      '复查 4 份 Agent 计划：维持 2 · 修订 1（出新版 1）· 作废 1；系统规则判定 1 · Agent 判定 3；'
      '已结束的链：过期 1 · 否决 0 · 平仓 2；无 Agent 计划的持仓：AAPL, MSFT'),
     ('retro', dict(i=3, o=2, detail={'events': 3, 'new_cards': 3, 'to_review': 2,
+                                    'drafts': {'ok': 2, 'rejected': 1, 'error': 0, 'skipped': 0},
                                     'by_end_kind': {'position_closed': 1, 'stop': 1, 'target': 0, 'expired': 1,
                                                     'invalidated': 0}}),
      '新结束 3 笔（平仓 1 · 止损 1 · 过期 1），新建复盘卡 3 张；起草 2/3 张；待审定 2 张'),
@@ -94,9 +95,11 @@ def test_describe_retro():
     assert older['sentence'] == '新结束 0 笔，新建复盘卡 0 张；起草 1/2 张；待审定 4 张'
     assert describe(row('retro'))['sentence'] == '没有新结束的计划或平仓；待审定 0 张'
     assert describe(row('retro', status='skipped', reason='not_trading_day'))['sentence'] == '跳过：纽约休市'
-    capped = describe(row('retro', status='degraded', i=7, o=4, detail={'events': 1, 'new_cards': 1, 'to_review': 4},
+    capped = describe(row('retro', status='degraded', i=7, o=4, detail={
+        'events': 1, 'new_cards': 1, 'to_review': 4, 'drafts': {'ok': 4, 'rejected': 1, 'error': 0, 'skipped': 2}},
                           skips=[{'reason': 'draft_cap', 'count': 2, 'samples': ['AAPL']}],
                           degradations=[{'kind': 'draft_rejected', 'detail': 'AMD'}]))
+    assert '起草 4/5 张' in capped['sentence']                      # {ok}/{attempted}: skipped cards were not attempted
     assert capped['sentence'].endswith('；降级：草稿未通过校验；跳过 2（超出每次起草上限 5 张 × 2）')
 
 
@@ -289,7 +292,7 @@ def test_overview_stages_1_placeholder():
     assert placeholder['duration_ms'] is None and placeholder['skips'] == []
     retro = view['stages'][7]
     assert retro['id'] == 'retro' and retro['status'] == 'not_recorded'
-    assert retro['sentence'] == '这次运行按 stages-2 记账（早于 v2.7 或迁移 027 未执行），没有复盘卡阶段'
+    assert retro['sentence'] == '这次运行按 stages-1 记账（早于 v2.5 或迁移 026 未执行），没有每日复查和复盘卡阶段'
     assert view['stages'][8]['id'] == 'push'
     assert view['runs'][0]['stages_version'] == 'stages-1' and view['runs'][0]['rows'] == 7
 

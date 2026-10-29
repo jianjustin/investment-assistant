@@ -233,6 +233,21 @@ def ask_check(discussion_id: int, payload: dict[str, Any], *, now: datetime) -> 
     rec = _validate_ask(payload)
     settings = agent_model.settings_from_env()
     ny_date = now.astimezone(NY).date()
+    run_key = str(uuid.uuid4())
+    try:
+        turn = _ask_in_tx(discussion_id, rec, settings, ny_date, run_key)
+    except BaseException:
+        release(run_key)                       # the busy marker is registered inside the lock; undo it on any failure
+        raise
+    if 'replayed' in turn:                      # the replay result, not a freshly written row
+        return turn
+    return {'turn_id': turn['id'], 'run_id': run_key, 'replayed': False}
+
+
+def _ask_in_tx(discussion_id: int, rec: dict[str, Any], settings, ny_date, run_key: str):
+    """The body of ``ask_check`` under the discussion lock. Returns the new turn row, or the replay result dict.
+    The ``pending`` marker for the new turn is registered here, before the turn is written and while the lock is
+    held, so a request waiting on the same lock already sees the question as running (never as interrupted)."""
     with service._tx() as conn:
         _require_ready(conn)
         repository.lock(conn, f'discussion:{discussion_id}')
@@ -254,17 +269,15 @@ def ask_check(discussion_id: int, payload: dict[str, Any], *, now: datetime) -> 
             raise ledger.Conflict('token_budget')
         if any(wait_state(t) == 'pending' for t in _unanswered(turns)):
             raise ledger.Conflict('discussion_busy')
-        run_key = str(uuid.uuid4())
+        with _LOCK:
+            _RUNNERS[run_key] = ''
         try:
-            turn = repository.insert_turn(conn, {
+            return repository.insert_turn(conn, {
                 'discussion_id': discussion_id, 'seq': max((t['seq'] for t in turns), default=0) + 1, 'role': 'user',
                 'request_id': rec['request_id'], 'request_hash': digest, 'body': rec['body'],
                 'attachment': attachment, 'run_id': run_key})
         except psycopg.errors.UniqueViolation:
             raise ledger.Conflict('request_id_conflict') from None
-    with _LOCK:
-        _RUNNERS[run_key] = ''
-    return {'turn_id': turn['id'], 'run_id': run_key, 'replayed': False}
 
 
 # ---------------------------------------------------------------- answer (background body)
