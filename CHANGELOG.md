@@ -165,7 +165,7 @@
 
 ### 验收
 
-- 测试：离线 pytest 2246 passed / 821 skipped；一次性库 pytest 3067 passed；前端 `npm test` 672 passed（51 个文件），`npm run build` 通过；`knowledge check` 通过（98 张卡、原理页 14 节）。
+- 测试：离线 pytest 2248 passed / 827 skipped；一次性库 pytest 3075 passed（终审修复 fed0a02 之后）；前端 `npm test` 672 passed（51 个文件），`npm run build` 通过；`knowledge check` 通过（98 张卡、原理页 14 节）。
 - **验收未开始**：迁移 028、`pg_dump` 备份、`.env` 改动、重启、ChatGPT 登录、tag 与推送都需要你逐项单独授权，均未执行（计划的 Task 7）；退出条件（连续 10 个交易日 `daily` 定时运行无需人工介入、手动造一次节点失败并续跑成功、没有外部请求超过 2 分钟、你任选 3 天打开运行详情都能回答“哪个数据源对哪个目标没拿到、为什么、卡在哪个节点”、Agent 单元在 ChatGPT 上完成且通过同一套引用校验、智谱引用已删）逐条待积累，验收记录 `docs/roadmap/v2.8-acceptance.md` 在真实验收开始时新建；不宣称用户验收已过。
 
 ## v2.7.0 — 2026-10-29
