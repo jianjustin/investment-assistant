@@ -916,19 +916,24 @@ _STAGE_RUN_COLUMNS = ('id, run_id, job, trigger, session, stage, stages_version,
 def insert_stage_run(conn, row: dict[str, Any]) -> dict[str, Any]:
     """Append one stage-run row; the five JSONB columns arrive as Python objects, encoded here.
 
-    `row` keys are the table columns except `id`/`created_at`, which the database sets."""
+    `row` keys are the table columns except `id`/`created_at`, which the database sets. `job` is written as given
+    ('workbench' or, since migration 028, 'daily'). `attempt` (default 1) is written only when it is not 1, so a
+    first attempt still lands in a database that has not run migration 028 (the column default is 1)."""
+    attempt = int(row.get('attempt') or 1)
+    columns = ', '.join(['run_id', 'job', 'trigger', 'session', 'stage', 'stages_version', 'status', 'reason',
+                         'input_count', 'output_count', 'skips', 'failures', 'degradations', 'outputs', 'detail',
+                         'started_at', 'finished_at', 'duration_ms'] + (['attempt'] if attempt != 1 else []))
+    marks = ('%s, ' * 10 + '%s::jsonb, ' * 5 + '%s, %s, %s') + (', %s' if attempt != 1 else '')
     return _one(conn,
-                'INSERT INTO stage_runs (run_id, job, trigger, session, stage, stages_version, status, reason, '
-                'input_count, output_count, skips, failures, degradations, outputs, detail, started_at, '
-                'finished_at, duration_ms) '
-                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, '
-                f'%s::jsonb, %s, %s, %s) RETURNING {_STAGE_RUN_COLUMNS}',
+                f'INSERT INTO stage_runs ({columns}) VALUES ({marks}) '
+                f"RETURNING {_STAGE_RUN_COLUMNS}{', attempt' if attempt != 1 else ''}",
                 (row['run_id'], row['job'], row['trigger'], row.get('session'), row['stage'],
                  row['stages_version'], row['status'], row.get('reason'), row['input_count'],
                  row['output_count'], _plan_json(row.get('skips') or []),
                  _plan_json(row.get('failures') or []), _plan_json(row.get('degradations') or []),
                  _plan_json(row.get('outputs') or {}), _plan_json(row.get('detail') or {}),
-                 row['started_at'], row['finished_at'], row['duration_ms']))
+                 row['started_at'], row['finished_at'], row['duration_ms'],
+                 *([attempt] if attempt != 1 else [])))
 
 
 def stage_runs_ready(conn) -> bool:
@@ -940,6 +945,87 @@ def stage_runs_for_run(conn, run_id: str) -> list[dict[str, Any]]:
     """One run's stage rows, oldest first."""
     return _all(conn, f'SELECT {_STAGE_RUN_COLUMNS} FROM stage_runs WHERE run_id = %s ORDER BY created_at, id',
                 (run_id,))
+
+
+# --- daily workflow (v2.8, migration 028) ---
+
+# Stage order per stages_version, for sorting rows of runs booked under different versions (literal on purpose:
+# `stages` imports this module).
+_STAGE_ORDER = {
+    'stages-1': ('collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'push'),
+    'stages-2': ('collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'review', 'push'),
+    'stages-3': ('collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'review', 'retro', 'push'),
+    'stages-4': ('sec_monitor', 'collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'review', 'push',
+                 'retro'),
+}
+_ATTEMPT_RESET_COLUMNS = 'id, ticker, signal_date, mode, request_id, origin, created_at'
+
+
+def daily_ready(conn) -> bool:
+    """True when migration 028 has run: `stage_runs.attempt`, the attempt-reset table and the `daily` job row.
+
+    028 creates the credential tables in the same transaction, so the attempt-reset table stands in for them (this
+    module never touches the connection tables, spec §10.2). A pure existence check (no row is written); `daily` refuses to run without it (D36)."""
+    present = conn.execute("SELECT to_regclass('stage_runs'), to_regclass('agent_attempt_resets'), "
+                           "to_regclass('scheduled_jobs')").fetchone()
+    if any(item is None for item in present):
+        return False
+    has_attempt = conn.execute("SELECT 1 FROM pg_attribute WHERE attrelid = 'stage_runs'::regclass "
+                               "AND attname = 'attempt' AND NOT attisdropped").fetchone()
+    has_job = conn.execute("SELECT 1 FROM scheduled_jobs WHERE name = 'daily'").fetchone()
+    return bool(has_attempt and has_job)
+
+
+def stage_rows_for_run(conn, run_id: str) -> list[dict[str, Any]]:
+    """One run's stage rows including `attempt`, ordered by the stage's position in its stages_version, then
+    attempt (oldest first). Needs migration 028."""
+    rows = _all(conn, f'SELECT {_STAGE_RUN_COLUMNS}, attempt FROM stage_runs WHERE run_id = %s ORDER BY id',
+                (run_id,))
+
+    def position(row: dict[str, Any]) -> tuple[int, int, int]:
+        order = _STAGE_ORDER.get(row['stages_version'], ())
+        index = order.index(row['stage']) if row['stage'] in order else len(order)
+        return index, row['attempt'], row['id']
+
+    return sorted(rows, key=position)
+
+
+def max_stage_attempt(conn, run_id: str) -> int:
+    """The highest `attempt` booked for the run; 0 when it has no rows. Needs migration 028."""
+    return int(conn.execute('SELECT COALESCE(max(attempt), 0) FROM stage_runs WHERE run_id = %s',
+                            (run_id,)).fetchone()[0])
+
+
+def insert_attempt_reset(conn, row: dict[str, Any]) -> dict[str, Any]:
+    """Append one attempt-reset record (D26); a repeated `request_id` returns the stored row with `replayed`.
+
+    `row` keys: ticker, signal_date, mode ('propose' / 'interpret'), request_id, origin ('run_detail' /
+    'plan_page' / 'api')."""
+    inserted = _one(conn,
+                    'INSERT INTO agent_attempt_resets (ticker, signal_date, mode, request_id, origin) '
+                    'VALUES (%s, %s, %s, %s, %s) ON CONFLICT (request_id) DO NOTHING '
+                    f'RETURNING {_ATTEMPT_RESET_COLUMNS}',
+                    (row['ticker'], row['signal_date'], row['mode'], row['request_id'], row['origin']))
+    if inserted is not None:
+        return {**inserted, 'replayed': False}
+    existing = _one(conn, f'SELECT {_ATTEMPT_RESET_COLUMNS} FROM agent_attempt_resets WHERE request_id = %s',
+                    (row['request_id'],))
+    return {**existing, 'replayed': True}
+
+
+def attempt_resets_for(conn, ticker: str, signal_date: date, mode: str) -> list[dict[str, Any]]:
+    """A decision unit's reset records for one mode, newest first."""
+    return _all(conn, f'SELECT {_ATTEMPT_RESET_COLUMNS} FROM agent_attempt_resets '
+                      'WHERE ticker = %s AND signal_date = %s AND mode = %s ORDER BY created_at DESC, id DESC',
+                (ticker, signal_date, mode))
+
+
+def latest_daily_push_finished_at(conn, *, before: datetime) -> datetime | None:
+    """When the latest `daily` push that actually pushed finished before `before` (the base of the review-card
+    count in the plan summary, D3); None when there was none. Skipped and failed pushes do not count."""
+    return conn.execute("SELECT max(finished_at) FROM stage_runs WHERE job = 'daily' AND stage = 'push' "
+                        "AND status IN ('success', 'partial', 'degraded') AND finished_at < %s",
+                        (before,)).fetchone()[0]
 
 
 def stage_runs_for_session(conn, session: date) -> list[dict[str, Any]]:

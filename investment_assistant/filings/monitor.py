@@ -106,7 +106,11 @@ def collect(config, start: date, end: date, state: dict, save, source, *, persis
               "downloaded_count": 0, "filings": [], "other_8k": [], "errors": {},
               "legacy_pending_verification": sum(not sent for sent in known.values()), "event_ids": []}
     # Finish the entire submissions query before downloading anything.
-    candidates = source.discover(tickers, start.isoformat(), end.isoformat())
+    found = source.discover(tickers, start.isoformat(), end.isoformat())
+    # EdgarSource.discover is per ticker and returns (metas, {ticker: error}); a plain list (older sources, test
+    # doubles) has no per-ticker errors. One ticker failing must not stop the others (fetch-1 spec §6.2 row 4a).
+    candidates, ticker_errors = found if isinstance(found, tuple) else (found, {})
+    result["errors"].update(ticker_errors)
     for meta in candidates:
         key = meta["ticker"] + ":" + meta["accession_number"]
         if key in known:
@@ -152,6 +156,11 @@ def collect(config, start: date, end: date, state: dict, save, source, *, persis
             result["event_ids"].append(_event(state, "other:" + key,
                 f"【其他 8-K】{meta['ticker']} {meta['filing_date']} {meta['primary_document']}\n"
                 f"未见 Item 2.02 或 EX-99.1，未存入正式来源库。\n{meta['edgar_url']}"))
+    if ticker_errors:
+        # Coverage is incomplete: no "nothing new" claim and no advance of the last complete scan.
+        result["coverage"] = "partial_for_declared_universe"
+        save()
+        return result
     result["coverage"] = "complete_for_declared_universe"
     state["last_complete_scan"] = {"at": datetime.now(UTC).isoformat(), "start": start.isoformat(), "end": end.isoformat()}
     save()
@@ -179,8 +188,10 @@ def scan_and_notify(config, start: date, end: date, *, source=None, client=None,
         today = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
         scan_key = f"{today}:{start}:{end}"
         if result["errors"]:
+            reason = result["errors"].get("collection") or "; ".join(
+                f"{ticker}: {error}" for ticker, error in sorted(result["errors"].items()))
             content = (f"【SEC 采集失败】本地投研工作台 · {today}\n范围 {start} 至 {end}（美东申报日期）\n"
-                       f"{str(result['errors']['collection'])[:800]}\n未能完成查源/归档，不能判断为零命中。"
+                       f"{str(reason)[:800]}\n未能完成查源/归档，不能判断为零命中。"
                        "成功查找记录未前移。运行记录：http://127.0.0.1:8787/")
             result["event_ids"].append(_event(state, "failure:" + today + ":" + content, content))
         elif (not state.get("notified_scans", {}).get(scan_key)

@@ -10,11 +10,14 @@ per-family advisory locks.
 """
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from investment_assistant.data import fetch_policy
+from investment_assistant.data.fetch_policy import FetchError, Fetched
 from investment_assistant.workbench import bars as bars_module
 from investment_assistant.workbench import families
 from investment_assistant.workbench import macro as macro_module
@@ -23,60 +26,184 @@ from investment_assistant.workbench import repository
 from investment_assistant.workbench import universe as universe_module
 
 
-def bars_one(ticker: str, *, session: date, now: datetime, deps: Any, lookback_days: int) -> dict:
+# fetch-1 hooks (spec §6): every external request of this module runs under FETCH_POLICY; tests shorten it and
+# swap the sleep. ``deps``-injected fetchers are wrapped too, so a fake that raises is classified, not special-cased.
+FETCH_POLICY = fetch_policy.FetchPolicy()
+FETCH_SLEEP = time.sleep
+
+
+def _fetch(target: str, fn: Callable[[], Any]) -> Fetched:
+    return fetch_policy.fetch(target, fn, policy=FETCH_POLICY, sleep=lambda seconds: FETCH_SLEEP(seconds))
+
+
+def _iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat() if hasattr(value, 'isoformat') else str(value)
+
+
+def _fail(tally: 'Tally | None', target: str, exc: BaseException, outcome: Fetched | None = None) -> None:
+    """Book a failure on the tally. A failure after a successful fetch (normalise, store) keeps that fetch's
+    attempt records; the caller still re-raises the original exception."""
+    if tally is None:
+        return
+    if not isinstance(exc, FetchError):
+        kind, status = fetch_policy.classify_exception(exc)
+        exc = FetchError(str(exc) or type(exc).__name__, kind=kind, status=status,
+                         attempts=outcome.attempts if outcome else [], target=target)
+    tally.record(target, exc)
+
+
+def bars_one(ticker: str, *, session: date, now: datetime, deps: Any, lookback_days: int,
+             tally: 'Tally | None' = None) -> dict:
     """One ticker's daily bars, stored in their own transaction.
 
-    Returns ``{'counts': store_bars result, 'skipped': list[date]}``."""
+    Returns ``{'counts': store_bars result, 'skipped': list[date]}``. The request runs under the fetch-1 policy;
+    a failure raises ``FetchError``. With ``tally`` the outcome is booked there (target = ticker, ``rows`` = bars
+    newly written, ``latest`` = newest ``trade_date`` fetched) and the caller must not book it again."""
     from investment_assistant.workbench import service as service_module
 
-    frame = bars_module.fetch_history(ticker, session - timedelta(days=lookback_days), session,
-                                      fetcher=deps.bar_fetcher)
-    rows, skipped = bars_module.normalize_history(frame)
-    with service_module._tx() as conn:
-        counts = repository.store_bars(conn, ticker, rows, now=now)
+    outcome: Fetched | None = None
+    try:
+        outcome = _fetch(ticker, lambda: bars_module.fetch_history(
+            ticker, session - timedelta(days=lookback_days), session, fetcher=deps.bar_fetcher))
+        rows, skipped = bars_module.normalize_history(outcome.value)
+        with service_module._tx() as conn:
+            counts = repository.store_bars(conn, ticker, rows, now=now)
+    except Exception as exc:
+        _fail(tally, ticker, exc, outcome)
+        raise
+    if tally is not None:
+        tally.record(ticker, outcome, rows=counts['inserted'],
+                     latest=_iso(max((row['price_date'] for row in rows), default=None)))
     return {'counts': counts, 'skipped': skipped}
 
 
-def news_one(ticker: str, *, now: datetime, deps: Any) -> dict:
-    """One ticker's yfinance news, stored in its own transaction."""
+def news_one(ticker: str, *, now: datetime, deps: Any, drop_after: datetime | None = None,
+             tally: 'Tally | None' = None) -> dict:
+    """One ticker's yfinance news, stored in its own transaction.
+
+    ``drop_after`` (a resumed run's ``cutoff_at``, spec §5.5) drops items published after it; the count is
+    returned as ``after_cutoff_dropped`` (the key only exists when ``drop_after`` is given). Items without a
+    publication time cannot be judged and are kept."""
     from investment_assistant.workbench import service as service_module
 
-    raw = news_module.fetch_yfinance(ticker, fetcher=deps.news_fetcher)
-    items, bad = news_module.normalize_yfinance(raw, ticker=ticker)
-    with service_module._tx() as conn:
-        return {**repository.store_news(conn, [(i, [ticker]) for i in items], now=now),
-                'fetched': len(raw), 'skipped': bad}
+    outcome: Fetched | None = None
+    try:
+        outcome = _fetch(ticker, lambda: news_module.fetch_yfinance(ticker, fetcher=deps.news_fetcher))
+        raw = outcome.value
+        items, bad = news_module.normalize_yfinance(raw, ticker=ticker)
+        dropped = 0
+        if drop_after is not None:
+            kept = [i for i in items if i['published_at'] is None or i['published_at'] <= drop_after]
+            dropped, items = len(items) - len(kept), kept
+        with service_module._tx() as conn:
+            counts = repository.store_news(conn, [(i, [ticker]) for i in items], now=now)
+    except Exception as exc:
+        _fail(tally, ticker, exc, outcome)
+        raise
+    if tally is not None:
+        tally.record(ticker, outcome, rows=counts['inserted'],
+                     latest=_iso(max((i['published_at'] for i in items if i['published_at'] is not None),
+                                     default=None)))
+    result = {**counts, 'fetched': len(raw), 'skipped': bad}
+    if drop_after is not None:
+        result['after_cutoff_dropped'] = dropped
+    return result
 
 
-def sec_listing(tickers: list[str], *, session: date, now: datetime, deps: Any) -> dict:
-    """SEC 8-K listings over the filing lookback, stored as news plus acceptance fill."""
+def _discover_one(source: Any, ticker: str, start: str, end: str) -> list[dict]:
+    """One ticker's filings from ``EdgarSource.discover_one`` or, for sources that only have ``discover``
+    (test doubles), from ``discover([ticker])``."""
+    if hasattr(source, 'discover_one'):
+        return source.discover_one(ticker, start, end)
+    found = source.discover([ticker], start, end)
+    if isinstance(found, tuple):
+        found, errors = found
+        if errors:
+            raise RuntimeError(next(iter(errors.values())))
+    return found
+
+
+def sec_listing(tickers: list[str], *, session: date, now: datetime, deps: Any, tally: 'Tally | None' = None,
+                drop_after: datetime | None = None) -> dict:
+    """SEC 8-K listings over the filing lookback, stored as news plus acceptance fill — one ticker at a time.
+
+    Every ticker is its own target: a missing CIK or a dropped connection fails only that ticker. The result keeps
+    the old keys (``inserted`` / ``existing`` / ``acceptance_filled``) and adds ``by_ticker`` (``{ticker: {'rows',
+    'latest'}}`` for the ones that worked), ``errors`` (``{ticker: reason}``) and, when ``drop_after`` is given,
+    ``after_cutoff_dropped`` (filings accepted after that cutoff are left out, spec §5.5).
+
+    With ``tally`` each ticker's outcome is booked there and failures do not raise; a ``company_tickers.json``
+    failure (nothing can be resolved) is booked as the whole-call ``'*'`` and listing stops. Without ``tally``
+    (older callers) any failure raises and nothing is stored, as the single-call version did."""
+    from investment_assistant.filings import monitor_source
     from investment_assistant.workbench import service as service_module
 
     source = deps.filing_source
     if source is None:
-        from investment_assistant.filings.monitor_source import EdgarSource
-        source = EdgarSource(service_module.SEC_EVIDENCE_DIR)
-    metas = source.discover(tickers,
-                            (session - timedelta(days=service_module.FILING_LOOKBACK_DAYS)).isoformat(),
-                            session.isoformat())
+        source = monitor_source.EdgarSource(service_module.SEC_EVIDENCE_DIR)
+    start = (session - timedelta(days=service_module.FILING_LOOKBACK_DAYS)).isoformat()
+    end = session.isoformat()
+    once = fetch_policy.FetchPolicy(backoff_s=())      # EdgarSource.get retries each request itself
+    metas: list[dict] = []
+    by_ticker: dict[str, dict] = {}
+    errors: dict[str, str] = {}
+    dropped = 0
+    for ticker in tickers:
+        try:
+            outcome = fetch_policy.fetch(ticker, lambda ticker=ticker: _discover_one(source, ticker, start, end),
+                                         policy=once, sleep=lambda seconds: FETCH_SLEEP(seconds))
+        except Exception as exc:
+            if tally is None:
+                raise
+            if isinstance(exc, FetchError) and exc.target == monitor_source.COMPANY_TICKERS_TARGET:
+                errors['*'] = families.sanitize_reason(exc)
+                tally.record('*', exc)
+                break
+            errors[ticker] = families.sanitize_reason(exc)
+            tally.record(ticker, exc)
+            continue
+        found, drop_count = monitor_source.drop_after_cutoff(outcome.value, drop_after)
+        dropped += drop_count
+        metas.extend(found)
+        latest = max((m['filing_date'] for m in found), default=None)
+        by_ticker[ticker] = {'rows': len(found), 'latest': latest}
+        if tally is not None:
+            tally.record(ticker, outcome, rows=len(found), latest=latest)
     with service_module._tx() as conn:
-        return {**repository.store_news(conn, news_module.filing_news(metas), now=now),
-                'acceptance_filled': repository.fill_filing_acceptance(conn, metas)}
+        result = {**repository.store_news(conn, news_module.filing_news(metas), now=now),
+                  'acceptance_filled': repository.fill_filing_acceptance(conn, metas),
+                  'by_ticker': by_ticker, 'errors': errors}
+    if drop_after is not None:
+        result['after_cutoff_dropped'] = dropped
+    return result
 
 
 def fred_series(series_id: str, *, session: date, now: datetime, deps: Any,
-                api_key: str | None) -> dict | str:
+                api_key: str | None, tally: 'Tally | None' = None) -> dict | str:
     """One FRED series: ``'not_configured'`` without a key (no request, no rows),
-    otherwise the stored observations."""
+    otherwise the stored observations. The request runs under the fetch-1 policy (``FetchError`` on failure;
+    the key never appears in its text); with ``tally`` the outcome is booked under the series id."""
     from investment_assistant.workbench import service as service_module
 
     if not api_key:
         return 'not_configured'
-    rows = macro_module.fetch_series(
-        series_id, start=session - timedelta(days=macro_module.MACRO_LOOKBACK_DAYS), end=session,
-        api_key=api_key, fetcher=deps.macro_fetcher)
-    with service_module._tx() as conn:
-        return repository.store_macro(conn, series_id, rows, now=now)
+    outcome: Fetched | None = None
+    try:
+        outcome = _fetch(series_id, lambda: macro_module.fetch_series(
+            series_id, start=session - timedelta(days=macro_module.MACRO_LOOKBACK_DAYS), end=session,
+            api_key=api_key, fetcher=deps.macro_fetcher))
+        rows = outcome.value
+        with service_module._tx() as conn:
+            counts = repository.store_macro(conn, series_id, rows, now=now)
+    except Exception as exc:
+        _fail(tally, series_id, exc, outcome)
+        raise
+    if tally is not None:
+        tally.record(series_id, outcome, rows=counts['inserted'],
+                     latest=_iso(max((row['obs_date'] for row in rows), default=None)))
+    return counts
 
 
 def load_universe(deps: Any):
@@ -92,6 +219,9 @@ def load_universe(deps: Any):
 def wall_clock() -> datetime:
     """Real wall time for data_fetch_runs timestamps; injected in tests (I07)."""
     return datetime.now(UTC)
+
+
+TARGETS_MAX = 600       # detail.targets items kept per family; the excess is counted in detail.targets_truncated
 
 
 class Tally:
@@ -110,6 +240,7 @@ class Tally:
         self.job = job
         self.targets: list[str] = []
         self.outcomes: dict[str, str | None] = {}   # target -> failure reason; None means ok
+        self._records: dict[str, dict[str, Any]] = {}   # target -> detail.targets item (fetch-1, spec §6.4)
         self.detail: dict[str, Any] = {}
         self._skipped: str | None = None
         self._call_failure: str | None = None
@@ -124,16 +255,43 @@ class Tally:
         if target != '*' and target not in self.targets:
             self.targets.append(target)
 
-    def ok(self, target: str) -> None:
-        self.add_target(target)
-        self.outcomes[target] = None
+    def record(self, target: str, outcome: Fetched | BaseException, *, rows: int | None = None,
+               latest: Any = None) -> None:
+        """Book one target's outcome: a ``Fetched`` is a success, a ``FetchError`` (or any exception) a failure.
 
-    def fail(self, target: str, reason: str) -> None:
+        Feeds ``outcomes`` (the family status, ``failures``) and ``detail.targets`` (spec §6.4):
+        ``{target, ok, attempts, error_kind, http_status, reason, rows, latest, elapsed_ms}``. ``rows`` is what the
+        fetch newly wrote (bars / news / observations) or found (SEC filings); ``latest`` the newest point in time
+        it saw (date or datetime, stored as ISO text). The last record per target wins. ``'*'`` (the whole-call
+        failure) books the failure but is not a target."""
+        if isinstance(outcome, Fetched):
+            item = {'ok': True, 'attempts': len(outcome.attempts) or None, 'error_kind': None,
+                    'http_status': (outcome.attempts[-1].get('status') if outcome.attempts else None),
+                    'reason': None, 'rows': rows, 'latest': _iso(latest), 'elapsed_ms': outcome.elapsed_ms}
+            reason = None
+        else:
+            reason = families.sanitize_reason(outcome)
+            if isinstance(outcome, FetchError):
+                kind, status = outcome.kind, outcome.status
+                attempts, elapsed = len(outcome.attempts) or None, outcome.elapsed_ms if outcome.attempts else None
+            else:
+                kind, status = fetch_policy.classify_exception(outcome)
+                attempts = elapsed = None
+            item = {'ok': False, 'attempts': attempts, 'error_kind': kind, 'http_status': status,
+                    'reason': reason, 'rows': rows, 'latest': _iso(latest), 'elapsed_ms': elapsed}
         if target == '*':
-            self._call_failure = families.sanitize_reason(reason)
+            self._call_failure = reason
             return
         self.add_target(target)
-        self.outcomes[target] = families.sanitize_reason(reason)
+        self.outcomes[target] = reason
+        self._records[target] = {'target': target, **item}
+
+    def ok(self, target: str) -> None:
+        self.record(target, Fetched(None))
+
+    def fail(self, target: str, reason: Any) -> None:
+        """Legacy failure booking: no attempt data unless ``reason`` is itself a ``FetchError``."""
+        self.record(target, reason if isinstance(reason, BaseException) else RuntimeError(str(reason)))
 
     def skip(self, reason: str) -> None:
         self._skipped = families.sanitize_reason(reason)
@@ -147,6 +305,13 @@ class Tally:
                            for target, reason in self.outcomes.items() if reason is not None),
                           key=lambda failure: failure['target'])
         detail = dict(self.detail)
+        if self._records:
+            targets = [self._records[name] for name in sorted(self._records)]
+            detail['policy'] = fetch_policy.FETCH_POLICY_VERSION
+            if len(targets) > TARGETS_MAX:
+                detail['targets_truncated'] = len(targets) - TARGETS_MAX
+                targets = targets[:TARGETS_MAX]
+            detail['targets'] = targets
         if self._call_failure is not None:
             failures.append({'target': '*', 'reason': self._call_failure})
             # I05: a family-scoped '*' failure applies to this call's own targets only.

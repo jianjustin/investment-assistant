@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
+from investment_assistant.data.fetch_policy import FetchError
 from investment_assistant.data.http import get_json
 
 FRED_URL = 'https://api.stlouisfed.org/fred/series/observations'
@@ -32,7 +33,7 @@ def redact(text: str, secret: str | None) -> str:
 def _default_fetcher(url: str, *, params: dict, api_key: str | None) -> tuple[dict | None, dict]:
     # The shared http layer logs request failures; scrub the key there too, not
     # only from the exception we raise (spec §5.1: the key never reaches logs).
-    return get_json(url, params=params, redact=lambda text: redact(text, api_key))
+    return get_json(url, params=params, target=params.get('series_id'), redact=lambda text: redact(text, api_key))
 
 
 def fetch_series(series_id: str, *, start: date, end: date, api_key: str | None,
@@ -45,10 +46,16 @@ def fetch_series(series_id: str, *, start: date, end: date, api_key: str | None,
               'observation_start': start.isoformat(), 'observation_end': end.isoformat()}
     try:
         data, meta = fetch(FRED_URL, params=params)
+    except FetchError as exc:
+        raise FetchError(redact(str(exc), api_key), kind=exc.kind, status=exc.status, attempts=exc.attempts,
+                         target=series_id) from None
     except Exception as exc:  # requests exceptions embed the full URL, key included
         raise RuntimeError(redact(str(exc), api_key)) from None
     if not meta.get('ok'):
-        raise RuntimeError(redact(f"FRED 请求失败：HTTP {meta.get('status_code')} {meta.get('error')}", api_key))
+        # The error category and the attempt records travel with the exception (fetch-1 spec §6.2 row 6).
+        raise FetchError(redact(f"FRED 请求失败：HTTP {meta.get('status_code')} {meta.get('error')}", api_key),
+                         kind=meta.get('error_kind') or 'other', status=meta.get('status_code'),
+                         attempts=meta.get('attempts'), target=series_id)
     if not isinstance(data, dict) or 'observations' not in data:
         raise RuntimeError(redact(f'FRED 响应缺少 observations：{series_id}', api_key))
     rows: list[dict] = []

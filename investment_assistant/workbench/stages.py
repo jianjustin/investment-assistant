@@ -176,6 +176,11 @@ class StageRecorder:
     transaction via ``write_stage_row``); any write error is swallowed into the
     first ``error`` and never raised, so accounting cannot fail the batch.
 
+    ``attempt`` / ``job`` (v2.8, migration 028) are written into every row: a first run is ``attempt = 1``, a resumed
+    ``daily`` run appends ``attempt = n + 1`` rows for the nodes it re-executes; the v2.7 batch keeps
+    ``job = 'workbench'``. ``duration_ms`` is the stage's real wall span (``finished_at - started_at``, D25: waits
+    and retries included); the accumulator's own sub-timings stay in ``detail.timings.measured_ms``.
+
     ``version`` picks the stage set: ``stages-3`` (default, nine rows), ``stages-2`` (eight rows, migration 027
     missing) or ``stages-1`` (seven rows, migration 026 missing): a stage outside the set is ignored by
     ``open`` / ``finish`` / ``skip``."""
@@ -184,10 +189,14 @@ class StageRecorder:
                  writer: Callable[[dict], None] | None = None,
                  wall_now: Callable[[], datetime] | None = None,
                  clock: Callable[[], float] = time.monotonic,
-                 version: str = STAGES_VERSION):
+                 version: str = STAGES_VERSION,
+                 attempt: int = 1,
+                 job: str = 'workbench'):
         if version not in STAGE_IDS_BY_VERSION:
             raise ValueError(f'unknown stages version: {version!r}')
         self.version = version
+        self.attempt = attempt        # a resumed `daily` run writes attempt n + 1 for the nodes it re-executes
+        self.job = job
         self.stage_ids = STAGE_IDS_BY_VERSION[version]
         self.run_id = run_id
         self.trigger = trigger
@@ -225,7 +234,7 @@ class StageRecorder:
                           failures=acc.failures if acc else [],
                           degradations=acc.degradations if acc else [])
         self._write(self._row(stage_id, status=status, reason=reason, acc=acc,
-                              started_at=self._started_at.get(stage_id, self._wall_now()),
+                              started_at=self._started_at.get(stage_id) or self._wall_now(),
                               finished_at=self._wall_now()))
 
     @contextmanager
@@ -274,10 +283,14 @@ class StageRecorder:
 
     def _row(self, stage_id: str, *, status: str, reason: str | None, acc: StageAcc | None,
              started_at: datetime, finished_at: datetime) -> dict[str, Any]:
-        """One stage_runs row: exactly the §5.1 columns, without id / created_at."""
+        """One stage_runs row: the §5.1 columns plus ``attempt``, without id / created_at."""
+        detail = dict(acc.detail) if acc else {}
+        if acc:
+            detail['timings'] = {**(detail.get('timings') if isinstance(detail.get('timings'), dict) else {}),
+                                 'measured_ms': round(acc.duration_ms)}
         return {
-            'run_id': self.run_id, 'job': 'workbench', 'trigger': self.trigger,
-            'session': self.session, 'stage': stage_id, 'stages_version': self.version,
+            'run_id': self.run_id, 'job': self.job, 'trigger': self.trigger,
+            'session': self.session, 'stage': stage_id, 'stages_version': self.version, 'attempt': self.attempt,
             'status': status, 'reason': reason,
             'input_count': acc.input_count if acc else 0,
             'output_count': acc.output_count if acc else 0,
@@ -285,9 +298,9 @@ class StageRecorder:
             'failures': acc.failures if acc else [],
             'degradations': acc.degradations if acc else [],
             'outputs': acc.outputs if acc else {},
-            'detail': acc.detail if acc else {},
+            'detail': detail,
             'started_at': started_at, 'finished_at': finished_at,
-            'duration_ms': round(acc.duration_ms) if acc else 0,
+            'duration_ms': max(0, round((finished_at - started_at).total_seconds() * 1000)),
         }
 
     def _write(self, row: dict[str, Any]) -> None:

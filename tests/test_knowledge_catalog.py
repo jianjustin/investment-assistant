@@ -4,6 +4,7 @@ Reads the committed cards, so a code change that adds a rule / reason / state / 
 updating the cards fails here. Offline: no database."""
 import pytest
 
+from investment_assistant.data import fetch_policy
 from investment_assistant.workbench import (
     backcheck, derivation, families, knowledge, knowledge_items, knowledge_perf, labels, monthly, plan_shadow,
     plans, regime, retro, review, rules, screen, stages, timeline, tracks,
@@ -44,6 +45,8 @@ REQUIRED_IDS = (
     # v2.7 growth loop (7)
     'review.retro_card', 'review.retro_end', 'system.my_knowledge', 'review.knowledge_performance',
     'agent.knowledge_citation', 'system.discussion', 'review.weekly_learning',
+    # v2.8 (1): the spec calls it data.fetch_policy, but card ids must start with an existing group (knowledge.GROUPS)
+    'system.fetch_policy',
 )
 
 STAGE_STATUSES = ('success', 'partial', 'degraded', 'failed', 'skipped')
@@ -74,6 +77,7 @@ CURRENT_VERSIONS = {
     'retro.RETRO_VERSION': retro.RETRO_VERSION,
     'knowledge_items.MY_KNOWLEDGE_VERSION': knowledge_items.MY_KNOWLEDGE_VERSION,
     'knowledge_perf.KNOWLEDGE_PERF_VERSION': knowledge_perf.KNOWLEDGE_PERF_VERSION,
+    'fetch_policy.FETCH_POLICY_VERSION': fetch_policy.FETCH_POLICY_VERSION,
 }
 
 
@@ -87,7 +91,7 @@ def body_of(catalog, card_id: str) -> str:
 
 
 def test_catalog_loads_and_matches_required_ids(catalog):
-    assert len(REQUIRED_IDS) == 95 and len(set(REQUIRED_IDS)) == 95
+    assert len(REQUIRED_IDS) == 96 and len(set(REQUIRED_IDS)) == 96
     assert set(catalog.concepts) == set(REQUIRED_IDS)
 
 
@@ -114,6 +118,8 @@ CODE_SET_CASES = [
     ('retro_end_kinds', list(retro.END_KINDS), ('review.retro_end',)),
     ('retro_card_statuses', list(retro.CARD_STATUSES), ('review.retro_card',)),
     ('retro_fact_keys', list(retro.FACT_KEYS), ('review.retro_card',)),
+    ('retry_statuses', sorted(fetch_policy.RETRY_STATUSES), ('system.fetch_policy',)),
+    ('fetch_error_kinds', list(fetch_policy.ERROR_KINDS), ('system.fetch_policy',)),
 ]
 
 

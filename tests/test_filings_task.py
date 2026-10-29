@@ -103,7 +103,9 @@ def test_downloader_records_partial_by_ticker(monkeypatch):
     assert rows[0]["trigger"] == "scheduled"
     assert rows[0]["run_id"] == "filings-r9"
     assert rows[0]["target_count"] == 2 and rows[0]["ok_count"] == 1
-    assert rows[0]["detail"] == {"targets_source": "config.watchlist", "mode": "downloader"}
+    detail = rows[0]["detail"]      # v2.8: the legacy Tally.ok/fail also write detail.policy / detail.targets
+    assert {k: detail[k] for k in ("targets_source", "mode")} == {"targets_source": "config.watchlist", "mode": "downloader"}
+    assert detail["policy"] == "fetch-1" and [t["target"] for t in detail["targets"]] == ["MU", "NVDA"]
     assert out["data_status"] == {"written": 1, "error": None}
 
 
@@ -175,7 +177,9 @@ def test_monitor_success_uses_summary_tickers(monkeypatch, tmp_path):
     assert rows[0]["status"] == "success"
     assert rows[0]["target_count"] == 1 and rows[0]["ok_count"] == 1
     assert rows[0]["failures"] == []
-    assert rows[0]["detail"] == {"targets_source": "sec_monitor.watchlist_path", "mode": "monitor"}
+    assert {k: v for k, v in rows[0]["detail"].items() if k not in ("policy", "targets")} == {
+        "targets_source": "sec_monitor.watchlist_path", "mode": "monitor"}
+    assert [t["target"] for t in rows[0]["detail"]["targets"]] == ["AAPL"]
 
 
 def test_monitor_delivery_failure_is_not_a_target(monkeypatch, tmp_path):

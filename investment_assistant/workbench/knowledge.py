@@ -45,6 +45,7 @@ KNOWN_VERSIONS: frozenset[str] = frozenset({
     'monthly-3', 'stages-2', 'backcheck-2', 'rules-1', 'knowledge-1',
     'stages-1', 'review-5', 'monthly-2', 'regime-1', 'context-1', 'backcheck-1',
     'stages-3', 'retro-1', 'agent-retro-1', 'agent-discuss-1', 'my-knowledge-1', 'knowledge-perf-1', 'review-7',
+    'stages-4', 'daily-1', 'fetch-1', 'siwc-1',
 })
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

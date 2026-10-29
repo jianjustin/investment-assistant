@@ -88,10 +88,17 @@ def test_shared_http_log_redacts_key(monkeypatch, caplog):
     from investment_assistant.data import http as http_module
     monkeypatch.setattr(http_module.time, 'sleep', lambda _s: None)
 
-    def broken_get(url, **kwargs):
-        raise requests_module.RequestException(
-            'Max retries exceeded with url: /fred/series/observations?api_key=SECRET123&file_type=json')
-    monkeypatch.setattr(http_module.requests, 'get', broken_get)
+    class BrokenSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, **kwargs):
+            raise requests_module.RequestException(
+                'Max retries exceeded with url: /fred/series/observations?api_key=SECRET123&file_type=json')
+    monkeypatch.setattr(http_module.fetch_policy, 'policy_session', lambda policy=None: BrokenSession())
     caplog.set_level(logging.WARNING, logger='investment_assistant.data.http')
     with pytest.raises(RuntimeError) as exc:
         macro.fetch_series('T10Y2Y', start=START, end=END, api_key='SECRET123')  # default fetcher path

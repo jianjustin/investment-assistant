@@ -128,6 +128,28 @@ def test_corrupt_legacy_log_stops_scan_and_does_not_emit_zero(cfg):
     assert "无新符合规则" not in client.sent[0]
 
 
+class PartialSource(Source):
+    """discover() as EdgarSource returns it: (metas, {ticker: error}); MU's listing failed."""
+
+    def discover(self, tickers, start, end):
+        assert tickers == ["NVDA", "MU"]
+        return Source.discover(self, ["NVDA"], start, end), {"MU": "SEC HTTP 503 (3 attempts)"}
+
+
+def test_monitor_collect_continues_after_one_ticker_fails(cfg):
+    Path(cfg.sec_monitor.watchlist_path).write_text("| Ticker | 采集 |\n|---|---|\n| NVDA | 是 |\n| MU | 是 |\n")
+    source, client = PartialSource(), Client()
+    out = scan(cfg, source, client)
+    # NVDA is still archived and notified; MU's failure is reported per ticker, not as a whole-scan failure
+    assert source.downloads == 1 and [m["ticker"] for m in out["filings"]] == ["NVDA"]
+    assert out["errors"] == {"MU": "SEC HTTP 503 (3 attempts)"}
+    assert out["coverage"] == "partial_for_declared_universe"
+    assert any("】NVDA 8-K" in text for text in client.sent)
+    assert any("采集失败" in text and "MU" in text for text in client.sent)
+    assert not any("无新符合规则" in text for text in client.sent)
+    assert "last_complete_scan" not in json.loads((Path(cfg.sec_monitor.state_dir) / "state.json").read_text())
+
+
 def test_non_target_8k_has_link_but_no_formal_archive(cfg):
     out = scan(cfg, Source(selected=False), Client())
     assert len(out["other_8k"]) == 1
@@ -156,16 +178,26 @@ def test_watchlist_is_read_each_time_and_empty_table_fails(cfg):
         read_watchlist(path)
 
 
-def test_http_errors_are_not_retried_and_missing_agent_is_an_error(tmp_path, monkeypatch):
+def test_http_errors_follow_the_retry_policy_and_missing_agent_is_an_error(tmp_path, monkeypatch):
+    """fetch-1: 429 / 5xx retry twice (Retry-After capped by the 2 s / 8 s backoff), 4xx fails at once."""
     class Session:
         calls = 0
+        def __init__(self, status, headers):
+            self.status, self.headers = status, headers
         def get(self, *args, **kwargs):
             self.calls += 1
-            return type("Response", (), {"status_code": 429, "headers": {"Retry-After": "60"}})()
-    session = Session()
-    source = EdgarSource(tmp_path, session=session)
+            return type("Response", (), {"status_code": self.status, "headers": self.headers})()
+    waits = []
     monkeypatch.setenv("SEC_USER_AGENT", "Research test@example.com")
+    monkeypatch.setattr("investment_assistant.filings.monitor_source.time.sleep", lambda _s: None)   # the throttle
+    session = Session(429, {"Retry-After": "60"})
+    source = EdgarSource(tmp_path, session=session, sleep=waits.append)
     with pytest.raises(RuntimeError, match="HTTP 429"):
+        source.get("https://data.sec.gov/test")
+    assert session.calls == 3 and waits == [2, 8]
+    session = Session(403, {})
+    source = EdgarSource(tmp_path, session=session, sleep=waits.append)
+    with pytest.raises(RuntimeError, match="HTTP 403"):
         source.get("https://data.sec.gov/test")
     assert session.calls == 1
     monkeypatch.delenv("SEC_USER_AGENT")
@@ -184,8 +216,9 @@ def test_network_failures_are_classified_without_leaking_details(tmp_path, monke
     class Session:
         def get(self, *args, **kwargs):
             raise exception
+    monkeypatch.setattr("investment_assistant.filings.monitor_source.time.sleep", lambda _s: None)   # the throttle
     with pytest.raises(RuntimeError) as caught:
-        EdgarSource(tmp_path, session=Session()).get("https://data.sec.gov/test")
+        EdgarSource(tmp_path, session=Session(), sleep=lambda _s: None).get("https://data.sec.gov/test")
     assert reason in str(caught.value) and "secret" not in str(caught.value)
 
 
@@ -218,8 +251,8 @@ def test_historical_pages_are_scanned_and_tsla_10k_is_excluded(tmp_path):
         return {"filings": {"recent": rows([]), "files": [{"name": "CIK0001318605-submissions-001.json",
                     "filingFrom": "2026-10-01", "filingTo": "2026-10-15"}]}}
     source.json = get
-    out = source.discover(["TSLA"], "2026-10-01", "2026-10-15")
-    assert [x["form"] for x in out] == ["10-Q", "8-K"]
+    out, errors = source.discover(["TSLA"], "2026-10-01", "2026-10-15")
+    assert errors == {} and [x["form"] for x in out] == ["10-Q", "8-K"]
     assert any("-submissions-001" in url for url in urls)
     with pytest.raises(ValueError):
         source.rows({"form": ["10-Q"]})
@@ -295,7 +328,7 @@ def test_acceptance_time_z_suffix_is_real_utc(tmp_path):
     # filing date and EDGAR's hours; reading it as Eastern would put it after midnight on 10-22.
     source = _submission_source(tmp_path, acceptanceDateTime=["2026-10-22T00:41:42.000Z", "2026-08-27T11:05:00.000Z"],
                                 items=["2.02,9.01", ""])
-    out = {x["form"]: x for x in source.discover(["NVDA"], "2026-08-01", "2026-08-31")}
+    out = {x["form"]: x for x in source.discover(["NVDA"], "2026-08-01", "2026-08-31")[0]}
     assert out["8-K"]["accepted_at"] == "2026-10-22T00:41:42+00:00"
     assert out["8-K"]["items"] == ["2.02", "9.01"]
     assert out["10-Q"]["accepted_at"] == "2026-08-27T11:05:00+00:00"
@@ -303,11 +336,11 @@ def test_acceptance_time_z_suffix_is_real_utc(tmp_path):
 
 
 def test_missing_acceptance_fields_stay_unknown(tmp_path):
-    out = _submission_source(tmp_path).discover(["NVDA"], "2026-08-01", "2026-08-31")
+    out, _ = _submission_source(tmp_path).discover(["NVDA"], "2026-08-01", "2026-08-31")
     assert all(x["accepted_at"] is None and x["items"] is None for x in out)
 
 
 def test_malformed_acceptance_time_is_unknown_not_guessed(tmp_path):
     source = _submission_source(tmp_path, acceptanceDateTime=["not-a-time", None], items=[None, 5])
-    out = source.discover(["NVDA"], "2026-08-01", "2026-08-31")
+    out, _ = source.discover(["NVDA"], "2026-08-01", "2026-08-31")
     assert all(x["accepted_at"] is None and x["items"] is None for x in out)

@@ -125,7 +125,7 @@ def test_row_shape():
         acc.set_ref('marker', 'm')
         acc.detail['earnings'] = 3
     row = rows[0]
-    assert set(row) == {'run_id', 'job', 'trigger', 'session', 'stage', 'stages_version', 'status',
+    assert set(row) == {'run_id', 'job', 'trigger', 'session', 'stage', 'stages_version', 'attempt', 'status',
                         'reason', 'input_count', 'output_count', 'skips', 'failures', 'degradations',
                         'outputs', 'detail', 'started_at', 'finished_at', 'duration_ms'}
     assert row['run_id'] == 'run-1' and row['job'] == 'workbench'
@@ -137,9 +137,47 @@ def test_row_shape():
     assert row['failures'] == [{'target': 'bars:AAPL', 'reason': 'timeout'}]
     assert row['degradations'] == [{'kind': 'fred_not_configured', 'detail': 'FRED_API_KEY 未配置'}]
     assert row['outputs'] == {'data_fetch_runs': [7], 'marker': 'm'}
-    assert row['detail'] == {'earnings': 3}
+    assert row['detail'] == {'earnings': 3, 'timings': {'measured_ms': 350}}    # sub-timings, not the duration
     assert row['started_at'] == WALL and row['finished_at'] == WALL
-    assert row['duration_ms'] == 350
+    assert row['attempt'] == 1
+    assert row['duration_ms'] == 0                                              # D25: the wall span, here zero
+
+
+def test_recorder_writes_attempt_and_job():
+    rows = []
+    default = _recorder(rows)
+    default.skip('collect', 'x')
+    assert (rows[0]['attempt'], rows[0]['job']) == (1, 'workbench')
+    resumed = stages.StageRecorder('run-2', 'scheduled', SESSION, writer=rows.append, wall_now=lambda: WALL,
+                                   clock=lambda: 0.0, attempt=2, job='daily')
+    with resumed.stage('collect'):
+        pass
+    resumed.skip('screen', 'upstream_failed')
+    assert [(r['stage'], r['attempt'], r['job']) for r in rows[1:]] == [('collect', 2, 'daily'), ('screen', 2, 'daily')]
+    assert resumed.close(None)['written'] == 9               # still one row per stage of the (stages-3) set
+
+
+def test_duration_ms_is_wall_span():
+    """D25: duration_ms = finished_at - started_at on the wall clock, whatever the sub-timer measured."""
+    rows = []
+    walls = iter([WALL, WALL.replace(minute=32, second=30)])        # open -> finish: 2 min 30 s of wall time
+    ticks = iter((10.0, 10.35))                                     # the monotonic sub-timer saw only 350 ms
+    rec = stages.StageRecorder('run-w', 'scheduled', SESSION, writer=rows.append, wall_now=lambda: next(walls),
+                               clock=lambda: next(ticks))
+    with rec.stage('collect') as acc:
+        acc.detail['timings'] = {'in_signals_ms': 12}
+    row = rows[0]
+    assert row['duration_ms'] == 150_000
+    assert row['started_at'] == WALL and row['finished_at'] == WALL.replace(minute=32, second=30)
+    assert row['detail']['timings'] == {'in_signals_ms': 12, 'measured_ms': 350}
+    # a skipped stage has no span; a clock that steps back never yields a negative duration
+    assert stages.StageRecorder('r', 'scheduled', SESSION, writer=rows.append, wall_now=lambda: WALL,
+                                clock=lambda: 0.0)._row('plan', status='skipped', reason='x', acc=None,
+                                                        started_at=WALL, finished_at=WALL)['duration_ms'] == 0
+    backwards = stages.StageRecorder('r', 'scheduled', SESSION, writer=rows.append, wall_now=lambda: WALL,
+                                     clock=lambda: 0.0)._row('plan', status='success', reason=None, acc=None,
+                                                             started_at=WALL, finished_at=WALL.replace(second=0, minute=29))
+    assert backwards['duration_ms'] == 0
 
 
 def test_stage_context_writes_aborted_and_reraises():

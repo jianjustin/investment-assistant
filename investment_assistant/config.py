@@ -80,12 +80,10 @@ class FundamentalsConfig:
 
 @dataclass(frozen=True)
 class PriceConfig:
-    """OHLCV collection with retry/backoff (Phase 2)."""
+    """OHLCV collection. Timeouts and retries live in ``data/fetch_policy`` (fetch-1), not here."""
 
     primary: str = "yfinance"
     history_days: int = 400
-    max_retries: int = 3
-    backoff_seconds: float = 1.0
 
 
 @dataclass(frozen=True)

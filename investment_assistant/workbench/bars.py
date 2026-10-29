@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from investment_assistant.data import fetch_policy
 from investment_assistant.data.calendar import add_trading_days, is_trading_day
 
 NY = ZoneInfo('America/New_York')
@@ -21,14 +22,20 @@ HistoryFetcher = Callable[[str, date, date], pd.DataFrame]
 
 
 class BarsUnavailable(RuntimeError):
-    pass
+    fetch_kind = 'empty'      # an empty answer is not retried (fetch-1 spec §6.1)
 
 
 def _yfinance_fetcher(ticker: str, start: date, end: date) -> pd.DataFrame:
     import yfinance as yf
 
-    return yf.Ticker(ticker).history(start=start.isoformat(), end=end.isoformat(),
-                                     auto_adjust=False, actions=True)
+    # A session of our own so libcurl's total / connect timeouts apply to every request yfinance makes (cookie,
+    # crumb, history), plus a thread-level backstop (fetch-1 spec §6.2 row 1, §6.3).
+    def call() -> pd.DataFrame:
+        return yf.Ticker(ticker, session=fetch_policy.yf_session()).history(
+            start=start.isoformat(), end=end.isoformat(), auto_adjust=False, actions=True,
+            timeout=fetch_policy.TOTAL_TIMEOUT_S)
+
+    return fetch_policy.hard_deadline(call, seconds=fetch_policy.YF_HARD_DEADLINE_S)
 
 
 def fetch_history(ticker: str, start: date, end: date, *, fetcher: HistoryFetcher | None = None) -> pd.DataFrame:

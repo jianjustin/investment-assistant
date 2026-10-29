@@ -10,12 +10,12 @@ from investment_assistant.config import load_config
 def test_config_parses_nested_overrides(tmp_path):
     path = tmp_path / "cfg.json"
     path.write_text(
-        '{"notify": {"channel": "email"}, "prices": {"max_retries": 7}}',
+        '{"notify": {"channel": "email"}, "prices": {"history_days": 7}}',
         encoding="utf-8",
     )
     cfg = load_config(path)
     assert cfg.notify.channel == "email"
-    assert cfg.prices.max_retries == 7
+    assert cfg.prices.history_days == 7
 
 
 def test_dashboard_refuses_public_bind_without_optin(monkeypatch):
