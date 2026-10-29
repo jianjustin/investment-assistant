@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any, Callable
 
 from investment_assistant import db
@@ -108,3 +108,27 @@ def patch_scheduled_job(name: str, *, enabled=None, time_local=None) -> dict[str
         return {"updated": False, "degraded": True}
     _with_conn(lambda conn: db.update_scheduled_job(conn, name, enabled=enabled, time_local=time_local))
     return {"updated": True}
+
+
+def resume_daily(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Continue a failed ``daily`` run from its failed node (spec §5.4): every pre-check runs here, synchronously and
+    without writing a row; the continuation runs in the background. Returns the 202 body.
+
+    ``ValueError`` (body without ``run_id`` / ``node``, a malformed id, a node not of ``stages-4``), ``LookupError``
+    (no such run), ``workflow.ResumeRejected`` (``not_failed`` / ``node_mismatch`` / ``resume_window_closed``),
+    ``daily.DailyBusy`` (the lock is taken) and ``service.Unavailable`` (migration 028 missing, no database) are the
+    caller's to map."""
+    from investment_assistant.tasks import daily
+    from investment_assistant.workbench import run_detail, workflow
+
+    body = payload or {}
+    run_id, node = body.get("run_id"), body.get("node")
+    if not isinstance(run_id, str) or not run_id or not isinstance(node, str) or not node:
+        raise ValueError("run_id and node are required")
+    if not run_detail.RUN_ID_RE.match(run_id):
+        raise ValueError("run_id 格式不合法")
+    info = workflow.resume_check(run_id, node, now=datetime.now(UTC))     # raises before anything is written
+    if daily.is_running():
+        raise daily.DailyBusy()
+    runner_id = runner.submit("daily_resume", lambda: daily.resume(run_id, node))
+    return {"run_id": run_id, "node": node, "status": "pending", "attempt": info["attempt"], "runner_id": runner_id}

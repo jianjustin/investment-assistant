@@ -9,7 +9,7 @@ from investment_assistant.workbench import (
     backcheck, derivation, families, knowledge, knowledge_items, knowledge_perf, labels, monthly, plan_shadow,
     plans, regime, retro, review, rules, screen, stages, timeline, tracks, workflow,
 )
-from investment_assistant.workbench.agent import REASON_TEXT, conditions, graph, tools
+from investment_assistant.workbench.agent import REASON_TEXT, chatgpt, conditions, graph, tools
 from investment_assistant.workbench.agent.discuss_tools import DISCUSS_TOOLS
 from investment_assistant.workbench.knowledge import DEFAULT_ROOT, load
 
@@ -45,8 +45,8 @@ REQUIRED_IDS = (
     # v2.7 growth loop (7)
     'review.retro_card', 'review.retro_end', 'system.my_knowledge', 'review.knowledge_performance',
     'agent.knowledge_citation', 'system.discussion', 'review.weekly_learning',
-    # v2.8 (2): the spec calls it data.fetch_policy, but card ids must start with an existing group (knowledge.GROUPS)
-    'system.fetch_policy', 'system.daily_workflow',
+    # v2.8 (3): the spec calls the first data.fetch_policy, but card ids must start with an existing group (knowledge.GROUPS)
+    'system.fetch_policy', 'system.daily_workflow', 'system.agent_connection',
 )
 
 STAGE_STATUSES = ('success', 'partial', 'degraded', 'failed', 'skipped')
@@ -79,6 +79,7 @@ CURRENT_VERSIONS = {
     'knowledge_perf.KNOWLEDGE_PERF_VERSION': knowledge_perf.KNOWLEDGE_PERF_VERSION,
     'fetch_policy.FETCH_POLICY_VERSION': fetch_policy.FETCH_POLICY_VERSION,
     'workflow.DAILY_GRAPH_VERSION': workflow.DAILY_GRAPH_VERSION,
+    'chatgpt.CHATGPT_PROTOCOL_VERSION': chatgpt.CHATGPT_PROTOCOL_VERSION,
 }
 
 
@@ -92,7 +93,7 @@ def body_of(catalog, card_id: str) -> str:
 
 
 def test_catalog_loads_and_matches_required_ids(catalog):
-    assert len(REQUIRED_IDS) == 97 and len(set(REQUIRED_IDS)) == 97
+    assert len(REQUIRED_IDS) == 98 and len(set(REQUIRED_IDS)) == 98
     assert set(catalog.concepts) == set(REQUIRED_IDS)
 
 

@@ -36,6 +36,30 @@
 
 **运行状态**：由十个节点的有效行推出：有失败 → 失败；有 `partial` / `degraded` → 降级；否则成功。降级是常态（例如 FRED 没配置），不发通知；失败发通知。
 
+## 运行详情
+
+每次运行都有一页详情（`#tools/runs/<run_id>`），回答「这次运行每个节点做了什么、出了什么错、能不能接着跑」。设计见 [v2.8 每日工作流 §7](../specs/2026-10-29-v2.8-daily-workflow-design.md)。
+
+**入口**：「工具 → 运行记录」每一行的「详情」；「今日」运行一览标题旁的「运行详情」链接；「立即运行」后出现的「运行详情」链接；失败通知里的链接（`workbench.public_url` 配置了才带）。命令行 `python -m investment_assistant.tasks.daily show --run-id …` 打印同一份节点表（状态、耗时、`attempt`、失败目标数，不含原始摘要）。
+
+**页面**：
+- 顶部一句话 `headline`（与「今日」运行一览是同一个函数：失败时「10 月 29 日的运行在「数据采集」失败（已自动重试 1 次）：…；其后 8 个节点未执行」，续跑后加「（第 2 次执行，从「…」续跑）」）、元信息（任务、触发、交易日、截止时间、`daily-1` / `stages-4`）和执行记录（一次运行有多次执行时逐次列出：首次执行与每次续跑，各一行 `job_reports`）。
+- 节点状态图：十个格子，颜色之外有图标与文字（成功 / 降级 / 部分成功 / 失败 / 跳过 / 未开始 / 运行中）；重新执行过的节点角标「×2」；点格子展开下面的三块。
+- ①做了什么：运行一览同一套句子、输入与产出、跳过与降级原因、自动重试说明；失败节点下方是「从此节点继续」。
+- ②拉取详情（`sec_monitor`、`collect`、`screen` 三个节点）：按数据族分组，每个目标一行——结果、尝试次数、失败类别与原文、行数、最新时点、耗时；默认只展开失败目标。
+- ③结果详情：每类至多 200 项（`total` 是真实数，超出标「只显示前 n 项」）——SEC 申报、入选成员、区制快照、信号候选、规则计划、Agent 运行（链到推理视图与计划，失败或次数用完的单元有「重新运行 Agent」）、每日复查、推送、复盘卡与周 / 月复盘。
+- 底部折叠的「原始摘要」就是该运行最新一行 `job_reports.summary`。
+
+**续跑与重跑**：
+- 「从此节点继续」只在 `resume.allowed` 时出现（失败的运行、检查点停在该节点、还没过下一个交易日纽约 17:00、没有别的执行占着锁）；点开确认后每 5 秒刷新直到状态不再是「运行中」。不能续跑时页面给出原因：这次运行没有失败的节点 / 只能从失败的节点继续 / 已过截止时间只能整次重新运行 / 每日工作流正在运行。
+- 「重新运行 Agent」：某个单元最近一次 Agent 运行是 `error`，或因次数用完（`max_attempts`）跳过时出现；点击重置这个单元该模式的尝试次数（只追加一条记录，`request_id` 幂等），`propose` 立即重跑一次，`interpret` 等下一次运行或续跑执行。该单元已经在重置之后就不再显示按钮。「今日」计划页上同样有这个入口。
+
+**状态**：`success` / `degraded` / `failed` 由有效行推出；有行但还没有这次执行的运行报告、而 `daily:run` 锁被占时是 `running`（页面轮询）；执行到一半进程被杀、没有写完十个节点的运行显示 `failed`，不能续跑，只能整次重新运行。
+
+**旧运行**：v2.8 之前的批处理运行（`stages-1` 到 `stages-3`，7 / 8 / 9 个阶段）按各自的阶段列表画，拉取详情只有失败的目标（注明「这次运行早于目标级明细」），没有续跑与重跑按钮；SEC、回补等没有节点证据的运行只显示原始摘要。
+
+**只读**：详情接口（`GET /api/runs/{run_id}/detail`，`run_id` 形如 `daily-20261030033000-1a2b3c4d`；格式不对 400、没有这次运行 404、库没就绪 503）全程在只读事务里读已经记下的行和检查点的下一个节点，不调用任何外部数据源，不碰 Agent 连接，也不会改变任何东西。
+
 ## 规则 v1
 
 阈值事先固定，不用历史数据调参；改阈值就发新版本，旧信号保留原版本和输入。
@@ -177,7 +201,7 @@
 ## 入口与验证
 
 - 页面：「今日」（决策单元、Agent 计划块与折叠的规则基线、布局开关、进行中的 Agent 计划与「重新复查」、持仓止损、市场环境、「重新推送今日计划」）；「标的」（单只股票的 K 线图（MA20/50/200 与成交量，最多 250 根日线）、日线、候选、计划与决定历史，页尾「Agent 计划」与「我的补充」）；计划页 `#plan/<id>`（`agent-2` 计划另有版本链、复查记录、「重新复查」与「我的补充」）。
-- API：`GET /api/workbench/today`、`POST /api/workbench/decisions`（`plan_id` 与 `own_plan` 二选一；可选 `agent_plan_id`、`review_view`，见上文）、`GET /api/workbench/instruments/{ticker}`、`GET/POST /api/workbench/trades`、`POST /api/workbench/trades/{id}/void`、`POST /api/workbench/push`。
+- API：`GET /api/runs/{run_id}/detail`（运行详情）、`POST /api/jobs/daily/run`（手动运行，等价于 `POST /api/workbench/run`，返回 `{run_id, daily_run_id, status}`）、`POST /api/jobs/daily/resume`（续跑，body `{run_id, node}`，202）、`POST /api/workbench/agent-runs/rerun`（重新运行 Agent）、`GET /api/workbench/today`、`POST /api/workbench/decisions`（`plan_id` 与 `own_plan` 二选一；可选 `agent_plan_id`、`review_view`，见上文）、`GET /api/workbench/instruments/{ticker}`、`GET/POST /api/workbench/trades`、`POST /api/workbench/trades/{id}/void`、`POST /api/workbench/push`。
 - 运行报告：`job_reports` 中 `daily` 的 `summary`（每次执行一行，续跑另追加 `trigger_source = resume` 的行；v2.7 及以前是 `workbench`），额外有 `graph_version`、`run_status`、`failed_node`、`resumed`、`stage_status`，以及 `retro`（`{new_cards, drafts, to_review}`，v2.7）、`tickers.<T>`（日线、资讯、候选、跳过原因）、`plans`（`inserted` / `existing` / `conflict` / `skip: 原因`）、`earnings`、`push`、`sources`（按数据源列出失败）、`timings`、`pool.chains`（只采集不跑规则的链标的数）、`review`（复查对象数、各结论条数、token）。
 - 验证一次：手动运行后，运行报告里 `plans.<T> == "inserted"`；「今日」显示「入场区间 x–y · 止损 z · T1 w · 建议 N 股」和「证据：未验证」；点「重新推送今日计划」，页面提示「已推送 N 条」，`push.sent == true`。
 - 验证 Agent 优先：有 `agent-2` 链的单元，「今日」先显示「Agent 计划 · 第 n 版」块，下面是一行「规则基线 plan-1：…」；点「展开」看到完整规则计划；页头切到「规则优先（旧）」后顺序反过来、都不折叠，刷新页面仍保持；提交决定后 `signal_decisions.review_view` 记下当时的布局与是否展开过。

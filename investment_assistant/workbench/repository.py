@@ -1030,6 +1030,59 @@ def latest_daily_push_finished_at(conn, *, before: datetime) -> datetime | None:
                         (before,)).fetchone()[0]
 
 
+# --- run detail reads (v2.8 §7.2): lean columns, ids only from the stage evidence, nothing written ---
+
+def job_reports_for_run(conn, run_id: str) -> list[dict[str, Any]]:
+    """Every `job_reports` row of one run id (a first execution and its resumes), oldest first."""
+    return _all(conn, 'SELECT id, task, run_id, status, trigger_source, started_at, finished_at, summary, '
+                      'target_start_date FROM job_reports WHERE run_id = %s ORDER BY started_at, id', (run_id,))
+
+
+def previous_daily_report(conn, *, before: datetime) -> dict[str, Any] | None:
+    """The latest real `daily` execution (a graph ran: `summary.graph_version`) that started before `before`:
+    `{'started_at', 'finished_at', 'summary'}`; refused executions (`daily_running`, `migration_028_missing`, ...) are
+    not executions in this sense. The base of the once-per-episode connection notice (v2.8 §8.8)."""
+    return _one(conn, "SELECT started_at, finished_at, summary FROM job_reports WHERE task = 'daily' "
+                      "AND started_at < %s AND summary ? 'graph_version' ORDER BY started_at DESC, id DESC LIMIT 1",
+                (before,))
+
+
+def fetch_runs_by_ids(conn, ids) -> list[dict[str, Any]]:
+    """The `data_fetch_runs` rows a stage row refers to, in the order of `ids`."""
+    rows = _all(conn, f'SELECT {_FETCH_RUN_COLUMNS} FROM data_fetch_runs WHERE id = ANY(%s)', (list(ids),))
+    order = {int(i): n for n, i in enumerate(ids)}
+    return sorted(rows, key=lambda row: order.get(int(row['id']), len(order)))
+
+
+def plans_by_ids(conn, ids) -> list[dict[str, Any]]:
+    return _all(conn, 'SELECT id, ticker, signal_date, kind, status, invalid_reasons FROM trade_plans '
+                      'WHERE id = ANY(%s::uuid[]) ORDER BY ticker, signal_date, created_at', (list(map(str, ids)),))
+
+
+def candidate_refs_by_ids(conn, ids) -> list[dict[str, Any]]:
+    return _all(conn, 'SELECT id, ticker, signal_date, rule_id FROM signal_candidates WHERE id = ANY(%s::uuid[])',
+                (list(map(str, ids)),))
+
+
+def agent_runs_by_ids(conn, ids) -> list[dict[str, Any]]:
+    """Run rows without the output / counter payloads (the detail page lists them, the reasoning view opens one)."""
+    return _all(conn, 'SELECT id, ticker, signal_date, mode, status, reason, attempt, model, plan_id, input_tokens, '
+                      'output_tokens, created_at FROM agent_runs WHERE id = ANY(%s::uuid[]) '
+                      'ORDER BY ticker, signal_date, mode, created_at', (list(map(str, ids)),))
+
+
+def plan_reviews_by_ids(conn, ids) -> list[dict[str, Any]]:
+    """Needs migration 026."""
+    return _all(conn, 'SELECT id, ticker, signal_date, outcome, head_plan_id, new_plan_id FROM plan_reviews '
+                      'WHERE id = ANY(%s) ORDER BY ticker, signal_date, id', (list(ids),))
+
+
+def review_card_refs_by_ids(conn, ids) -> list[dict[str, Any]]:
+    """Needs migration 027."""
+    return _all(conn, 'SELECT id, ticker, subject, end_kind FROM review_cards WHERE id = ANY(%s) ORDER BY id',
+                (list(ids),))
+
+
 def stage_runs_for_session(conn, session: date) -> list[dict[str, Any]]:
     """One session's stage rows across runs, oldest first."""
     return _all(conn, f'SELECT {_STAGE_RUN_COLUMNS} FROM stage_runs WHERE session = %s ORDER BY created_at, id',

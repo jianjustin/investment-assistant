@@ -1,11 +1,13 @@
 from datetime import UTC, date, datetime
 from typing import Any
 
+import psycopg.errors
 from fastapi import APIRouter, Body, HTTPException
 
-from investment_assistant.tasks import runner
+from investment_assistant.tasks import daily, runner
 from investment_assistant.workbench import (derivation_view, discussion, ledger, my_knowledge, plan_review, reasoning,
-                                            retro_cards, run_overview, service, user_inputs)
+                                            retro_cards, run_overview, service, user_inputs, workflow)
+from investment_assistant.workbench.agent.chatgpt import ChatGPTError
 
 router = APIRouter()
 
@@ -19,8 +21,14 @@ def _call(fn, *args, **kwargs):
         return fn(*args, **kwargs)
     except service.Unavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except daily.DailyBusy as exc:
+        raise HTTPException(status_code=409, detail='daily_running') from exc
+    except workflow.ResumeRejected as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc     # the code is the text: {"error": "<code>"}
     except (ledger.Conflict, service.AgentConflict, plan_review.RecheckConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ChatGPTError as exc:
+        raise HTTPException(status_code=502, detail=exc.code) from exc     # only the safe code, never a response text
     except (ledger.NotFound, LookupError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -185,7 +193,6 @@ def push_today():
 
 @router.post('/api/workbench/run')
 def run_now():
-    from investment_assistant.tasks import daily
     try:
         busy = daily.is_running()
     except Exception:   # noqa: BLE001 - no database to ask: the run itself reports what is wrong
@@ -220,6 +227,23 @@ def run_agent(payload: dict[str, Any] = Body(default_factory=dict)):
     if not ticker or signal_date is None:
         raise HTTPException(status_code=400, detail='ticker 与 signal_date 必填')
     return _call(service.run_agent, ticker.upper(), signal_date, now=_now())
+
+
+@router.post('/api/workbench/agent-runs/rerun')
+def rerun_agent(payload: dict[str, Any] = Body(default_factory=dict)):
+    """v2.8 D26 (spec §5.7): reset a unit's attempt gate and, for ``propose``, run it once now (synchronous, like the
+    single-unit run above). 400 bad body / mode / origin, 404 no such unit, 409 ``not_needed``, 503 (migration 028 too).
+    ``request_id`` makes a repeat harmless; ``origin`` defaults to ``api``."""
+    ticker = str(payload.get('ticker') or '')
+    signal_date = _date(payload.get('signal_date'), 'signal_date')
+    if not ticker or signal_date is None:
+        raise HTTPException(status_code=400, detail='ticker 与 signal_date 必填')
+    try:
+        return _call(service.rerun_agent, ticker.upper(), signal_date, str(payload.get('mode') or ''),
+                     request_id=str(payload.get('request_id') or ''), origin=str(payload.get('origin') or 'api'),
+                     now=_now())
+    except psycopg.errors.UndefinedTable:      # the reset table belongs to migration 028
+        raise HTTPException(status_code=503, detail='migration_028_missing') from None
 
 
 @router.get('/api/workbench/review-pushes')

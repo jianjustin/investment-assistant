@@ -218,3 +218,31 @@ def test_a_missing_database_does_not_block_the_manual_run(monkeypatch):
     monkeypatch.setattr(daily, "is_running", no_db)
     monkeypatch.setattr(jobs.runner, "submit", lambda kind, fn: "runner-4")
     assert jobs.trigger_job("daily")["run_id"] == "runner-4"
+
+
+def test_resume_daily_checks_then_submits_in_that_order(monkeypatch):
+    from investment_assistant.tasks import daily
+    from investment_assistant.workbench import workflow
+
+    order = []
+    run_id = "daily-20261030033000-1a2b3c4d"
+    monkeypatch.setattr(workflow, "resume_check", lambda rid, node, *, now: order.append("check") or {"attempt": 3})
+    monkeypatch.setattr(daily, "is_running", lambda: order.append("lock") or False)
+    monkeypatch.setattr(jobs.runner, "submit", lambda kind, fn: order.append(("submit", kind)) or "daily_resume-x")
+    out = jobs.resume_daily({"run_id": run_id, "node": "collect", "request_id": "ignored"})
+    assert out == {"run_id": run_id, "node": "collect", "status": "pending", "attempt": 3, "runner_id": "daily_resume-x"}
+    assert order == ["check", "lock", ("submit", "daily_resume")]
+    monkeypatch.setattr(daily, "is_running", lambda: True)
+    with pytest.raises(daily.DailyBusy):
+        jobs.resume_daily({"run_id": run_id, "node": "collect"})
+    assert order.count(("submit", "daily_resume")) == 1                  # a busy lock submits nothing
+
+
+@pytest.mark.parametrize("body", [None, {}, {"run_id": "daily-20261030033000-1a2b3c4d"}, {"node": "collect"},
+                                  {"run_id": "x", "node": "collect"}, {"run_id": 1, "node": "collect"}])
+def test_resume_daily_refuses_a_bad_body_before_any_check(monkeypatch, body):
+    from investment_assistant.workbench import workflow
+
+    monkeypatch.setattr(workflow, "resume_check", lambda *a, **k: pytest.fail("the body is checked first"))
+    with pytest.raises(ValueError):
+        jobs.resume_daily(body)

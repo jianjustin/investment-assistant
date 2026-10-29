@@ -1,12 +1,12 @@
 """The ``daily`` task shell (v2.8 §4.7, §5.9): one ``job_reports`` row per execution, the status mapping, the
 ``daily:run`` lock, the node table CLI and the manual-only ``sec_backfill``. SQL tests on the disposable database."""
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
 from _daily_db import (NotifyCfg, clock, daily_config, daily_db, job_reports, notices, shared_saver)   # noqa: F401
 from test_daily_workflow import RUN_ID, effective, fake_sec, flaky, no_fetch_backoff, rows, world   # noqa: F401
-from test_workbench_service import NOW, SESSION, seed_watchlist
+from test_workbench_service import NOW, SESSION, _agent_settings, seed_watchlist
 
 from investment_assistant.tasks import daily, filings
 from investment_assistant.workbench import workflow
@@ -196,3 +196,117 @@ def test_is_running_only_looks_at_the_lock(daily_db):
     assert daily.is_running() is False
     with daily.exclusive():                                       # and a probe leaves nothing behind
         pass
+
+
+# ---------------------------------------------------------------- connection-lost notice (v2.8 §8.8, §13.2)
+
+class Episode:
+    """``agent_connection.first_failure_since_ok`` with one failure at ``failure_at``: true for a run whose base is not
+    after it (the real rule, minus the events table)."""
+
+    def __init__(self):
+        self.failure_at = datetime(2000, 1, 1, tzinfo=UTC)
+        self.calls: list = []
+
+    def __call__(self, *, since=None):
+        self.calls.append(since)
+        return since is None or self.failure_at >= since
+
+
+@pytest.fixture
+def episode(monkeypatch):
+    from investment_assistant.workbench import agent_connection
+
+    fake = Episode()
+    monkeypatch.setattr(agent_connection, 'first_failure_since_ok', fake)
+    return fake
+
+
+def run_with_connection(clock, number, connection):
+    d = world(clk=clock, agent=True)
+    d.agent_settings = _agent_settings(connection=connection)
+    return daily.run(daily_config(), now=NOW, deps=d, run_id=f'daily-2026102300000{number}-aaaaaaa{number}',
+                     checkpointer_factory=shared_saver()[1], sleep=clock.sleep, notify_cfg=NotifyCfg(),
+                     trigger_source='manual')
+
+
+def lost_titles(notices):
+    return [t for t in notices.titles('workbench') if t == '⚠️ ChatGPT 连接已失效']
+
+
+def times(daily_db):
+    return daily_db.execute('SELECT started_at, finished_at FROM job_reports ORDER BY id').fetchall()
+
+
+def test_not_connected_notifies_once_per_episode(daily_db, clock, notices, job_reports, episode):
+    seed_watchlist(daily_db, [('NVDA', ['core'])])
+    first = run_with_connection(clock, 1, 'needs_login')
+    assert first['status'] == 'degraded'                                  # the agent being unavailable never fails the run
+    eff = effective(daily_db, 'daily-20261023000001-aaaaaaa1')
+    assert eff['agent']['status'] == 'skipped' and eff['agent']['reason'] == 'agent_unavailable: not_connected'
+    assert len(lost_titles(notices)) == 1 and episode.calls == [None]    # no earlier daily execution: any failure counts
+    assert first['summary']['connection_notice'] == {'sent': True, 'reason': None}
+    [fields] = [n.fields for t, items in notices.calls for n in items if n.title == '⚠️ ChatGPT 连接已失效']
+    assert [(f.name, f.value) for f in fields] == [('影响', '今天的 Agent 建议与复查已跳过'),
+                                                  ('处理', '到「设置 → Agent 连接」重新连接')]
+    # the next run is still not connected, but the failure was told already: its base is the end of the run that sent it
+    second = run_with_connection(clock, 2, 'needs_login')
+    assert len(lost_titles(notices)) == 1 and episode.calls[-1] == times(daily_db)[0][1]
+    assert second['summary']['connection_notice'] == {'sent': False, 'reason': 'already_reported'}
+    # a new failure after that run (reconnected, then lost again) is a new episode
+    episode.failure_at = datetime.now(UTC) + timedelta(hours=1)
+    third = run_with_connection(clock, 3, 'needs_login')
+    assert len(lost_titles(notices)) == 2 and third['summary']['connection_notice']['sent'] is True
+    assert episode.calls[-1] == times(daily_db)[1][0]                     # run 2 sent nothing: its start is the base
+
+
+def test_connection_notice_is_retried_until_it_was_sent(daily_db, clock, notices, job_reports, episode):
+    seed_watchlist(daily_db, [('NVDA', ['core'])])
+    notices.result = {'sent': False, 'messages': 0, 'reason': 'discord_disabled'}
+    first = run_with_connection(clock, 1, 'needs_login')
+    assert first['summary']['connection_notice'] == {'sent': False, 'reason': 'discord_disabled'}
+    notices.result = {'sent': True, 'messages': 1}
+    episode.failure_at = datetime.now(UTC)                                # the failure is older than run 2's start
+    second = run_with_connection(clock, 2, 'needs_login')
+    assert second['summary']['connection_notice']['sent'] is True         # run 1 sent nothing: its start is the base
+    assert episode.calls[-1] == times(daily_db)[0][0]
+
+
+def test_no_connection_notice_without_not_connected(daily_db, clock, notices, job_reports, episode):
+    seed_watchlist(daily_db, [('NVDA', ['core'])])
+    ok = run_with_connection(clock, 1, 'connected')
+    assert 'connection_notice' not in ok['summary'] and episode.calls == [] and lost_titles(notices) == []
+    off = run_daily(clock)                                                # provider off: disabled, not a lost connection
+    assert 'connection_notice' not in off['summary'] and episode.calls == []
+
+
+def test_connection_notice_failure_never_changes_the_run(daily_db, clock, notices, job_reports, monkeypatch):
+    from investment_assistant.workbench import agent_connection
+    from investment_assistant.workbench.agent.chatgpt import ChatGPTError
+
+    def broken(*, since=None):
+        raise ChatGPTError('migration_028_missing', '迁移 028 未执行。')
+
+    monkeypatch.setattr(agent_connection, 'first_failure_since_ok', broken)
+    seed_watchlist(daily_db, [('NVDA', ['core'])])
+    out = run_with_connection(clock, 1, 'needs_login')
+    assert out['status'] == 'degraded' and out['summary']['connection_notice'] == {
+        'sent': False, 'reason': 'notice_failed: ChatGPTError'}
+    assert lost_titles(notices) == []
+
+
+def test_a_resume_that_does_not_rerun_the_agent_does_not_notify(daily_db, clock, notices, job_reports, episode,
+                                                                monkeypatch):
+    seed_watchlist(daily_db, [('NVDA', ['core'])])
+    flaky('push', monkeypatch, fail_times=2)
+    saver, factory = shared_saver()
+    d = world(clk=clock, agent=True)
+    d.agent_settings = _agent_settings(connection='needs_login')
+    first = daily.run(daily_config(), now=NOW, deps=d, run_id=RUN_ID, checkpointer_factory=factory, sleep=clock.sleep,
+                      notify_cfg=NotifyCfg(), trigger_source='manual')
+    assert first['run_status'] == 'failed' and len(lost_titles(notices)) == 1
+    episode.calls.clear()
+    out = daily.resume(RUN_ID, 'push', now=NOW, deps=d, config=daily_config(), checkpointer_factory=factory,
+                       sleep=clock.sleep, notify_cfg=NotifyCfg())
+    assert out['run_status'] != 'failed' and episode.calls == [] and 'connection_notice' not in out['summary']
+    assert len(lost_titles(notices)) == 1

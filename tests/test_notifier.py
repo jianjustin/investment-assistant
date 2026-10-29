@@ -348,6 +348,19 @@ def test_daily_failed_template():
                                                             ('原因', 'migration_028_missing')]
 
 
+def test_agent_not_connected_template():
+    """v2.8 §13.2, verbatim: the title, red, the two fields; nothing else (no link, no session)."""
+    from investment_assistant.notify import templates
+
+    [notice] = templates.agent_not_connected({'run_id': 'daily-20261030033000-1a2b3c4d'})
+    assert notice.title == '⚠️ ChatGPT 连接已失效' and notice.color == templates.DAILY_FAILED_COLOR == 15548997
+    assert [(f.name, f.value) for f in notice.fields] == [
+        ('影响', '今天的 Agent 建议与复查已跳过'),
+        ('处理', '到「设置 → Agent 连接」重新连接')]
+    assert [(f.name, f.value) for f in templates.agent_not_connected(None)[0].fields] == [
+        (f.name, f.value) for f in notice.fields]
+
+
 def test_daily_failed_goes_through_the_workbench_category(monkeypatch):
     """Sent as ``send_notifications('workbench', …)``: the existing category key, channel and switch (D15)."""
     from investment_assistant.notify import notifier, templates

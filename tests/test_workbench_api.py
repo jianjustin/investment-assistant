@@ -95,6 +95,36 @@ def test_manual_run_while_daily_is_running_is_409(client, monkeypatch):
     assert resp.status_code == 409 and resp.json() == {'error': 'daily_running'}
 
 
+def test_existing_keys_unchanged(client, monkeypatch):
+    """v2.8 only adds keys: the manual run keeps ``run_id`` / ``status``, a scheduled row and a job report keep theirs,
+    and any other job's run answer is still the v2.7 pair (``daily_run_id`` belongs to ``daily`` alone)."""
+    from investment_assistant import db
+    from investment_assistant.services import jobs
+    from investment_assistant.tasks import daily, runner
+
+    monkeypatch.setattr(daily, 'is_running', lambda: False)
+    monkeypatch.setattr(runner, 'submit', lambda kind, fn: f'{kind}-20261029030000-aaaaaaaa')
+    run = client.post('/api/workbench/run').json()
+    assert {'run_id', 'status'} <= set(run) and set(run) - {'run_id', 'status'} == {'daily_run_id'}
+    monkeypatch.setattr(jobs, 'REGISTRY', {'metrics': lambda config, **kw: {}})
+    monkeypatch.setattr(jobs, 'load_config', lambda: object())
+    assert client.post('/api/jobs/metrics/run', json={}).json() == {'run_id': 'metrics-20261029030000-aaaaaaaa',
+                                                                    'status': 'pending'}
+    monkeypatch.setenv('INVESTMENT_ASSISTANT_DATABASE_URL', 'postgres://x')
+    monkeypatch.setattr(jobs, '_with_conn', lambda fn: fn('CONN'))
+    scheduled_row = {'name': 'daily', 'time_local': '11:30', 'weekday_mask': '2-6', 'timezone': 'Asia/Shanghai',
+                     'enabled': True, 'next_run_at': None, 'last_run_at': None}
+    monkeypatch.setattr(db, 'list_scheduled_jobs', lambda conn: [dict(scheduled_row)])
+    listed = client.get('/api/jobs/scheduled').json()
+    assert set(listed) == {'jobs', 'degraded', 'scheduler'} and set(listed['jobs'][0]) == set(scheduled_row) | {'description'}
+    report = {'task': 'daily', 'run_id': 'daily-20261029030000-aaaaaaaa', 'status': 'success', 'started_at': None,
+              'finished_at': None, 'summary': {}, 'created_at': None, 'target_start_date': None,
+              'target_end_date': None, 'trigger_source': 'manual'}
+    monkeypatch.setattr(db, 'list_job_reports', lambda conn, *, task, limit: [dict(report)])
+    reports = client.get('/api/jobs/reports').json()
+    assert set(reports) == {'reports', 'degraded'} and set(reports['reports'][0]) == set(report)
+
+
 def test_task_is_registered_with_scheduler():
     from investment_assistant.tasks import daily, scheduler
     assert scheduler.REGISTRY['daily'] is daily.run
@@ -960,7 +990,11 @@ def test_growth_http_flow(seeded, client, monkeypatch, scripted_model):
     from investment_assistant.tasks import runner
     from test_workbench_retro_cards import stage_deps
 
-    monkeypatch.setenv('ZHIPU_API_KEY', 'sk-test')
+    from investment_assistant.workbench import agent_connection
+
+    # v2.8: the agent is available when the ChatGPT connection is (the API-key variable is gone)
+    monkeypatch.setattr(agent_connection, 'read_for_settings', lambda: {
+        'status': 'connected', 'scopes_ok': True, 'model': 'gpt-test', 'secret': 'test-access-token'})
     made = _grow(client, '/api/workbench/my-knowledge', {
         'request_id': str(uuid.uuid4()), 'title': '回踩不追', 'body': '正文', 'scope': '范围', 'counter_examples': '',
         'concepts': ['plan.stop'], 'tickers': ['AAA']})

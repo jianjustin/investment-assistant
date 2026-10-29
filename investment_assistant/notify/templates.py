@@ -325,6 +325,16 @@ def daily_failed(payload: dict) -> list[Notification]:
                          fields=fields, footer=_footer())]
 
 
+def agent_not_connected(payload: dict | None = None) -> list[Notification]:
+    """「ChatGPT 连接已失效」(v2.8 §13.2): sent once per failure episode by the ``daily`` task when this execution's Agent
+    nodes were skipped for ``not_connected``. The text is fixed; ``payload`` is accepted for symmetry with the other
+    templates and carries nothing the notice shows."""
+    return [Notification(title='⚠️ ChatGPT 连接已失效', color=DAILY_FAILED_COLOR,
+                         fields=[NotifyField('影响', '今天的 Agent 建议与复查已跳过'),
+                                 NotifyField('处理', '到「设置 → Agent 连接」重新连接')],
+                         footer=_footer())]
+
+
 def workbench_closed(ny_date) -> list[Notification]:
     return [Notification(title=f"🛌 纽约休市，未运行 · {ny_date.isoformat()}", color=9807270,
                          fields=[], footer=_footer())]
