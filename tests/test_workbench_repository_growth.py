@@ -21,9 +21,9 @@ def decision(conn, ticker='NVDA', signal_date=DAY, *, decision='accept', action=
         'reason': 'because', 'supersedes_id': supersedes_id, 'plan_id': plan_id}, 'h', decided_at=decided_at)
 
 
-def trade(conn, ticker='NVDA', side='buy', decision_id=None, executed_at=NOW):
+def trade(conn, ticker='NVDA', side='buy', decision_id=None, executed_at=NOW, quantity=10):
     return repository.insert_trade(conn, {
-        'request_id': uuid.uuid4(), 'ticker': ticker, 'side': side, 'quantity': 10, 'price': 100, 'fee': 0,
+        'request_id': uuid.uuid4(), 'ticker': ticker, 'side': side, 'quantity': quantity, 'price': 100, 'fee': 0,
         'executed_at': executed_at, 'decision_id': decision_id, 'note': None}, 'h', recorded_at=NOW)
 
 
@@ -245,9 +245,10 @@ def test_retro_subjects_scope(workbench_db):
     assert tsla['decision']['id'] == e_head['id']
     assert [b['id'] for b in tsla['buys']] == [e_buy['id']]                 # a buy on a superseded decision stays in the unit
     assert set(tsla['decision_ids']) == {e_first['id'], e_head['id']}
+    assert [(d['id'], d['plan_id']) for d in tsla['decisions']] == [(e_first['id'], None), (e_head['id'], None)]   # oldest first
     free = trades[free_buy['id']]
     assert (free['ticker'], free['signal_date'], free['decision'], free['plans']) == ('IBM', None, None, [])
-    assert [b['id'] for b in free['buys']] == [free_buy['id']]
+    assert [b['id'] for b in free['buys']] == [free_buy['id']] and free['decisions'] == []
     assert a_sell['id'] not in {b['id'] for s in subjects for b in s['buys']}
     # ordering: units by (signal_date, ticker), then trades by execution time
     assert [s['kind'] for s in subjects] == ['unit'] * 6 + ['trade'] * 2
@@ -262,6 +263,44 @@ def test_retro_subjects_scope(workbench_db):
     early = repository.retro_subjects(conn, since=date(2026, 10, 1), until=date(2026, 10, 19))
     assert {s['ticker'] for s in early if s['kind'] == 'unit'} == {'F', 'HD', 'AMZN'}    # signals of 10-20 are later
     assert {s['ticker'] for s in early if s['kind'] == 'trade'} == {'LOW'}               # IBM was bought on 10-21
+
+
+def _split_bar(conn, ticker, day, factor):
+    repository.store_bars(conn, ticker, [{'price_date': day, 'open': 10, 'high': 11, 'low': 9, 'close': 10,
+                                          'adj_close': 10, 'volume': 1000, 'split_factor': factor}], now=NOW)
+
+
+def test_open_before_applies_splits_the_way_positions_do(workbench_db):
+    """``_open_before`` runs a share count over the trades before ``since`` with the splits applied: a sale in
+    post-split shares must not look like a short, and a reverse split must not leave a ghost position."""
+    conn = workbench_db
+
+    def at(day):
+        return datetime(2026, 10, day, 15, tzinfo=UTC)
+
+    # forward 2:1 on 10-05, bought 10 before it, sold 15 (post-split shares) after it: 5 shares remain
+    trade(conn, 'SPA', executed_at=at(1))
+    _split_bar(conn, 'SPA', date(2026, 10, 5), 2)
+    trade(conn, 'SPA', side='sell', executed_at=at(6), quantity=15)
+    # forward 2:1, everything sold after it (20 post-split shares): flat
+    trade(conn, 'SPB', executed_at=at(1))
+    _split_bar(conn, 'SPB', date(2026, 10, 5), 2)
+    trade(conn, 'SPB', side='sell', executed_at=at(6), quantity=20)
+    # reverse 1:10 on 10-05 (factor 0.1): 100 shares become 10, the sale of 10 leaves nothing
+    trade(conn, 'SPC', executed_at=at(1), quantity=100)
+    _split_bar(conn, 'SPC', date(2026, 10, 5), '0.1')
+    trade(conn, 'SPC', side='sell', executed_at=at(6), quantity=10)
+    # the split comes after `since`: it does not touch the count before it
+    trade(conn, 'SPD', executed_at=at(1))
+    _split_bar(conn, 'SPD', date(2026, 10, 12), 2)
+
+    open_before = repository._open_before
+    assert open_before(conn, 'SPA', date(2026, 10, 8)) is True          # 20 - 15 = 5 left (a naive 10 - 15 would say flat)
+    assert open_before(conn, 'SPA', date(2026, 10, 3)) is True          # before the split, only the buy counts
+    assert open_before(conn, 'SPB', date(2026, 10, 8)) is False         # 20 - 20 = 0
+    assert open_before(conn, 'SPB', date(2026, 10, 6)) is True          # the sale is on `since`, not before it
+    assert open_before(conn, 'SPC', date(2026, 10, 8)) is False         # 100 x 0.1 - 10 = 0 (naive: 90 left)
+    assert open_before(conn, 'SPD', date(2026, 10, 8)) is True
 
 
 def test_knowledge_drafts_citations_discussions(workbench_db):

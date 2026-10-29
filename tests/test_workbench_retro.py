@@ -198,6 +198,31 @@ def test_reference_plan_fallback():
     assert ref(decision=None, plans=[rule], has_buys=False)['id'] == 'p-rule'
 
 
+def test_reference_plan_for_a_held_unit_follows_the_buys_decision():
+    """Spec D3 as ruled in the final review: with live buys the plan is the one the buys' decision executed (the
+    latest buy whose decision has a plan_id), else the latest chain decision that carries a plan_id; never a fallback."""
+    rule, own = plan('p-rule'), plan('p-own', kind='own')
+    plans = [rule, own, plan('p-a1', kind='agent', plan_version='agent-1')]
+    chain = [{'id': 'd1', 'plan_id': 'p-rule'}, {'id': 'd2', 'plan_id': None}, {'id': 'd3', 'plan_id': 'p-own'},
+             {'id': 'd4', 'plan_id': None}]
+    head = chain[-1]                                                    # a later reject / downgrade has no plan_id
+    on = lambda id_, decision_id, day: {**buy(id_, day), 'decision_id': decision_id}      # noqa: E731
+    ref = retro.reference_plan
+    # (1) accept + buy, later a reject: the buy's decision wins over the head
+    assert ref(decision=head, plans=plans, has_buys=True, buys=[on('b1', 'd1', D1)], chain=chain)['id'] == 'p-rule'
+    # several buys: the latest buy whose decision has a plan_id (a later buy on a plan-less decision is skipped)
+    buys = [on('b1', 'd1', D1), on('b2', 'd3', D2), on('b3', 'd4', D3)]
+    assert ref(decision=head, plans=plans, has_buys=True, buys=buys, chain=chain)['id'] == 'p-own'
+    # (2) the buys sit on plan-less decisions: the most recent chain decision that carries a plan_id
+    assert ref(decision=head, plans=plans, has_buys=True, buys=[on('b1', 'd2', D1)], chain=chain)['id'] == 'p-own'
+    # a plan_id that is not among the unit's plans is passed over, not invented
+    assert ref(decision=head, plans=[rule], has_buys=True, buys=[on('b1', 'd3', D1)], chain=chain)['id'] == 'p-rule'
+    # nothing on the whole chain: no card, and the no-position fallbacks (rule plan, agent-1) do not apply
+    bare = [{'id': 'd1', 'plan_id': None}]
+    assert ref(decision=bare[0], plans=plans, has_buys=True, buys=[on('b1', 'd1', D1)], chain=bare) is None
+    assert ref(decision=None, plans=plans, has_buys=True, buys=[buy()], chain=[]) is None
+
+
 def test_no_plan_returns_none():
     assert retro.reference_plan(decision={'plan_id': None, 'agent_plan_id': None}, plans=[], has_buys=False) is None
     assert end(ref_plan=None, invalidating_review=REVIEW) is None

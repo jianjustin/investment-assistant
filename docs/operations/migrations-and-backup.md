@@ -170,7 +170,7 @@ psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=
 2. **全库备份**：`pg_dump -Fc "$INVESTMENT_ASSISTANT_DATABASE_URL" -f .local/us-workbench/backups/investment_assistant-before-027-<时间戳>.dump`，`shasum -a 256` 记下，`pg_restore --list` 确认可读。
 3. **执行**：`psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=1 -f migrations/027_growth_loop.sql`；首次执行时 `DROP CONSTRAINT IF EXISTS` 找不到具名约束的 `NOTICE` 属预期；`schema_migrations` 仍只到 `017`。
 4. **验证**：十一张新表各 0 行；`agent_runs_mode_check` 含 `retro`、`discuss`，`agent_runs_mode_plan_check`、`agent_runs_interpret_no_pass_check` 不变；`agent_tool_calls_phase_check` 含 `retro`、`discuss`；`stage_runs_stage_check` 为 9 个阶段；`public` 表数 +11；旧表行数与预检相同。
-5. **重启服务**（[本机服务](local-service.md)）：新进程起来后手动跑一次批处理，`stage_runs` 该 `run_id` 有 9 行；`python -m investment_assistant.workbench.retro_cards check --since <上线前第 5 个交易日>` 与 `python -m investment_assistant.workbench.my_knowledge check-cutoff --since <上线日>` 通过。
+5. **重启服务**（[本机服务](local-service.md)）：新进程起来后手动跑一次批处理，`stage_runs` 该 `run_id` 有 9 行；`python -m investment_assistant.workbench.retro_cards check --since <首次批处理交易日 S 之前的第 4 个交易日>`（即 S−4，`retro.window_start(S)`：首次批处理只检测 S−4 到 S，起点再早会把窗口外的旧结束事件当成「缺卡」；要核对更早的事件，先 `retro_cards detect --since <日期>` 补卡再核对） 与 `python -m investment_assistant.workbench.my_knowledge check-cutoff --since <上线日>` 通过。
 
 回滚：`pg_restore --clean -d "$INVESTMENT_ASSISTANT_DATABASE_URL" <上面的 dump>`，再重启到 v2.6 代码。执行记录写进 `docs/roadmap/v2.7-acceptance.md` 的「迁移 027 执行记录」一节。
 

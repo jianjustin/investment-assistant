@@ -60,12 +60,13 @@ def make_plan(db, ticker: str, signal_date: date, *, status='ok', reasons=(), va
         'request_id': None, 'request_hash': None})
 
 
-def make_decision(db, ticker, signal_date, plan_id, *, decision='accept', decided_at=None, action='buy'):
+def make_decision(db, ticker, signal_date, plan_id, *, decision='accept', decided_at=None, action='buy',
+                  supersedes_id=None):
     final = {'accept': action, 'reject': 'ignore', 'downgrade': 'watch'}[decision]
     return repository.insert_decision(db, {
         'request_id': uuid.uuid4(), 'ticker': ticker, 'signal_date': signal_date, 'candidate_ids': [uuid.uuid4()],
         'brief_id': None, 'proposed_action': action, 'final_action': final, 'decision': decision,
-        'reason': '合成样例决定', 'supersedes_id': None, 'plan_id': plan_id},
+        'reason': '合成样例决定', 'supersedes_id': supersedes_id, 'plan_id': plan_id},
         'h', decided_at=decided_at or evening(signal_date))
 
 
@@ -254,17 +255,51 @@ def test_unplanned_trade_card(db, scripted_model):
     assert run['signal_date'] == D(-2)                                  # the buy's New York day
 
 
-def test_no_plan_counted_and_no_card(db, scripted_model):
-    """A held unit whose head decision has no plan_id gets no card (spec §4.1); the stage counts it."""
+def test_held_unit_whose_latest_decision_is_a_reject_keeps_the_accepted_plan(db, scripted_model):
+    """Accept + buy, then a reject (no plan_id) on the same unit, then a full close: the card exists and its reference
+    is the plan the buy's decision executed (spec D3)."""
     signal = D(-3)
-    plan = make_plan(db, 'ZZZN', signal)
-    decision = make_decision(db, 'ZZZN', signal, None)                  # accepted without a plan
-    make_trade(db, 'ZZZN', 'buy', 100, at(D(-2)), decision['id'])
-    make_trade(db, 'ZZZN', 'sell', 101, at(D(0)), decision['id'])
-    put_bars(db, 'ZZZN', flat(D(-8), D(0)))
+    plan = make_plan(db, 'ZZZR', signal)
+    accept = make_decision(db, 'ZZZR', signal, plan['id'])
+    make_decision(db, 'ZZZR', signal, None, decision='reject', decided_at=evening(D(-1)), supersedes_id=accept['id'])
+    make_trade(db, 'ZZZR', 'buy', 103, at(D(-2)), accept['id'])
+    make_trade(db, 'ZZZR', 'sell', 106, at(D(0)), accept['id'])
+    path = flat(D(-8), D(0))
+    path[D(-2)], path[D(0)] = (101.0, 104.0, 99.0, 103.0), (103.0, 107.0, 102.0, 106.0)
+    put_bars(db, 'ZZZR', path)
+    out, summary, acc = run_stage(db, stage_deps(scripted_model, [draft_reply()]))
+    card = only_card(db)
+    assert (card['end_kind'], card['end_session']) == ('position_closed', D(0))
+    facts = card['facts']
+    assert [(p['key'], p['roles']) for p in facts['plans']] == [(f"plan:{plan['id']}", ['reference', 'executed'])]
+    assert facts['decision']['text'] == '否决' and facts['decision']['plan_id'] is None
+    assert acc.detail['events'] == 1 and acc.detail['no_plan'] == 0
+
+
+def _held_without_any_plan(db, ticker='ZZZN'):
+    signal = D(-3)
+    make_plan(db, ticker, signal)
+    decision = make_decision(db, ticker, signal, None)                  # accepted without a plan, never one on the chain
+    make_trade(db, ticker, 'buy', 100, at(D(-2)), decision['id'])
+    make_trade(db, ticker, 'sell', 101, at(D(0)), decision['id'])
+    put_bars(db, ticker, flat(D(-8), D(0)))
+
+
+def test_no_plan_is_counted_only_where_the_close_falls_in_the_window(db, scripted_model):
+    """A held unit whose chain never had a plan_id gets no card; the stage counts it once the close is inside the window,
+    not while the position is open or before the sale, and not after the window moved on."""
+    _held_without_any_plan(db)
+    open_unit = make_decision(db, 'ZZZO', D(-3), None)
+    make_trade(db, 'ZZZO', 'buy', 100, at(D(-2)), open_unit['id'])      # still held: no end, so nothing to count
+    put_bars(db, 'ZZZO', flat(D(-8), D(0)))
+    before = D(-1)                                                      # the sale (D(0)) has not happened yet
+    out, summary, acc = run_stage(db, stage_deps(scripted_model, []), session=before, now=evening(before))
+    assert cards(db) == [] and acc.detail['no_plan'] == 0
     out, summary, acc = run_stage(db, stage_deps(scripted_model, []))
-    assert cards(db) == [] and acc.detail['no_plan'] == 1 and acc.detail['events'] == 0
-    assert plan['id'] is not None
+    assert cards(db) == [] and acc.detail['no_plan'] == 1 and acc.detail['events'] == 0     # ZZZN, not ZZZO
+    later = D(6)                                                        # the close left the 5-session window
+    out, summary, acc = run_stage(db, stage_deps(scripted_model, []), session=later, now=evening(later))
+    assert cards(db) == [] and acc.detail['no_plan'] == 0
 
 
 def test_detect_since_backfills(db, scripted_model):
@@ -408,6 +443,24 @@ def test_draft_cap_and_gates(db, scripted_model):
     assert acc.input_count == 6 and [(s['reason'], s['count']) for s in acc.skips] == [('draft_cap', 1)]
     assert acc.detail['drafts'] == {'ok': 5, 'rejected': 0, 'error': 0, 'skipped': 1}
     assert summary['retro']['to_review'] == 5
+
+
+def test_review_stage_quota_stops_the_retro_drafts_without_spending_an_attempt(db, scripted_model):
+    _seed_cards(db, scripted_model, 2)
+    db.execute('DELETE FROM knowledge_drafts')
+    db.execute('DELETE FROM review_card_drafts')
+    db.commit()
+    summary = {'errors': [], 'agent': {'quota_exhausted': False}, 'review': {'quota_exhausted': True}}
+    out, summary, acc = run_stage(db, stage_deps(scripted_model, []), summary=summary)     # an empty queue: no model call
+    assert [(s['reason'], s['count']) for s in acc.skips] == [('quota_exhausted', 2)]
+    assert acc.detail['drafts'] == {'ok': 0, 'rejected': 0, 'error': 0, 'skipped': 2}
+    assert acc.failures == [] and db.execute('SELECT count(*) FROM agent_runs').fetchone()[0] == 0
+    assert sorted(db.execute('SELECT status, reason FROM review_card_drafts').fetchall()) \
+        == [('skipped', 'quota_exhausted')] * 2
+    assert [card_state['failed'] for card_state in
+            (retro_cards.card_state(db, c['id']) for c in cards(db))] == [0, 0]       # nothing counts towards draft_failed
+    out, summary, acc = run_stage(db, stage_deps(scripted_model, [draft_reply(), draft_reply()]))
+    assert acc.detail['drafts']['ok'] == 2                                  # the next day's run drafts them normally
 
 
 def test_max_attempts_is_reported_once_and_draft_failed_is_not_needing(db, scripted_model):
@@ -838,6 +891,44 @@ def test_retro_check_cli(db, scripted_model, capsys):
         retro_cards.main(['check', '--since', 'yesterday'])
     assert raised.value.code == 2
     capsys.readouterr()
+
+
+def test_retro_check_compares_facts_as_of_the_freeze(db, scripted_model, capsys):
+    """A shadow that moves on after the close is not a changed fact; a trade voided after the freeze is."""
+    scenario(db, 'ZZZA')
+    assert retro_cards.detect(SESSION, now=NOW)
+    db.commit()
+    since, until = D(-4).isoformat(), D(3).isoformat()
+    later = flat(D(1), D(3))
+    later[D(2)] = (110.0, 113.0, 109.0, 112.0)                          # the rule plan's shadow reaches T1 (112)
+    put_bars(db, 'ZZZA', later, fetched=at(D(1)))
+    db.commit()
+    assert retro_cards._fresh_tracks(service.unit_track_row(
+        db, 'ZZZA', only_card(db)['signal_date'], session=D(3), now=NOW + timedelta(days=30)))['rule'] \
+        != only_card(db)['facts']['tracks']['rule']                     # the premise: today's row really drifted
+    code, out = _run(capsys, 'check', '--since', since, '--until', until)
+    assert code == 0 and '事实已变化 0' in out and '事实已变化：' not in out
+    sell = db.execute("SELECT id FROM trades WHERE ticker = 'ZZZA' AND side = 'sell'").fetchone()[0]
+    repository.mark_trade_voided(db, sell, 'typo', voided_at=NOW)
+    db.commit()
+    code, out = _run(capsys, 'check', '--since', since, '--until', until)
+    assert code == 0 and '事实已变化 1' in out and '事实已变化：tracks' in out
+
+
+def test_retro_check_fails_for_a_closed_unit_without_a_reference_plan(db, scripted_model, capsys):
+    scenario(db, 'ZZZA')
+    _held_without_any_plan(db)
+    since = D(-4).isoformat()
+    assert retro_cards.detect(SESSION, now=NOW)
+    db.commit()
+    code, out = _run(capsys, 'check', '--since', since, '--until', SESSION.isoformat())
+    lines = out.splitlines()
+    assert code == 1 and sum('无参考计划' in line for line in lines) == 2         # its own line + the summary count
+    own = next(line for line in lines if line.startswith('无参考计划'))
+    assert 'ZZZN' in own and str(D(-3)) in own and str(D(0)) in own
+    assert '缺卡 0' in lines[-1] and '无参考计划 1' in lines[-1] and '→ 不通过' in lines[-1]
+    assert out.count('齐全') == 1                                       # ZZZA's card is still fine
+    assert _run(capsys, 'check', '--since', D(1).isoformat(), '--until', SESSION.isoformat())[0] == 2   # since > until
 
 
 def test_retro_check_database_unavailable_exits_two(monkeypatch, capsys):

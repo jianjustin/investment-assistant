@@ -111,9 +111,10 @@ def create(payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:
 
 
 def _new_version(conn, knowledge_id: int, fields: dict[str, Any], *, request_id: uuid.UUID, digest: str,
-                 base_version: int, draft_id: int | None) -> dict[str, Any]:
+                 base_version: int, draft_id: int | None, draft_base: int | None = None) -> dict[str, Any]:
     """Version n+1 of an item under its advisory lock: 404 unknown, 409 ``knowledge_archived``, 409
-    ``knowledge_stale: <sentence>`` when ``base_version`` is not the highest version."""
+    ``knowledge_stale: <sentence>`` when ``base_version`` is not the highest version. A discussion draft passes the
+    version it rewrote as ``draft_base``: refreshing cannot help it, so its sentence says what can."""
     repository.lock(conn, f'knowledge:{knowledge_id}')
     versions, statuses = repository.knowledge_rows(conn, cutoff=None, knowledge_id=knowledge_id)
     if not versions:
@@ -122,6 +123,9 @@ def _new_version(conn, knowledge_id: int, fields: dict[str, Any], *, request_id:
     if knowledge_items.status_at(statuses, None) == 'archived':
         raise ledger.Conflict('knowledge_archived')
     if base_version != top['version']:
+        if draft_base is not None:
+            raise ledger.Conflict(f"knowledge_stale: 草稿基于第 {draft_base} 版，现在是第 {top['version']} 版："
+                                  f"只能不采纳，或在讨论里基于第 {top['version']} 版重新改写")
         raise ledger.Conflict(f"knowledge_stale: 这条知识已更新到第 {top['version']} 版，请刷新后再改")
     version_id = repository.insert_knowledge_version(conn, {
         'knowledge_id': knowledge_id, 'version': top['version'] + 1, 'supersedes_id': top['id'],
@@ -356,6 +360,26 @@ def learning_perf(conn, *, session: date, now: datetime) -> dict[int, dict[str, 
 
 # ---------------------------------------------------------------- what plans cite (today / chain views)
 
+def _ref_entries(conn, rows: list[dict[str, Any]]) -> dict[Any, list[dict[str, Any]]]:
+    """``group key -> [{ref, title, fields, current_version}]`` for citation rows already grouped by the caller:
+    ``rows`` carry a ``group`` key; each group's cited versions get the title at that version and the item's newest."""
+    versions, _ = repository.knowledge_rows(conn, cutoff=None)
+    top: dict[int, int] = {}
+    title: dict[tuple[int, int], str] = {}
+    for v in versions:
+        top[v['knowledge_id']] = max(top.get(v['knowledge_id'], 0), v['version'])
+        title[(v['knowledge_id'], v['version'])] = v['title']
+    grouped: dict[Any, dict[tuple[int, int], list[str]]] = {}
+    for row in rows:
+        fields = grouped.setdefault(row['group'], {}).setdefault((row['knowledge_id'], row['version']), [])
+        if row['field'] not in fields:
+            fields.append(row['field'])
+    return {group: [{'ref': knowledge_items.ref(kid, version), 'title': title.get((kid, version), ''),
+                     'fields': [f for f in CITED_FIELDS if f in fields], 'current_version': top.get(kid, version)}
+                    for (kid, version), fields in sorted(cited.items())]
+            for group, cited in grouped.items()}
+
+
 def refs_for_plans(conn, plan_ids) -> dict[str, list[dict[str, Any]]]:
     """``plan id -> [{ref, title, fields, current_version}]``: the knowledge versions each plan cited, with the
     title at the cited version and the item's newest version (spec §6.2). Plans without citations are absent;
@@ -366,21 +390,15 @@ def refs_for_plans(conn, plan_ids) -> dict[str, list[dict[str, Any]]]:
     rows = repository.citations_for_plans(conn, ids)
     if not rows:
         return {}
-    versions, _ = repository.knowledge_rows(conn, cutoff=None)
-    top: dict[int, int] = {}
-    title: dict[tuple[int, int], str] = {}
-    for v in versions:
-        top[v['knowledge_id']] = max(top.get(v['knowledge_id'], 0), v['version'])
-        title[(v['knowledge_id'], v['version'])] = v['title']
-    grouped: dict[str, dict[tuple[int, int], list[str]]] = {}
-    for row in rows:
-        fields = grouped.setdefault(str(row['plan_id']), {}).setdefault((row['knowledge_id'], row['version']), [])
-        if row['field'] not in fields:
-            fields.append(row['field'])
-    return {plan_id: [{'ref': knowledge_items.ref(kid, version), 'title': title.get((kid, version), ''),
-                       'fields': [f for f in CITED_FIELDS if f in fields], 'current_version': top.get(kid, version)}
-                      for (kid, version), fields in sorted(cited.items())]
-            for plan_id, cited in grouped.items()}
+    return _ref_entries(conn, [{**row, 'group': str(row['plan_id'])} for row in rows])
+
+
+def refs_for_review(conn, review_id: int) -> list[dict[str, Any]]:
+    """The same entries for the knowledge one review row cited (spec §6.2); empty without migration 027."""
+    if not repository.growth_ready(conn):
+        return []
+    rows = repository.citations_for_review(conn, review_id)
+    return _ref_entries(conn, [{**row, 'group': review_id} for row in rows]).get(review_id, []) if rows else []
 
 
 # ---------------------------------------------------------------- lesson drafts
@@ -395,6 +413,9 @@ def _draft_views(conn, drafts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     open_ids = {d['id'] for d in repository.knowledge_drafts(conn, open_only=True)}
     versions, _ = repository.knowledge_rows(conn, cutoff=None)
     approved = {v['draft_id']: v for v in versions if v['draft_id'] is not None}
+    newest: dict[int, int] = {}
+    for v in versions:
+        newest[v['knowledge_id']] = max(newest.get(v['knowledge_id'], 0), v['version'])
     card_of = {row[0]: row[1] for row in conn.execute(
         'SELECT id, card_id FROM review_card_drafts WHERE id = ANY(%s)',
         ([d['card_draft_id'] for d in drafts if d['card_draft_id']],)).fetchall()}
@@ -409,6 +430,7 @@ def _draft_views(conn, drafts: list[dict[str, Any]]) -> list[dict[str, Any]]:
             'id': d['id'], 'origin': d['origin'], 'card_id': card_of.get(d['card_draft_id']),
             'discussion_id': discussion_of.get(d['discussion_turn_id']), 'discussion_turn_id': d['discussion_turn_id'],
             'target_knowledge_id': d['target_knowledge_id'], 'target_version': d['target_version'],
+            'target_current_version': newest.get(d['target_knowledge_id']),
             'title': d['title'], 'body': d['body'], 'scope': d['scope'], 'counter_examples': d['counter_examples'],
             'concepts': list(d['concepts']), 'tickers': list(d['tickers']), 'refs': d['refs'],
             'created_at': d['created_at'],
@@ -438,7 +460,8 @@ def draft_verdict(draft_id: int, payload: dict[str, Any], *, now: datetime) -> d
     """Approve (fields editable) or dismiss a discussion lesson draft (spec §5.4, §12). ``payload = {request_id,
     action: 'approve' | 'dismiss', <edited fields>, base_version?}``. Approving a draft without a target creates a
     new item (origin ``discussion``); with a target it becomes the target's next version, ``base_version``
-    defaulting to the draft's ``target_version`` (409 ``knowledge_stale`` / ``knowledge_archived``). A card's draft
+    defaulting to the draft's ``target_version`` (409 ``knowledge_archived``, or 409 ``knowledge_stale: 草稿基于第 k 版，
+    现在是第 n 版：只能不采纳，或在讨论里基于第 n 版重新改写`` once the target has a newer version). A card's draft
     is 409 ``review_on_card``; a draft already decided by another request is 409 ``draft_decided`` (not in spec §12's
     code list; the page shows its sentence); the same request again replays (``replayed``), the same ``request_id``
     with other content is 409 ``request_id_conflict``."""
@@ -480,7 +503,7 @@ def draft_verdict(draft_id: int, payload: dict[str, Any], *, now: datetime) -> d
         if draft['target_knowledge_id'] is not None:
             base = _base_version(payload, draft['target_version'])
             row = _new_version(conn, draft['target_knowledge_id'], fields, request_id=request_id, digest=digest,
-                               base_version=base, draft_id=draft_id)
+                               base_version=base, draft_id=draft_id, draft_base=draft['target_version'])
             knowledge_id = draft['target_knowledge_id']
         else:
             discussion_id = conn.execute('SELECT discussion_id FROM discussion_turns WHERE id = %s',

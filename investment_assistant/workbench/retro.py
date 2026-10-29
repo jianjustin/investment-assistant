@@ -93,18 +93,32 @@ def _id(value: Any) -> str | None:
 
 # ---- reference plan, keys, exit basis -----------------------------------------------------------------
 
-def reference_plan(*, decision: dict[str, Any] | None, plans: list[dict[str, Any]],
-                   has_buys: bool) -> dict[str, Any] | None:
-    """D3. With a position: only the plan the decision executed. Without one: that plan, else the Agent
-    version the user saw when deciding, else the rule plan ``plan-1``, else the ``agent-1`` plan."""
+def reference_plan(*, decision: dict[str, Any] | None, plans: list[dict[str, Any]], has_buys: bool,
+                   buys: list[dict[str, Any]] | tuple = (),
+                   chain: list[dict[str, Any]] | tuple = ()) -> dict[str, Any] | None:
+    """D3. With a position: the plan the decision executed (``signal_decisions.plan_id`` only, never a fallback).
+    A buy can sit on any decision of the unit and only an accept carries a ``plan_id``, so the executed plan is
+    (1) the plan of the decision the live ``buys`` are attached to (the latest buy whose decision has a plan_id
+    that is among ``plans``), else (2) the most recent decision of the ``chain`` (rows ``{id, plan_id}`` oldest
+    first; the head ``decision`` when no chain is given) that carries one. Without a position: that plan, else
+    the Agent version the user saw when deciding, else the rule plan ``plan-1``, else the ``agent-1`` plan."""
     def find(plan_id: Any) -> dict[str, Any] | None:
         if plan_id is None:
             return None
         return next((p for p in plans if str(p['id']) == str(plan_id)), None)
 
-    executed = find(decision.get('plan_id')) if decision else None
     if has_buys:
-        return executed
+        plan_of = {str(d['id']): d.get('plan_id') for d in chain}
+        for buy in sorted(buys, key=lambda b: (b['executed_at'], str(b['id'])), reverse=True):
+            found = find(plan_of.get(str(buy.get('decision_id'))))
+            if found is not None:
+                return found
+        for row in reversed(list(chain) or ([decision] if decision else [])):
+            found = find(row.get('plan_id'))
+            if found is not None:
+                return found
+        return None
+    executed = find(decision.get('plan_id')) if decision else None
     if executed is not None:
         return executed
     seen = find(decision.get('agent_plan_id')) if decision else None
@@ -146,10 +160,23 @@ def exit_basis(*, closing_sell: dict[str, Any], stop_days: list[date], target_da
 
 # ---- end event ----------------------------------------------------------------------------------------
 
-def _closed_event(*, subject, ref_plan, buys, segments, open_lots, stop_days, target_days, bars):
+def _last_segment(segments, open_lots):
+    """The segment that flattened the position, or None while a lot is still held / nothing was sold."""
     if open_lots or not segments:
+        return None
+    return max(segments, key=lambda seg: (seg['closed_at'], str(seg['sell_trade_id'])))
+
+
+def close_session(*, segments: list[dict[str, Any]], open_lots: list[dict[str, Any]]) -> date | None:
+    """The New York day the last lot was sold (the end session of a closed position), or None while open."""
+    last = _last_segment(segments, open_lots)
+    return None if last is None else _ny_day(last['closed_at'])
+
+
+def _closed_event(*, subject, ref_plan, buys, segments, open_lots, stop_days, target_days, bars):
+    last = _last_segment(segments, open_lots)
+    if last is None:
         return None                                   # a lot is still held, or nothing has been sold yet
-    last = max(segments, key=lambda seg: (seg['closed_at'], str(seg['sell_trade_id'])))
     end_session = _ny_day(last['closed_at'])
     detail: dict[str, Any] = {'closing_sell_id': str(last['sell_trade_id'])}
     if subject.get('kind') == 'unit':

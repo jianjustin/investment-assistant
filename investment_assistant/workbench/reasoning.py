@@ -32,6 +32,7 @@ NO_TIMELINE_NOTE = '迁移 026 未执行，没有版本与复查记录'
 NO_CALLS_NOTE = '没有记录到工具调用'
 RESPONSE_EMPTY_TITLE = '回应：本版之后还没有复查'
 RESPONSE_TITLE = '回应：本版之后的复查'
+DRAFT_DROPPED_NOTE = '经验草稿没有通过校验，已丢弃：{reason}'
 IMPLICATED_NOTE = '未通过的检查在这几项之中：{items}；校验器遇到第一处失败就停，不记录是哪一项'
 
 TOOL_TEXT: dict[str, str] = {
@@ -224,12 +225,14 @@ def _proposal(run: dict, *, revise: bool, legacy: bool) -> dict:
     return step
 
 
-def _check(run: dict, key: str) -> dict:
+def _check(run: dict, key: str, *, draft_dropped: str | None = None) -> dict:
+    """``draft_dropped``: a discussion answer that passed but lost its knowledge draft (the reason is stored on the
+    reply); that run is ``ok``, yet its ``draft`` check did not pass, so it is shown as such."""
     status, reason = run['status'], run.get('reason')
     items, implicated = [], []
     for item_id, text, reasons in CHECKS[key]:
         if status in ('ok', 'pass'):
-            result = 'pass'
+            result = 'implicated' if draft_dropped and item_id == 'draft' else 'pass'
         elif status == 'rejected':
             result = 'implicated' if reason in reasons else 'not_recorded'
         else:
@@ -237,8 +240,11 @@ def _check(run: dict, key: str) -> dict:
         if result == 'implicated':
             implicated.append(text)
         items.append({'id': item_id, 'text': text, 'result': result})
+    note = IMPLICATED_NOTE.format(items='、'.join(implicated)) if implicated else None
+    if draft_dropped:
+        note = DRAFT_DROPPED_NOTE.format(reason=_reason_text(draft_dropped))
     return {'kind': 'check', 'title': '校验结果', 'concept': 'agent.reject_reasons', 'items': items,
-            'note': IMPLICATED_NOTE.format(items='、'.join(implicated)) if implicated else None,
+            'note': note,
             'reason': reason, 'reason_text': _reason_text(reason)}
 
 
@@ -366,7 +372,7 @@ def _answer(run: dict, reply: dict | None) -> dict:
                                 if isinstance(draft, dict) else None)}
     dropped = ((reply or {}).get('detail') or {}).get('draft_dropped')
     if dropped:
-        step['note'] = f"经验草稿没有通过校验，已丢弃：{_reason_text(dropped)}"
+        step['note'] = DRAFT_DROPPED_NOTE.format(reason=_reason_text(dropped))
     return step
 
 
@@ -398,7 +404,7 @@ def _check_key(run: dict, legacy: bool) -> str:
 def build(*, run: dict, calls: list[dict], version: dict | None, trigger_review: dict | None,
           later_reviews: list[dict], plan_state: dict | None, timeline_ready: bool,
           card: dict | None = None, discussion: dict | None = None, turn: dict | None = None,
-          reply: dict | None = None) -> dict:
+          reply: dict | None = None, knowledge_refs: list[dict] | None = None) -> dict:
     """The §8.1 payload of one run. Pure; see the module docstring for what each input is. ``card`` (the review
     card of a retro run) and ``discussion`` / ``turn`` / ``reply`` (the discussion, the user's turn and its answer
     of a discuss run) are optional: a step shows what was stored and says so when the row is missing."""
@@ -418,7 +424,8 @@ def build(*, run: dict, calls: list[dict], version: dict | None, trigger_review:
         steps.append(_question(turn, discussion))
         steps.append(_read(calls, 'discuss', '回答前读了什么', NO_CALLS_NOTE))
         steps.append(_answer(run, reply))
-        steps.append(_check(run, _check_key(run, legacy)))
+        steps.append(_check(run, _check_key(run, legacy),
+                            draft_dropped=((reply or {}).get('detail') or {}).get('draft_dropped')))
     elif mode == 'review':
         steps.append(_read(calls, 'review', '复查员读了什么', NO_CALLS_NOTE))
         steps.append(_verdict(run))
@@ -452,7 +459,8 @@ def build(*, run: dict, calls: list[dict], version: dict | None, trigger_review:
         'run': _run_view(run), 'legacy': legacy,
         'version': ({'plan_id': version['plan_id'], 'version_no': version['version_no'], 'origin': version['origin']}
                     if version is not None and timeline_ready else None),
-        'review': review, 'steps': steps, 'notes': notes})
+        'review': review, 'steps': steps, 'notes': notes,
+        **({} if knowledge_refs is None else {'knowledge_refs': knowledge_refs})})
 
 
 # ---------------------------------------------------------------- use case
@@ -495,7 +503,20 @@ def _inputs(conn, key: str) -> dict:
         except Exception as exc:    # noqa: BLE001 - side panel: the reading view must still load, with the reason
             plan_state['consistency_error'] = (str(exc).splitlines() or [''])[0][:200] or type(exc).__name__
     return {'run': run, 'calls': calls, 'version': version, 'trigger_review': trigger_review,
-            'later_reviews': later, 'plan_state': plan_state, 'timeline_ready': ready}
+            'later_reviews': later, 'plan_state': plan_state, 'timeline_ready': ready,
+            'knowledge_refs': _knowledge_refs(conn, run, trigger_review)}
+
+
+def _knowledge_refs(conn, run: dict, trigger_review: dict | None) -> list[dict] | None:
+    """The knowledge the run's plan (propose / revise) or review row cited, in the plan card's shape
+    (``[{ref, title, fields, current_version}]``, spec §6.2); None for the modes that cite no plan knowledge."""
+    from investment_assistant.workbench import my_knowledge
+
+    if run['mode'] in ('propose', 'revise') and run.get('plan_id'):
+        return my_knowledge.refs_for_plans(conn, [run['plan_id']]).get(str(run['plan_id']), [])
+    if run['mode'] == 'review':
+        return my_knowledge.refs_for_review(conn, trigger_review['id']) if trigger_review else []
+    return None
 
 
 def view_in(conn, run_id: str) -> dict:

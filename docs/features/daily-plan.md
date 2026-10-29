@@ -93,7 +93,7 @@
 - **阶段证据**：`input_count` = 本次需要起草的卡数（新卡加之前没起草成功、且失败不足 3 次的），`output_count` = 本次成功的草稿数，`outputs` 有 `card_ids` / `draft_ids` / `agent_run_ids`，`skips` 逐卡记原因（`stage_budget`、`quota_exhausted`、`token_budget`、`max_attempts`、`draft_cap`、`agent_unavailable: <原因>`），草稿作废进降级 `draft_rejected`、出错进 `failures`，`detail` = `{events, new_cards, by_end_kind, no_plan, drafts: {ok, rejected, error, skipped}, to_review, tokens}`；运行报告 `summary.retro = {new_cards, drafts, to_review}`。Agent 不可用时照常检测与建卡，起草全部跳过，阶段 `degraded`（`agent_unavailable`）；没有需要起草的卡时阶段 `success`。
 - **迁移 027 未执行**：本阶段不运行，本次按 `stages-2` 记 8 行（没有 `retro` 行），运行报告 `errors` 有一条 `growth: migration_027_missing`，其余阶段照常。
 - **每日推送**：概览字段末尾多一行「复盘卡 新增 a · 待审定 b」（a、b 都为 0 时不加），不新增消息。
-- **验证一次**：手动运行批处理后 `stage_runs` 该 `run_id` 有 9 行，`retro` 行计数与 `review_cards` / `review_card_drafts` 一致；`python -m investment_assistant.workbench.retro_cards check --since <上线前第 5 个交易日>` 通过；「运行一览」第 8 行读作「新结束 n 笔（平仓 a · 止损 b …），新建复盘卡 n 张；起草 x/y 张；待审定 z 张」。
+- **验证一次**：手动运行批处理后 `stage_runs` 该 `run_id` 有 9 行，`retro` 行计数与 `review_cards` / `review_card_drafts` 一致；`python -m investment_assistant.workbench.retro_cards check --since <首次批处理交易日 S 之前的第 4 个交易日（= S−4，检测窗口起点）>` 通过；「运行一览」第 8 行读作「新结束 n 笔（平仓 a · 止损 b …），新建复盘卡 n 张；起草 x/y 张；待审定 z 张」。
 
 ## 「今日」：Agent 优先
 
@@ -109,7 +109,7 @@
 - **提交决定**：迁移 026 就绪时带上页面显示的 `agent_plan_id` 与 `review_view`（当前布局；本次会话里该单元的规则基线是否展开过，自动展开与旧布局都算展开；Agent 版本号），字段含义见下文[决定记录看到的 Agent 版本](#决定记录看到的-agent-版本)；迁移 026 未执行（`today.timeline_ready = false`）时两项都不带。返回 409 `agent_plan_stale` 时只显示冒号后的文案「Agent 计划已更新到第 n 版，请刷新后再决定」并给「刷新」：刷新后保留草稿理由，换一个新的 `request_id`（页面换成新版后请求内容也变了）。
 - **布局开关**：页头「布局：Agent 优先 / 规则优先（旧）」，存在浏览器本地（`localStorage` 键 `workbench.today.layout`，值 `agent_first` / `legacy`）；读写失败（隐私模式、禁用存储）一律按默认「Agent 优先」，切换只在本页生效。旧布局 = v2.4 的顺序：规则计划块在前、Agent 块在后，都不折叠，结构化字段照样显示在 Agent 块里。
 - **运行一览**：「今日」最顶部（筛选、市场环境之前）一段，默认展开，自己取数（`GET /api/workbench/run-overview`），不依赖下面的批处理视图。页头：一行摘要（运行方式 · 开始时间 · 用时 · 各状态阶段数）· 日期选择 · 同日多次运行时的运行切换（定时 / 手动 / 休市 + 开始时间）·「原理」链接（`#knowledge/principles`）· 折叠按钮（折叠状态不保存）。下面九行，每行：阶段名 · 状态（成功 / 部分失败 / 降级 / 失败 / 跳过 / 缺证据 / 未记录）· 一句话 · 「输入 I · 产出 O」· 用时；有跳过 / 失败 / 降级时可「展开明细」看原因文案与样本标的。`stages-1` 运行的第 7 项（每日复查）与 `stages-1` / `stages-2` 运行的第 8 项（复盘卡）是「未记录」占位；没有阶段证据或迁移 025 未执行时只显示后端给的说明。日期改了只重新请求这一段。句子与原因文案由后端按模板拼好（见 [调度与通知](../operations/scheduling-and-notifications.md)）。
-- **引用的知识与讨论**（v2.7）：Agent 计划卡与版本链每一版多一段「引用的知识」（`knowledge_refs`：`know:<id>@<版本>` + 引用时那一版的标题 + 引用的字段，点开到引用时的版本，该条目之后有新版时附「当前已是第 n 版」），以及「就此讨论」按钮（新建一次讨论并跳到 `#discuss/<id>`，见 [Agent 轨道 · 就此计划讨论](agent-track.md#就此计划讨论)）；「看推理过程」里 `get_knowledge` 的调用与返回的 `know:` 引用也链到条目页。
+- **引用的知识与讨论**（v2.7）：Agent 计划卡与版本链每一版多一段「引用的知识」（`knowledge_refs`：`know:<id>@<版本>` + 引用时那一版的标题 + 引用的字段，点开到引用时的版本，该条目之后有新版时附「当前已是第 n 版」），以及「就此讨论」按钮（新建一次讨论并跳到 `#discuss/<id>`，见 [Agent 轨道 · 就此计划讨论](agent-track.md#就此计划讨论)）；「看推理过程」里 `get_knowledge` 的调用与返回的 `know:` 引用也链到条目页，推理视图顶部同样列出这次运行引用的知识（提议 / 修订运行取它的计划的引用，复查运行取它的复查行的引用，形状同计划卡的 `knowledge_refs`；其余运行没有这个键）。
 - **进行中的 Agent 计划**：单元列表之后一段，列出已决定买入、等待成交的入场期链与持仓期链，每行：标的 · 入场期 / 持仓期 · 第 n 版 · 最近复查（结论、决定方、时间、理由前 40 字，没有写「尚未复查」）· 今日触发的信号 ·「查看」（`#plan/<最新版 id>`）·「重新复查」。
 - **重新复查**（「今日」与计划页同一做法）：提交后轮询 `/api/runs/<run_id>`，最长 900 秒（复查加修订常超过 2 分钟）；完成显示「复查完成：<结论>」（跳过或出错时附原因，如「复查完成：跳过（超出 token 上限）」）并刷新；轮询到时限仍未结束时显示「复查仍在后台进行，稍后刷新查看」，按钮保持不可点，不当作失败；409 显示「不能重新复查：<原因>」（正在复查 / 这条链不在入场期或持仓期 / Agent 不可用：<原因>）。
 - **持仓止损**：没有 `agent-2` 链的持仓行尾标「此持仓无 Agent 计划，不参与复查」；链在持仓期间被复查作废的标「Agent 计划已作废，不再复查」。

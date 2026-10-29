@@ -1508,8 +1508,10 @@ def retro_subjects(conn, *, since: date, until: date) -> list[dict[str, Any]]:
     window. Pruning is cheap and errs towards keeping (``end_event`` decides):
 
     * a ``unit``: a buy unit (some decision proposed ``buy``) with signal date <= ``until``, with its head
-      decision, every decision id of the chain, the live buys on any of those decisions, its plans and its
-      review rows (the caller adds bars, books and shadow results). Dropped only when it has live buys, none
+      decision, every decision id of the chain (``decision_ids``) and the chain itself oldest first as
+      ``decisions`` (``{id, plan_id, decided_at}``, read by the reference plan of a held unit), the live buys
+      on any of those decisions, its plans and its review rows (the caller adds bars, books and shadow
+      results). Dropped only when it has live buys, none
       of them on/after ``since`` and its ticker was flat before ``since`` (closed before the window), or when
       it has no buys and a review card already recorded its end;
     * a ``trade``: a live buy with no decision executed (New York date) on/before ``until``, dropped under the
@@ -1527,9 +1529,9 @@ def retro_subjects(conn, *, since: date, until: date) -> list[dict[str, Any]]:
     for unit in _all(conn, "SELECT DISTINCT ticker, signal_date FROM signal_decisions WHERE proposed_action = 'buy' "
                            'AND signal_date <= %s ORDER BY signal_date, ticker', (until,)):
         ticker, signal_date = unit['ticker'], unit['signal_date']
-        decision_ids = [row[0] for row in conn.execute(
-            'SELECT id FROM signal_decisions WHERE ticker = %s AND signal_date = %s ORDER BY decided_at, id',
-            (ticker, signal_date)).fetchall()]
+        chain = _all(conn, 'SELECT id, plan_id, decided_at FROM signal_decisions WHERE ticker = %s '
+                           'AND signal_date = %s ORDER BY decided_at, id', (ticker, signal_date))
+        decision_ids = [row['id'] for row in chain]
         buys = _all(conn, f"SELECT {_TRADE_COLUMNS} FROM trades WHERE side = 'buy' AND voided_at IS NULL "
                           'AND decision_id = ANY(%s) ORDER BY executed_at, id', (decision_ids,))
         if buys:
@@ -1540,7 +1542,7 @@ def retro_subjects(conn, *, since: date, until: date) -> list[dict[str, Any]]:
             continue
         subjects.append({'kind': 'unit', 'ticker': ticker, 'signal_date': signal_date, 'buy_trade_id': None,
                          'decision': decision_head(conn, ticker, signal_date, timeline=True),
-                         'decision_ids': decision_ids, 'buys': buys,
+                         'decision_ids': decision_ids, 'decisions': chain, 'buys': buys,
                          'plans': plans_for_unit(conn, ticker, signal_date),
                          'reviews': chain_reviews(conn, ticker, signal_date)})
     for buy in _all(conn, f"SELECT {_TRADE_COLUMNS} FROM trades WHERE side = 'buy' AND decision_id IS NULL "
@@ -1549,7 +1551,8 @@ def retro_subjects(conn, *, since: date, until: date) -> list[dict[str, Any]]:
         if _ny_date(buy['executed_at']) < since and closed_before(buy['ticker']):
             continue
         subjects.append({'kind': 'trade', 'ticker': buy['ticker'], 'signal_date': None, 'buy_trade_id': buy['id'],
-                         'decision': None, 'decision_ids': [], 'buys': [buy], 'plans': [], 'reviews': []})
+                         'decision': None, 'decision_ids': [], 'decisions': [], 'buys': [buy], 'plans': [],
+                         'reviews': []})
     return subjects
 
 
@@ -1734,6 +1737,11 @@ def insert_knowledge_citations(conn, rows: list[dict[str, Any]]) -> int:
 def citations_of(conn, knowledge_id: int) -> list[dict[str, Any]]:
     return _all(conn, f'SELECT {_CITATION_COLUMNS} FROM knowledge_citations WHERE knowledge_id = %s '
                       'ORDER BY id', (knowledge_id,))
+
+
+def citations_for_review(conn, review_id: int) -> list[dict[str, Any]]:
+    return _all(conn, f'SELECT {_CITATION_COLUMNS} FROM knowledge_citations WHERE review_id = %s ORDER BY id',
+                (review_id,))
 
 
 def citations_for_plans(conn, plan_ids) -> list[dict[str, Any]]:

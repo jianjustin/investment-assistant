@@ -482,6 +482,11 @@ def test_build_discuss_steps():
     assert step(dropped, 'answer')['knowledge_draft'] is None
     assert step(dropped, 'answer')['note'] == '经验草稿没有通过校验，已丢弃：教训草稿缺适用范围、反例或挂靠无效'
     assert step(dropped, 'question')['attachment'] is None
+    # the dropped draft is not a pass: the check step names it, the other checks still pass
+    checks = {i['id']: i['result'] for i in step(dropped, 'check')['items']}
+    assert checks == {'json': 'pass', 'refs': 'pass', 'draft': 'implicated', 'tool_rounds': 'pass'}
+    assert step(dropped, 'check')['note'] == '经验草稿没有通过校验，已丢弃：教训草稿缺适用范围、反例或挂靠无效'
+    assert {i['result'] for i in step(view, 'check')['items']} == {'pass'} and step(view, 'check')['note'] is None
     json.dumps([view, dropped])
 
 
@@ -582,6 +587,35 @@ def test_reasoning_reads_version_and_reviews(db, scripted_model):
 
     after = db.execute('SELECT (SELECT count(*) FROM agent_runs), (SELECT count(*) FROM plan_reviews)').fetchone()
     assert before == after
+
+
+def test_reasoning_shows_the_knowledge_a_run_cited(db, scripted_model):
+    """Spec §6.2: the plan card and the reasoning view both show the cited knowledge; same item shape."""
+    from datetime import timedelta
+    from test_workbench_repository_growth import item_with_versions
+    first, plan_a, plan_b, review_run, revise_run, review = _insert_revision_chain(db, scripted_model)
+    old = NOW - timedelta(days=30)
+    item_id = item_with_versions(db, [(old, ['AAA'], []), (old, ['AAA'], [])])          # two versions, titles t1 / t2
+    plain_id = item_with_versions(db, [(old, ['AAA'], [])])
+    repository.insert_knowledge_citations(db, [
+        {'agent_run_id': first['id'], 'plan_id': plan_a['id'], 'knowledge_id': item_id, 'version': 1, 'field': 'thesis',
+         'call_seq': 1},
+        {'agent_run_id': first['id'], 'plan_id': plan_a['id'], 'knowledge_id': item_id, 'version': 1, 'field': 'risks',
+         'call_seq': 1},
+        {'agent_run_id': uuid.UUID(revise_run), 'plan_id': plan_b['id'], 'knowledge_id': plain_id, 'version': 1,
+         'field': 'changes', 'call_seq': 1},
+        {'agent_run_id': uuid.UUID(review_run), 'review_id': review['id'], 'knowledge_id': item_id, 'version': 2,
+         'field': 'review', 'call_seq': 1}])
+    db.commit()
+    entry = {'ref': f'know:{item_id}@1', 'title': 't1', 'fields': ['thesis', 'risks'], 'current_version': 2}
+    assert reasoning.reasoning(str(first['id']))['knowledge_refs'] == [entry]
+    assert reasoning.reasoning(revise_run)['knowledge_refs'] == [
+        {'ref': f'know:{plain_id}@1', 'title': 't1', 'fields': ['changes'], 'current_version': 1}]
+    assert reasoning.reasoning(review_run)['knowledge_refs'] == [
+        {'ref': f'know:{item_id}@2', 'title': 't2', 'fields': ['review'], 'current_version': 2}]
+    db.execute('DELETE FROM knowledge_citations')
+    db.commit()
+    assert reasoning.reasoning(str(first['id']))['knowledge_refs'] == []        # nothing cited: an empty list, not a gap
 
 
 def test_reasoning_without_timeline_tables(db, scripted_model):

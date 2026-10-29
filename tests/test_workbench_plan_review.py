@@ -639,6 +639,19 @@ def test_budget_skips(db, monkeypatch, gate):
     assert len(reviews(db, 'SYNQ')) == 1
 
 
+def test_review_stage_records_its_own_quota_exhaustion(db):
+    """The retro stage reads this flag: a quota hit in the review stage itself must reach ``summary``."""
+    market = Market()
+    signal_day(db, market, ['SYNTH'])
+    market.jump('SYNTH', day(1), 1.10)
+    summary, rows, model = run(db, market, 1, tickers=['SYNTH'], model=make_model(review=[QuotaError()]))
+    [row] = reviews(db, 'SYNTH')
+    assert (row['outcome'], row['reason']) == ('error', 'quota_exhausted')
+    assert summary['review']['quota_exhausted'] is True
+    summary, rows, model = run(db, market, 2, tickers=['SYNTH'])           # nothing to ask the model: no flag
+    assert not summary['review'].get('quota_exhausted')
+
+
 def test_rerun_same_session_already_reviewed(db):
     market = Market()
     signal_day(db, market, ['SYNTH'])

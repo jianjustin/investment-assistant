@@ -103,8 +103,10 @@ def _effective_invalidation(reviews: list[dict[str, Any]]) -> dict[str, Any] | N
 
 def _evaluate(subject: dict[str, Any], cache: _Cache, *, window_start: date, known: Callable[[str], bool],
               full: bool = False) -> dict[str, Any]:
-    """§4.1 for one subject on rows already read. ``{'state': 'none' | 'no_plan'}`` or
-    ``{'state': 'event', 'event', 'ref_plan', 'sub', 'known'}`` (``known``: a card with this key exists)."""
+    """§4.1 for one subject on rows already read. ``{'state': 'none'}``, ``{'state': 'no_plan', 'ticker',
+    'signal_date', 'end_session'}`` (a held unit that closed inside the window with no ``plan_id`` anywhere on its
+    chain: the end is known, the reference plan is not) or ``{'state': 'event', 'event', 'ref_plan', 'sub',
+    'known'}`` (``known``: a card with this key exists)."""
     ticker = subject['ticker']
     buys = subject['buys']
     if subject['kind'] == 'trade' and not full and known(f"trade:{subject['buy_trade_id']}"):
@@ -116,9 +118,15 @@ def _evaluate(subject: dict[str, Any], cache: _Cache, *, window_start: date, kno
     open_lots = [lot for lot in data['book']['open'] if lot['buy_trade_id'] in buy_ids]
     decision = subject['decision']
     if subject['kind'] == 'unit':
-        ref_plan = retro.reference_plan(decision=decision, plans=subject['plans'], has_buys=bool(buys))
+        ref_plan = retro.reference_plan(decision=decision, plans=subject['plans'], has_buys=bool(buys), buys=buys,
+                                        chain=subject['decisions'])
         if ref_plan is None:
-            return {'state': 'no_plan'}
+            # decide the end first: a held unit counts as "no plan" only when its close falls inside the window
+            closed = retro.close_session(segments=segments, open_lots=open_lots) if buys else None
+            if closed is not None and window_start <= closed <= cache.session:
+                return {'state': 'no_plan', 'ticker': ticker, 'signal_date': subject['signal_date'],
+                        'end_session': closed}
+            return {'state': 'none'}
         sub = {'kind': 'unit', 'ticker': ticker, 'signal_date': subject['signal_date']}
     else:
         ref_plan = None
@@ -221,6 +229,8 @@ def _freeze(conn, item: dict[str, Any], cache: _Cache, *, session: date, now: da
 
     role(item['ref_plan']['id'] if item['ref_plan'] else None, 'reference')
     role(decision.get('plan_id') if decision else None, 'executed')
+    if buys and item['ref_plan'] is not None and 'executed' not in roles.get(str(item['ref_plan']['id']), []):
+        role(item['ref_plan']['id'], 'executed')              # a held unit's reference is the plan its buys executed
     role(decision.get('agent_plan_id') if decision else None, 'seen_at_decision')
     if versions:
         role(versions[0]['plan_id'], 'first')
@@ -266,7 +276,7 @@ def _scan(conn, *, session: date, now: datetime, window_start: date, with_facts:
     frozen ``facts`` when ``with_facts``; ``stats``: counts and per-subject failures. One bad subject only lands
     in ``failures`` (§9)."""
     stats: dict[str, Any] = {'events': 0, 'by_end_kind': {kind: 0 for kind in retro.END_KINDS}, 'no_plan': 0,
-                             'failures': [], 'existing': 0}
+                             'no_plan_units': [], 'failures': [], 'existing': 0}
     items: list[dict[str, Any]] = []
     cache = _Cache(conn, session, now)
 
@@ -280,6 +290,7 @@ def _scan(conn, *, session: date, now: datetime, window_start: date, with_facts:
                 result = _evaluate(subject, cache, window_start=window_start, known=known, full=include_known)
                 if result['state'] == 'no_plan':
                     stats['no_plan'] += 1
+                    stats['no_plan_units'].append(result)
                     continue
                 if result['state'] != 'event':
                     continue
@@ -542,7 +553,8 @@ def run_stage(session: date, *, now: datetime, deps: service.Deps, summary: dict
     drafts = {'ok': 0, 'rejected': 0, 'error': 0, 'skipped': 0}
     tokens = {'input': 0, 'output': 0}
     unavailable = agent_model.unavailable_reason(settings)
-    quota_exhausted = bool((summary.get('agent') or {}).get('quota_exhausted'))
+    # the quota may have run out in the agent stage or in the review stage that ran just before this one
+    quota_exhausted = any(bool((summary.get(stage) or {}).get('quota_exhausted')) for stage in ('agent', 'review'))
     started_drafts = 0
 
     with service.read_only_tx() as conn:
@@ -888,8 +900,11 @@ def card_view(card_id: int, *, now: datetime) -> dict[str, Any]:
 def check(since: date, until: date | None = None, out: Callable[[str], None] = print) -> int:
     """``check --since D [--until D]`` (spec §12): every end event in the window, judged again by §4.1, must have
     exactly one card (the same ``event_key``; an event without one is 「缺卡」), and every card that ended in the
-    window must carry all ten fact keys. The card's frozen ``facts.tracks`` is compared with today's ``tracks-1``
-    row and a difference is listed as 「事实已变化」 without failing (a trade voided after the freeze, spec §15).
+    window must carry all ten fact keys. A closed unit whose chain never carried a ``plan_id`` has no reference plan,
+    so no card can exist: it is listed on its own 「无参考计划」 line and fails the check. The card's frozen
+    ``facts.tracks`` is compared with the ``tracks-1`` row recomputed as of the freeze (the card's session, bars
+    known when it was created), so a shadow that kept moving is not a change; a difference is listed as 「事实已变化」
+    without failing (a trade voided after the freeze, spec §15).
     Returns 0 when nothing is missing, 1 otherwise. Read-only; Unavailable (exit 2 in ``main``) without a
     database or migration 027; ValueError when ``since`` is after ``until``."""
     now = datetime.now(UTC)
@@ -906,6 +921,10 @@ def check(since: date, until: date | None = None, out: Callable[[str], None] = p
             missing += 1
             event = item['event']
             out(f"缺卡  {event['event_key']}  {item['sub']['ticker']}  {event['end_kind']}  {event['end_session']}")
+        no_plan_units = scanned['stats']['no_plan_units']
+        for unit in no_plan_units:
+            out(f"无参考计划  unit:{unit['ticker']}:{unit['signal_date']}  {unit['ticker']}  信号日 {unit['signal_date']}  "
+                f"平仓 {unit['end_session']}  决定链上没有任何计划")
         for card in sorted(present, key=lambda c: (c['end_session'], c['id'])):
             facts = card['facts'] or {}
             absent = [name for name in retro.FACT_KEYS if name not in facts]
@@ -915,16 +934,20 @@ def check(since: date, until: date | None = None, out: Callable[[str], None] = p
                 continue
             note = ''
             if card['subject'] == 'unit':
-                row = service.unit_track_row(conn, card['ticker'], card['signal_date'], session=end, now=now)
+                # as of the freeze, not today: a shadow keeps moving after the close, a changed ledger does not
+                as_of = (facts.get('discipline') or {}).get('as_of')
+                frozen_session = date.fromisoformat(as_of) if as_of else card['end_session']
+                row = service.unit_track_row(conn, card['ticker'], card['signal_date'], session=frozen_session,
+                                             now=card['created_at'])
                 if _fresh_tracks(row) != (facts.get('tracks') or {}):
                     changed += 1
                     note = '  事实已变化：tracks 与现在的 tracks-1 行不同'
             out(f"齐全  {card['event_key']}  #{card['id']}{note}")
     for target, reason in scanned['stats']['failures']:
         out(f'读取失败  {target}  {reason}')
-    passed = not missing and not incomplete and not scanned['stats']['failures']
+    passed = not missing and not incomplete and not no_plan_units and not scanned['stats']['failures']
     out(f"汇总：窗口 {since} ~ {end} 应有 {len(present) + missing} 张，缺卡 {missing}，事实不全 {incomplete}，"
-        f"事实已变化 {changed}，没有计划 {scanned['stats']['no_plan']} → {'通过' if passed else '不通过'}")
+        f"事实已变化 {changed}，无参考计划 {len(no_plan_units)} → {'通过' if passed else '不通过'}")
     return 0 if passed else 1
 
 

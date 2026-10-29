@@ -400,11 +400,18 @@ def test_discussion_draft_verdict_new_and_target(db):
     _, _, rewrite = discussion_draft(db, target=(kid, 1))
     other = my_knowledge.revise(kid, {**body(tickers=['ZZZA'], concepts=[]), 'base_version': 1}, now=NOW)
     assert other['record']['version'] == 2
-    with pytest.raises(ledger.Conflict, match='^knowledge_stale: 这条知识已更新到第 2 版'):
+    shown = {d['id']: d for d in my_knowledge.drafts_view(open_only=True)['drafts']}[rewrite]
+    assert (shown['target_version'], shown['target_current_version']) == (1, 2)      # the page can see it moved on
+    with pytest.raises(ledger.Conflict) as stale:
         my_knowledge.draft_verdict(rewrite, {'request_id': str(uuid.uuid4()), 'action': 'approve'}, now=NOW)
+    assert str(stale.value) == ('knowledge_stale: 草稿基于第 1 版，现在是第 2 版：只能不采纳，或在讨论里基于第 2 版重新改写')
+    with pytest.raises(ledger.Conflict, match='^knowledge_stale: 草稿基于第 1 版，现在是第 2 版'):   # what the page sends
+        my_knowledge.draft_verdict(rewrite, {'request_id': str(uuid.uuid4()), 'action': 'approve',
+                                             'base_version': 1}, now=NOW)
     done = my_knowledge.draft_verdict(rewrite, {'request_id': str(uuid.uuid4()), 'action': 'approve',
                                                 'base_version': 2}, now=NOW)
     assert done['record']['ref'] == f'know:{kid}@3'
+    assert {d['id']: d for d in my_knowledge.drafts_view(open_only=False)['drafts']}[rewrite]['target_current_version'] == 3
     versions, _ = repository.knowledge_rows(db, cutoff=None, knowledge_id=kid)
     assert [(v['version'], v['draft_id']) for v in versions] == [(1, draft_id), (2, None), (3, rewrite)]
     # dismissing writes the decision only

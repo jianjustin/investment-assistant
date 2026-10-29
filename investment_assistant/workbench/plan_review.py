@@ -653,8 +653,9 @@ def _empty_review() -> dict[str, Any]:
 def run_stage(session: date, *, now: datetime, deps, summary: dict[str, Any], started: float,
               clock: Callable[[], float], run_id: str | None, acc: stages_module.StageAcc | None,
               timeline_ready: bool | None = None) -> str | None:
-    """The batch's review stage (spec §7.1): ``summary['review'] = {objects, outcomes, tokens}`` and, with
-    ``acc``, the stage accounting including the derivation check of this run's new versions.
+    """The batch's review stage (spec §7.1): ``summary['review'] = {objects, outcomes, tokens}`` (plus
+    ``quota_exhausted: True`` once the quota ran out) and, with ``acc``, the stage accounting including the
+    derivation check of this run's new versions.
 
     Returns a whole-stage skip reason for the caller to record — ``migration_026_missing`` (the agent
     stage already reported it in ``summary['errors']``) or ``agent_unavailable: <reason>`` when the agent
@@ -710,6 +711,8 @@ def run_stage(session: date, *, now: datetime, deps, summary: dict[str, Any], st
         if (out.get('detail') or {}).get('write_error'):
             summary['errors'].append(f"{obj['ticker']} review: {out['detail']['write_error']}")
 
+    if quota['exhausted']:
+        review['quota_exhausted'] = True                 # the retro stage after this one honours it (no draft, no attempt)
     detail['outcomes'] = dict(review['outcomes'])
     if acc is not None:
         acc.detail.update(detail)
