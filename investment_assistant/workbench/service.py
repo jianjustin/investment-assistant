@@ -1500,8 +1500,13 @@ def add_plan_note(payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:
 
 
 def list_trades() -> list[dict[str, Any]]:
+    """Every fill, newest first. A fill that follows a plan carries ``plan_label`` (the label the link list uses)."""
+    from investment_assistant.workbench import plan_views
+
     with _tx() as conn:
-        return list(reversed(repository.list_trades(conn)))
+        rows = list(reversed(repository.list_trades(conn)))
+        labels_ = plan_views.trade_plan_labels(conn, rows)
+        return [{**t, 'plan_label': labels_[t['id']]} if t['id'] in labels_ else t for t in rows]
 
 
 def void_trade(trade_id: str, reason: Any, *, now: datetime) -> dict[str, Any]:
@@ -2294,15 +2299,32 @@ def _week_units(conn, week_start: date, week_end: date, *, now: datetime) -> dic
         return contexts.get(ticker) or contexts.setdefault(ticker, plan_review.ticker_context(conn, ticker, now=now))
 
     units, fills = [], []
-    for group in sorted(groups, key=lambda g: (g['signal_date'], g['ticker'])):
+    owner: dict[Any, str] = {}          # a fill belongs to one unit: the unit that owns the chain wins over the unit whose
+                                        # baseline it was linked to (R17 / D22)
+    ordered = sorted(groups, key=lambda g: (g['signal_date'], g['ticker']))
+    chain_first = sorted(ordered, key=lambda g: not any(c['signal_date'] == g['signal_date']
+                                                         for c in context_of(g['ticker'])['chains']))
+    mine_of: dict[tuple, list] = {}
+    for group in chain_first:
+        key = (group['ticker'], group['signal_date'])
+        mine_of[key] = []
+        for buy in unit_fills(conn, group['ticker'], group['signal_date'], context_of(group['ticker'])):
+            if buy['id'] not in owner:
+                owner[buy['id']] = f"{group['ticker']}:{group['signal_date'].isoformat()}"
+                mine_of[key].append(buy)
+    for group in ordered:
         ticker, signal_date = group['ticker'], group['signal_date']
         shape = synthesis.synthesize(ticker, signal_date, group['candidates'], holding=False, now=now)
         uid = f'{ticker}:{signal_date.isoformat()}'
-        mine = unit_fills(conn, ticker, signal_date, context_of(ticker))
-        state = 'not_executed'
+        mine = mine_of[(ticker, signal_date)]
+        # the execution state is a buy unit's; a sell / watch / conflict unit nobody traded has none (M3)
+        state = 'not_executed' if shape['proposed_action'] == 'buy' and 'conflict' not in shape['labels'] \
+            or mine else 'not_applicable'
         for buy in mine:
             plan = plan_review._plan_of_buy(conn, buy)
-            fills.append({'trade': buy, 'unit_id': uid, 'plan_created_at': plan['created_at'] if plan else None})
+            # an own plan is written with the fill itself, so its age says nothing about how long you waited
+            created = plan['created_at'] if plan and plan['kind'] != 'own' else None
+            fills.append({'trade': buy, 'unit_id': uid, 'plan_created_at': created})
             day = buy['executed_at'].astimezone(NY).date()
             if plan is None or plan['valid_from'] <= day <= plan['valid_until']:
                 state = 'adopted'
@@ -2366,7 +2388,11 @@ def generate_weekly(week_start: date, *, notes: str = '', supersedes_id=None, no
         stats = review.weekly_stats(week_start, units, outcomes, repository.list_trades(conn), segments=segments,
                                     fills=week['fills'], unplanned=week['unplanned'],
                                     entry_opens={k: v.get('entry_price') for k, v in outcomes.items()},
-                                    plan_outcomes=plan_outcomes, by_pool=review.pool_summary(triggers, plan_outcomes),
+                                    plan_outcomes=plan_outcomes,
+                                    # the by-pool plan columns never mix two shadow versions: triggers and the
+                                    # plan-shadow-2 plans here, the older plans (no triggers) in by_pool_v1
+                                    by_pool=review.pool_summary(triggers, [p for p in plan_outcomes if p['shadow_version'] == _plan_shadow_module.SHADOW_V2]),
+                                    by_pool_v1=review.pool_summary([], [p for p in plan_outcomes if p['shadow_version'] != _plan_shadow_module.SHADOW_V2]),
                                     discipline=_week_discipline(conn, session, now),
                                     tracks={'units': track_rows, 'summary': _tracks_module.summarize_v2(track_rows)},
                                     learning=_weekly_learning(conn, week_start, week_end, session=session, now=now))
@@ -2454,8 +2480,6 @@ def generate_monthly(month: date, *, notes: str = '', supersedes_id=None, now: d
             since=month, until=month_end)
 
         rs = [r for _, r in sorted(rs, key=lambda item: item[0])]
-        v2_plans = [p for p in plan_outcomes if p['shadow_version'] == _plan_shadow_module.SHADOW_V2]
-        v1_plans = [p for p in plan_outcomes if p['shadow_version'] != _plan_shadow_module.SHADOW_V2]
         track_rows = _track_rows(conn, month, month_end, session=bars.latest_closed_session(now), now=now)
         stats = {
             'calc_version': monthly.MONTHLY_VERSION, 'month': month.isoformat(), 'return': ret,
@@ -2466,12 +2490,7 @@ def generate_monthly(month: date, *, notes: str = '', supersedes_id=None, now: d
             'review': monthly.review_detail(per_month),
             'sensitivity': {'approximate': True, 'count': len(rs), 'rows': monthly.sensitivity(rs)},
             'discipline': disc,
-            'plans': review._plan_summary(v2_plans, month, month_end),
-            'plans_v1': review._plan_summary(v1_plans, month, month_end),
-            'plans_counterfactual': review._plan_summary(
-                [{**p, 'outcome': p['shadow_v1']} for p in v2_plans if p.get('shadow_v1') is not None], month, month_end),
-            'shadow_versions': {'plans': 'plan-shadow-2', 'plans_v1': 'plan-shadow-1',
-                                'plans_counterfactual': 'plan-shadow-1'},
+            **review.shadow_plan_summaries(plan_outcomes, month, month_end),
             'tracks': {'units': track_rows, 'summary': _tracks_module.summarize_v2(track_rows)},
             'generated_at': now.isoformat(),
         }
@@ -2638,7 +2657,7 @@ def _previous_chain_facts(conn, ticker: str, signal_date: date, *, now: datetime
     for chain in ctx['chains']:
         if chain['signal_date'] >= signal_date:
             continue
-        item = plan_review.read_chain_facts(conn, chain, session=session, now=now, context=ctx, point_in_time=True)
+        item = plan_review.read_chain_facts(conn, chain, session=session, now=now, context=ctx, stamped=True)
         if item is None:
             continue
         rows = []

@@ -575,7 +575,9 @@ def test_weekly_review3_has_by_pool(workbench_db, monkeypatch):
     out = service.generate_weekly(date(2026, 10, 19), now=NOW + timedelta(days=2))
     assert out['calc_version'] == 'review-8'
     row = out['stats']['by_pool']['extended']['trend_reclaim']
-    assert (row['triggers'], row['plans']) == (1, 1)
+    assert (row['triggers'], row['plans']) == (1, 0)                # a rule-only plan is counted under `by_pool_v1`
+    older = out['stats']['by_pool_v1']['extended']['trend_reclaim']
+    assert (older['triggers'], older['plans']) == (0, 1)        # triggers are counted once, under `by_pool`
 
 
 def test_tier_change_midweek_uses_signal_date_tier(workbench_db, monkeypatch):

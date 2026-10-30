@@ -162,7 +162,8 @@ def test_generate_monthly_counts_first_and_latest(workbench_db, monkeypatch):
     stats = service.generate_monthly(date(2026, 10, 1), now=now)['stats']
     assert stats['calc_version'] == 'monthly-4'
     # agent-2 versions have no execution fields: summarised under plan-shadow-1, apart from plan-shadow-2 plans
-    assert stats['plans'] == {} and stats['shadow_versions']['plans_v1'] == 'plan-shadow-1'
+    assert set(stats['plans']) == {'Agent 首版（旧计划 · plan-shadow-1）', 'Agent 最新版（旧计划 · plan-shadow-1）'}
+    assert stats['shadow_versions']['plans_v1'] == 'plan-shadow-1'
     assert stats['plans_v1']['agent']['count'] == 1
     assert stats['plans_v1']['agent_latest']['count'] == 1
     assert stats['tracks']['units'][0]['agent']['version_basis'] == 'first'
@@ -199,6 +200,7 @@ def test_monthly4_freezes_tracks2_discipline2_two_shadows(workbench_db, monkeypa
     assert stats['shadow_versions'] == {'plans': 'plan-shadow-2', 'plans_v1': 'plan-shadow-1',
                                         'plans_counterfactual': 'plan-shadow-1'}
     assert stats['plans']['rule']['count'] == 1 and stats['plans_v1']['rule']['count'] == 1
+    assert stats['plans']['规则（旧计划 · plan-shadow-1）']['count'] == 1             # the page lists both, never mixed
     assert 'rule' not in stats['plans_counterfactual'] or stats['plans_counterfactual']['rule']['count'] == 1
     assert stats['discipline']['calc_version'] == 'discipline-2'
     assert 'merged' in stats['tracks']['summary']['all']['agent']

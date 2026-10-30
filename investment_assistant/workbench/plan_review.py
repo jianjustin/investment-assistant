@@ -61,15 +61,19 @@ EMPTY_REASON = '（无理由）'
 
 # ---------------------------------------------------------------- chain facts (timeline-2, R10, R11)
 
-def ticker_context(conn, ticker: str, *, now: datetime) -> dict[str, Any]:
+def ticker_context(conn, ticker: str, *, now: datetime, point_in_time: bool = False) -> dict[str, Any]:
     """What every chain of one ticker is judged from, read once at cutoff ``now``: the fills as the cutoff knew
     them (``list_trades(cutoff=now)``, R11), the position they build, the ticker's chains and retrigger rows, and
     the plan -> chain map of the fills' linked plans (D22). Raises ``positions.PositionError`` on a broken fill
-    history; the callers read it under a savepoint."""
+    history; the callers read it under a savepoint.
+
+    ``point_in_time=True`` also cuts the chains: only those whose first version existed by ``now`` (a chain opened
+    later is not there yet). Readers of a past day (the plan table of an older session, the plans a back-filled fill
+    may follow) read this way together with ``read_chain_facts(point_in_time=True)``."""
     ticker = ticker.upper()
     trades = repository.list_trades(conn, ticker, cutoff=now)
     book = positions.build(trades, splits=repository.split_events(conn, ticker))
-    chains = repository.chains_for_ticker(conn, ticker)
+    chains = repository.chains_for_ticker(conn, ticker, cutoff=now if point_in_time else None)
     retriggers = repository.chain_retriggers_for(conn, ticker, cutoff=now)
     versions_by_plan = {v['plan_id']: v for c in chains for v in repository.chain_versions(conn, ticker, c['signal_date'])}
     plan_chain: dict[Any, Any] = {}
@@ -83,7 +87,8 @@ def ticker_context(conn, ticker: str, *, now: datetime) -> dict[str, Any]:
 
 
 def read_chain_facts(conn, chain: dict[str, Any], *, session: date, now: datetime,
-                     context: dict[str, Any] | None = None, point_in_time: bool = False) -> dict[str, Any] | None:
+                     context: dict[str, Any] | None = None, point_in_time: bool = False,
+                     stamped: bool = False) -> dict[str, Any] | None:
     """One chain read for ``timeline.chain_state_v2`` at session S and cutoff ``now`` (spec §4.2; the `plan` node and
     the review share it). ``chain`` needs ``ticker`` and ``signal_date``. Returns ``{'chain', 'facts', 'state',
     'buys'}`` — ``chain`` / ``facts`` are `chain_state_v2`'s inputs, ``buys`` the chain's live fills — or None
@@ -93,49 +98,60 @@ def read_chain_facts(conn, chain: dict[str, Any], *, session: date, now: datetim
 
     Review rows are read *as stored* — the operational state (what the batch, a recheck and the `plan` node act
     on) must see a review a concurrent run has just written, exactly as the v2.5 reading did — so their
-    ``created_at`` is not offered to the state function. ``point_in_time=True`` keeps it, for a reader that asks
-    what a past cutoff knew (the 「同标的上一条链」 block)."""
+    ``created_at`` is not offered to the state function. ``point_in_time=True`` keeps it and reads the whole chain as
+    ``now`` knew it — versions, reviews and the old decision created after the cutoff are left out, so the head is
+    the version that was the head then — for a reader that asks what a past cutoff knew (a past day's plan table,
+    a back-filled fill). ``stamped=True`` only keeps the reviews' ``created_at`` without cutting anything — the
+    「同标的上一条链」 block, whose pure function does the cutting itself."""
     ticker, signal_date = chain['ticker'].upper(), chain['signal_date']
     versions = repository.chain_versions(conn, ticker, signal_date)
+    if point_in_time:
+        versions = [v for v in versions if v['created_at'] <= now]
     if not versions:
         return None
-    ctx = context or ticker_context(conn, ticker, now=now)
+    ctx = context or ticker_context(conn, ticker, now=now, point_in_time=point_in_time)
     head_plan = repository.plan_by_id(conn, versions[-1]['plan_id'])
     buys = execution.chain_buys((ticker, signal_date), ctx['trades'], plan_chain=ctx['plan_chain'],
                                 legacy_decision_ids=repository.unit_decision_ids(conn, ticker, signal_date))
-    facts = {'decision': repository.decision_head(conn, ticker, signal_date), 'buys': buys,
+    decision = repository.decision_head(conn, ticker, signal_date)
+    if point_in_time and decision is not None and decision['decided_at'] > now:
+        decision = None
+    facts = {'decision': decision, 'buys': buys,
              'open_lots': ctx['book']['open'],
              'retriggers': [r for r in ctx['retriggers'] if r['chain_signal_date'] == signal_date],
              'later_chains': [{'signal_date': c['signal_date']} for c in ctx['chains']
                               if signal_date < c['signal_date'] <= session]}
     reviews = repository.chain_reviews(conn, ticker, signal_date)
+    if point_in_time:
+        reviews = [r for r in reviews if r['created_at'] <= now]
     chain_input = {'ticker': ticker, 'signal_date': signal_date, 'legacy': False, 'versions': versions,
                    'head_plan': head_plan,
-                   'reviews': reviews if point_in_time else [{**r, 'created_at': None} for r in reviews]}
+                   'reviews': reviews if (point_in_time or stamped) else [{**r, 'created_at': None} for r in reviews]}
     return {'chain': chain_input, 'facts': facts, 'buys': buys,
             'state': timeline.chain_state_v2(chain_input, session=session, now=now, facts=facts)}
 
 
 def ticker_chain_items(conn, ticker: str, *, session: date, now: datetime, before: date | None = None,
-                       context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+                       context: dict[str, Any] | None = None, point_in_time: bool = False) -> list[dict[str, Any]]:
     """``read_chain_facts`` of every chain of the ticker (oldest first); ``before`` keeps only chains whose signal
     date is earlier (the `plan` node's view: a unit never merges into its own or a later chain)."""
-    ctx = context or ticker_context(conn, ticker, now=now)
+    ctx = context or ticker_context(conn, ticker, now=now, point_in_time=point_in_time)
     items = []
     for chain in ctx['chains']:
         if before is not None and chain['signal_date'] >= before:
             continue
-        item = read_chain_facts(conn, chain, session=session, now=now, context=ctx)
+        item = read_chain_facts(conn, chain, session=session, now=now, context=ctx, point_in_time=point_in_time)
         if item is not None:
             items.append(item)
     return items
 
 
 def active_chain_of(conn, ticker: str, *, session: date, now: datetime, before: date | None = None,
-                    context: dict[str, Any] | None = None) -> dict[str, Any] | None:
+                    context: dict[str, Any] | None = None, point_in_time: bool = False) -> dict[str, Any] | None:
     """The ticker's active chain at S (D2, R5): ``timeline.active_chain`` over its chains, or None. Result keys
     are ``timeline.active_chain``'s (``chain``, ``state``, ``chain_state``, ``renewable``)."""
-    items = ticker_chain_items(conn, ticker, session=session, now=now, before=before, context=context)
+    items = ticker_chain_items(conn, ticker, session=session, now=now, before=before, context=context,
+                               point_in_time=point_in_time)
     return timeline.active_chain([i['chain'] for i in items], session=session, now=now,
                                  facts_by_chain={(i['chain']['ticker'], i['chain']['signal_date']): i['facts']
                                                  for i in items})
@@ -992,16 +1008,18 @@ def _exiting_signals(conn, *, ticker: str, plan: dict, bars: list[dict], retrigg
 
 
 def _holding_row(conn, ticker: str, session: date, run_id: str | None, *, now: datetime,
-                 skipped: dict[tuple[str, str], str], unavailable: str | None) -> dict | None:
+                 skipped: dict[tuple[str, str], str], unavailable: str | None,
+                 point_in_time: bool = False) -> dict | None:
     """One position's ``holding_status`` values at S: the chain it belongs to (its latest version sets the stop and
     T1, D20), today's review (whatever became of it), the exit instruction if one stands, or — without a chain —
     the plan its fills follow. None when the cutoff holds no position."""
-    ctx = ticker_context(conn, ticker, now=now)
+    ctx = ticker_context(conn, ticker, now=now, point_in_time=point_in_time)
     book = ctx['book']
     position = book['position']
     if position is None:
         return None
-    items = [i for i in ticker_chain_items(conn, ticker, session=session, now=now, context=ctx)
+    items = [i for i in ticker_chain_items(conn, ticker, session=session, now=now, context=ctx,
+                                           point_in_time=point_in_time)
              if i['state']['state'] in ('holding', 'exiting')]
     item = max(items, key=lambda i: i['chain']['signal_date']) if items else None
     bars = repository.read_bars(conn, ticker, session, cutoff_at=now)
@@ -1370,6 +1388,24 @@ def retrigger_rows(conn, ticker: str, signal_date: date, reviews: list[dict], nu
     return out
 
 
+def _version_execution(plan: dict | None, status: dict, session: date) -> dict | None:
+    """What the fills made of one version (R13, `execution-1`): ``{status}`` and, for an adopted one, the day (MM-DD)
+    and size of the first fill linked to it. None for a version without a plan row."""
+    if plan is None:
+        return None
+    state = status['state']['state']
+    code = execution.status(plan, status['buys'], session=session, chain_ended=state not in ACTIVE_STATES,
+                            chain_in_entry=state == 'entry')
+    out: dict[str, Any] = {'status': code}
+    if code == 'adopted':
+        mine = [b for b in status['buys'] if b.get('voided_at') is None and str(b.get('plan_id')) == str(plan['id'])
+                and plan['valid_from'] <= b['executed_at'].astimezone(service.NY).date() <= plan['valid_until']]
+        first = min(mine, key=lambda b: (b['executed_at'], str(b['id'])))
+        out.update(date=first['executed_at'].astimezone(service.NY).strftime('%m-%d'),
+                   quantity=format(Decimal(str(first['quantity'])).normalize(), 'f'))
+    return out
+
+
 def chain_view(ticker: str, signal_date: date, *, now: datetime) -> dict:
     """One chain read at S = the latest closed trading day at ``now`` (spec §12 GET chains): ``state``
     (``timeline.chain_state_v2``'s ``{state, mode, active, basis, basis_ref, timeline_version, renewable}``),
@@ -1399,6 +1435,7 @@ def chain_view(ticker: str, signal_date: date, *, now: datetime) -> dict:
             output = (run or {}).get('output') or {}
             found = (service.shadow_outcomes(plan, ticker_bars, spy, splits=splits) if plan is not None
                      else {'outcome': None, 'shadow_version': None, 'shadow_v1': None})
+            executed = _version_execution(plan, status, session)
             versions.append({
                 'version_no': version['version_no'], 'plan_id': str(version['plan_id']),
                 'origin': version['origin'],
@@ -1408,7 +1445,7 @@ def chain_view(ticker: str, signal_date: date, *, now: datetime) -> dict:
                 'as_of_session': version['as_of_session'], 'created_at': version['created_at'],
                 'is_head': str(version['plan_id']) == head_id, 'diff': version['diff'],
                 'changes': output.get('changes') or [], 'plan': plan, 'run': _run_view(run),
-                'shadow': found['outcome'], 'shadow_version': found['shadow_version'],
+                'execution': executed, 'shadow': found['outcome'], 'shadow_version': found['shadow_version'],
                 'shadow_v1': found['shadow_v1']})
         reviews = [_review_row(row, numbers) for row in status['reviews']]
         inputs = user_inputs.view(user_inputs.ticker_rows(conn, ticker), signal_date)

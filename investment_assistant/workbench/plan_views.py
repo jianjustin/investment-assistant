@@ -163,6 +163,12 @@ def _end_of(item: dict[str, Any], session: date, *, segments: list[dict[str, Any
     return {'kind': name, 'at': at, 'text': '旧决定不买'}
 
 
+def _how(end: dict[str, Any]) -> str:
+    """How a chain ended, as a verb phrase after 「已于 <日期>」: 「过期未执行」「作废：…」「平仓」「被取代」."""
+    how = end['text'].replace('已过期（未执行）', '过期未执行')
+    return how[1:] if how.startswith('已') else how
+
+
 def _within_window(at: date, session: date) -> bool:
     return at <= session and len(trading_days_between(at, session)) - 1 <= timeline.ENDED_WINDOW_SESSIONS
 
@@ -306,7 +312,8 @@ def _holding_block(row: dict[str, Any], *, stale: bool) -> dict[str, Any]:
     return out
 
 
-def _holding_rows(conn, session: date, *, cut: datetime, errors: dict[str, str]) -> dict[str, dict[str, Any]]:
+def _holding_rows(conn, session: date, *, cut: datetime, errors: dict[str, str],
+                  point_in_time: bool = False) -> dict[str, dict[str, Any]]:
     """The day's ``holding_status`` rows by ticker; a held ticker without one gets a computed row marked stale."""
     stored = {r['ticker']: _holding_block(r, stale=False) for r in repository.holding_status_for(conn, session=session)}
     for ticker in plan_review._held_tickers(conn, cut):
@@ -314,7 +321,8 @@ def _holding_rows(conn, session: date, *, cut: datetime, errors: dict[str, str])
             continue
         try:
             with conn.transaction():
-                values = plan_review._holding_row(conn, ticker, session, None, now=cut, skipped={}, unavailable=None)
+                values = plan_review._holding_row(conn, ticker, session, None, now=cut, skipped={}, unavailable=None,
+                                                  point_in_time=point_in_time)
         except Exception as exc:        # noqa: BLE001 - one ticker's row never takes the table down (§13)
             errors[ticker] = f'holding: {str(exc) or type(exc).__name__}'
             continue
@@ -385,12 +393,13 @@ def plan_table(conn, *, session: date | None = None, include_extended: bool = Fa
     now = now or datetime.now(UTC)
     latest = bars_module.latest_closed_session(now)
     session = session or latest
-    cut = _cutoff(session, now) if session < latest else now
+    pit = session < latest                # an older day is read as its own close knew it: versions, reviews, fills
+    cut = _cutoff(session, now) if pit else now
     errors: dict[str, str] = {}
     entry: list[dict] = []
     holding: list[dict] = []
     ended: list[dict] = []
-    hs_rows = _holding_rows(conn, session, cut=cut, errors=errors)
+    hs_rows = _holding_rows(conn, session, cut=cut, errors=errors, point_in_time=pit)
     seen_tickers: set[str] = set()
 
     by_ticker: dict[str, list[dict]] = {}
@@ -400,8 +409,9 @@ def plan_table(conn, *, session: date | None = None, include_extended: bool = Fa
     for ticker in sorted(by_ticker):
         try:
             with conn.transaction():
-                context = plan_review.ticker_context(conn, ticker, now=cut)
-                items = plan_review.ticker_chain_items(conn, ticker, session=session, now=cut, context=context)
+                context = plan_review.ticker_context(conn, ticker, now=cut, point_in_time=pit)
+                items = plan_review.ticker_chain_items(conn, ticker, session=session, now=cut, context=context,
+                                                       point_in_time=pit)
                 held_items = [i for i in items if i['state']['state'] in ('holding', 'exiting')]
                 for item in items:
                     name = item['state']['state']
@@ -437,16 +447,17 @@ def plan_table(conn, *, session: date | None = None, include_extended: bool = Fa
             continue
         try:
             with conn.transaction():
-                context = plan_review.ticker_context(conn, ticker, now=cut)
+                context = plan_review.ticker_context(conn, ticker, now=cut, point_in_time=pit)
                 holding.append(_chainless_holding_row(conn, ticker, hs, context, cut=cut))
         except Exception as exc:        # noqa: BLE001
             errors[ticker] = str(exc) or type(exc).__name__
 
-    other = _units_without_chain(conn, session=session, cut=cut, entry=entry, ended=ended,
+    other = _units_without_chain(conn, session=session, cut=cut, entry=entry, ended=ended, pit=pit,
                                  active_tickers=active_tickers, errors=errors)
     groups = {'entry': entry, 'holding': holding, 'ended': ended}
-    if not include_extended:
-        groups = {name: [r for r in rows if r['pool'] != 'extended'] for name, rows in groups.items()}
+    if not include_extended:       # the switch is for extended-pool units; a position is never hidden from 「今日」
+        groups = {name: rows if name == 'holding' else [r for r in rows if r['pool'] != 'extended']
+                  for name, rows in groups.items()}
         other = [u for u in other if not u.pop('_extended', False)]
     for unit in other:
         unit.pop('_extended', None)
@@ -456,7 +467,7 @@ def plan_table(conn, *, session: date | None = None, include_extended: bool = Fa
             'counts': {name: len(rows) for name, rows in groups.items()}, 'errors': errors}
 
 
-def _units_without_chain(conn, *, session: date, cut: datetime, entry: list[dict], ended: list[dict],
+def _units_without_chain(conn, *, session: date, cut: datetime, entry: list[dict], ended: list[dict], pit: bool,
                          active_tickers: set[str], errors: dict[str, str]) -> list[dict[str, Any]]:
     """The undecided units of the last 14 days that have no row yet: buy units without a chain become entry rows (or
     ended rows once their baseline expired), the rest are the 「其他触发」 lines."""
@@ -481,18 +492,28 @@ def _units_without_chain(conn, *, session: date, cut: datetime, entry: list[dict
                 if repository.chain_versions(conn, ticker, signal_date):
                     continue                      # the unit opened a chain: its row is the chain's
                 merged = repository.retrigger_for_unit(conn, ticker, signal_date)
-                if merged is not None and ticker in active_tickers:
-                    continue                      # merged into an active chain: a line inside that chain's row
-                if merged is None and ticker in active_tickers:
+                merged_end = None
+                if merged is not None:
+                    target = plan_review.read_chain_facts(
+                        conn, {'ticker': ticker, 'signal_date': merged['chain_signal_date']}, session=session,
+                        now=cut, point_in_time=pit)
+                    if target is not None and target['state']['state'] in timeline.ACTIVE_STATES:
+                        continue                  # merged into an active chain: a line inside that chain's row
+                    if target is not None:
+                        context = plan_review.ticker_context(conn, ticker, now=cut, point_in_time=pit)
+                        merged_end = _end_of(target, session, segments=context['book']['closed'])
+                elif ticker in active_tickers:
+                    other.append(shape)           # the ticker has an active chain this older unit never joined: a line only
                     continue
                 plan = repository.rule_plan(conn, ticker, signal_date)
                 if plan is None or plan['status'] != 'ok':
                     other.append(shape)
                     continue
-                context = plan_review.ticker_context(conn, ticker, now=cut)
+                context = plan_review.ticker_context(conn, ticker, now=cut, point_in_time=pit)
                 if service.unit_fills(conn, ticker, signal_date, context):
                     continue                      # a fill followed this baseline: the position's row shows it
-                row = _no_chain_unit(conn, ticker, signal_date, plan, merged=merged, session=session, cut=cut)
+                row = _no_chain_unit(conn, ticker, signal_date, plan, merged=merged, merged_end=merged_end, session=session,
+                                     cut=cut)
                 if row is None:
                     continue
                 row['pool'] = 'extended' if extended else row['pool']
@@ -502,13 +523,16 @@ def _units_without_chain(conn, *, session: date, cut: datetime, entry: list[dict
     return other
 
 
-def _no_chain_unit(conn, ticker: str, signal_date: date, plan: dict[str, Any], *, merged: dict | None, session: date,
-                   cut: datetime) -> dict[str, Any] | None:
+def _no_chain_unit(conn, ticker: str, signal_date: date, plan: dict[str, Any], *, merged: dict | None,
+                   merged_end: dict | None, session: date, cut: datetime) -> dict[str, Any] | None:
     """The row of a buy unit with no chain of its own: why the Agent gave no plan, or that its chain ended today."""
     runs = repository.agent_runs_for(conn, ticker, signal_date)
     latest = runs[-1] if runs else None
     if merged is not None:
-        reason = '所并入的链今日作废，以下为规则基线'
+        # the chain the unit joined is over: say how and when it ended (expired, invalidated, closed, superseded ...)
+        ended = (f" {_mmdd(merged_end['at'])} {_how(merged_end)}" if merged_end is not None else '')
+        reason = (f"所并入的链 {ticker}·{_mmdd(merged['chain_signal_date'])} 已于{ended}，以下为规则基线"
+                  if merged_end is not None else '所并入的链已结束，以下为规则基线')
     elif latest is None:
         reason = 'Agent 尚未给出计划，以下为规则基线'
     elif latest['status'] == 'pass':
@@ -534,9 +558,10 @@ def holding_status_view(conn, *, session: date, now: datetime | None = None) -> 
     as written; a held ticker whose row is missing is computed and marked ``stale`` (R18), never stored."""
     _require(conn)
     now = now or datetime.now(UTC)
-    cut = _cutoff(session, now) if session < bars_module.latest_closed_session(now) else now
+    pit = session < bars_module.latest_closed_session(now)
+    cut = _cutoff(session, now) if pit else now
     errors: dict[str, str] = {}
-    rows = list(_holding_rows(conn, session, cut=cut, errors=errors).values())
+    rows = list(_holding_rows(conn, session, cut=cut, errors=errors, point_in_time=pit).values())
     rows.sort(key=lambda r: (INSTRUCTION_ORDER.get(r['instruction'], 9), r['ticker']))
     return rows
 
@@ -546,6 +571,33 @@ def holding_status_view(conn, *, session: date, now: datetime | None = None) -> 
 def _link_label(prefix: str, plan: dict[str, Any], *, state: str | None = None) -> str:
     until = _mmdd(plan['valid_until'])
     return f'{prefix}（{state + "，" if state else ""}有效至 {until}）'
+
+
+def plan_label(plan: dict[str, Any], *, version_no: int | None = None, state: str | None = None) -> str:
+    """The label of a plan as the link list and the trade list show it: 「Agent MU·10-29 第 2 版（入场期，有效至 11-03）」,
+    「规则基线 MU·10-29（有效至 11-04）」, 「自定 MU·10-28 入场 95.00–97.00（有效 10-28）」."""
+    ticker = plan['ticker']
+    if plan['kind'] == 'agent' and version_no is not None:
+        return _link_label(f"Agent {chain_label(ticker, plan['signal_date'], version_no)}", plan, state=state)
+    if plan['kind'] == 'own':
+        return (f"自定 {ticker}·{_mmdd(plan['signal_date'])} 入场 {_money(plan['entry_low'])}–{_money(plan['entry_high'])}"
+                f"（有效 {_mmdd(plan['valid_from'])}）")
+    prefix = '规则基线' if plan['kind'] == 'rule' else 'Agent'
+    return _link_label(f"{prefix} {ticker}·{_mmdd(plan['signal_date'])}", plan)
+
+
+def trade_plan_labels(conn, trades: list[dict[str, Any]]) -> dict[Any, str]:
+    """``plan_label`` of the plan each trade follows (trades without ``plan_id`` are absent)."""
+    out: dict[Any, str] = {}
+    for trade in trades:
+        if trade.get('plan_id') is None:
+            continue
+        plan = repository.plan_by_id(conn, trade['plan_id'])
+        if plan is None:
+            continue
+        version = repository.version_by_plan(conn, plan['id']) if plan['kind'] == 'agent' else None
+        out[trade['id']] = plan_label(plan, version_no=version['version_no'] if version else None)
+    return out
 
 
 def linkable_plans(conn, ticker: str, *, executed_at: datetime) -> dict[str, Any]:
@@ -558,29 +610,25 @@ def linkable_plans(conn, ticker: str, *, executed_at: datetime) -> dict[str, Any
     day = _ny_day(executed_at)
     plans: list[dict[str, Any]] = []
     default_id = None
-    found = plan_review.active_chain_of(conn, ticker, session=day, now=executed_at)
+    # read the chain as the moment of the fill knew it: the version that was the head then, the state it was in then
+    found = plan_review.active_chain_of(conn, ticker, session=day, now=executed_at, point_in_time=True)
     if found is not None and found['state']['state'] in timeline.REVIEWABLE_STATES:
         chain = found['chain']
-        known = [v for v in repository.chain_versions(conn, ticker, chain['signal_date'])
-                 if v['created_at'] <= executed_at]
-        if known:
-            head = known[-1]
-            plan = repository.plan_by_id(conn, head['plan_id'])
-            plans.append({'plan_id': str(plan['id']), 'kind': 'agent', 'chain_signal_date': chain['signal_date'],
-                          'version_no': head['version_no'],
-                          'label': _link_label(f"Agent {chain_label(ticker, chain['signal_date'], head['version_no'])}",
-                                               plan, state=STATE_TEXT[found['state']['state']])})
-            default_id = str(plan['id'])
+        head = chain['versions'][-1]
+        plan = chain['head_plan']
+        plans.append({'plan_id': str(plan['id']), 'kind': 'agent', 'chain_signal_date': chain['signal_date'],
+                      'version_no': head['version_no'],
+                      'label': plan_label(plan, version_no=head['version_no'],
+                                          state=STATE_TEXT[found['state']['state']])})
+        default_id = str(plan['id'])
     since = add_trading_days(day, -OWN_LINK_SESSIONS)
     for plan in repository.plans_for_ticker(conn, ticker, since=since):
         if plan['kind'] == 'rule' and plan['status'] == 'ok' and plan['valid_from'] <= day <= plan['valid_until']:
             plans.append({'plan_id': str(plan['id']), 'kind': 'rule', 'chain_signal_date': None, 'version_no': None,
-                          'label': _link_label(f"规则基线 {ticker}·{_mmdd(plan['signal_date'])}", plan)})
+                          'label': plan_label(plan)})
         elif plan['kind'] == 'own' and since <= plan['valid_from'] <= day:
             plans.append({'plan_id': str(plan['id']), 'kind': 'own', 'chain_signal_date': None, 'version_no': None,
-                          'label': (f"自定 {ticker}·{_mmdd(plan['signal_date'])} 入场 "
-                                    f"{_money(plan['entry_low'])}–{_money(plan['entry_high'])}"
-                                    f"（有效 {_mmdd(plan['valid_from'])}）")})
+                          'label': plan_label(plan)})
     return {'ticker': ticker, 'plans': plans, 'default_plan_id': default_id}
 
 
@@ -651,8 +699,7 @@ def plan_history(conn, ticker: str, *, include_reviews: bool = False, include_ba
             tail = '此前没有计划链'
         else:
             gap = len(trading_days_between(previous_end['at'], signal_date)) - 1 if previous_end['at'] <= signal_date else 0
-            how = previous_end['text'].replace('已过期（未执行）', '过期未执行')
-            how = how[1:] if how.startswith('已') else how                # 「已于 10-24 作废：…」, not 「已于 10-24 已作废」
+            how = _how(previous_end)                                       # 「已于 10-24 作废：…」, not 「已于 10-24 已作废」
             tail = (f"上一条链 {ticker}·{_mmdd(previous_key)} 已于 {_mmdd(previous_end['at'])} "
                     f"{how}，间隔 {max(gap, 0)} 个交易日")
         add(0, {'kind': 'chain_open', 'at': first['created_at'], 'session': _ny_day(first['created_at']),
@@ -763,9 +810,15 @@ def linkable_view(ticker: str, executed_at: datetime) -> dict[str, Any]:
     return _view(lambda conn: linkable_plans(conn, ticker, executed_at=executed_at))
 
 
-def notes_view(*, ticker: str, chain_signal_date: date | None = None, plan_id=None) -> dict[str, Any]:
+def notes_view(*, ticker: str | None, chain_signal_date: date | None = None, plan_id=None) -> dict[str, Any]:
     def read(conn):
         _require(conn)
+        nonlocal ticker
+        if not ticker:                    # a plan knows its ticker
+            plan = repository.plan_by_id(conn, plan_id) if plan_id else None
+            if plan is None:
+                raise LookupError('plan not found')
+            ticker = plan['ticker']
         rows = repository.plan_notes_for(conn, ticker, chain_signal_date=chain_signal_date, plan_id=plan_id)
         return {'notes': [n for n in rows if n['status'] == 'active'], 'all': rows}
     out = _view(read)

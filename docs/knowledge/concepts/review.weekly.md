@@ -19,7 +19,7 @@ sources: [investment_assistant/workbench/review.py, investment_assistant/workben
 - **执行偏差**：成交价相对信号后下一交易日开盘价的偏离，以及从**所关联的计划版本生成**到成交的延迟小时数（`review-7` 及更早是从决定到成交）。
 - **计划外成交**（`unplanned_trades`，`review-8`）：本周没有关联任何计划的买入。`review-7` 及更早叫「无信号交易」。
 - **已平仓交易**：持有交易日数、盈亏、同期 SPY、最大浮盈与浮亏。
-- **计划影子**：按计划种类汇总，Agent 分首版与最新版两个口径，见[首版与最新版汇总](review.first_latest.md)。`review-8` 起按影子口径分开：`plans` 是带执行字段的计划（`plan-shadow-2`）、`plans_v1` 是旧计划（`plan-shadow-1`）、`plans_counterfactual` 是前者在 `plan-shadow-1` 下的反事实，三者不混算。
+- **计划影子**：按计划种类汇总，Agent 分首版与最新版两个口径，见[首版与最新版汇总](review.first_latest.md)。`review-8` 起 `plans` 列出全部计划：带执行字段的按 `plan-shadow-2` 用原来的键，旧计划按 `plan-shadow-1` 用带口径名的键（如「规则（旧计划 · plan-shadow-1）」），两种口径各自汇总、不混算；`plans_counterfactual` 是前者在 `plan-shadow-1` 下的反事实。
 - **纪律**：追高进场、过早止盈、死扛亏损、计划外交易四项与遵守率（`review-8` 起是 `discipline-2`）。
 - **分池**：核心（`core`）、筛选（`screen`）、扩展（`extended`）三类。
 - **三方对比**：当期冻结一份（`review-8` 起是 `tracks-2`）。

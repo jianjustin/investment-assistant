@@ -53,6 +53,22 @@ def test_check_draft_ok():
         assert check(draft(expected_vs_actual=[{'text': 'x', 'refs': [f'fact:{key}']}]))
 
 
+def test_check_draft_allows_only_the_cards_own_fact_keys():
+    """M5: a retro-1 draft cannot cite fact:execution / fact:holding, a retro-2 draft cannot cite fact:decision."""
+    from investment_assistant.workbench.retro import FACT_KEYS_V2
+
+    def with_keys(key, keys):
+        refs = [f'fact:{key}']
+        text = json.dumps(draft(expected_vs_actual=[{'text': 'x', 'refs': refs}],
+                                decision_review={'text': 'x', 'refs': refs}, lessons=[]), ensure_ascii=False)
+        return growth_check.check_draft(text, refs=REFS, concept_ids=CONCEPTS, default_ticker='AAPL', fact_keys=keys)
+    assert with_keys('decision', FACT_KEYS)
+    assert with_keys('execution', FACT_KEYS_V2) and with_keys('holding', FACT_KEYS_V2)
+    for key, keys in (('execution', FACT_KEYS), ('holding', FACT_KEYS), ('decision', FACT_KEYS_V2)):
+        with pytest.raises(Rejected):
+            with_keys(key, keys)
+
+
 def with_(mutate):
     payload = copy.deepcopy(draft())
     mutate(payload)

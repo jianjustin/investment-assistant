@@ -146,8 +146,10 @@ def test_signal_to_weekly_review_end_to_end(offline):
 
     week = S1 - timedelta(days=S1.weekday())
     frozen = service.generate_weekly(week, notes='合成笔记', now=later)
-    assert frozen['stats']['units'] == {'executed': 1, 'not_executed': 1}
-    assert frozen['stats']['by_execution']['not_executed']['5']['count'] == 1
+    assert frozen['stats']['units'] == {'executed': 1, 'not_executed': 0}    # the watch unit nobody traded: not applicable
+    assert 'not_executed' not in frozen['stats']['by_execution'] or \
+        frozen['stats']['by_execution']['not_executed']['5']['count'] == 0
+    assert frozen['stats']['by_rule']                                           # ...but still in the per-rule table
     assert frozen['stats']['execution'][0]['slippage'] == pytest.approx(0.0)
     assert frozen['stats']['unplanned_trades'] == []
 

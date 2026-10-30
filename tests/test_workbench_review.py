@@ -147,6 +147,17 @@ def test_review8_execution_delay_from_version():
                                    'slippage': pytest.approx(0.01), 'delay_hours': pytest.approx(17.0)}]
 
 
+def test_review8_non_buy_units_have_no_execution_state():
+    """M3: a unit nobody could execute (sell / watch / conflict) is in the control group and by_rule only."""
+    week, units, outcomes, trades, _ = _week_fixture()
+    watch = unit('watch', execution='not_applicable', rules=('new_filing',))
+    outcomes[watch['id']] = review.shadow_outcome(watch, STOCK, SPY)
+    stats = review.weekly_stats(week, [*units, watch], outcomes, trades, segments=[], entry_opens={})
+    assert stats['units'] == {'executed': 2, 'not_executed': 1}                  # the watch unit is in neither
+    assert 'not_applicable' not in stats['by_execution']
+    assert stats['by_rule']['new_filing']['5']['count'] == 3                       # ... but it is in by_rule
+
+
 def test_review8_unplanned_trades():
     week, units, outcomes, trades, _ = _week_fixture()
     stats = review.weekly_stats(week, units, outcomes, trades, segments=[], entry_opens={}, unplanned=[trades[1]])
@@ -169,7 +180,10 @@ def test_review8_plans_split_by_shadow_version():
     old = {**base, 'kind': 'agent', 'shadow_version': 'plan-shadow-1', 'outcome': {'status': 'closed', 'r': 2.0},
            'shadow_v1': None, 'chain': None}
     stats = review.weekly_stats(week, [], {}, [], segments=[], entry_opens={}, plan_outcomes=[new, old])
-    assert stats['plans']['rule']['voided'] == 1 and 'agent' not in stats['plans']
+    assert stats['plans']['rule']['voided'] == 1 and 'agent' not in stats['plans']        # the new plans, their own keys
+    # ... and the older ones in the same list, under keys that name their shadow (the page lists every key)
+    assert stats['plans']['Agent 首版（旧计划 · plan-shadow-1）']['count'] == 1
+    assert stats['plans']['Agent 最新版（旧计划 · plan-shadow-1）']['r_mean'] == 2.0
     assert stats['plans_v1']['agent']['count'] == 1
     assert stats['plans_counterfactual']['rule']['r_mean'] == 1.0
     assert stats['shadow_versions']['plans'] == 'plan-shadow-2'
@@ -184,6 +198,28 @@ def test_old_snapshots_not_recomputed(workbench_db):
     assert review.CALC_VERSION == 'review-8'
     [head] = review.list_weekly(workbench_db)
     assert head['id'] == first['id'] and head['stats'] == frozen
+
+
+def test_generating_a_new_week_leaves_an_old_snapshot_alone(workbench_db, monkeypatch):
+    """Review Focus 3: generating a `review-8` snapshot for another week neither rewrites nor supersedes the frozen
+    `review-7` one."""
+    from contextlib import contextmanager
+
+    from investment_assistant.workbench import service
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+    monkeypatch.setattr(service, 'connection', connection)
+    old_week = date(2026, 10, 5)
+    frozen = {'calc_version': 'review-7', 'units': {'decided': 3, 'undecided': 1}, 'by_decision': {'accept': {}}}
+    old = review.save_weekly(workbench_db, old_week, frozen, notes='旧', supersedes_id=None)
+    before = workbench_db.execute('SELECT id, calc_version, stats::text, supersedes_id FROM weekly_reviews').fetchall()
+    new = service.generate_weekly(date(2026, 10, 19), now=datetime(2026, 11, 2, 22, 30, tzinfo=UTC))
+    assert new['calc_version'] == 'review-8' and new['id'] != old['id']
+    after = workbench_db.execute('SELECT id, calc_version, stats::text, supersedes_id FROM weekly_reviews').fetchall()
+    assert len(after) == 2 and [r for r in after if r[0] == old['id']] == before   # the old row is byte-for-byte the same
+    assert {h['id'] for h in review.list_weekly(workbench_db)} == {new['id'], old['id']}      # two weeks, two heads
 
 
 # --- weekly snapshot persistence (disposable schema) ---
@@ -299,6 +335,8 @@ def test_weekly_stats_carries_by_pool():
                                 by_pool={'core': {'trend_reclaim': {'triggers': 1}}})
     assert stats['by_pool'] == {'core': {'trend_reclaim': {'triggers': 1}}}
     assert review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], entry_opens={})['by_pool'] == {}
+    split = review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], entry_opens={}, by_pool_v1={'core': {}})
+    assert split['by_pool'] == {} and split['by_pool_v1'] == {'core': {}}        # plan columns of two shadows, apart
 
 
 def test_weekly_plan_summary_has_agent_kind():
@@ -392,8 +430,10 @@ def test_generate_weekly_counts_first_and_latest(workbench_db, monkeypatch):
         previous = plan['id']
     out = service.generate_weekly(date(2026, 10, 19), now=NOW)
     assert out['calc_version'] == 'review-8' and out['stats']['calc_version'] == 'review-8'
-    # agent-2 versions carry no execution fields: plan-shadow-1, summarised apart from the plan-shadow-2 plans
-    assert out['stats']['plans'] == {} and out['stats']['shadow_versions']['plans_v1'] == 'plan-shadow-1'
+    # agent-2 versions carry no execution fields: plan-shadow-1, listed under keys that name that shadow
+    assert out['stats']['shadow_versions']['plans_v1'] == 'plan-shadow-1'
+    assert out['stats']['plans']['Agent 首版（旧计划 · plan-shadow-1）']['count'] == 1
+    assert set(out['stats']['plans']) == {'Agent 首版（旧计划 · plan-shadow-1）', 'Agent 最新版（旧计划 · plan-shadow-1）'}
     assert out['stats']['plans_v1']['agent']['count'] == 1
     assert out['stats']['plans_v1']['agent_latest']['count'] == 1
     agent = out['stats']['tracks']['units'][0]['agent']

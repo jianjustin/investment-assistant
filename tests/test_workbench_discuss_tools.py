@@ -185,6 +185,24 @@ def test_plan_context_has_execution(db, scripted_model):
     assert '只给自己看的备注' not in json.dumps(data, ensure_ascii=False)
 
 
+def test_card_context_hides_note_bodies(db, scripted_model):
+    """D25: a retro-2 card froze the notes you wrote; the discussion tool hands the Agent their count, never the text."""
+    plan, _ = run_chain(db, scripted_model)
+    secret = '只给自己看的备注原文'
+    cid = make_card(db, key='unit:AAA:2026-10-22:closed:x', ticker='AAA', signal_date=SESSION, end_kind='position_closed',
+                    end_session=SESSION,
+                    facts={'subject': {'kind': 'unit', 'exit_basis': None},
+                           'execution': {'status': 'adopted', 'text': '采纳（照规则基线）',
+                                         'notes': [{'id': 7, 'body': secret, 'created_at': '2026-10-22T10:00:00Z'}]}})
+    db.commit()
+    data = get_plan_context(dataclasses.replace(make_ctx(db, card_id=cid), plan_id=None))
+    text = json.dumps(data, ensure_ascii=False)
+    assert secret not in text
+    assert data['facts']['execution']['notes'] == [{'id': 7, 'created_at': '2026-10-22T10:00:00Z'}]
+    assert data['facts']['execution']['text'] == '采纳（照规则基线）'
+    assert plan is not None
+
+
 def test_card_context_excludes_drafts(db, scripted_model):
     plan, _ = run_chain(db, scripted_model)
     cid = make_card(db, key='unit:AAA:2026-10-22:ended', ticker='AAA', signal_date=SESSION, end_kind='stop',

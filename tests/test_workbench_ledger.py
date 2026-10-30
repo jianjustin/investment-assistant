@@ -69,7 +69,7 @@ def test_plan_id_and_own_plan_are_exclusive():
 
 @pytest.mark.parametrize('hold', [2, 31, True, '10', 7.5])
 def test_own_plan_max_hold_range(hold):
-    with pytest.raises(ledger.LedgerError):
+    with pytest.raises(ledger.LedgerError, match='最长持有须为 3–30 个交易日'):
         ledger.validate_trade(trade_payload(own_plan=own_levels(max_hold_sessions=hold)), now=NOW + timedelta(days=1))
 
 

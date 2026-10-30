@@ -51,6 +51,8 @@ def _read_ro(fn: Callable[[Any], Any]) -> Any:
 def require_ready(conn) -> None:
     if not repository.growth_ready(conn):
         raise service.Unavailable(MIGRATION_MISSING)
+    if not repository.executable_ready(conn):           # retro-2 reads trades.plan_id, plan_notes, chain_retriggers
+        raise service.Unavailable('migration_029_missing')
 
 
 def _ny_day(moment: datetime) -> date:

@@ -176,6 +176,7 @@ def test_ended_window_five_sessions(db):
     """D35: only chains that ended within the last 5 sessions are listed; older ones belong to the plan history."""
     market = Market()
     entry_chain(db, market)
+    retime(db)
     expired_on = day(3)
     assert rows_of(table(db, 2), 'ended') == []                                # still in the entry phase
     [row] = rows_of(table(db, 3), 'ended')
@@ -428,6 +429,7 @@ def test_linkable_excludes_exiting(db):
     when = datetime.combine(day(2), time(10, 0), tzinfo=NY)
     assert plan_views.linkable_plans(db, 'SYNTH', executed_at=when)['default_plan_id'] == str(v0['plan']['id'])
     exit_review(db, v0, 2)
+    retime(db)
     out = plan_views.linkable_plans(db, 'SYNTH', executed_at=datetime.combine(day(3), time(10, 0), tzinfo=NY))
     assert out['default_plan_id'] is None and all(p['kind'] != 'agent' for p in out['plans'])
 
@@ -508,3 +510,209 @@ def test_notes_not_in_any_agent_input(db):
     calls = db.execute('SELECT count(*) FROM agent_tool_calls WHERE args::text LIKE %s OR result::text LIKE %s',
                        [f'%{secret}%', f'%{secret}%']).fetchone()[0]
     assert stored == 0 and calls == 0
+    # the discussion path: a retro-2 card froze the note; what the discussion tool hands out has no text of it
+    import dataclasses
+    import json
+
+    from investment_assistant.workbench import retro
+    from investment_assistant.workbench.agent import discuss_tools
+
+    notes = repository.plan_notes_for(db, 'SYNTH', chain_signal_date=S1)
+    facts = {'subject': {'kind': 'unit', 'exit_basis': None},
+             'execution': retro.execution_fact(buys=[], plans_by_trade={}, notes=notes)}
+    assert secret in json.dumps(facts, ensure_ascii=False)                   # the card does carry it (for you)
+    card_id = repository.insert_review_card(db, {
+        'event_key': 'unit:SYNTH:x', 'subject': 'unit', 'ticker': 'SYNTH', 'signal_date': S1, 'buy_trade_id': None,
+        'end_kind': 'expired', 'end_session': day(3), 'retro_version': 'retro-2', 'facts': facts,
+        'detected_run_id': 'r'})
+    ctx = discuss_tools.DiscussContext(ticker='SYNTH', session=day(3), cutoff_at=evening(day(3)),
+                                       read=lambda fn: fn(db), signal_date=S1, plan_id=None, card_id=card_id,
+                                       unit_plan_ids=frozenset(), unit_run_ids=frozenset())
+    context = discuss_tools.get_plan_context(ctx)
+    assert secret not in json.dumps(context, ensure_ascii=False)
+    assert [n['id'] for n in context['facts']['execution']['notes']] == [n['id'] for n in notes]
+
+
+# ---------------------------------------------------------------- an older day is read as that day knew it (I6)
+
+def test_past_plan_table_ignores_the_next_days_exit_instruction(db):
+    """The probe of the review: a position whose exit instruction comes on day 3 is still `holding` in the table of
+    day 2 when that table is read later."""
+    market = Market()
+    v0 = holding_chain(db, market)
+    run(db, market, 2, tickers=['SYNTH'], model=make_model(review=verdict('SYNTH', 'maintain', 'ok', cite=False)))
+    exit_review(db, v0, 3)
+    retime(db)
+    [row] = rows_of(table(db, 2, now_k=4), 'holding')                      # read two days later
+    assert row['chain']['state'] == 'holding' and row['status']['label'] == '持仓期'
+    [after] = rows_of(table(db, 4), 'holding')
+    assert after['chain']['state'] == 'exiting'
+
+
+def test_past_plan_table_shows_an_entry_chain_invalidated_later(db):
+    """An entry-phase chain that a review invalidates on day 2 is still an entry row in the table of day 1."""
+    market = Market()
+    v0 = entry_chain(db, market)
+    db.execute("INSERT INTO plan_reviews (ticker, signal_date, head_plan_id, session, trigger, run_id, mode, "
+               "timeline_version, outcome, decided_by, reason, attempt, cutoff_at, detail) VALUES "
+               "('SYNTH', %s, %s, %s, 'batch', 'r', 'entry', 'timeline-2', 'invalidate', 'host', '失效条件成立', 1, %s, '{}')",
+               [S1, v0['plan']['id'], day(2), evening(day(2))])
+    retime(db)
+    [row] = rows_of(table(db, 1, now_k=5), 'entry')
+    assert row['chain']['state'] == 'entry'
+    assert rows_of(table(db, 1, now_k=5), 'ended') == []
+    [ended] = rows_of(table(db, 2, now_k=5), 'ended')
+    assert ended['status']['label'].startswith('已作废：')
+
+
+def test_past_plan_table_shows_the_version_of_that_day(db):
+    market = Market()
+    v0 = entry_chain(db, market)
+    spike(market, 'SYNTH', 1)
+    run(db, market, 1, tickers=['SYNTH'], model=make_model(revise=renewal('SYNTH'), counter=counter()))
+    retime(db)
+    [then] = rows_of(table(db, 0, now_k=3), 'entry')
+    assert then['chain']['version_no'] == 0 and then['plan']['plan_id'] == str(v0['plan']['id'])
+    [later] = rows_of(table(db, 1, now_k=3), 'entry')
+    assert later['chain']['version_no'] == 1
+
+
+def test_past_table_does_not_show_a_chain_opened_later(db):
+    market = Market()
+    entry_chain(db, market)
+    retime(db)
+    assert table(db, 0, now_k=0)['counts']['entry'] == 1
+    before = plan_views.plan_table(db, session=day(0) - timedelta(days=3), now=evening(day(4)))
+    assert before['counts'] == {'entry': 0, 'holding': 0, 'ended': 0}
+
+
+def test_linkable_reads_the_chain_as_the_fill_knew_it(db):
+    """M11: a fill back-filled for day 1 is offered the version that was the head then, even though the chain was
+    invalidated later."""
+    market = Market()
+    v0 = entry_chain(db, market)
+    db.execute("INSERT INTO plan_reviews (ticker, signal_date, head_plan_id, session, trigger, run_id, mode, "
+               "timeline_version, outcome, decided_by, reason, attempt, cutoff_at, detail) VALUES "
+               "('SYNTH', %s, %s, %s, 'batch', 'r', 'entry', 'timeline-2', 'invalidate', 'host', 'x', 1, %s, '{}')",
+               [S1, v0['plan']['id'], day(2), evening(day(2))])
+    retime(db)
+    out = plan_views.linkable_plans(db, 'SYNTH', executed_at=datetime.combine(day(1), time(10, 0), tzinfo=NY))
+    assert out['default_plan_id'] == str(v0['plan']['id'])
+    late = plan_views.linkable_plans(db, 'SYNTH', executed_at=datetime.combine(day(3), time(10, 0), tzinfo=NY))
+    assert late['default_plan_id'] is None
+
+
+def test_include_extended_never_hides_a_position(db):
+    """I3: the extended-pool switch is for extended-pool units; their positions stay in the holding group."""
+    market = Market()
+    db.execute('INSERT INTO pool_tiers (ticker, tier, effective_session, recorded_at) '
+               "VALUES ('SYNA', 'extended', %s, %s)", [S1 - timedelta(days=1), evening(S1) - timedelta(days=1)])
+    signal_day(db, market, None, pool=pool_module.Pool(core=('SYNTH',), extended=('SYNA',)))
+    fill(db, 'SYNA', '10', '125', 1, repository.chain_head(db, 'SYNA', S1)['plan']['id'])
+    hidden = table(db, 2)
+    assert [r['ticker'] for r in rows_of(hidden, 'holding')] == ['SYNA'] and rows_of(hidden, 'holding')[0]['pool'] == 'extended'
+    assert hidden['counts']['holding'] == 1
+    assert [r['ticker'] for r in rows_of(table(db, 2, include_extended=True), 'holding')] == ['SYNA']
+
+
+def test_chain_view_versions_carry_their_execution(db):
+    """I4 (R13): the plan page's 「执行状态」 column: the version a fill was linked to is adopted, the other one is not."""
+    from investment_assistant.workbench import plan_review
+
+    market = Market()
+    v0 = entry_chain(db, market)
+    spike(market, 'SYNTH', 1)
+    run(db, market, 1, tickers=['SYNTH'], model=make_model(revise=renewal('SYNTH'), counter=counter()))
+    fill(db, 'SYNTH', '10', '125', 2, repository.chain_head(db, 'SYNTH', S1)['plan']['id'])
+    view = plan_review.chain_view('SYNTH', S1, now=evening(day(2)))
+    first, second = view['versions']
+    assert first['execution'] == {'status': 'not_executed'}                        # a holding chain waits for no fill
+    assert second['execution'] == {'status': 'adopted', 'date': f'{day(2):%m-%d}', 'quantity': '10'}
+    assert v0['plan']['id'] is not None
+
+
+def test_trade_list_carries_the_plan_label(db):
+    """M1: the trade list says which plan a fill followed, in the words of the link list, not a UUID."""
+    market = Market()
+    v0 = entry_chain(db, market)
+    retime(db)
+    fill(db, 'SYNTH', '10', '125', 1, v0['plan']['id'])
+    plain = repository.insert_trade(db, {
+        'request_id': uuid.uuid4(), 'ticker': 'SYNTH', 'side': 'sell', 'quantity': 5, 'price': 130, 'fee': 0,
+        'executed_at': datetime.combine(day(2), time(10, 0), tzinfo=NY), 'decision_id': None, 'plan_id': None,
+        'note': None}, 'h', recorded_at=evening(day(2)))
+    db.commit()
+    rows = {str(t['id']): t for t in service.list_trades()}
+    linked = next(t for t in rows.values() if t['plan_id'] == v0['plan']['id'])
+    assert linked['plan_label'] == f'Agent SYNTH·09-01 第 0 版（有效至 {day(3):%m-%d}）'
+    assert 'plan_label' not in rows[str(plain['id'])]
+    assert plan_views.plan_label(v0['plan'], version_no=0, state='入场期') == \
+        f'Agent SYNTH·09-01 第 0 版（入场期，有效至 {day(3):%m-%d}）'
+
+
+def test_week_fills_belong_to_one_unit_and_own_plans_have_no_delay(db):
+    """M2: a fill linked to the baseline of a unit merged into a chain is the chain unit's, once; a fill that wrote its own
+    plan has no delay hours."""
+    market = Market()
+    entry_chain(db, market)
+    spike(market, 'SYNTH', 1)
+    run(db, market, 1, tickers=['SYNTH'], model=make_model(revise=renewal('SYNTH'), counter=counter()))
+    [merged] = repository.chain_retriggers_for(db, 'SYNTH')
+    fill(db, 'SYNTH', '10', '125', 2, merged['baseline_plan_id'])
+    retime(db)
+    week = service._week_units(db, S1 - timedelta(days=S1.weekday()), S1 + timedelta(days=6), now=evening(day(5)))
+    owned = [(f['unit_id'], str(f['trade']['id'])) for f in week['fills']]
+    assert len(owned) == len(set(t for _, t in owned)) == 1                       # once, not once per unit
+    states = {u['id']: u['execution'] for u in week['units']}
+    assert states[f'SYNTH:{S1}'] == 'adopted' and states[f'SYNTH:{day(1)}'] == 'not_executed'
+    assert owned[0][0] == f'SYNTH:{S1}'
+
+
+def test_a_fill_that_wrote_its_own_plan_has_no_delay(db):
+    from investment_assistant.workbench import ledger, review
+
+    market = Market()
+    entry_chain(db, market)
+    retime(db)
+    when = datetime.combine(day(1), time(10, 0), tzinfo=NY)
+    out = ledger.record_trade(db, {'request_id': str(uuid.uuid4()), 'ticker': 'SYNTH', 'side': 'buy', 'quantity': '5',
+                                   'price': '125', 'executed_at': when.isoformat(),
+                                   'own_plan': {'entry_low': '120', 'entry_high': '128', 'stop': '115',
+                                                'target1': '140'}}, now=evening(day(1)))
+    db.commit()
+    week = service._week_units(db, S1 - timedelta(days=S1.weekday()), S1 + timedelta(days=6), now=evening(day(1)))
+    [one] = [f for f in week['fills'] if f['trade']['id'] == out['record']['id']]
+    assert one['plan_created_at'] is None
+    stats = review.weekly_stats(S1 - timedelta(days=S1.weekday()), week['units'], {}, [], segments=[], entry_opens={},
+                                fills=week['fills'])
+    assert stats['execution'][0]['delay_hours'] is None
+
+
+def test_merged_unit_says_how_its_chain_ended(db):
+    """M8: the baseline of a unit merged into a chain that has since ended is a row, and the label says how and when."""
+    from test_workbench_plan_review import settings
+
+    market = Market()
+    entry_chain(db, market)
+    spike(market, 'SYNTH', 1)
+    run(db, market, 1, tickers=['SYNTH'], agent=settings(provider='off'))           # merged on day 1, nothing revised
+    retime(db)
+    assert rows_of(table(db, 1), 'entry')[0]['chain'] is not None                  # chain A still active: a line in its row
+    assert len(rows_of(table(db, 1), 'entry')) == 1
+    entry = [r for r in rows_of(table(db, 3), 'entry') if r['chain'] is None]
+    [row] = entry
+    assert row['status']['label'] == f'所并入的链 SYNTH·09-01 已于 {day(3):%m-%d} 过期未执行，以下为规则基线'
+
+
+def test_older_unit_of_a_ticker_with_an_active_chain_is_a_line(db):
+    """M8: an older buy unit that never joined the ticker's (later) active chain is listed under 「其他触发」."""
+    from test_workbench_plan_review import settings
+
+    market = Market()
+    run(db, market, 0, tickers=['SYNTH'], agent=settings(provider='off'))           # day 0: the unit, no chain
+    spike(market, 'SYNTH', 1)
+    run(db, market, 1, tickers=['SYNTH'], model=make_model(propose=proposal('SYNTH'), counter=counter()))
+    retime(db)
+    view = table(db, 1)
+    assert [r['chain']['signal_date'] for r in rows_of(view, 'entry')] == [day(1)]
+    assert [(u['ticker'], u['signal_date'], u['proposed_action']) for u in view['other_units']] == [('SYNTH', S1, 'buy')]

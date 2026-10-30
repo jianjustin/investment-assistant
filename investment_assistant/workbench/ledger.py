@@ -110,7 +110,7 @@ def _own_plan(value: Any) -> dict[str, Any] | None:
         hold = _plans.RULE_MAX_HOLD_SESSIONS
     low, high = _plans.MAX_HOLD_RANGE
     if isinstance(hold, bool) or not isinstance(hold, int) or not low <= hold <= high:
-        raise LedgerError(f'own_plan.max_hold_sessions must be an integer in {low}..{high}')
+        raise LedgerError(f'最长持有须为 {low}–{high} 个交易日')
     return {**levels, 'max_hold_sessions': hold}
 
 
@@ -206,8 +206,8 @@ def own_plan_signal_date(conn, ticker: str, executed_at: datetime) -> date:
     from investment_assistant.workbench import plan_review
 
     fill_day = _ny_day(executed_at)
-    found = plan_review.active_chain_of(conn, ticker, session=fill_day, now=executed_at)
-    if found is not None and found['chain']['versions'][0]['created_at'] <= executed_at:       # it existed by then
+    found = plan_review.active_chain_of(conn, ticker, session=fill_day, now=executed_at, point_in_time=True)
+    if found is not None:                           # read as the fill knew it: a chain opened later is not there
         return found['chain']['signal_date']
     since = add_trading_days(fill_day, -OWN_PLAN_UNIT_SESSIONS)
     days = [c['signal_date'] for c in repository.read_candidates(conn, ticker, since=since)
@@ -320,7 +320,12 @@ def validate_note(payload: dict[str, Any]) -> dict[str, Any]:
     if kind == 'retract' and supersedes_id is None:
         raise LedgerError('撤回需要 supersedes_id')
     body = _note_body(payload.get('body'), required=kind == 'note') or '（撤回）'
-    return {'request_id': _uuid(payload.get('request_id'), 'request_id'), 'ticker': _ticker(payload.get('ticker')),
+    given = payload.get('ticker')
+    if given in (None, '') and plan_id is not None:
+        ticker = None                    # a plan knows its ticker: record_note takes it from the plan
+    else:
+        ticker = _ticker(given)
+    return {'request_id': _uuid(payload.get('request_id'), 'request_id'), 'ticker': ticker,
             'chain_signal_date': chain_signal_date, 'plan_id': plan_id, 'kind': kind, 'body': body,
             'supersedes_id': supersedes_id}
 
@@ -330,10 +335,16 @@ def record_note(conn, payload: dict[str, Any], *, now: datetime | None = None) -
 
     Scope is a chain (``ticker`` + ``chain_signal_date``, which must exist) or a non-chain plan (``plan_id`` of a
     rule or own plan of the same ticker); a correction or retraction must point at a note of the same scope. Idempotent
-    on ``request_id`` (a different content under the same id is a ``Conflict``). Needs migration 029. Notes are never
+    on ``request_id`` (a different content under the same id is a ``Conflict``). With a ``plan_id`` the ``ticker`` may be left
+    out: it is the plan's (a ticker that does not match is a 400). Needs migration 029. Notes are never
     handed to an Agent. Returns ``{'status': 'created' | 'existing', 'record': <the row>}``."""
     rec = validate_note(payload)
     _need_executable(conn)
+    if rec['ticker'] is None:
+        plan = repository.plan_by_id(conn, rec['plan_id'])
+        if plan is None:
+            raise NotFound('plan not found')
+        rec['ticker'] = plan['ticker']
     digest = request_hash({k: v for k, v in rec.items() if v is not None})
     repository.lock(conn, f"plan-note:{rec['ticker']}")
     row = repository.plan_note_by_request(conn, rec['request_id'])

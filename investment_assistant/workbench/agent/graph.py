@@ -592,7 +592,9 @@ def run_retro(*, card: dict, ctx: ToolContext, model: BaseChatModel, checkpointe
     def check(text: str) -> dict:
         refs = (recorder.refs('retro') | recorder.knowledge_refs('retro')
                 | growth_check.concept_refs(recorder.calls, 'retro'))
-        return growth_check.check_draft(text, refs=refs, concept_ids=concept_ids, default_ticker=ctx.ticker)
+        return growth_check.check_draft(text, refs=refs, concept_ids=concept_ids, default_ticker=ctx.ticker,
+                                        fact_keys=growth_check.FACT_KEYS_V2 if agent_version == RETRO_AGENT_V2
+                                        else growth_check.FACT_KEYS)
 
     head = (f"标的 {card.get('ticker', ctx.ticker)} · 复盘卡 #{card.get('id')} · 结束日 {card.get('end_session')} · "
             f"数据截至起草时刻")

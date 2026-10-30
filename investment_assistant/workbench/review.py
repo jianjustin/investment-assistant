@@ -224,20 +224,43 @@ def pool_summary(triggers: list[dict], plan_outcomes: list[dict]) -> dict:
 
 
 EXECUTION_GROUPS = ('adopted', 'out_of_validity', 'not_executed')
+LEGACY_PLAN_LABEL = {'rule': '规则', 'own': '自定', 'agent': 'Agent 首版', 'agent_latest': 'Agent 最新版'}
+LEGACY_SHADOW_TEXT = '旧计划 · plan-shadow-1'
+
+
+def shadow_plan_summaries(plan_outcomes: list[dict[str, Any]], start: date, end: date) -> dict[str, Any]:
+    """The plan-shadow part of a `review-8` / `monthly-4` snapshot (v2.9 §5.6): every plan of the period, each shadow
+    version summarised on its own and never mixed.
+
+    ``plans``: the plans with execution fields (`plan-shadow-2`) under the usual kind keys, then the older plans
+    (`plan-shadow-1`) under keys that carry their basis (「规则（旧计划 · plan-shadow-1）」), so the page lists them all
+    and says which shadow produced each row; ``plans_v1`` / ``plans_counterfactual`` / ``shadow_versions`` are the
+    same split for machines. An entry without ``shadow_version`` counts as `plan-shadow-2`."""
+    v2 = [p for p in plan_outcomes if p.get('shadow_version', 'plan-shadow-2') == 'plan-shadow-2']
+    v1 = [p for p in plan_outcomes if p.get('shadow_version', 'plan-shadow-2') != 'plan-shadow-2']
+    old = _plan_summary(v1, start, end)
+    counterfactual = [{**p, 'outcome': p['shadow_v1']} for p in v2 if p.get('shadow_v1') is not None]
+    return {
+        'plans': {**_plan_summary(v2, start, end),
+                  **{f'{LEGACY_PLAN_LABEL.get(kind, kind)}（{LEGACY_SHADOW_TEXT}）': block for kind, block in old.items()}},
+        'plans_v1': old, 'plans_counterfactual': _plan_summary(counterfactual, start, end),
+        'shadow_versions': {'plans': 'plan-shadow-2', 'plans_v1': 'plan-shadow-1',
+                            'plans_counterfactual': 'plan-shadow-1'}}
 
 
 def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[Any, dict[str, Any]],
                  trades: list[dict[str, Any]], *, segments: list[dict[str, Any]], entry_opens: dict[Any, float],
                  fills: list[dict[str, Any]] | None = None, unplanned: list[dict[str, Any]] | None = None,
                  plan_outcomes: list[dict[str, Any]] | None = None, discipline: dict[str, Any] | None = None,
-                 by_pool: dict | None = None, tracks: dict[str, Any] | None = None,
+                 by_pool: dict | None = None, by_pool_v1: dict | None = None, tracks: dict[str, Any] | None = None,
                  learning: dict[str, Any] | None = None) -> dict[str, Any]:
     """`review-8` snapshot (v2.9 D30) for the units whose signal_date falls in the week; values are excess returns
     vs SPY.
 
     ``units`` are ALL the week's units (the control group, D26: every ticker-day with candidates, not only the
     decided ones), each ``{id, ticker, signal_date, proposed_action, rule_ids, execution}`` with ``execution`` one of
-    ``adopted`` / ``out_of_validity`` / ``not_executed`` (`execution-1`). ``units.executed`` / ``not_executed``
+    ``adopted`` / ``out_of_validity`` / ``not_executed`` (`execution-1`) or ``not_applicable`` (a sell / watch /
+    conflict unit nobody traded: it counts in ``by_rule`` and the control group, not in the execution groups). ``units.executed`` / ``not_executed``
     count them; ``by_execution`` groups the excess returns by it, plus an ``unplanned`` group that only counts the
     week's plan-less buys (they have no signal to replay). ``fills`` are the week's linked buys
     ``{trade, unit_id, plan_created_at}``: the execution list prices each against the unit's T+1 open and measures
@@ -251,7 +274,8 @@ def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[A
     for u in units:
         for rule_id in dict.fromkeys(u['rule_ids']):
             by_rule.setdefault(rule_id, []).append(u)
-        by_execution.setdefault(u['execution'], []).append(u)
+        if u['execution'] in EXECUTION_GROUPS:         # a sell / watch / conflict unit nobody traded has none
+            by_execution.setdefault(u['execution'], []).append(u)
     executed = sum(len(by_execution.get(name, [])) for name in ('adopted', 'out_of_validity'))
 
     execution = []
@@ -265,9 +289,6 @@ def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[A
                                           if created is not None else None)})
     grouped = {name: by for name, by in _grouped(by_execution, outcomes).items()}
     grouped['unplanned'] = {str(n): _summary([], len(unplanned)) for n in WINDOWS}
-    v2_plans = [p for p in plan_outcomes or [] if p.get('shadow_version', 'plan-shadow-2') == 'plan-shadow-2']
-    v1_plans = [p for p in plan_outcomes or [] if p.get('shadow_version', 'plan-shadow-2') != 'plan-shadow-2']
-    counterfactual = [{**p, 'outcome': p['shadow_v1']} for p in v2_plans if p.get('shadow_v1') is not None]
     stats = {
         'calc_version': CALC_VERSION,
         'week': {'start': week_start.isoformat(), 'end': week_end.isoformat()},
@@ -277,12 +298,9 @@ def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[A
         'execution': execution,
         'unplanned_trades': [str(t['id']) for t in unplanned],
         'closed_trades': segments,
-        'plans': _plan_summary(v2_plans, week_start, week_end),
-        'plans_v1': _plan_summary(v1_plans, week_start, week_end),
-        'plans_counterfactual': _plan_summary(counterfactual, week_start, week_end),
-        'shadow_versions': {'plans': 'plan-shadow-2', 'plans_v1': 'plan-shadow-1',
-                            'plans_counterfactual': 'plan-shadow-1'},
+        **shadow_plan_summaries(plan_outcomes or [], week_start, week_end),
         'by_pool': by_pool or {},
+        'by_pool_v1': by_pool_v1 or {},
         'discipline': discipline or {},
         'tracks': tracks,
         'note': '描述性统计，样本小且重叠，不代表规则有效。',

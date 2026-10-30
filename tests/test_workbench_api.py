@@ -1205,3 +1205,23 @@ def test_trade_link_errors_and_the_note_endpoint(seeded, client):
                                                               'chain_signal_date': BATCH_SESSION.isoformat()}).json()
     assert [n['body'] for n in listed['notes']] == ['等回踩']
     assert client.post('/api/workbench/plan-notes', json={**note, 'request_id': 'x'}).status_code == 400
+
+
+def test_notes_on_a_plan_need_no_ticker(seeded, client):
+    """I1: the page writes and reads a non-chain plan's notes with the plan id alone; the ticker is the plan's."""
+    from investment_assistant.workbench import repository as repo
+
+    rule = repo.rule_plan(seeded, 'AAA', BATCH_SESSION)
+    body = {'request_id': '6f1d1c1e-6666-4444-8888-0000000000c1', 'body': '规则基线上的备注', 'plan_id': str(rule['id'])}
+    created = client.post('/api/workbench/plan-notes', json=body)
+    assert created.status_code == 200 and created.json()['record']['ticker'] == 'AAA'
+    assert client.post('/api/workbench/plan-notes', json=body).json()['status'] == 'existing'
+    listed = client.get('/api/workbench/plan-notes', params={'plan_id': str(rule['id'])})
+    assert listed.status_code == 200 and [n['body'] for n in listed.json()['notes']] == ['规则基线上的备注']
+    assert client.post('/api/workbench/plan-notes', json={**body, 'request_id': '6f1d1c1e-6666-4444-8888-0000000000c2',
+                                                          'ticker': 'MU'}).status_code == 400
+    missing = '6f1d1c1e-6666-4444-8888-0000000000ff'
+    assert client.get('/api/workbench/plan-notes', params={'plan_id': missing}).status_code == 404
+    assert client.post('/api/workbench/plan-notes', json={**body, 'request_id': '6f1d1c1e-6666-4444-8888-0000000000c3',
+                                                          'plan_id': missing}).status_code == 404
+    assert client.get('/api/workbench/plan-notes').status_code == 400

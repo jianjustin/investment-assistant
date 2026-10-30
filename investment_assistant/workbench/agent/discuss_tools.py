@@ -163,6 +163,16 @@ def _plan_context(conn, ctx: DiscussContext) -> dict:
     return _plain(out)
 
 
+def _without_note_bodies(facts: dict) -> dict:
+    """A retro-2 card froze the notes you wrote (`execution.notes`); a note is a log for yourself and never reaches an
+    Agent (v2.9 D25), so the discussion gets how many there were and when, not what they said."""
+    execution = facts.get('execution')
+    if not isinstance(execution, dict) or not execution.get('notes'):
+        return facts
+    notes = [{'id': n.get('id'), 'created_at': n.get('created_at')} for n in execution['notes'] if isinstance(n, dict)]
+    return {**facts, 'execution': {**execution, 'notes': notes, 'notes_hidden': '备注只给你自己看，不提供给 Agent'}}
+
+
 def _card_context(conn, ctx: DiscussContext) -> dict:
     from investment_assistant.workbench import knowledge_items, retro
 
@@ -177,7 +187,7 @@ def _card_context(conn, ctx: DiscussContext) -> dict:
         if item is not None and item['source_card_id'] == card['id']:
             adopted.append({'ref': knowledge_items.ref(row['knowledge_id'], 1), 'title': row['title'],
                             'current_version': row['version']})
-    facts = card['facts'] or {}
+    facts = _without_note_bodies(card['facts'] or {})
     basis = (facts.get('subject') or {}).get('exit_basis')
     return _plain({
         'kind': 'card', 'ticker': card['ticker'], 'signal_date': card['signal_date'], 'cutoff_at': ctx.cutoff_at,

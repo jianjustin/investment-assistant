@@ -18,7 +18,7 @@
 
 `plan-shadow-1` 按价位逐日独立模拟规则计划、Agent 计划和自定计划，结果以 R 计：有三种入场方式；止损和 T1 在同一天都触及时，按先触止损算；移动止损有保本下限；跳空穿过止损时按开盘价成交。影子结果不受你实际选择的影响。
 
-**`plan-shadow-2`（v2.9）**用于带执行字段的计划（`plan-2`、`agent-3`、v2.9 起的自定计划）：入场按计划的入场类型与开盘三种情形回放（开盘 ≤ 止损当天起作废，状态 `voided`，计 0R、汇总里单列）；成交后持有满最长持有天数而仍没有一个收盘到过成交价加 1R 时，在次一交易日开盘退出（`time_stop`，T1 之后不再适用）。同一份计划**同时**算 `plan-shadow-1` 作反事实列（无时间止损、旧入场规则）。没有执行字段的旧计划只算 `plan-shadow-1`。`GET /api/workbench/plans/shadow` 每行另带 `shadow_version`、带执行字段的计划另带 `shadow_v1`，响应顶层 `shadow_version = plan-shadow-2`，`agent_summary` 另有 `counterfactual: {v1, v2}`（同一批 Agent 计划在两种口径下的汇总，`v2` 另给 `voided` 计数）。周度 / 月度快照的计划影子按 `plans`（plan-shadow-2）、`plans_v1`（plan-shadow-1）、`plans_counterfactual` 分开汇总，不混算。
+**`plan-shadow-2`（v2.9）**用于带执行字段的计划（`plan-2`、`agent-3`、v2.9 起的自定计划）：入场按计划的入场类型与开盘三种情形回放（开盘 ≤ 止损当天起作废，状态 `voided`，计 0R、汇总里单列）；成交后持有满最长持有天数而仍没有一个收盘到过成交价加 1R 时，在次一交易日开盘退出（`time_stop`，T1 之后不再适用）。同一份计划**同时**算 `plan-shadow-1` 作反事实列（无时间止损、旧入场规则）。没有执行字段的旧计划只算 `plan-shadow-1`。`GET /api/workbench/plans/shadow` 每行另带 `shadow_version`、带执行字段的计划另带 `shadow_v1`，响应顶层 `shadow_version = plan-shadow-2`，`agent_summary` 另有 `counterfactual: {v1, v2}`（同一批 Agent 计划在两种口径下的汇总，`v2` 另给 `voided` 计数）。周度 / 月度快照的计划影子：`plans` 列出全部计划（新口径用原键，旧计划用带口径名的键），`plans_v1`（plan-shadow-1）、`plans_counterfactual` 另给，两种口径不混算。
 
 `agent-2` 计划链的每一版都是一份计划、各自模拟（修订版的有效期从复查日次一交易日开始，所以只可能在生成之后成交）。`GET /api/workbench/plans/shadow` 每行带 `chain`：`{version_no, origin, is_head, supersedes_plan_id}`（`agent-1`、规则与自定计划为 `null`）；响应另有 `agent_summary: {first, latest}`——`first` 每条链只算首版（`agent-1` 计划算自己的首版），`latest` 每条链只算当前最新版（`agent-1` 计划同样算自己）；每项给 `count`、`determined`（有 R 的份数）、`expired`、`r_mean`、`r_median`，有 R 的不足 5 份时均值与中位数为空。
 
@@ -41,7 +41,7 @@
 
 ### 周度复盘 `review-8`
 
-`review-8`（v2.9，D30）：`units.decided / undecided` 改为 `units.executed / not_executed`（单元集合是**全部单元**，D26）；`by_decision` 改为 `by_execution`（已采纳 / 有效期外 / 未执行 / 计划外四组，计划外一组只有计数）；执行偏差的延迟改为「所关联的计划版本生成到成交」；`unsignaled_trades` 改为 `unplanned_trades`（没有关联任何计划的买入）；对照组按全部单元；`learning.cards[].decision_text` 改为 `execution_text`（旧卡显示它的旧决定文案）；纪律为 `discipline-2`，三方对比为 `tracks-2`，计划影子分三块（见上）。`review-7` 及更早的快照不重算，页面按 `calc_version` 分支显示（周度推送的概览同样分支）。
+`review-8`（v2.9，D30）：`units.decided / undecided` 改为 `units.executed / not_executed`（单元集合是**全部单元**，D26）；`by_decision` 改为 `by_execution`（已采纳 / 有效期外 / 未执行 / 计划外四组，计划外一组只有计数）；执行偏差的延迟改为「所关联的计划版本生成到成交」；`unsignaled_trades` 改为 `unplanned_trades`（没有关联任何计划的买入）；对照组按全部单元；`learning.cards[].decision_text` 改为 `execution_text`（旧卡显示它的旧决定文案）；纪律为 `discipline-2`，三方对比为 `tracks-2`，计划影子：`plans` 列出本周全部计划，带执行字段的（`plan-shadow-2`）用原来的键，旧计划（`plan-shadow-1`）用「规则（旧计划 · plan-shadow-1）」这类带口径名的键，两种口径各自汇总、不混算，页面逐行列出；`plans_v1` / `plans_counterfactual` / `shadow_versions` 同一拆分供机器读取；分池 `by_pool` 只含 `plan-shadow-2` 的计划，旧计划另放 `by_pool_v1`；非买入单元（卖出 / 观察 / 冲突）没有执行状态（`execution = not_applicable`），不进 `units` 与 `by_execution`，仍进 `by_rule`；`execution[]` 每笔成交只归一个单元（链所在单元优先），自定计划的 `delay_hours` 为空。`review-7` 及更早的快照不重算，页面按 `calc_version` 分支显示（周度推送的概览同样分支）。
 
 以下是 `review-7` 起的口径：从按规则、按决定、执行偏差、无信号交易、计划影子、纪律、分池几个视角统计，并冻结一份当期三方对比。计划影子按种类汇总：`agent` 每条链只算首版（`agent-1` 计划算自己的首版，页面标「Agent（首版）」），`agent_latest` 是快照生成时每条链的最新版（页面标「Agent（最新版）」），避免样本被修订次数放大（`review-5` 及更早的快照里 `agent` 是每一版都算，页面仍标「Agent」，已冻结的快照不重算）。分池按三分类：`core`（核心）、`screen`（筛选，`source = screen` 的计划不论是否进了主列表）、`extended`（扩展）；旧计划的 context 没有来源时按分层归池。快照生成后就冻结；要更正，就对同一周重新生成，新快照指向旧快照。
 

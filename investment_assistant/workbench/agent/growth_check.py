@@ -147,11 +147,14 @@ def _sentence(item: Any) -> dict:
     return {'text': _text(item.get('text'), SENTENCE_MAX), 'refs': _ref_list(item.get('refs'))}
 
 
-def check_draft(text: str, *, refs: set[str], concept_ids: set[str], default_ticker: str) -> dict:
+def check_draft(text: str, *, refs: set[str], concept_ids: set[str], default_ticker: str,
+                fact_keys: tuple[str, ...] | None = None) -> dict:
     """§4.4 in full. ``refs`` = this run's ``call:N``, the ``concept:`` / ``know:`` refs its tools returned;
-    the ``fact:<key>`` refs of the frozen facts (ten of a retro-1 card, eleven of a retro-2 one) are always allowed."""
+    the ``fact:<key>`` refs of the frozen facts are always allowed: ``fact_keys`` is the card's own set (`retro-1` ten,
+    `retro-2` eleven; None allows both)."""
     payload = _loads_object(text)
-    allowed = set(refs) | {f'fact:{key}' for key in (*FACT_KEYS, *FACT_KEYS_V2)}      # retro-1 and retro-2 cards
+    keys = fact_keys if fact_keys is not None else (*FACT_KEYS, *FACT_KEYS_V2)    # the card's own keys (M5)
+    allowed = set(refs) | {f'fact:{key}' for key in keys}
     headline = _text(payload.get('headline'), HEADLINE_MAX)
     narrative_raw = payload.get('expected_vs_actual')
     if (not isinstance(narrative_raw, list)

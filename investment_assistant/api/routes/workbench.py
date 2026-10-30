@@ -112,14 +112,14 @@ def add_plan_note(payload: dict[str, Any] = Body(default_factory=dict)):
 
 @router.get('/api/workbench/plan-notes')
 def plan_notes(ticker: str | None = None, chain_signal_date: str | None = None, plan_id: str | None = None):
-    if not ticker:
-        raise HTTPException(status_code=400, detail='ticker is required')
+    if not ticker and not plan_id:
+        raise HTTPException(status_code=400, detail='ticker or plan_id is required')
     if plan_id:
         try:
             uuid.UUID(plan_id)
         except ValueError:
             raise HTTPException(status_code=400, detail='plan_id must be a UUID') from None
-    return _call(plan_views.notes_view, ticker=ticker.upper(), chain_signal_date=_date(chain_signal_date, 'chain_signal_date'),
+    return _call(plan_views.notes_view, ticker=ticker.upper() if ticker else None, chain_signal_date=_date(chain_signal_date, 'chain_signal_date'),
                  plan_id=plan_id or None)
 
 

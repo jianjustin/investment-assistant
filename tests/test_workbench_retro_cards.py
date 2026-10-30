@@ -1117,8 +1117,11 @@ def test_retro1_cards_render_unchanged(db, scripted_model, capsys):
     assert list(view['facts']) == list(retro.FACT_KEYS) and view['facts']['decision']['text'] == '采纳（照规则计划）'
     [row] = retro_cards.list_view(status=None, ticker=None, since=None)['cards']
     assert row['decision_text'] == '采纳（照规则计划）' and row['execution_text'] == '采纳（照规则计划）'
-    assert retro_cards.main(['check', '--since', D(-4).isoformat()]) in (0, 1)
-    assert '齐全' in capsys.readouterr().out
+    code = retro_cards.main(['check', '--since', D(-4).isoformat(), '--until', SESSION.isoformat()])
+    out = capsys.readouterr().out
+    assert code == 0, out                                    # the old card is complete under its own ten keys
+    assert f"齐全  {item['event']['event_key']}  #{card_id}" in out
+    assert '事实不全 0' in out and '缺卡 0' in out and out.splitlines()[-1].endswith('→ 通过')
     # a re-draft of the old card still speaks the retro-1 language
     built = agent_deps(scripted_model, [draft_reply(review_ref='fact:decision')], settings=_agent_settings())
     result = retro_cards.draft_card(card_id, now=NOW, deps=built, trigger='manual')
@@ -1143,3 +1146,13 @@ def test_retro2_check_cli(db, scripted_model, capsys):
     db.commit()
     code, out = _run(capsys, 'check', '--since', since)
     assert code == 1 and '事实不全  copy:broken  缺 holding' in out
+
+
+def test_retro_cli_without_029_exits_2(db, capsys, monkeypatch):
+    """M10: the review-card scan reads 029 tables; without them the command says migration_029_missing, exit code 2."""
+    monkeypatch.setattr(repository, 'executable_ready', lambda conn: False)
+    code = retro_cards.main(['check', '--since', D(-4).isoformat()])
+    captured = capsys.readouterr()
+    assert code == 2 and 'migration_029_missing' in captured.err
+    with pytest.raises(service.Unavailable):
+        retro_cards.list_view(status=None, ticker=None, since=None)
