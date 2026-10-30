@@ -12,8 +12,8 @@
 
   const statusText = (status: string) => NODE_STATUS_TEXT[status] ?? status
   const tone = (status: string) =>
-    status === 'success' ? 'text-success' : status === 'failed' ? 'text-danger'
-      : status === 'partial' || status === 'degraded' ? 'text-warn' : 'text-muted'
+    status === 'success' ? 'text-success' : status === 'failed' ? 'text-destructive'
+      : status === 'partial' || status === 'degraded' ? 'text-warn' : 'text-muted-foreground'
 
   /** Rows of a family: its targets, or (rows older than v2.8) one failed row per recorded failure. */
   function targetsOf(family: FetchFamily): FetchTarget[] {
@@ -39,18 +39,18 @@
       <div class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
         <h4 class="font-medium">{family.title}</h4>
         <span class="text-xs font-medium {tone(family.status)}">{statusText(family.status)}</span>
-        <span class="text-xs text-muted">{family.ok_count} / {family.target_count}</span>
+        <span class="text-xs text-muted-foreground">{family.ok_count} / {family.target_count}</span>
         {#if family.started_at || family.finished_at}
-          <span class="text-xs text-muted">{fmtBeijing(family.started_at)} 至 {fmtBeijing(family.finished_at)}</span>
+          <span class="text-xs text-muted-foreground">{fmtBeijing(family.started_at)} 至 {fmtBeijing(family.finished_at)}</span>
         {/if}
-        {#if family.scope}<span class="text-xs text-muted">范围：{family.scope}</span>{/if}
+        {#if family.scope}<span class="text-xs text-muted-foreground">范围：{family.scope}</span>{/if}
       </div>
-      {#if family.legacy}<p class="text-xs text-muted">{LEGACY_NOTE}</p>{/if}
+      {#if family.legacy}<p class="text-xs text-muted-foreground">{LEGACY_NOTE}</p>{/if}
       {#if shown(family).length}
         <div class="overflow-x-auto">
           <table class="w-full text-xs">
             <thead>
-              <tr class="text-left text-muted">
+              <tr class="text-left text-muted-foreground">
                 <th class="pr-3 font-normal">目标</th><th class="pr-3 font-normal">结果</th>
                 <th class="pr-3 font-normal">尝试次数</th><th class="pr-3 font-normal">失败原因</th>
                 <th class="pr-3 font-normal">行数</th><th class="font-normal">最新时点</th>
@@ -60,7 +60,7 @@
               {#each shown(family) as t, i (`${t.target}#${i}`)}
                 <tr class="border-t border-border align-top">
                   <td class="py-1 pr-3 font-mono">{t.target}</td>
-                  <td class="pr-3 {t.ok ? 'text-success' : 'text-danger'}">{resultText(t)}</td>
+                  <td class="pr-3 {t.ok ? 'text-success' : 'text-destructive'}">{resultText(t)}</td>
                   <td class="pr-3">{cell(t.attempts)}</td>
                   <td class="pr-3 break-all">{cell(t.reason)}</td>
                   <td class="pr-3">{cell(t.rows)}</td>
@@ -71,16 +71,16 @@
           </table>
         </div>
       {:else if !family.legacy && total > 0}
-        <p class="text-xs text-muted">没有失败的目标</p>
+        <p class="text-xs text-muted-foreground">没有失败的目标</p>
       {/if}
       {#if !family.legacy && family.target_count > total}
-        <p class="text-xs text-muted">共 {family.target_count} 个目标，明细只记录了前 {total} 个</p>
+        <p class="text-xs text-muted-foreground">共 {family.target_count} 个目标，明细只记录了前 {total} 个</p>
       {/if}
       {#if !family.legacy && total > 0 && total > shown(family).length}
-        <button type="button" class="text-xs text-accent underline"
+        <button type="button" class="text-xs text-primary underline"
                 onclick={() => showAll[family.family] = true}>显示全部 {total} 个目标</button>
       {:else if !family.legacy && showAll[family.family] && total > 0}
-        <button type="button" class="text-xs text-accent underline"
+        <button type="button" class="text-xs text-primary underline"
                 onclick={() => showAll[family.family] = false}>只看失败目标</button>
       {/if}
     </section>

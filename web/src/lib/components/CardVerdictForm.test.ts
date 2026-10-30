@@ -168,6 +168,6 @@ describe('CardVerdictForm', () => {
     expect(screen.getByRole('link', { name: 'know:22@1' })).toHaveAttribute('href', '#knowledge/mine/22@1')
     const dismissed = screen.getByText('止损按计划执行').closest('li')!
     expect(dismissed).toHaveTextContent('不采纳')
-    expect(dismissed.className).toMatch(/text-muted/)
+    expect(dismissed.className).toMatch(/text-muted-foreground/)
   })
 })

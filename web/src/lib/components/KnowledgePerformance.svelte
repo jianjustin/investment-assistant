@@ -24,15 +24,15 @@
   <section aria-label="表现回看" class="space-y-2 text-sm">
     <h3 class="font-semibold">表现回看 <span class="text-xs font-normal"><ConceptTerm id={ATTACH.myKnowledge.performance}>说明</ConceptTerm></span></h3>
     <p data-sample class="font-medium">{sampleLine(perf.sample, perf.min_sample, rText)}</p>
-    <p class="text-xs text-muted">{perf.note}</p>
-    <p class="text-xs text-muted">证据：未验证 <ConceptTerm id={ATTACH.agentCard.evidence}>证据状态</ConceptTerm></p>
+    <p class="text-xs text-muted-foreground">{perf.note}</p>
+    <p class="text-xs text-muted-foreground">证据：未验证 <ConceptTerm id={ATTACH.agentCard.evidence}>证据状态</ConceptTerm></p>
     {#if perf.rows.length}
       <table aria-label="每个单元的首个引用版本" class="text-xs w-full">
-        <thead><tr class="text-left text-muted"><th>单元</th><th>计划</th><th>引用</th><th>状态</th><th>R</th><th>成交 / 结果</th></tr></thead>
+        <thead><tr class="text-left text-muted-foreground"><th>单元</th><th>计划</th><th>引用</th><th>状态</th><th>R</th><th>成交 / 结果</th></tr></thead>
         <tbody>
           {#each perf.rows as row (row.plan_id)}
             <tr>
-              <td><a class="text-accent underline" href={`#plan/${row.plan_id}`}>{row.unit.ticker} {row.unit.signal_date}</a></td>
+              <td><a class="text-primary underline" href={`#plan/${row.plan_id}`}>{row.unit.ticker} {row.unit.signal_date}</a></td>
               <td>{KIND_TEXT[row.kind] ?? row.kind}{versionText(row.version_no)}</td>
               <td>引用第 {row.cited_version} 版知识{#if row.fields.length} · {row.fields.map(f => CITED_FIELD_TEXT[f] ?? f).join('、')}{/if}</td>
               <td>{row.status_text}</td>
@@ -45,7 +45,7 @@
     {/if}
     {#if perf.by_version.length}
       <table aria-label="按知识版本" class="text-xs">
-        <thead><tr class="text-left text-muted"><th>知识版本</th><th>计划数</th><th>单元数</th></tr></thead>
+        <thead><tr class="text-left text-muted-foreground"><th>知识版本</th><th>计划数</th><th>单元数</th></tr></thead>
         <tbody>
           {#each perf.by_version as v (v.version)}
             <tr><td>第 {v.version} 版</td><td>{v.plans}</td><td>{v.units}</td></tr>
@@ -58,5 +58,5 @@
 {:else if error}
   <p role="alert" class="text-sm text-red-600">表现回看加载失败：<span>{error}</span></p>
 {:else}
-  <p class="text-xs text-muted">表现回看加载中…</p>
+  <p class="text-xs text-muted-foreground">表现回看加载中…</p>
 {/if}

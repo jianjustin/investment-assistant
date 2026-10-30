@@ -55,29 +55,29 @@
   {#if error}
     <p role="alert" class="text-sm text-red-600">{error}</p>
   {:else if loading}
-    <p class="text-sm text-muted">加载中…</p>
+    <p class="text-sm text-muted-foreground">加载中…</p>
   {:else if overview}
     <header class="flex items-center justify-between">
       <div>
         <h1 class="text-lg font-semibold">{familyId ? `${detail?.card.title ?? familyId} · 数据族` : '数据'}</h1>
-        <p class="text-xs text-muted">最近收盘交易日 {overview.session}</p>
+        <p class="text-xs text-muted-foreground">最近收盘交易日 {overview.session}</p>
       </div>
-      {#if familyId}<a class="text-xs text-accent underline" href="#data">返回总览</a>{/if}
+      {#if familyId}<a class="text-xs text-primary underline" href="#data">返回总览</a>{/if}
     </header>
-    <p aria-label="证据说明" class="text-xs text-muted border border-border rounded p-2 bg-surface">{overview.evidence} <ConceptTerm id={ATTACH.data.evidence} /></p>
+    <p aria-label="证据说明" class="text-xs text-muted-foreground border border-border rounded-sm p-2 bg-card">{overview.evidence} <ConceptTerm id={ATTACH.data.evidence} /></p>
     {#if !overview.fetch_runs_ready || (familyId && detail && !detail.card.fetch_runs_ready)}
-      <p class="text-xs text-warn border border-border rounded p-2 bg-surface"><span>迁移 024 未执行</span>：最近拉取不可见，拉取接口不可用。</p>
+      <p class="text-xs text-warn border border-border rounded-sm p-2 bg-card"><span>迁移 024 未执行</span>：最近拉取不可见，拉取接口不可用。</p>
     {/if}
     {#if familyId && detail}
       <DataFamilyCard card={detail.card} pageEvidence={overview.evidence} onfetched={() => load(familyId)} />
       <section class="space-y-2">
         <div class="flex items-center justify-between">
           <h2 class="font-semibold">最近 20 次拉取</h2>
-          <a class="text-xs text-accent underline" href="#tools/runs">运行记录</a>
+          <a class="text-xs text-primary underline" href="#tools/runs">运行记录</a>
         </div>
-        <div class="overflow-x-auto border border-border rounded bg-surface">
+        <div class="overflow-x-auto border border-border rounded-sm bg-card">
           <table aria-label="最近拉取" class="w-full text-sm text-left whitespace-nowrap">
-            <thead><tr class="text-muted">
+            <thead><tr class="text-muted-foreground">
               <th class="px-3 py-2">触发来源</th><th>状态</th><th>成功/目标</th><th>范围</th><th>任务</th>
               <th>开始时间</th><th>完成时间</th><th>失败原因</th>
             </tr></thead>
@@ -88,7 +88,7 @@
                   <td><StatusPill status={run.status} /></td><td>{run.ok_count}/{run.target_count}</td>
                   <td>{run.scope === 'ticker' ? run.ticker : '全族'}</td>
                   <td class="px-3 py-2">{run.job}{#if run.detail?.targets_source}
-                    <span class="block text-xs text-muted">{run.detail.targets_source}</span>
+                    <span class="block text-xs text-muted-foreground">{run.detail.targets_source}</span>
                   {/if}</td>
                   <td>{fmtBeijing(run.started_at)}</td><td>{fmtBeijing(run.finished_at)}</td>
                   <td class="px-3 py-2 whitespace-normal min-w-40">
@@ -98,7 +98,7 @@
                     {#each run.failures as failure}<p class="text-red-600">{failure.target}：{failure.reason}</p>{:else}{#if run.status !== 'skipped'}—{/if}{/each}
                   </td>
                 </tr>
-              {:else}<tr><td colspan="8" class="px-3 py-3 text-muted">无记录</td></tr>{/each}
+              {:else}<tr><td colspan="8" class="px-3 py-3 text-muted-foreground">无记录</td></tr>{/each}
             </tbody>
           </table>
         </div>
@@ -108,17 +108,17 @@
           <h2 class="font-semibold">逐目标覆盖</h2>
           <label class="text-xs flex items-center gap-1"><input type="checkbox" bind:checked={onlyLagging} />仅看滞后</label>
         </div>
-        <div class="overflow-x-auto border border-border rounded bg-surface">
+        <div class="overflow-x-auto border border-border rounded-sm bg-card">
           <table aria-label="逐目标覆盖" class="w-full text-sm text-left">
-            <thead><tr class="text-muted"><th class="px-3 py-2">目标</th><th>最新时点</th><th>是否滞后</th><th>最近失败原因</th></tr></thead>
+            <thead><tr class="text-muted-foreground"><th class="px-3 py-2">目标</th><th>最新时点</th><th>是否滞后</th><th>最近失败原因</th></tr></thead>
             <tbody>
               {#each coverageRows as row (row.target)}
                 <tr class="border-t border-border">
                   <td class="px-3 py-2">{row.target}</td><td>{latestText(row.latest_at)}</td>
-                  <td class={row.lagging ? 'text-warn' : 'text-muted'}>{row.lagging ? '滞后' : '否'}</td>
+                  <td class={row.lagging ? 'text-warn' : 'text-muted-foreground'}>{row.lagging ? '滞后' : '否'}</td>
                   <td class="px-3 py-2 text-red-600">{row.last_failure ?? '—'}</td>
                 </tr>
-              {:else}<tr><td colspan="4" class="px-3 py-3 text-muted">{onlyLagging ? '无滞后目标' : '无目标'}</td></tr>{/each}
+              {:else}<tr><td colspan="4" class="px-3 py-3 text-muted-foreground">{onlyLagging ? '无滞后目标' : '无目标'}</td></tr>{/each}
             </tbody>
           </table>
         </div>

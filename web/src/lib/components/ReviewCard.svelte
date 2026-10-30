@@ -128,30 +128,30 @@
 </script>
 
 <section bind:this={root} class="space-y-4 min-w-0">
-  <p><a class="text-xs text-accent underline" href="#review/cards">返回复盘卡列表</a></p>
+  <p><a class="text-xs text-primary underline" href="#review/cards">返回复盘卡列表</a></p>
   {#if error}
     <p role="alert" class="text-sm text-red-600">复盘卡加载失败：<span>{error}</span></p>
   {:else if !view || !facts}
-    <p class="text-sm text-muted">加载中…</p>
+    <p class="text-sm text-muted-foreground">加载中…</p>
   {:else}
     <header data-testid="card-header" data-fact="subject" class="space-y-1 {hl('subject')}">
       <h2 class="text-lg font-semibold">{facts.subject.ticker} · {endText(facts.subject.end_kind, facts.subject.exit_basis)}
         · {view.card.end_session}</h2>
-      <p class="text-xs text-muted flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span class="px-1.5 py-0.5 rounded bg-accent/10 text-accent">{CARD_STATUS_TEXT[view.status] ?? view.status}</span>
+      <p class="text-xs text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span class="px-1.5 py-0.5 rounded-sm bg-primary/10 text-primary">{CARD_STATUS_TEXT[view.status] ?? view.status}</span>
         <span>结束类型 <ConceptTerm id={D.end}>{endText(facts.subject.end_kind, facts.subject.exit_basis)}</ConceptTerm></span>
-        <a class="text-accent underline" href={`#instrument/${encodeURIComponent(facts.subject.ticker)}`}>标的页</a>
-        {#if referencePlan}<a class="text-accent underline" href={`#plan/${planId(referencePlan.key)}`}>参考计划</a>{/if}
+        <a class="text-primary underline" href={`#instrument/${encodeURIComponent(facts.subject.ticker)}`}>标的页</a>
+        {#if referencePlan}<a class="text-primary underline" href={`#plan/${planId(referencePlan.key)}`}>参考计划</a>{/if}
         <DiscussButton context={{ kind: 'card', card_id: id }} />
         <ConceptTerm id={D.card}>复盘卡说明</ConceptTerm>
       </p>
-      <p class="text-xs text-muted">证据：未验证 <ConceptTerm id={ATTACH.agentCard.evidence}>证据状态</ConceptTerm></p>
+      <p class="text-xs text-muted-foreground">证据：未验证 <ConceptTerm id={ATTACH.agentCard.evidence}>证据状态</ConceptTerm></p>
     </header>
 
     <section class="space-y-2">
       <h3 class="font-semibold text-sm">预期 vs 实际</h3>
       <table aria-label="预期与实际" class="text-xs w-full">
-        <thead><tr class="text-left text-muted"><th>计划</th><th>角色</th><th>价位</th><th>有效期</th><th>影子结果</th><th>首次触及</th></tr></thead>
+        <thead><tr class="text-left text-muted-foreground"><th>计划</th><th>角色</th><th>价位</th><th>有效期</th><th>影子结果</th><th>首次触及</th></tr></thead>
         <tbody>
           {#each facts.plans as p (p.key)}
             <tr data-fact="plans shadow" class="align-top border-t border-border {hl('plans', 'shadow')}">
@@ -164,7 +164,7 @@
               <td>{touched(p.key)}</td>
             </tr>
           {:else}
-            <tr><td colspan="6" class="text-muted">没有相关计划</td></tr>
+            <tr><td colspan="6" class="text-muted-foreground">没有相关计划</td></tr>
           {/each}
         </tbody>
       </table>
@@ -172,7 +172,7 @@
       {#if facts.reviews}
         <p data-fact="reviews" class="text-xs {hl('reviews')}">复查摘要：共 {facts.reviews.count} 次{#if facts.reviews.invalidated}；已作废（{facts.reviews.invalidated.session}{facts.reviews.invalidated.reason ? `：${facts.reviews.invalidated.reason}` : ''}）{/if}</p>
       {/if}
-      <p data-fact="knowledge" class="text-xs {hl('knowledge')}">计划当时引用过的知识：{#each facts.knowledge as k, i (k.ref)}{#if i}、{/if}<a class="text-accent underline" href={knowHref(k.ref)}>{k.ref}</a> {k.title_at_version}{:else}没有{/each}</p>
+      <p data-fact="knowledge" class="text-xs {hl('knowledge')}">计划当时引用过的知识：{#each facts.knowledge as k, i (k.ref)}{#if i}、{/if}<a class="text-primary underline" href={knowHref(k.ref)}>{k.ref}</a> {k.title_at_version}{:else}没有{/each}</p>
 
       <section aria-label="复盘叙述" class="border-l-2 border-sky-400/50 pl-2 space-y-1 text-sm">
         {#if narrative}
@@ -183,12 +183,12 @@
             {/each}
           </ol>
           {#if narrative.execution_review}
-            <p><span class="text-xs text-muted">执行回顾</span> <span class="whitespace-pre-wrap">{narrative.execution_review.text}</span><RefList refs={narrative.execution_review.refs} runId={okDraft?.agent_run_id} onFact={scrollToFact} /></p>
+            <p><span class="text-xs text-muted-foreground">执行回顾</span> <span class="whitespace-pre-wrap">{narrative.execution_review.text}</span><RefList refs={narrative.execution_review.refs} runId={okDraft?.agent_run_id} onFact={scrollToFact} /></p>
           {:else if narrative.decision_review}
-            <p><span class="text-xs text-muted">{facts.execution ? '执行回顾' : '决定回顾'}</span> <span class="whitespace-pre-wrap">{narrative.decision_review.text}</span><RefList refs={narrative.decision_review.refs} runId={okDraft?.agent_run_id} onFact={scrollToFact} /></p>
+            <p><span class="text-xs text-muted-foreground">{facts.execution ? '执行回顾' : '决定回顾'}</span> <span class="whitespace-pre-wrap">{narrative.decision_review.text}</span><RefList refs={narrative.decision_review.refs} runId={okDraft?.agent_run_id} onFact={scrollToFact} /></p>
           {/if}
         {:else}
-          <p class="text-xs text-muted">还没有叙述草稿。</p>
+          <p class="text-xs text-muted-foreground">还没有叙述草稿。</p>
         {/if}
       </section>
     </section>
@@ -197,10 +197,10 @@
       <h3 class="font-semibold text-sm">三条轨道 <span class="text-xs font-normal"><ConceptTerm id={D.tracks}>说明</ConceptTerm></span></h3>
       <ul class="text-sm space-y-0.5">
         {#if facts.tracks.rule}
-          <li>{trackLine('规则', facts.tracks.rule)}{#if facts.tracks.rule.plan_id} · <a class="text-accent underline" href={`#plan/${facts.tracks.rule.plan_id}`}>看计划</a>{/if}</li>
+          <li>{trackLine('规则', facts.tracks.rule)}{#if facts.tracks.rule.plan_id} · <a class="text-primary underline" href={`#plan/${facts.tracks.rule.plan_id}`}>看计划</a>{/if}</li>
         {/if}
         {#if facts.tracks.agent}
-          <li>{trackLine(`Agent${facts.tracks.agent.version_no != null ? ` 第 ${facts.tracks.agent.version_no} 版` : ''}`, facts.tracks.agent)}{#if facts.tracks.agent.version_basis}（{VERSION_BASIS_TEXT_V2[facts.tracks.agent.version_basis] ?? facts.tracks.agent.version_basis}）{/if}{#if facts.tracks.agent.plan_id} · <a class="text-accent underline" href={`#plan/${facts.tracks.agent.plan_id}`}>看计划</a>{/if}</li>
+          <li>{trackLine(`Agent${facts.tracks.agent.version_no != null ? ` 第 ${facts.tracks.agent.version_no} 版` : ''}`, facts.tracks.agent)}{#if facts.tracks.agent.version_basis}（{VERSION_BASIS_TEXT_V2[facts.tracks.agent.version_basis] ?? facts.tracks.agent.version_basis}）{/if}{#if facts.tracks.agent.plan_id} · <a class="text-primary underline" href={`#plan/${facts.tracks.agent.plan_id}`}>看计划</a>{/if}</li>
         {/if}
         <li>{actualLine(facts.tracks.actual)}{#if facts.tracks.actual.plan_kind} · 照{KIND_TEXT[facts.tracks.actual.plan_kind] ?? facts.tracks.actual.plan_kind}计划{/if}</li>
       </ul>
@@ -211,22 +211,22 @@
         {@const ex = facts.execution}
         <h3 class="font-semibold">你的执行与纪律 <span class="text-xs font-normal"><ConceptTerm id={ATTACH.today.basis}>执行状态说明</ConceptTerm></span></h3>
         <p data-fact="execution" class={hl('execution')}>执行：{ex.text}
-          {#if ex.plan_id} · <a class="text-accent underline" href={`#plan/${ex.plan_id}`}>看计划</a>{/if}
-          {#each ex.notes ?? [] as n (n.id)}<span class="block text-xs text-muted whitespace-pre-wrap">备注（{fmtBeijing(n.created_at)}）：{n.body}</span>{/each}
-          {#if ex.legacy_decision}<span class="block text-xs text-muted whitespace-pre-wrap">旧决定：{ex.legacy_decision.text}{ex.legacy_decision.reason ? `（理由：${ex.legacy_decision.reason}）` : ''}</span>{/if}</p>
+          {#if ex.plan_id} · <a class="text-primary underline" href={`#plan/${ex.plan_id}`}>看计划</a>{/if}
+          {#each ex.notes ?? [] as n (n.id)}<span class="block text-xs text-muted-foreground whitespace-pre-wrap">备注（{fmtBeijing(n.created_at)}）：{n.body}</span>{/each}
+          {#if ex.legacy_decision}<span class="block text-xs text-muted-foreground whitespace-pre-wrap">旧决定：{ex.legacy_decision.text}{ex.legacy_decision.reason ? `（理由：${ex.legacy_decision.reason}）` : ''}</span>{/if}</p>
         {#if facts.holding}
           {@const h = facts.holding}
           <p data-fact="holding" class="text-xs {hl('holding')}">{holdingText(h)}</p>
         {/if}
       {:else if facts.decision}
         <h3 class="font-semibold">你的决定与纪律</h3>
-        <p data-fact="decision" class={hl('decision')}>决定：{facts.decision.text}{#if facts.decision.reason}<span class="block text-xs text-muted whitespace-pre-wrap">理由：{facts.decision.reason}</span>{/if}</p>
+        <p data-fact="decision" class={hl('decision')}>决定：{facts.decision.text}{#if facts.decision.reason}<span class="block text-xs text-muted-foreground whitespace-pre-wrap">理由：{facts.decision.reason}</span>{/if}</p>
       {/if}
       <ul data-fact="trades" class="text-xs space-y-0.5 {hl('trades')}">
         {#each facts.trades.trades as t (t.id)}
           <li>{t.side === 'buy' ? '买入' : '卖出'} {t.quantity} @ {t.price}（费 {t.fee}）· {fmtBeijing(t.executed_at)}</li>
         {:else}
-          <li class="text-muted">没有成交</li>
+          <li class="text-muted-foreground">没有成交</li>
         {/each}
       </ul>
       <div data-fact="discipline" class={hl('discipline')}>
@@ -234,7 +234,7 @@
           <p>未成交，纪律四项不适用</p>
         {:else}
           <table aria-label="纪律判定" class="text-xs">
-            <thead><tr class="text-left text-muted"><th></th><th>检测时</th>{#if disciplineChanged}<th>现在</th>{/if}</tr></thead>
+            <thead><tr class="text-left text-muted-foreground"><th></th><th>检测时</th>{#if disciplineChanged}<th>现在</th>{/if}</tr></thead>
             <tbody>
               {#each DISCIPLINE_FLAGS as flag (flag)}
                 <tr>
@@ -245,7 +245,7 @@
               {/each}
             </tbody>
           </table>
-          <p class="text-xs text-muted">
+          <p class="text-xs text-muted-foreground">
             {#if disciplineChanged}检测时 = {view.facts.discipline.as_of} 的判定（冻结）；现在 = {view.discipline_now.as_of} 的只读重算，不改卡。
             {:else}判定于 {view.facts.discipline.as_of}（冻结）。{/if}
           </p>
@@ -254,17 +254,17 @@
     </section>
 
     {#if !okDraft && !reviewed}
-      <section aria-label="起草状态" class="border border-border rounded p-3 text-sm space-y-1">
+      <section aria-label="起草状态" class="border border-border rounded-sm p-3 text-sm space-y-1">
         {#if canRedraft}
           <p>{CARD_STATUS_TEXT.draft_failed}</p>
-          {#if lastDraft}<p class="text-xs text-muted">最近一次（第 {lastDraft.attempt} 次）：{reasonText(lastDraft.reason)}</p>{/if}
+          {#if lastDraft}<p class="text-xs text-muted-foreground">最近一次（第 {lastDraft.attempt} 次）：{reasonText(lastDraft.reason)}</p>{/if}
           <div class="flex items-center gap-2">
-            <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50"
+            <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted disabled:opacity-50"
                     disabled={redraft.busy} onclick={runRedraft}>重新起草</button>
             {#if redraft.text}<span role={redraft.busy ? undefined : 'alert'} class="text-xs">{redraft.text}</span>{/if}
           </div>
         {:else}
-          <p class="text-xs text-muted">这张卡还在起草，稍后刷新查看；现在也可以直接审定。</p>
+          <p class="text-xs text-muted-foreground">这张卡还在起草，稍后刷新查看；现在也可以直接审定。</p>
         {/if}
       </section>
     {/if}
@@ -276,7 +276,7 @@
 
     {#if runId}
       <div class="space-y-1">
-        <button type="button" class="text-xs text-accent underline" aria-expanded={reasoningOpen}
+        <button type="button" class="text-xs text-primary underline" aria-expanded={reasoningOpen}
                 onclick={() => reasoningOpen = !reasoningOpen}>看起草过程</button>
         {#if reasoningOpen}<AgentReasoning {runId} />{/if}
       </div>
@@ -286,9 +286,9 @@
       <h3 class="font-semibold">讨论</h3>
       <ul class="text-xs space-y-0.5">
         {#each view.discussions as d (d.id)}
-          <li><a class="text-accent underline" href={`#discuss/${d.id}`}>{fmtBeijing(d.created_at)} · {d.turn_count} 轮{d.first_question ? ` · ${truncate(d.first_question, 40)}` : ''}</a></li>
+          <li><a class="text-primary underline" href={`#discuss/${d.id}`}>{fmtBeijing(d.created_at)} · {d.turn_count} 轮{d.first_question ? ` · ${truncate(d.first_question, 40)}` : ''}</a></li>
         {:else}
-          <li class="text-muted">还没有讨论</li>
+          <li class="text-muted-foreground">还没有讨论</li>
         {/each}
       </ul>
     </section>

@@ -257,7 +257,7 @@ describe('Data 总览', () => {
     await fireEvent.click(screen.getAllByRole('button', { name: '拉取' })[0])
     const message = await screen.findByText('仍在后台运行，稍后刷新')
     expect(message).toBeTruthy()
-    expect(message).toHaveClass('text-muted')
+    expect(message).toHaveClass('text-muted-foreground')
     expect(message.className).not.toMatch(/text-(?:red|danger)/)
     expect(screen.getAllByRole('button', { name: '拉取' })[0]).toBeEnabled()
     expect(api.pollRun).toHaveBeenCalledWith('r1', { timeoutMs: 900_000 })

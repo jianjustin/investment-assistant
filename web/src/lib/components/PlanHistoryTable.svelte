@@ -69,22 +69,22 @@
       <input type="checkbox" bind:checked={baselines} onchange={change} />
       显示规则基线
     </label>
-    <span class="text-muted"><ConceptTerm id={I.chainState}>链状态说明</ConceptTerm></span>
+    <span class="text-muted-foreground"><ConceptTerm id={I.chainState}>链状态说明</ConceptTerm></span>
   </div>
 
   {#if !rows?.length}
-    <p class="text-xs text-muted">该标的还没有计划历史</p>
+    <p class="text-xs text-muted-foreground">该标的还没有计划历史</p>
   {:else}
     <div class="overflow-x-auto">
       <table aria-label="计划历史" class="text-xs w-full min-w-[720px]">
-        <thead><tr class="text-left text-muted">
+        <thead><tr class="text-left text-muted-foreground">
           <th>日期</th><th>链与版本</th><th>入场 / 止损 / T1</th><th>变化点</th><th>变化原因</th><th>结束方式</th>
         </tr></thead>
         {#each groups as g, gi (gi)}
           <tbody data-chain={g.signal ?? ''} class={gi > 0 ? (g.signal ? 'border-t-4 border-border' : 'border-t-2 border-border') : ''}>
             {#each g.rows as r, i (`${r.kind}|${r.at}|${i}`)}
               {#if r.kind === 'chain_open'}
-                <tr data-kind="chain_open" class="bg-surface-2 align-top">
+                <tr data-kind="chain_open" class="bg-muted align-top">
                   <td class="whitespace-nowrap">{r.session}</td>
                   <td>{chainText(r)}</td>
                   <td colspan="4">{r.text}</td>
@@ -99,17 +99,17 @@
               {:else}
                 <tr data-kind={r.kind} class="align-top border-t border-border">
                   <td class="whitespace-nowrap">{r.session}</td>
-                  <td>{chainText(r)} <span class="text-muted">{KIND_TEXT[r.kind] ?? r.kind}</span></td>
-                  <td>{levelsText(r)}{#if r.validity}<span class="block text-muted">有效期 {r.validity.valid_from} 至 {r.validity.valid_until}</span>{/if}</td>
+                  <td>{chainText(r)} <span class="text-muted-foreground">{KIND_TEXT[r.kind] ?? r.kind}</span></td>
+                  <td>{levelsText(r)}{#if r.validity}<span class="block text-muted-foreground">有效期 {r.validity.valid_from} 至 {r.validity.valid_until}</span>{/if}</td>
                   <td>
                     {#each diffItems(r) as d, di (di)}<span class="block">{d}</span>{/each}
                   </td>
                   <td>
                     {#each changeTexts(r) as c, ci (ci)}<span class="block">{c}</span>{/each}
-                    {#if signalsText(r)}<span class="block text-muted">触发：{signalsText(r)}</span>{/if}
+                    {#if signalsText(r)}<span class="block text-muted-foreground">触发：{signalsText(r)}</span>{/if}
                     {#if reasonLine(r)}<span class="block">{reasonLine(r)}</span>{/if}
                     {#if !changeTexts(r).length && !reasonLine(r)}<span class="block">{r.text}</span>{/if}
-                    <span class="block text-muted">{fmtBeijing(r.at)}</span>
+                    <span class="block text-muted-foreground">{fmtBeijing(r.at)}</span>
                   </td>
                   <td></td>
                 </tr>
@@ -120,7 +120,7 @@
       </table>
     </div>
     {#if chains.length}
-      <p class="text-xs text-muted">共 {chains.length} 条链</p>
+      <p class="text-xs text-muted-foreground">共 {chains.length} 条链</p>
     {/if}
   {/if}
 </div>

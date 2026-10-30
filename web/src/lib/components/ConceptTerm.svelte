@@ -54,20 +54,20 @@
 
 <span class="concept-term">
   {#if children}
-    <span class={hasButton ? 'border-b border-dotted border-muted' : ''}>{@render children()}</span>
+    <span class={hasButton ? 'border-b border-dotted border-muted-foreground' : ''}>{@render children()}</span>
   {:else if entry}
-    <span class="border-b border-dotted border-muted">{entry.title}</span>
+    <span class="border-b border-dotted border-muted-foreground">{entry.title}</span>
   {:else if phase !== 'loading'}
     <span>{id}</span>
-  {/if}{#if hasButton}<button type="button" class="ml-0.5 text-xs text-muted hover:text-accent"
+  {/if}{#if hasButton}<button type="button" class="ml-0.5 text-xs text-muted-foreground hover:text-primary"
           aria-label={`概念：${entry?.title ?? id}`} aria-expanded={open} onclick={toggle}>ⓘ</button>{/if}
   {#if open && hasButton}
-    <span role="note" class="block my-1 p-2 border border-border rounded bg-surface text-xs text-ink font-normal space-y-1 max-w-prose">
+    <span role="note" class="block my-1 p-2 border border-border rounded-sm bg-card text-xs text-foreground font-normal space-y-1 max-w-prose">
       {#if entry}
         <span class="block font-medium">{entry.title}</span>
         <span class="block">{entry.summary}</span>
-        <span class="block text-muted"><code>{entry.ref}</code></span>
-        <span class="block"><a class="text-accent underline" href={`#knowledge/${entry.id}`}>看完整卡</a></span>
+        <span class="block text-muted-foreground"><code>{entry.ref}</code></span>
+        <span class="block"><a class="text-primary underline" href={`#knowledge/${entry.id}`}>看完整卡</a></span>
       {:else}
         <span class="block">概念卡暂不可用：{failure}</span>
       {/if}

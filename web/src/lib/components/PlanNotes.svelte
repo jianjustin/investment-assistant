@@ -38,18 +38,18 @@
   {#if notes.length}
     <ul class="text-xs space-y-0.5">
       {#each notes as n (n.id)}
-        <li><span class="text-muted">{fmtBeijing(n.created_at)}</span> <span class="whitespace-pre-wrap">{n.body}</span></li>
+        <li><span class="text-muted-foreground">{fmtBeijing(n.created_at)}</span> <span class="whitespace-pre-wrap">{n.body}</span></li>
       {/each}
     </ul>
   {:else}
-    <p class="text-xs text-muted">还没有备注</p>
+    <p class="text-xs text-muted-foreground">还没有备注</p>
   {/if}
   <form class="space-y-1" onsubmit={submit}>
-    <textarea aria-label="备注正文" class="w-full border border-border rounded p-2 text-sm bg-bg" rows="2"
+    <textarea aria-label="备注正文" class="w-full border border-border rounded-sm p-2 text-sm bg-background" rows="2"
               placeholder="写给自己的备注（1–1000 字）" bind:value={body} oninput={() => { requestId = null }}></textarea>
-    <p class="text-xs text-muted">{wb.NOTE_HINT_TEXT}</p>
+    <p class="text-xs text-muted-foreground">{wb.NOTE_HINT_TEXT}</p>
     <div class="flex flex-wrap items-center gap-2">
-      <button type="submit" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50"
+      <button type="submit" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted disabled:opacity-50"
               disabled={busy || chars === 0 || tooLong}>保存备注</button>
       {#if tooLong}<span class="text-xs text-red-600">备注最多 {wb.NOTE_MAX_CHARS} 字（现在 {chars} 字）</span>{/if}
       {#if error}<span role="alert" class="text-xs text-red-600">{error}</span>{/if}

@@ -108,81 +108,81 @@
   {:else if error}
     <p role="alert" class="text-sm text-red-600">{error}</p>
   {:else if !view || !viewed}
-    <p class="text-sm text-muted">加载中…</p>
+    <p class="text-sm text-muted-foreground">加载中…</p>
   {:else}
     {#if isOld}
       <p class="text-sm text-amber-700"><span>这是第 {viewed.version} 版，最新为第 {latest!.version} 版</span>
-        <a class="text-accent underline ml-2" href={`#knowledge/mine/${id}`}>查看最新版</a></p>
+        <a class="text-primary underline ml-2" href={`#knowledge/mine/${id}`}>查看最新版</a></p>
     {/if}
     <header class="space-y-1">
       <h1 class="text-lg font-semibold">{viewed.title}</h1>
-      <p class="text-xs text-muted flex flex-wrap items-center gap-2">
-        <span class="px-1.5 py-0.5 rounded bg-surface-2">{KNOWLEDGE_STATUS_TEXT[archived ? 'archived' : 'active']}</span>
+      <p class="text-xs text-muted-foreground flex flex-wrap items-center gap-2">
+        <span class="px-1.5 py-0.5 rounded-sm bg-muted">{KNOWLEDGE_STATUS_TEXT[archived ? 'archived' : 'active']}</span>
         <span>第 {viewed.version} 版</span>
         <span>写入 {fmtBeijing(view.item.created_at)}</span>
         <span>本版 {fmtBeijing(viewed.created_at)}</span>
         <ConceptTerm id={M.item}>说明</ConceptTerm>
       </p>
-      {#if archived && archiveReason}<p class="text-xs text-muted">归档理由：{archiveReason}</p>{/if}
+      {#if archived && archiveReason}<p class="text-xs text-muted-foreground">归档理由：{archiveReason}</p>{/if}
     </header>
 
     <div class="space-y-2 text-sm">
       <p class="whitespace-pre-wrap">{viewed.body}</p>
       <div>
-        <p class="text-xs text-muted">适用范围</p>
+        <p class="text-xs text-muted-foreground">适用范围</p>
         <p class="whitespace-pre-wrap">{viewed.scope}</p>
       </div>
       {#if viewed.counter_examples}
         <div>
-          <p class="text-xs text-muted">反例</p>
+          <p class="text-xs text-muted-foreground">反例</p>
           <p class="whitespace-pre-wrap">{viewed.counter_examples}</p>
         </div>
       {/if}
       <p class="text-xs">挂靠：
         {#each viewed.concepts as c (c)}<span class="mr-2"><ConceptTerm id={conceptId(c)} /></span>{/each}
-        {#each viewed.tickers as t (t)}<a class="mr-2 text-accent underline" href={`#instrument/${t}`}>{t}</a>{/each}
+        {#each viewed.tickers as t (t)}<a class="mr-2 text-primary underline" href={`#instrument/${t}`}>{t}</a>{/each}
       </p>
     </div>
 
     <div class="space-y-2">
       <div class="flex flex-wrap items-center gap-2">
         {#if archived}
-          <span class="text-xs text-muted">已归档，先恢复才能改</span>
-          <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2" onclick={startStatus}>恢复</button>
+          <span class="text-xs text-muted-foreground">已归档，先恢复才能改</span>
+          <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted" onclick={startStatus}>恢复</button>
         {:else}
-          <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2"
+          <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted"
                   onclick={() => { mode = 'edit'; stale = false; reloadNote = '' }}>改</button>
-          <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2" onclick={startStatus}>归档</button>
+          <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted" onclick={startStatus}>归档</button>
         {/if}
       </div>
 
       {#if mode === 'status'}
-        <div class="border border-border rounded p-2 space-y-1 text-sm">
+        <div class="border border-border rounded-sm p-2 space-y-1 text-sm">
           <label class="flex flex-col text-xs">理由
-            <input aria-label="理由" maxlength="300" class="border border-border rounded px-2 py-1 bg-bg text-sm" bind:value={reason} />
+            <input aria-label="理由" maxlength="300" class="border border-border rounded-sm px-2 py-1 bg-background text-sm" bind:value={reason} />
           </label>
           <div class="flex gap-2">
-            <button type="button" class="text-xs px-2 py-1 rounded bg-accent text-white disabled:opacity-50" disabled={statusBusy}
+            <button type="button" class="text-xs px-2 py-1 rounded-sm bg-primary text-white disabled:opacity-50" disabled={statusBusy}
                     onclick={changeStatus}>{archived ? '确认恢复' : '确认归档'}</button>
-            <button type="button" class="text-xs px-2 py-1 border border-border rounded" onclick={() => mode = 'view'}>取消</button>
+            <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm" onclick={() => mode = 'view'}>取消</button>
           </div>
           {#if statusError}<p role="alert" class="text-xs text-red-600">{statusError}</p>{/if}
         </div>
       {/if}
 
       {#if mode === 'edit' && latest}
-        <div class="border border-border rounded p-3 space-y-2">
-          <p class="text-xs text-muted">改动会作为第 {latest.version + 1} 版写入，原来的版本都保留。</p>
+        <div class="border border-border rounded-sm p-3 space-y-2">
+          <p class="text-xs text-muted-foreground">改动会作为第 {latest.version + 1} 版写入，原来的版本都保留。</p>
           {#if reloadNote}<p class="text-xs text-amber-700">{reloadNote}</p>{/if}
           {#key formGen}
             <KnowledgeForm initial={latest} onSubmit={reviseSubmit} requestKey={`base:${latest.version}`} />
           {/key}
           <div class="flex gap-2">
             {#if stale}
-              <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2"
+              <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted"
                       onclick={refreshStale}>刷新</button>
             {/if}
-            <button type="button" class="text-xs px-2 py-1 border border-border rounded" onclick={() => mode = 'view'}>取消</button>
+            <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm" onclick={() => mode = 'view'}>取消</button>
           </div>
         </div>
       {/if}
@@ -193,12 +193,12 @@
       <ol aria-label="版本历史" class="space-y-1">
         {#each history as { v, changed } (v.version)}
           <li class="text-xs">
-            <a class="text-accent underline" href={`#knowledge/mine/${id}@${v.version}`}>第 {v.version} 版</a>
+            <a class="text-primary underline" href={`#knowledge/mine/${id}@${v.version}`}>第 {v.version} 版</a>
             · {fmtBeijing(v.created_at)}
             {#if changed === null}
               · 首版 · {KNOWLEDGE_ORIGIN_TEXT[view.item.origin] ?? view.item.origin}
-              {#if view.item.source_card_id}· <a class="text-accent underline" href={`#review/cards/${view.item.source_card_id}`}>复盘卡 #{view.item.source_card_id}</a>{/if}
-              {#if view.item.source_discussion_id}· <a class="text-accent underline" href={`#discuss/${view.item.source_discussion_id}`}>讨论 #{view.item.source_discussion_id}</a>{/if}
+              {#if view.item.source_card_id}· <a class="text-primary underline" href={`#review/cards/${view.item.source_card_id}`}>复盘卡 #{view.item.source_card_id}</a>{/if}
+              {#if view.item.source_discussion_id}· <a class="text-primary underline" href={`#discuss/${view.item.source_discussion_id}`}>讨论 #{view.item.source_discussion_id}</a>{/if}
             {:else}
               · 改了：{changed.length ? changed.join('、') : '没有字段变化'}
             {/if}
@@ -214,9 +214,9 @@
           {#each view.citations as c, i (i)}
             <li>
               {#if c.plan_id}
-                <a class="text-accent underline" href={`#plan/${c.plan_id}`}>{c.ticker} {c.signal_date} 第 {c.version_no} 版</a>
+                <a class="text-primary underline" href={`#plan/${c.plan_id}`}>{c.ticker} {c.signal_date} 第 {c.version_no} 版</a>
               {:else if c.head_plan_id}
-                <a class="text-accent underline" href={`#plan/${c.head_plan_id}`}>{c.ticker} {c.signal_date} 复查 #{c.review_id}</a>
+                <a class="text-primary underline" href={`#plan/${c.head_plan_id}`}>{c.ticker} {c.signal_date} 复查 #{c.review_id}</a>
               {:else}
                 {c.ticker} {c.signal_date}{c.review_id ? ` 复查 #${c.review_id}` : ''}
               {/if}
@@ -225,7 +225,7 @@
           {/each}
         </ul>
       {:else}
-        <p class="text-xs text-muted">还没有被计划或复查引用</p>
+        <p class="text-xs text-muted-foreground">还没有被计划或复查引用</p>
       {/if}
     </section>
 

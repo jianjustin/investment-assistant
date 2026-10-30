@@ -40,7 +40,7 @@
     pass: '通过', implicated: '可能未通过', not_recorded: '未单独记录', not_run: '未运行',
   }
   const CHECK_CLASS: Record<string, string> = {
-    pass: 'text-muted', implicated: 'text-amber-700', not_recorded: 'text-muted', not_run: 'text-muted',
+    pass: 'text-muted-foreground', implicated: 'text-amber-700', not_recorded: 'text-muted-foreground', not_run: 'text-muted-foreground',
   }
   const ACTION_TEXT: Record<string, string> = { buy: '买入', pass: '不建议买入' }
 
@@ -83,7 +83,7 @@
   const listKey = (seq: number, key: string) => `${seq}|${key}`
 </script>
 
-{#snippet refList(list: string[] | undefined)}{#if list?.length}（{#each list as ref, i}{#if i}、{/if}{#if tl.isCallRef(ref)}<button type="button" class="underline" onclick={() => jump(ref)}>{ref}</button>{:else if isKnowRef(ref)}<a class="text-accent underline" href={knowHref(ref)}>{ref}</a>{:else}<span>{ref}</span>{/if}{/each}）{/if}{/snippet}
+{#snippet refList(list: string[] | undefined)}{#if list?.length}（{#each list as ref, i}{#if i}、{/if}{#if tl.isCallRef(ref)}<button type="button" class="underline" onclick={() => jump(ref)}>{ref}</button>{:else if isKnowRef(ref)}<a class="text-primary underline" href={knowHref(ref)}>{ref}</a>{:else}<span>{ref}</span>{/if}{/each}）{/if}{/snippet}
 
 {#snippet conditionList(label: string, list: any[] | undefined)}
   {#if list?.length}
@@ -97,16 +97,16 @@
   {#if error}
     <p role="alert" class="text-xs text-red-600">{error}</p>
   {:else if !data}
-    <p class="text-xs text-muted">推理过程加载中…</p>
+    <p class="text-xs text-muted-foreground">推理过程加载中…</p>
   {:else}
     {@const run = data.run}
-    <p class="text-xs text-muted">
+    <p class="text-xs text-muted-foreground">
       {run.ticker} · {run.signal_date} · {MODE_TEXT[run.mode] ?? run.mode} · {run.agent_version}{run.model ? ` · ${run.model}` : ''}
       {#if run.cutoff_at} · 截止 {fmtBeijing(run.cutoff_at)}{/if}
     </p>
     {#if data.version}
-      <p class="text-xs text-muted">这次运行产出第 {data.version.version_no} 版 · {tl.ORIGIN_TEXT[data.version.origin as tl.Origin] ?? data.version.origin}
-        · <a class="text-accent underline" href={`#plan/${data.version.plan_id}`}>看计划页</a></p>
+      <p class="text-xs text-muted-foreground">这次运行产出第 {data.version.version_no} 版 · {tl.ORIGIN_TEXT[data.version.origin as tl.Origin] ?? data.version.origin}
+        · <a class="text-primary underline" href={`#plan/${data.version.plan_id}`}>看计划页</a></p>
     {/if}
     {#each data.notes as note}<p class="text-xs text-amber-700">{note}</p>{/each}
     {#if data.knowledge_refs?.length}<KnowledgeRefs refs={data.knowledge_refs} />{/if}
@@ -122,20 +122,20 @@
         <h4 aria-label={step.title} class="font-medium text-xs">
           {#if step.concept}<ConceptTerm id={step.concept}>{step.title}</ConceptTerm>{:else}{step.title}{/if}
         </h4>
-        {#if step.note && step.kind !== 'check'}<p class="text-xs text-muted">{step.note}</p>{/if}
+        {#if step.note && step.kind !== 'check'}<p class="text-xs text-muted-foreground">{step.note}</p>{/if}
 
         {#if step.kind === 'previous_chain'}
-          <pre class="text-xs whitespace-pre-wrap rounded border border-border p-2" data-previous-chain>{step.text}</pre>
+          <pre class="text-xs whitespace-pre-wrap rounded-sm border border-border p-2" data-previous-chain>{step.text}</pre>
         {:else if step.kind === 'read'}
           <ul class="space-y-1">
             {#each step.calls ?? [] as call (call.seq)}
               <li data-call={`${runId}-${call.seq}`} data-highlighted={highlighted === call.seq ? 'true' : undefined}
-                  class="text-xs rounded px-1 {highlighted === call.seq ? 'bg-amber-100 ring-1 ring-amber-400' : ''}">
+                  class="text-xs rounded-sm px-1 {highlighted === call.seq ? 'bg-amber-100 ring-1 ring-amber-400' : ''}">
                 <p class="break-all">
                   <span class="font-medium">{call.ref}</span> ·
                   {#if call.concept}<ConceptTerm id={call.concept}>{toolName(call)}</ConceptTerm>{:else}{toolName(call)}{/if}
                   · <code>{text(call.args)}</code> · 哈希 {call.result_sha256_8}
-                  <button type="button" class="text-accent underline" aria-expanded={!!shownResult[call.seq]}
+                  <button type="button" class="text-primary underline" aria-expanded={!!shownResult[call.seq]}
                           onclick={() => shownResult[call.seq] = !shownResult[call.seq]}>{shownResult[call.seq] ? '收起返回值' : '看返回值'}</button>
                 </p>
                 {#if call.cutoff_exempt}
@@ -146,7 +146,7 @@
                 {#if shownResult[call.seq]}
                   <div class="ml-3 space-y-0.5">
                     {#if extraFields(call).length}
-                      <p class="text-muted">涉及：{#each extraFields(call) as [name, concept], i (i)}{#if i}、{/if}<ConceptTerm id={concept}>{name}</ConceptTerm>{/each}</p>
+                      <p class="text-muted-foreground">涉及：{#each extraFields(call) as [name, concept], i (i)}{#if i}、{/if}<ConceptTerm id={concept}>{name}</ConceptTerm>{/each}</p>
                     {/if}
                     {#each resultEntries(call.result) as [key, value] (key)}
                       {#if Array.isArray(value)}
@@ -155,14 +155,14 @@
                         <p>
                           {#if call.fields[key]}<ConceptTerm id={call.fields[key]}>{key}</ConceptTerm>{:else}{key}{/if}（{value.length} 条）
                           {#if value.length > 4}
-                            <button type="button" class="text-accent underline"
+                            <button type="button" class="text-primary underline"
                                     onclick={() => fullList[listKey(call.seq, key)] = !all}>{all ? '只看首尾' : '展开全部'}</button>
                           {/if}
                         </p>
                         <ul class="ml-3 break-all">
                           {#each shown as item, i}
-                            <li>{#if call.tool === 'get_knowledge' && isKnowRef(String(item?.ref))}<a class="text-accent underline" href={knowHref(String(item.ref))}>{item.ref}</a> {item.title ?? ''}{:else}{text(item)}{/if}</li>
-                            {#if !all && value.length > 4 && i === 1}<li class="text-muted">…</li>{/if}
+                            <li>{#if call.tool === 'get_knowledge' && isKnowRef(String(item?.ref))}<a class="text-primary underline" href={knowHref(String(item.ref))}>{item.ref}</a> {item.title ?? ''}{:else}{text(item)}{/if}</li>
+                            {#if !all && value.length > 4 && i === 1}<li class="text-muted-foreground">…</li>{/if}
                           {/each}
                         </ul>
                       {:else}
@@ -194,17 +194,17 @@
           {/if}
           {#if step.thesis?.length || step.reasons?.length}
             {@const entries = step.thesis ?? step.reasons ?? []}
-            <p class="text-xs text-muted">{data.legacy ? '理由' : '论点'}</p>
+            <p class="text-xs text-muted-foreground">{data.legacy ? '理由' : '论点'}</p>
             <ol aria-label={data.legacy ? '理由' : '论点'} class="ml-1 space-y-0.5 text-xs">
               {#each entries as t, i}
-                <li>{#if !data.legacy}<span class="px-1 rounded bg-surface-2">{(t as any).id ?? `T${i + 1}`}</span> {/if}{t.text}{@render refList(t.refs)}</li>
+                <li>{#if !data.legacy}<span class="px-1 rounded-sm bg-muted">{(t as any).id ?? `T${i + 1}`}</span> {/if}{t.text}{@render refList(t.refs)}</li>
               {/each}
             </ol>
           {/if}
           {@render conditionList('失效条件', step.invalidation)}
           {@render conditionList('下次复查条件', step.review_when)}
           {#if step.diff?.length}
-            <p class="text-xs text-muted">相对上版 · 宿主差异</p>
+            <p class="text-xs text-muted-foreground">相对上版 · 宿主差异</p>
             <ul class="list-disc ml-5 text-xs">
               {#each step.diff as d}
                 <li>{tl.CHANGE_FIELD_TEXT[d.field] ?? d.field} {tl.diffValueText(d.field, d.before)} → {tl.diffValueText(d.field, d.after)}</li>
@@ -212,7 +212,7 @@
             </ul>
           {/if}
           {#if step.changes?.length}
-            <p class="text-xs text-muted">模型说明</p>
+            <p class="text-xs text-muted-foreground">模型说明</p>
             <ul class="list-disc ml-5 text-xs">
               {#each step.changes as c}<li>{tl.CHANGE_FIELD_TEXT[c.field] ?? c.field}：{c.text}{@render refList(c.refs)}</li>{/each}
             </ul>
@@ -221,12 +221,12 @@
         {:else if step.kind === 'check'}
           <ul class="text-xs space-y-0.5">
             {#each step.items ?? [] as item, i (i)}
-              <li>{item.text} · <span class={CHECK_CLASS[item.result] ?? 'text-muted'}>{CHECK_TEXT[item.result] ?? item.result}</span></li>
+              <li>{item.text} · <span class={CHECK_CLASS[item.result] ?? 'text-muted-foreground'}>{CHECK_TEXT[item.result] ?? item.result}</span></li>
             {/each}
           </ul>
           {#if implicatedNote(step)}<p class="text-xs text-amber-700">{implicatedNote(step)}</p>{/if}
           {#if step.reason_text && (step.items ?? []).some(item => item.result === 'not_run')}
-            <p class="text-xs text-muted">{step.reason_text}</p>
+            <p class="text-xs text-muted-foreground">{step.reason_text}</p>
           {/if}
 
         {:else if step.kind === 'counter'}
@@ -234,7 +234,7 @@
           {#if step.items?.length}
             <ul aria-label="反证" class="text-xs space-y-0.5">
               {#each step.items as c}
-                <li><span class="px-1 rounded bg-surface-2">{thesisLabel(c.thesis)}</span> {c.text}{@render refList(c.refs)}</li>
+                <li><span class="px-1 rounded-sm bg-muted">{thesisLabel(c.thesis)}</span> {c.text}{@render refList(c.refs)}</li>
               {/each}
             </ul>
           {/if}
@@ -242,19 +242,19 @@
             <p class="text-xs">其他风险：{#each step.risks as risk, i}{#if i}；{/if}{risk.text}{@render refList(risk.refs)}{/each}</p>
           {/if}
           {#if step.uncountered?.length}
-            <p class="text-xs text-muted">反方未对这些论点给出反证：{step.uncountered.map(thesisLabel).join('、')}</p>
+            <p class="text-xs text-muted-foreground">反方未对这些论点给出反证：{step.uncountered.map(thesisLabel).join('、')}</p>
           {/if}
-          {#if step.available !== false && step.dropped != null}<p class="text-xs text-muted">丢弃 {step.dropped} 条无效反证</p>{/if}
+          {#if step.available !== false && step.dropped != null}<p class="text-xs text-muted-foreground">丢弃 {step.dropped} 条无效反证</p>{/if}
 
         {:else if step.kind === 'response'}
           {#each (step as any).items ?? [] as item (item.review_id)}
             <div class="text-xs space-y-0.5">
               <p>{item.session} · {tl.TRIGGER_TEXT[item.trigger] ?? item.trigger} · {tl.OUTCOME_TEXT[item.outcome as tl.Outcome] ?? item.outcome}
                 {#if item.decided_by} · {tl.DECIDED_BY_TEXT[item.decided_by as tl.DecidedBy] ?? item.decided_by}{/if}
-                {#if item.new_plan_id} → <a class="text-accent underline" href={`#plan/${item.new_plan_id}`}>第 {item.new_version_no} 版</a>{/if}</p>
+                {#if item.new_plan_id} → <a class="text-primary underline" href={`#plan/${item.new_plan_id}`}>第 {item.new_version_no} 版</a>{/if}</p>
               {#if item.reason}<p>{item.reason}</p>{/if}
               {#if item.signals_fired?.length}
-                <p class="text-muted">信号：{item.signals_fired.map((k: string) => tl.SIGNAL_TEXT[k] ?? k).join('、')}</p>
+                <p class="text-muted-foreground">信号：{item.signals_fired.map((k: string) => tl.SIGNAL_TEXT[k] ?? k).join('、')}</p>
               {/if}
               {#if item.changes?.length}
                 <ul class="list-disc ml-5">
@@ -269,7 +269,7 @@
             {#if step.plan_id}
               计划行：{step.status === 'invalid' ? `已作废（${(step.invalid_reasons ?? []).join('、')}）` : '有效'}
               {#if consistencyOf(step.consistency)} · {CONSISTENCY_TEXT[consistencyOf(step.consistency) as keyof typeof CONSISTENCY_TEXT] ?? consistencyOf(step.consistency)}{/if}
-              · <a class="text-accent underline" href={`#plan/${step.plan_id}`}>看推导</a>
+              · <a class="text-primary underline" href={`#plan/${step.plan_id}`}>看推导</a>
             {:else}
               这次运行没有生成计划行
             {/if}
@@ -288,12 +288,12 @@
             {/if}
             {#if step.user_input_ids?.length}<p>给模型的用户输入：{step.user_input_ids.map(i => `user:${i}`).join('、')}</p>{/if}
             {#if step.review_agent_run_id && step.review_agent_run_id !== runId}
-              <button type="button" class="text-accent underline" aria-expanded={!!nested[step.review_agent_run_id]}
+              <button type="button" class="text-primary underline" aria-expanded={!!nested[step.review_agent_run_id]}
                       onclick={() => nested[step.review_agent_run_id!] = !nested[step.review_agent_run_id!]}>看复查推理</button>
               {#if nested[step.review_agent_run_id]}<AgentReasoning runId={step.review_agent_run_id} />{/if}
             {/if}
             {#if step.revision_agent_run_id && step.revision_agent_run_id !== runId}
-              <button type="button" class="text-accent underline" aria-expanded={!!nested[step.revision_agent_run_id]}
+              <button type="button" class="text-primary underline" aria-expanded={!!nested[step.revision_agent_run_id]}
                       onclick={() => nested[step.revision_agent_run_id!] = !nested[step.revision_agent_run_id!]}>看修订推理</button>
               {#if nested[step.revision_agent_run_id]}<AgentReasoning runId={step.revision_agent_run_id} />{/if}
             {/if}
@@ -310,7 +310,7 @@
           {#if step.summary}<p>{step.summary}</p>{/if}
           {#each [['支持', step.support], ['反证', step.contra], ['冲突与缺口', step.conflicts]] as [label, list]}
             {#if Array.isArray(list) && list.length}
-              <p class="text-xs text-muted">{label}</p>
+              <p class="text-xs text-muted-foreground">{label}</p>
               <ul class="list-disc ml-5 text-xs">{#each list as item}<li>{item.text}{@render refList(item.refs)}</li>{/each}</ul>
             {/if}
           {/each}
@@ -324,7 +324,7 @@
             </ol>
           {/if}
           {#if step.lessons?.length}
-            <p class="text-xs text-muted">教训草稿</p>
+            <p class="text-xs text-muted-foreground">教训草稿</p>
             <ul class="space-y-1 text-xs">
               {#each step.lessons as lesson}
                 <li class="border-l border-border pl-2">
@@ -332,7 +332,7 @@
                   <p class="whitespace-pre-wrap">{lesson.body}</p>
                   <p>适用范围：{lesson.scope}</p>
                   <p>反例：{lesson.counter_examples}</p>
-                  {#if lesson.refs?.length}<p class="text-muted">依据{@render refList(lesson.refs)}</p>{/if}
+                  {#if lesson.refs?.length}<p class="text-muted-foreground">依据{@render refList(lesson.refs)}</p>{/if}
                 </li>
               {/each}
             </ul>
@@ -340,17 +340,17 @@
 
         {:else if step.kind === 'question'}
           {#if step.text}<p class="whitespace-pre-wrap">{step.text}</p>{/if}
-          {#if step.attachment}<p class="text-xs text-muted whitespace-pre-wrap">{step.attachment}</p>{/if}
-          {#if step.context}<p class="text-xs text-muted whitespace-pre-wrap">{step.context}</p>{/if}
+          {#if step.attachment}<p class="text-xs text-muted-foreground whitespace-pre-wrap">{step.attachment}</p>{/if}
+          {#if step.context}<p class="text-xs text-muted-foreground whitespace-pre-wrap">{step.context}</p>{/if}
 
         {:else if step.kind === 'answer'}
           {#if step.available === false}<p class="text-xs">{step.text}</p>
           {:else if step.text}<p class="whitespace-pre-wrap">{step.text}</p>{/if}
-          {#if step.refs?.length}<p class="text-xs text-muted">引用{@render refList(step.refs)}</p>{/if}
+          {#if step.refs?.length}<p class="text-xs text-muted-foreground">引用{@render refList(step.refs)}</p>{/if}
           {#if step.knowledge_draft}
             {@const draft = step.knowledge_draft}
             <div class="text-xs border-l border-border pl-2">
-              <p class="text-muted">经验草稿</p>
+              <p class="text-muted-foreground">经验草稿</p>
               <p class="font-medium">{draft.title}</p>
               <p class="whitespace-pre-wrap">{draft.body}</p>
               <p>适用范围：{draft.scope}</p>

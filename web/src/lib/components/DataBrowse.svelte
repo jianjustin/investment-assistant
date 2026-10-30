@@ -140,9 +140,9 @@
 </script>
 
 {#snippet rawTable(label: string, values: Row[], fields: Column[])}
-  <div class="overflow-x-auto border border-border rounded bg-surface">
+  <div class="overflow-x-auto border border-border rounded-sm bg-card">
     <table aria-label={label} class="w-full text-sm text-left whitespace-nowrap">
-      <thead><tr class="text-muted">
+      <thead><tr class="text-muted-foreground">
         {#each fields as column}<th class="px-3 py-2">{#if column.concept}<ConceptTerm id={column.concept}>{column.label}</ConceptTerm>{:else}{column.label}{/if}</th>{/each}
       </tr></thead>
       <tbody>
@@ -151,12 +151,12 @@
             {#each fields as column}
               <td class="px-3 py-2">
                 {#if column.link && row[column.link]}
-                  <a href={String(row[column.link])} target="_blank" rel="noopener noreferrer" class="text-accent underline whitespace-normal break-words">{text(row[column.key])}</a>
+                  <a href={String(row[column.link])} target="_blank" rel="noopener noreferrer" class="text-primary underline whitespace-normal wrap-break-word">{text(row[column.key])}</a>
                 {:else}{(column.format ?? text)(row[column.key])}{/if}
               </td>
             {/each}
           </tr>
-        {:else}<tr><td colspan={fields.length} class="px-3 py-3 text-muted">无记录</td></tr>{/each}
+        {:else}<tr><td colspan={fields.length} class="px-3 py-3 text-muted-foreground">无记录</td></tr>{/each}
       </tbody>
     </table>
   </div>
@@ -164,22 +164,22 @@
 
 <section aria-label="原始数据浏览" class="space-y-3 min-w-0">
   <h2 class="font-semibold">原始数据浏览</h2>
-  {#if evidence}<p class="text-xs text-muted"><CodeText text={evidence} /></p>{/if}
+  {#if evidence}<p class="text-xs text-muted-foreground"><CodeText text={evidence} /></p>{/if}
   {#if byTicker}
     <form onsubmit={selectTicker} class="flex flex-wrap items-center gap-2">
       <label class="text-sm" for="browse-ticker">标的</label>
       <input id="browse-ticker" list="browse-targets" bind:value={draft} disabled={busy}
-             class="text-sm border border-border rounded px-2 py-1 bg-surface" placeholder="选择或输入标的" />
+             class="text-sm border border-border rounded-sm px-2 py-1 bg-card" placeholder="选择或输入标的" />
       <datalist id="browse-targets">{#each targets as target}<option value={target}></option>{/each}</datalist>
-      <button type="submit" disabled={busy} class="text-xs px-2 py-1 rounded border border-border">浏览</button>
+      <button type="submit" disabled={busy} class="text-xs px-2 py-1 rounded-sm border border-border">浏览</button>
       {#if family.per_ticker}
         <button type="button" disabled={busy || !draft.trim()} onclick={fetchOne}
-                class="text-xs px-2 py-1 rounded bg-accent text-white disabled:opacity-50">{busy ? '采集中…' : '只拉这一只'}</button>
+                class="text-xs px-2 py-1 rounded-sm bg-primary text-white disabled:opacity-50">{busy ? '采集中…' : '只拉这一只'}</button>
       {/if}
     </form>
   {:else if family.id === 'fred'}
     <label class="text-sm">FRED 序列
-      <select bind:value={series} class="text-sm border border-border rounded px-2 py-1 bg-surface">
+      <select bind:value={series} class="text-sm border border-border rounded-sm px-2 py-1 bg-card">
         <option value="BAMLH0A0HYM2">BAMLH0A0HYM2</option><option value="T10Y2Y">T10Y2Y</option>
       </select>
     </label>
@@ -187,30 +187,30 @@
   {/if}
   {#if showFetchResult}
     {#if fetchError}<p class="text-xs text-red-600">{fetchError}</p>{/if}
-    {#if fetchNote}<p class="text-xs text-muted">{fetchNote}</p>{/if}
+    {#if fetchNote}<p class="text-xs text-muted-foreground">{fetchNote}</p>{/if}
   {/if}
   {#if error}
     <p role="alert" class="text-sm text-red-600">{error}</p>
   {:else if loading}
-    <p class="text-sm text-muted">加载中…</p>
+    <p class="text-sm text-muted-foreground">加载中…</p>
   {:else if result}
     {#each result.notes ?? [] as note}<p class="text-xs text-warn">{noteText(note)}</p>{/each}
     {#if result.current_error}<p class="text-xs text-warn">{result.current_error}</p>{/if}
     {#if family.id === 'bars'}
-      <p class="text-xs text-muted">{text(rows[0]?.note ?? '拆股调整、未分红调整；adj_close 全调整')} <ConceptTerm id={ATTACH.data.barsAdjust} /></p>
+      <p class="text-xs text-muted-foreground">{text(rows[0]?.note ?? '拆股调整、未分红调整；adj_close 全调整')} <ConceptTerm id={ATTACH.data.barsAdjust} /></p>
     {:else if family.id === 'atr'}
-      <p class="text-xs text-muted"><CodeText text={result.note ?? '现算，与 `plan-1` 同一函数；不入库'} /></p>
+      <p class="text-xs text-muted-foreground"><CodeText text={result.note ?? '现算，与 `plan-1` 同一函数；不入库'} /></p>
     {/if}
     {#if family.id === 'universe' && result.meta}
-      <p class="text-xs text-muted"><ConceptTerm id={ATTACH.data.universeMeta} /></p>
-      <dl class="text-sm grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 break-words">
+      <p class="text-xs text-muted-foreground"><ConceptTerm id={ATTACH.data.universeMeta} /></p>
+      <dl class="text-sm grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 wrap-break-word">
         {#each ['name', 'as_of', 'source', 'note'] as field}
-          <dt class="text-muted">{field}</dt><dd class="min-w-0">{text(result.meta[field])}</dd>
+          <dt class="text-muted-foreground">{field}</dt><dd class="min-w-0">{text(result.meta[field])}</dd>
         {/each}
       </dl>
     {/if}
     {#if !result.has_data}
-      <p class="text-sm text-muted">无数据，可点拉取</p>
+      <p class="text-sm text-muted-foreground">无数据，可点拉取</p>
     {:else if family.id === 'sec_filings'}
       <h3 class="text-sm font-medium">filings</h3>
       {@render rawTable('filings', result.filings ?? [], columns.sec_filings)}
@@ -220,6 +220,6 @@
       {@render rawTable(tableNames[family.id], rows, columns[family.id])}
     {/if}
   {:else if byTicker}
-    <p class="text-sm text-muted">请选择或输入标的</p>
+    <p class="text-sm text-muted-foreground">请选择或输入标的</p>
   {/if}
 </section>

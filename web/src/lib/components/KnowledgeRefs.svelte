@@ -16,10 +16,10 @@
 
 {#if refs?.length}
   <section aria-label="引用的知识" class="text-xs space-y-0.5">
-    <p class="text-muted">引用的知识 <ConceptTerm id={ATTACH.myKnowledge.citation}>说明</ConceptTerm></p>
+    <p class="text-muted-foreground">引用的知识 <ConceptTerm id={ATTACH.myKnowledge.citation}>说明</ConceptTerm></p>
     <ul class="list-disc ml-5">
       {#each refs as item (item.ref)}
-        <li><a class="text-accent underline" href={knowHref(item.ref)}>{item.ref}</a> {item.title}{#if item.fields?.length}
+        <li><a class="text-primary underline" href={knowHref(item.ref)}>{item.ref}</a> {item.title}{#if item.fields?.length}
             · {item.fields.map(f => CITED_FIELD_TEXT[f] ?? f).join('、')}{/if}{#if newer(item)} · 当前已是第 {newer(item)} 版{/if}</li>
       {/each}
     </ul>

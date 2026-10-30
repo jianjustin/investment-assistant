@@ -54,44 +54,44 @@
 </script>
 <Modal {open} {title} {onclose}>
   {#if description}
-    <p class="text-xs text-muted mb-3">{description}</p>
+    <p class="text-xs text-muted-foreground mb-3">{description}</p>
   {/if}
-  <div class="flex gap-1 mb-4 bg-bg rounded-lg p-1">
+  <div class="flex gap-1 mb-4 bg-background rounded-lg p-1">
     {#each MODES as [m, label]}
       <button
-        class="flex-1 px-2 py-1.5 rounded-md text-sm transition-colors {mode === m ? 'bg-accent text-white shadow-elev-1' : 'text-muted hover:bg-accent/10'}"
+        class="flex-1 px-2 py-1.5 rounded-md text-sm transition-colors {mode === m ? 'bg-primary text-white shadow-1' : 'text-muted-foreground hover:bg-primary/10'}"
         onclick={() => (mode = m)}
       >{label}</button>
     {/each}
   </div>
   {#if mode === 'single'}
     <div class="mb-4">
-      <label class="block text-xs text-muted mb-1" for="fetch-single-date">日期</label>
+      <label class="block text-xs text-muted-foreground mb-1" for="fetch-single-date">日期</label>
       <input id="fetch-single-date" type="date" bind:value={single}
-        class="w-full border border-border rounded px-2 py-1.5 text-sm bg-bg" />
+        class="w-full border border-border rounded-sm px-2 py-1.5 text-sm bg-background" />
     </div>
   {:else if mode === 'range'}
     <div class="grid grid-cols-2 gap-2 mb-1">
       <div>
-        <label class="block text-xs text-muted mb-1" for="fetch-range-from">开始</label>
+        <label class="block text-xs text-muted-foreground mb-1" for="fetch-range-from">开始</label>
         <input id="fetch-range-from" type="date" bind:value={from}
-          class="w-full border border-border rounded px-2 py-1.5 text-sm bg-bg" />
+          class="w-full border border-border rounded-sm px-2 py-1.5 text-sm bg-background" />
       </div>
       <div>
-        <label class="block text-xs text-muted mb-1" for="fetch-range-to">结束</label>
+        <label class="block text-xs text-muted-foreground mb-1" for="fetch-range-to">结束</label>
         <input id="fetch-range-to" type="date" bind:value={to}
-          class="w-full border border-border rounded px-2 py-1.5 text-sm bg-bg" />
+          class="w-full border border-border rounded-sm px-2 py-1.5 text-sm bg-background" />
       </div>
     </div>
-    <p class="text-[11px] text-muted mb-3">一次最多拉取 {maxRangeDays} 天</p>
+    <p class="text-[11px] text-muted-foreground mb-3">一次最多拉取 {maxRangeDays} 天</p>
   {/if}
   {#if error}
     <p class="text-xs text-red-500 mb-2">{error}</p>
   {/if}
   <div class="flex justify-end gap-2 mt-2">
-    <button class="px-3 py-1.5 rounded text-sm text-muted hover:bg-accent/5" onclick={onclose}>取消</button>
+    <button class="px-3 py-1.5 rounded-sm text-sm text-muted-foreground hover:bg-primary/5" onclick={onclose}>取消</button>
     <button
-      class="px-4 py-1.5 rounded bg-accent text-white text-sm disabled:opacity-50"
+      class="px-4 py-1.5 rounded-sm bg-primary text-white text-sm disabled:opacity-50"
       disabled={!!error}
       onclick={confirm}
     >确认</button>

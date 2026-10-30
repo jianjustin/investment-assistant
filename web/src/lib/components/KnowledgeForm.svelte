@@ -92,39 +92,39 @@
 
 <div class="space-y-2 text-sm">
   <label class="flex flex-col">标题
-    <input aria-label="标题" class="border border-border rounded px-2 py-1 bg-bg" bind:value={title} />
+    <input aria-label="标题" class="border border-border rounded-sm px-2 py-1 bg-background" bind:value={title} />
   </label>
   <label class="flex flex-col">正文
-    <textarea aria-label="正文" rows="4" class="border border-border rounded px-2 py-1 bg-bg" bind:value={body}></textarea>
+    <textarea aria-label="正文" rows="4" class="border border-border rounded-sm px-2 py-1 bg-background" bind:value={body}></textarea>
   </label>
   <label class="flex flex-col">适用范围
-    <textarea aria-label="适用范围" rows="2" class="border border-border rounded px-2 py-1 bg-bg" bind:value={scope}></textarea>
+    <textarea aria-label="适用范围" rows="2" class="border border-border rounded-sm px-2 py-1 bg-background" bind:value={scope}></textarea>
   </label>
   <label class="flex flex-col">反例{requireCounter ? '（必填）' : '（可空）'}
-    <textarea aria-label="反例" rows="2" class="border border-border rounded px-2 py-1 bg-bg" bind:value={counter}></textarea>
+    <textarea aria-label="反例" rows="2" class="border border-border rounded-sm px-2 py-1 bg-background" bind:value={counter}></textarea>
   </label>
 
   <div class="space-y-1">
-    <p class="text-xs text-muted">这条经验挂在哪些概念或标的上（合计 1–10 项）</p>
+    <p class="text-xs text-muted-foreground">这条经验挂在哪些概念或标的上（合计 1–10 项）</p>
     <div class="flex flex-wrap items-center gap-1">
       <input aria-label="概念" list={listId} placeholder="概念 id（可从提示里选）"
-             class="border border-border rounded px-2 py-1 bg-bg text-xs" bind:value={conceptInput}
+             class="border border-border rounded-sm px-2 py-1 bg-background text-xs" bind:value={conceptInput}
              onkeydown={onEnter(addConcept)} />
       <datalist id={listId}>{#each known as id (id)}<option value={id}></option>{/each}</datalist>
-      <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2" onclick={addConcept}>添加概念</button>
-      <input aria-label="标的" placeholder="标的，如 NVDA" class="border border-border rounded px-2 py-1 bg-bg text-xs"
+      <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted" onclick={addConcept}>添加概念</button>
+      <input aria-label="标的" placeholder="标的，如 NVDA" class="border border-border rounded-sm px-2 py-1 bg-background text-xs"
              bind:value={tickerInput} onkeydown={onEnter(addTicker)} />
-      <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2" onclick={addTicker}>添加标的</button>
+      <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted" onclick={addTicker}>添加标的</button>
     </div>
     <ul class="flex flex-wrap gap-1 text-xs">
       {#each concepts as id (id)}
-        <li class="px-1.5 py-0.5 rounded bg-surface-2"><code>{id}</code>
-          <button type="button" aria-label={`移除概念 ${id}`} class="text-muted hover:text-red-600"
+        <li class="px-1.5 py-0.5 rounded-sm bg-muted"><code>{id}</code>
+          <button type="button" aria-label={`移除概念 ${id}`} class="text-muted-foreground hover:text-red-600"
                   onclick={() => concepts = concepts.filter(c => c !== id)}>×</button></li>
       {/each}
       {#each tickers as t (t)}
-        <li class="px-1.5 py-0.5 rounded bg-surface-2">{t}
-          <button type="button" aria-label={`移除标的 ${t}`} class="text-muted hover:text-red-600"
+        <li class="px-1.5 py-0.5 rounded-sm bg-muted">{t}
+          <button type="button" aria-label={`移除标的 ${t}`} class="text-muted-foreground hover:text-red-600"
                   onclick={() => tickers = tickers.filter(x => x !== t)}>×</button></li>
       {/each}
     </ul>
@@ -132,7 +132,7 @@
 
   {#if error}<p role="alert" class="text-xs text-red-600">{error}</p>{/if}
   {#if !hideSubmit}
-    <button type="button" class="px-3 py-1 rounded bg-accent text-white disabled:opacity-50" disabled={busy}
+    <button type="button" class="px-3 py-1 rounded-sm bg-primary text-white disabled:opacity-50" disabled={busy}
             onclick={submit}>{submitLabel}</button>
   {/if}
 </div>

@@ -205,18 +205,18 @@
 
 <section aria-label="运行详情" class="space-y-4 text-sm">
   <header class="flex flex-wrap items-center gap-3">
-    <a href="#tools/runs" class="text-accent underline">返回运行记录</a>
-    <h1 class="font-mono text-xs text-muted">{runId}</h1>
+    <a href="#tools/runs" class="text-primary underline">返回运行记录</a>
+    <h1 class="font-mono text-xs text-muted-foreground">{runId}</h1>
   </header>
 
   {#if error}
-    <p role="alert" class="text-danger">{error}</p>
+    <p role="alert" class="text-destructive">{error}</p>
   {:else if !detail}
-    <p class="text-xs text-muted">加载中…</p>
+    <p class="text-xs text-muted-foreground">加载中…</p>
   {:else}
     <div class="space-y-1">
       {#if detail.headline}<p class="text-base font-medium" data-testid="headline">{detail.headline}</p>{/if}
-      <p class="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted" data-testid="meta">
+      <p class="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground" data-testid="meta">
         <span>任务 {detail.task}</span>
         <span>状态 {statusText(detail.status)}</span>
         {#if detail.trigger}<span>触发 {TRIGGER_TEXT[detail.trigger] ?? detail.trigger}</span>{/if}
@@ -243,33 +243,33 @@
     {/if}
 
     {#if detail.kind === 'other' || detail.nodes.length === 0}
-      <p class="text-muted">这类运行没有节点证据</p>
+      <p class="text-muted-foreground">这类运行没有节点证据</p>
     {:else}
       <NodeGraph nodes={detail.nodes} {selected} onselect={select} />
       {#if canAct && detail.status === 'failed' && detail.resume && !detail.resume.allowed && detail.resume.reason}
-        <p class="text-xs text-muted">{resumeErrorText(detail.resume.reason, { next: nodeTitle(detail.resume.node), day: nyDay(detail.resume.deadline_at) }) ?? detail.resume.reason}</p>
+        <p class="text-xs text-muted-foreground">{resumeErrorText(detail.resume.reason, { next: nodeTitle(detail.resume.node), day: nyDay(detail.resume.deadline_at) }) ?? detail.resume.reason}</p>
       {/if}
-      {#if resumeNotice}<p class="text-xs text-muted" role="status">{resumeNotice}</p>{/if}
-      {#if resumeError}<p role="alert" class="text-xs text-danger">{resumeError}</p>{/if}
+      {#if resumeNotice}<p class="text-xs text-muted-foreground" role="status">{resumeNotice}</p>{/if}
+      {#if resumeError}<p role="alert" class="text-xs text-destructive">{resumeError}</p>{/if}
 
       {#if selectedNode}
         {@const node = selectedNode}
-        <section aria-label={`${node.title} 详情`} class="space-y-4 rounded border border-border bg-surface p-3">
+        <section aria-label={`${node.title} 详情`} class="space-y-4 rounded-sm border border-border bg-card p-3">
           <h2 class="font-semibold">{node.title}</h2>
 
           <div class="space-y-1">
             <h3 class="font-medium">做了什么</h3>
             {#if node.did?.sentence}<p>{node.did.sentence}</p>{/if}
-            <p class="text-xs text-muted">
+            <p class="text-xs text-muted-foreground">
               状态 {statusText(node.status)}{node.reason_text || node.reason ? `：${node.reason_text ?? node.reason}` : ''}
               · 输入 {count(node.did?.input_count)} · 产出 {count(node.did?.output_count)}
               {#if node.duration_ms != null} · 耗时 {durationText(node.duration_ms)}{/if}
             </p>
             {#if node.status === 'failed' && node.reason && node.reason !== node.reason_text}
-              <p class="break-all text-xs text-danger">{node.reason}</p>
+              <p class="break-all text-xs text-destructive">{node.reason}</p>
             {/if}
             {#if node.attempts.length > 1}
-              <ul class="text-xs text-muted">
+              <ul class="text-xs text-muted-foreground">
                 {#each node.attempts as a (a.attempt)}
                   <li>第 {a.attempt} 次：{statusText(a.status)}{a.duration_ms != null ? ` · ${durationText(a.duration_ms)}` : ''}</li>
                 {/each}
@@ -280,7 +280,7 @@
               <p class="text-xs">{skip.text} × {skip.count}{skip.samples?.length ? `（样本：${skip.samples.join('、')}）` : ''}</p>
             {/each}
             {#each node.did?.failures ?? [] as failure, i (i)}
-              <p class="break-all text-xs text-danger">{failure.target}：{failure.reason}</p>
+              <p class="break-all text-xs text-destructive">{failure.target}：{failure.reason}</p>
             {/each}
             {#each node.did?.degradations ?? [] as d, i (i)}
               <p class="text-xs text-warn">{d.text}{d.detail ? `：${d.detail}` : ''}</p>
@@ -288,17 +288,17 @@
 
             {#if canAct && node.actions?.resume && detail.resume?.allowed && resumeNode?.id === node.id}
               {#if confirming}
-                <div role="group" aria-label="确认续跑" class="space-y-2 rounded border border-border bg-surface-2 p-2">
+                <div role="group" aria-label="确认续跑" class="space-y-2 rounded-sm border border-border bg-muted p-2">
                   <p>{resumeText}</p>
                   <div class="flex gap-2">
-                    <button type="button" class="rounded bg-accent px-3 py-1 text-white disabled:opacity-50"
+                    <button type="button" class="rounded-sm bg-primary px-3 py-1 text-white disabled:opacity-50"
                             disabled={resumeBusy} onclick={doResume}>确认继续</button>
-                    <button type="button" class="rounded border border-border px-3 py-1 disabled:opacity-50"
+                    <button type="button" class="rounded-sm border border-border px-3 py-1 disabled:opacity-50"
                             disabled={resumeBusy} onclick={() => confirming = false}>取消</button>
                   </div>
                 </div>
               {:else}
-                <button type="button" class="rounded border border-accent/40 px-3 py-1 text-accent"
+                <button type="button" class="rounded-sm border border-primary/40 px-3 py-1 text-primary"
                         onclick={() => { confirming = true; resumeError = '' }}>从此节点继续</button>
               {/if}
             {/if}
@@ -316,62 +316,62 @@
             <div class="space-y-1">
               <h3 class="font-medium">结果详情</h3>
               {#if results.kind === 'collect' && !results.items?.length}
-                <p class="text-xs text-muted">拉取详情已列全</p>
+                <p class="text-xs text-muted-foreground">拉取详情已列全</p>
               {:else if !results.items?.length}
-                <p class="text-xs text-muted">没有结果</p>
+                <p class="text-xs text-muted-foreground">没有结果</p>
               {:else}
-                <p class="text-xs text-muted">
+                <p class="text-xs text-muted-foreground">
                   {results.truncated ? `只显示前 ${results.items.length} 项，共 ${results.total} 项` : `共 ${results.total} 项`}
                 </p>
                 <ul class="space-y-1">
                   {#each results.items as item, i (i)}
                     <li class="space-y-0.5 text-xs">
                       {#if results.kind === 'sec_monitor'}
-                        <span><a class="text-accent underline" href={`#instrument/${encodeURIComponent(item.ticker)}`}>{item.ticker}</a>
+                        <span><a class="text-primary underline" href={`#instrument/${encodeURIComponent(item.ticker)}`}>{item.ticker}</a>
                           · {item.form} · {item.filing_date} · {item.accession} · {item.notified ? '已通知' : '未通知'}</span>
                       {:else if results.kind === 'screen'}
-                        <span><a class="text-accent underline" href={`#instrument/${encodeURIComponent(item.ticker)}`}>{item.ticker}</a>
+                        <span><a class="text-primary underline" href={`#instrument/${encodeURIComponent(item.ticker)}`}>{item.ticker}</a>
                           · 排名 {count(item.rank)} · {item.group ?? '—'}{item.selected ? ' · 入选' : ''}{item.new_member ? ' · 新成员' : ''}</span>
                       {:else if results.kind === 'regime'}
                         <span>{REGIME_LABELS[item.label] ?? item.label} · {item.regime_id}</span>
                       {:else if results.kind === 'signals'}
-                        <span><a class="text-accent underline" href={`#instrument/${encodeURIComponent(item.ticker)}`}>{item.ticker}</a>
+                        <span><a class="text-primary underline" href={`#instrument/${encodeURIComponent(item.ticker)}`}>{item.ticker}</a>
                           · {ruleLabel(item.rule_id)} · {INTERNAL_RESULT_TEXT[item.status] ?? item.status}</span>
                       {:else if results.kind === 'plan'}
-                        <span><a class="text-accent underline" href={`#plan/${item.plan_id}`}>{item.ticker}</a>
+                        <span><a class="text-primary underline" href={`#plan/${item.plan_id}`}>{item.ticker}</a>
                           · {item.status === 'invalid' ? '已作废' : item.status === 'ok' ? '有效' : item.status}{item.invalid_reasons?.length ? `（${item.invalid_reasons.join('、')}）` : ''}</span>
                       {:else if results.kind === 'agent'}
                         {@const key = unitKey(item)}
                         <span class="flex flex-wrap items-baseline gap-x-2">
-                          <a class="text-accent underline" href={`#instrument/${encodeURIComponent(item.ticker)}`}>{item.ticker}</a>
+                          <a class="text-primary underline" href={`#instrument/${encodeURIComponent(item.ticker)}`}>{item.ticker}</a>
                           <span>{item.signal_date}</span>
                           <span>{MODE_TEXT[item.mode] ?? item.mode}</span>
                           <span>{AGENT_STATUS_TEXT[item.status] ?? item.status}{item.reason_text || item.reason ? `（${item.reason_text ?? item.reason}）` : ''}</span>
-                          <span class="text-muted">第 {count(item.attempt)} 次 · 输入 {count(item.input_tokens)} · 产出 {count(item.output_tokens)} token{item.model ? ` · ${item.model}` : ''}</span>
-                          {#if item.plan_id}<a class="text-accent underline" href={`#plan/${item.plan_id}`}>计划</a>{/if}
+                          <span class="text-muted-foreground">第 {count(item.attempt)} 次 · 输入 {count(item.input_tokens)} · 产出 {count(item.output_tokens)} token{item.model ? ` · ${item.model}` : ''}</span>
+                          {#if item.plan_id}<a class="text-primary underline" href={`#plan/${item.plan_id}`}>计划</a>{/if}
                           {#if item.run_id}
-                            <button type="button" class="text-accent underline" aria-expanded={!!reasoningOpen[item.run_id]}
+                            <button type="button" class="text-primary underline" aria-expanded={!!reasoningOpen[item.run_id]}
                                     onclick={() => reasoningOpen[item.run_id] = !reasoningOpen[item.run_id]}>看推理过程</button>
                           {/if}
                           {#if canAct && item.can_rerun && !rerunDone[key]}
-                            <button type="button" class="rounded border border-accent/40 px-2 py-0.5 text-accent disabled:opacity-50"
+                            <button type="button" class="rounded-sm border border-primary/40 px-2 py-0.5 text-primary disabled:opacity-50"
                                     disabled={rerunBusy[key]} onclick={() => rerun(item)}>重新运行 Agent</button>
                           {/if}
-                          {#if rerunText[key]}<span class="text-muted">{rerunText[key]}</span>{/if}
+                          {#if rerunText[key]}<span class="text-muted-foreground">{rerunText[key]}</span>{/if}
                         </span>
                         {#if item.run_id && reasoningOpen[item.run_id]}<AgentReasoning runId={item.run_id} />{/if}
                       {:else if results.kind === 'review'}
-                        <span><a class="text-accent underline" href={`#instrument/${encodeURIComponent(item.ticker)}`}>{item.ticker}</a>
+                        <span><a class="text-primary underline" href={`#instrument/${encodeURIComponent(item.ticker)}`}>{item.ticker}</a>
                           · {item.signal_date} · {OUTCOME_TEXT[item.outcome as keyof typeof OUTCOME_TEXT] ?? item.outcome}
-                          {#if item.plan_id} · <a class="text-accent underline" href={`#plan/${item.plan_id}`}>计划</a>{/if}</span>
+                          {#if item.plan_id} · <a class="text-primary underline" href={`#plan/${item.plan_id}`}>计划</a>{/if}</span>
                       {:else if results.kind === 'push'}
                         <span>{item.sent ? `已发送 ${count(item.messages)} 条` : '未发送'}{item.channel ? ` · ${item.channel}` : ''}{item.reason ? ` · ${item.reason}` : ''}</span>
                       {:else if results.kind === 'retro'}
                         <span>
                           {#if item.kind === 'card'}
-                            <a class="text-accent underline" href={`#review/cards/${item.id}`}>{RETRO_KIND_TEXT.card}{item.ticker ? ` ${item.ticker}` : ''}</a>
+                            <a class="text-primary underline" href={`#review/cards/${item.id}`}>{RETRO_KIND_TEXT.card}{item.ticker ? ` ${item.ticker}` : ''}</a>
                           {:else}
-                            <a class="text-accent underline" href={`#review/${item.kind}`}>{RETRO_KIND_TEXT[item.kind] ?? item.kind}</a>
+                            <a class="text-primary underline" href={`#review/${item.kind}`}>{RETRO_KIND_TEXT[item.kind] ?? item.kind}</a>
                           {/if}
                           {item.status ? ` · ${RETRO_STATUS_TEXT[item.status] ?? item.status}` : ''}{item.push ? ` · ${typeof item.push === 'string' ? (RETRO_PUSH_TEXT[item.push] ?? item.push) : JSON.stringify(item.push)}` : ''}
                         </span>
@@ -386,13 +386,13 @@
           {/if}
         </section>
       {:else}
-        <p class="text-xs text-muted">点上面的格子，查看这个节点做了什么</p>
+        <p class="text-xs text-muted-foreground">点上面的格子，查看这个节点做了什么</p>
       {/if}
     {/if}
 
     <details class="text-xs">
-      <summary class="cursor-pointer text-accent">原始摘要</summary>
-      <pre class="mt-1 max-h-96 overflow-auto rounded bg-surface-2 p-2">{JSON.stringify(detail.raw_summary, null, 2)}</pre>
+      <summary class="cursor-pointer text-primary">原始摘要</summary>
+      <pre class="mt-1 max-h-96 overflow-auto rounded-sm bg-muted p-2">{JSON.stringify(detail.raw_summary, null, 2)}</pre>
     </details>
   {/if}
 </section>

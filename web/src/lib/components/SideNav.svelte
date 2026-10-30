@@ -92,12 +92,12 @@
 </script>
 
 <nav
-  class="flex flex-col bg-surface border-r border-border h-full transition-all duration-200 {collapsed ? 'w-14' : 'w-48'}"
+  class="flex flex-col bg-card border-r border-border h-full transition-all duration-200 {collapsed ? 'w-14' : 'w-48'}"
 >
   <!-- collapse toggle -->
   <button
     onclick={() => collapsed = !collapsed}
-    class="flex items-center justify-center h-10 mt-1 mb-2 mx-1 rounded text-muted hover:bg-surface-2 hover:text-ink transition-colors"
+    class="flex items-center justify-center h-10 mt-1 mb-2 mx-1 rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
     aria-label={collapsed ? '展开菜单' : '收起菜单'}
   >
     {#if collapsed}
@@ -117,8 +117,8 @@
       {#if hasChildren}
         <button
           onclick={e => toggleOpen(item.id, e)}
-          class="flex items-center gap-2 w-full px-2 py-2 rounded text-sm transition-colors text-left
-            {active ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-2 hover:text-ink'}"
+          class="flex items-center gap-2 w-full px-2 py-2 rounded-sm text-sm transition-colors text-left
+            {active ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}"
           aria-expanded={open}
         >
           <span class="text-base shrink-0 w-5 text-center">{item.icon}</span>
@@ -139,8 +139,8 @@
               {@const childActive = isChildCurrent(item, child)}
               <a
                 href={child.href ?? `#${item.id}/${child.id}`}
-                class="block px-2 py-1.5 rounded text-xs transition-colors
-                  {childActive ? 'bg-accent/10 text-accent font-medium' : 'text-muted hover:bg-surface-2 hover:text-ink'}"
+                class="block px-2 py-1.5 rounded-sm text-xs transition-colors
+                  {childActive ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}"
               >
                 {child.label}
               </a>
@@ -152,8 +152,8 @@
         <!-- leaf node -->
         <a
           href="#{item.id}"
-          class="flex items-center gap-2 px-2 py-2 rounded text-sm transition-colors
-            {active ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-2 hover:text-ink'}"
+          class="flex items-center gap-2 px-2 py-2 rounded-sm text-sm transition-colors
+            {active ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}"
         >
           <span class="text-base shrink-0 w-5 text-center">{item.icon}</span>
           {#if !collapsed}
@@ -167,8 +167,8 @@
 
     <button
       onclick={() => moreOpen = !moreOpen}
-      class="flex items-center gap-2 w-full px-2 py-2 mt-2 rounded text-sm text-left border-t border-border transition-colors
-        {legacyIds.includes(current) ? 'text-accent' : 'text-muted hover:bg-surface-2 hover:text-ink'}"
+      class="flex items-center gap-2 w-full px-2 py-2 mt-2 rounded-sm text-sm text-left border-t border-border transition-colors
+        {legacyIds.includes(current) ? 'text-primary' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}"
       aria-expanded={moreOpen}
     >
       <span class="text-base shrink-0 w-5 text-center">⋯</span>

@@ -74,8 +74,42 @@ def test_app_hash_router_covers_all_zones():
 def test_design_tokens_css_exists():
     assert Path("web/src/styles/tokens.css").exists()
     tokens = Path("web/src/styles/tokens.css").read_text(encoding="utf-8")
-    for var in ["--bg", "--surface", "--accent", "--up", "--down"]:
+    for var in ["--background", "--card", "--primary", "--up", "--down"]:
         assert var in tokens, f"missing token: {var}"
+
+
+def test_tailwind_v4_css_first():
+    import json
+
+    app_css = Path("web/src/styles/app.css").read_text(encoding="utf-8")
+    assert '@import "tailwindcss"' in app_css or "@import 'tailwindcss'" in app_css
+    assert "@tailwind" not in app_css
+    assert not Path("web/tailwind.config.ts").exists()
+    assert not Path("web/postcss.config.js").exists()
+    pkg = json.loads(Path("web/package.json").read_text(encoding="utf-8"))
+    dev = pkg["devDependencies"]
+    assert dev["tailwindcss"] == "4.3.3"
+    assert dev["@tailwindcss/vite"] == "4.3.3"
+    assert "autoprefixer" not in dev and "postcss" not in dev
+    assert "@tailwindcss/vite" in Path("web/vite.config.ts").read_text(encoding="utf-8")
+
+
+def test_no_legacy_token_names():
+    import re
+
+    class_re = re.compile(
+        r"\b(?:[\w-]+:)*(?:bg-bg|bg-surface(?:-2)?|text-ink|(?:text|border)-muted(?!-foreground)"
+        r"|(?:text|bg|border|ring)-accent|(?:text|bg|border)-danger|shadow-elev-[12])\b"
+    )
+    var_re = re.compile(r"var\(--(?:bg|surface(?:-2)?|text(?:-muted)?|accent|danger|elev-[12])\)")
+    offenders = []
+    for path in Path("web/src").rglob("*"):
+        if path.suffix not in {".svelte", ".ts", ".css"}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for m in list(class_re.finditer(text)) + list(var_re.finditer(text)):
+            offenders.append(f"{path}: {m.group(0)}")
+    assert not offenders, offenders[:20]
 
 
 def test_dark_mode_token_override_exists():

@@ -14,5 +14,5 @@
  <details><summary>原始口径及输入记录</summary><pre>{JSON.stringify(metric ?? {},null,2)}</pre></details>
 </details>
 <style>
- .value{font-variant-numeric:tabular-nums}small{display:block;color:var(--muted);white-space:normal;min-width:9rem}details{font-size:.75rem;margin-top:.25rem;white-space:normal}summary{cursor:pointer;color:var(--accent)}p{margin:.4rem 0;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.7rem;max-width:30rem}a{color:var(--accent)}
+ .value{font-variant-numeric:tabular-nums}small{display:block;color:var(--muted-foreground);white-space:normal;min-width:9rem}details{font-size:.75rem;margin-top:.25rem;white-space:normal}summary{cursor:pointer;color:var(--primary)}p{margin:.4rem 0;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.7rem;max-width:30rem}a{color:var(--primary)}
 </style>

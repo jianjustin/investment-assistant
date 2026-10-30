@@ -77,8 +77,8 @@
     if (label.startsWith('已作废')) return 'text-red-600'
     if (label.startsWith('已过期')) return 'text-amber-600'
     if (label.startsWith('已平仓')) return 'text-green-700'
-    if (label.startsWith('被取代')) return 'text-muted'
-    return 'text-accent'
+    if (label.startsWith('被取代')) return 'text-muted-foreground'
+    return 'text-primary'
   }
   const instructionClass = (i: wb.Instruction) =>
     i === 'exit' ? 'text-red-600 font-semibold' : i === 'sell_half' ? 'text-orange-600 font-semibold' : ''
@@ -90,7 +90,7 @@
 
 {#snippet chainBlock(row: wb.PlanTableRow)}
   <span class="block">{row.chain ? row.chain.label : (row.plan ? `规则基线 ${row.plan.plan_version}` : '无计划')}</span>
-  {#if row.plan}<span class="block text-xs text-muted">{wb.KIND_TEXT[row.plan.kind] ?? row.plan.kind} · {row.plan.plan_version}</span>{/if}
+  {#if row.plan}<span class="block text-xs text-muted-foreground">{wb.KIND_TEXT[row.plan.kind] ?? row.plan.kind} · {row.plan.plan_version}</span>{/if}
   {#if row.plan?.defaults_applied}<span class="block text-xs text-amber-700">{wb.DEFAULTS_APPLIED_TEXT}</span>{/if}
   {#if !row.chain && wb.activeChainText(row)}<span class="block text-xs text-amber-700">{wb.activeChainText(row)}</span>{/if}
   {#each row.chain?.retriggers ?? [] as r (r.unit_signal_date)}
@@ -112,11 +112,11 @@
   <span class="block font-medium {statusClass(row)}">{row.status.label}</span>
   {#each row.status.changes_text ?? [] as t, i (i)}<span class="block text-xs">变化：{t}</span>{/each}
   {#if row.status.diff?.length}
-    <span class="block text-xs text-muted">相对上版：{row.status.diff.map(d => `${tl.CHANGE_FIELD_TEXT[d.field] ?? d.field} ${tl.diffValueText(d.field, d.before)} → ${tl.diffValueText(d.field, d.after)}`).join('；')}</span>
+    <span class="block text-xs text-muted-foreground">相对上版：{row.status.diff.map(d => `${tl.CHANGE_FIELD_TEXT[d.field] ?? d.field} ${tl.diffValueText(d.field, d.before)} → ${tl.diffValueText(d.field, d.after)}`).join('；')}</span>
   {/if}
   {#if execText(row)}<span class="block text-xs"><ConceptTerm id={T.basis}>{execText(row)}</ConceptTerm></span>{/if}
   {#if row.notes?.length}
-    <span class="inline-block text-xs text-muted border border-border rounded px-1" title={row.notes.map(n => n.body).join('\n')}
+    <span class="inline-block text-xs text-muted-foreground border border-border rounded-sm px-1" title={row.notes.map(n => n.body).join('\n')}
           aria-label={`备注 ${row.notes.length} 条`}>备注 {row.notes.length}</span>
   {/if}
 {/snippet}
@@ -126,9 +126,9 @@
     <span class="block text-xs">{wb.holdingLine(row.holding)}</span>
     {#if row.holding.stale}<span class="block text-xs text-amber-700">{wb.STALE_HOLDING_TEXT}</span>{/if}
     {@const later = laterReview(row)}
-    {#if later}<span data-testid="later-review" class="block text-xs text-muted">{later}</span>{/if}
+    {#if later}<span data-testid="later-review" class="block text-xs text-muted-foreground">{later}</span>{/if}
   {:else}
-    <span class="text-xs text-muted">—</span>
+    <span class="text-xs text-muted-foreground">—</span>
   {/if}
 {/snippet}
 
@@ -146,26 +146,26 @@
 {/snippet}
 
 {#snippet expandButton(row: wb.PlanTableRow)}
-  <button type="button" class="text-xs text-accent underline" aria-expanded={!!expanded[row.row_id]} aria-controls={`row-detail-${row.row_id}`}
+  <button type="button" class="text-xs text-primary underline" aria-expanded={!!expanded[row.row_id]} aria-controls={`row-detail-${row.row_id}`}
           aria-label={`${expanded[row.row_id] ? '收起' : '展开'} ${row.ticker}`} onclick={() => toggle(row)}>{expanded[row.row_id] ? '收起' : '展开'}</button>
 {/snippet}
 
 {#snippet tickerCell(row: wb.PlanTableRow)}
-  <button type="button" class="font-medium text-accent underline" aria-expanded={!!expanded[row.row_id]}
+  <button type="button" class="font-medium text-primary underline" aria-expanded={!!expanded[row.row_id]}
           aria-controls={`row-detail-${row.row_id}`} onclick={() => toggle(row)}>{row.ticker}</button>
-  {#if row.pool === 'extended'}<span class="text-xs px-1 rounded bg-surface-2">扩展池</span>{/if}
-  <a class="block text-xs text-muted underline" href={`#instrument/${encodeURIComponent(row.ticker)}`}>标的页</a>
+  {#if row.pool === 'extended'}<span class="text-xs px-1 rounded-sm bg-muted">扩展池</span>{/if}
+  <a class="block text-xs text-muted-foreground underline" href={`#instrument/${encodeURIComponent(row.ticker)}`}>标的页</a>
 {/snippet}
 
 <!-- 窄屏：每行一张卡片，三种开盘情形纵排 -->
 {#snippet cards(rows: wb.PlanTableRow[], group: wb.RowGroup)}
   <ul class="space-y-2">
     {#each rows as row (row.row_id)}
-      <li data-testid="plan-card" data-group={group} class="border border-border rounded p-2 bg-surface space-y-1 text-sm">
+      <li data-testid="plan-card" data-group={group} class="border border-border rounded-sm p-2 bg-card space-y-1 text-sm">
         <div class={group === 'ended' ? 'opacity-60 space-y-1' : 'space-y-1'}>
         <div class="flex flex-wrap items-center gap-2">
           {@render tickerCell(row)}
-          {#if row.plan}<span class="text-xs px-1.5 py-0.5 rounded bg-accent/10 text-accent">{ACTION_TEXT[row.plan.action] ?? row.plan.action}</span>{/if}
+          {#if row.plan}<span class="text-xs px-1.5 py-0.5 rounded-sm bg-primary/10 text-primary">{ACTION_TEXT[row.plan.action] ?? row.plan.action}</span>{/if}
         </div>
         <div class="text-xs">{@render chainBlock(row)}</div>
         {#if row.plan}
@@ -173,7 +173,7 @@
         {/if}
         {#if group === 'entry'}
           <ul class="text-xs space-y-0.5">
-            {#each CASES as kase (kase)}<li><span class="text-muted">开盘·{wb.OPEN_CASE_TEXT[kase]}：</span>{scenarioOf(row, kase)}</li>{/each}
+            {#each CASES as kase (kase)}<li><span class="text-muted-foreground">开盘·{wb.OPEN_CASE_TEXT[kase]}：</span>{scenarioOf(row, kase)}</li>{/each}
           </ul>
         {:else if group === 'holding'}
           {@render holdingBlock(row)}
@@ -182,7 +182,7 @@
         <div>{@render voidBlock(row)}</div>
         </div>
         <div>{@render statusBlock(row)}</div>
-        {#if group === 'ended' && row.ended_at}<p class="text-xs text-muted">结束于 {row.ended_at}</p>{/if}
+        {#if group === 'ended' && row.ended_at}<p class="text-xs text-muted-foreground">结束于 {row.ended_at}</p>{/if}
         <p>{@render expandButton(row)}</p>
         {#if expanded[row.row_id]}{@render detail(row)}{/if}
       </li>
@@ -194,13 +194,13 @@
   <section aria-label="入场期" class="space-y-2">
     <h2 class="font-semibold text-sm">入场期（可执行）{entryRows.length}</h2>
     {#if entryRows.length === 0}
-      <p class="text-sm text-muted">入场期暂无可执行的计划</p>
+      <p class="text-sm text-muted-foreground">入场期暂无可执行的计划</p>
     {:else if narrow}
       {@render cards(entryRows, 'entry')}
     {:else}
       <div class="overflow-x-auto">
         <table aria-label="入场期计划" class="text-xs w-full min-w-[1100px]">
-          <thead><tr class="text-left text-muted align-bottom">
+          <thead><tr class="text-left text-muted-foreground align-bottom">
             <th>标的</th><th>链与版本</th><th>动作</th>
             <th>入场类型与区间</th><th>止损</th><th>T1</th><th>建议股数</th><th>有效期</th>
             <th>开盘：区间内</th><th>开盘：高开</th><th>开盘：低开</th><th>本计划何时作废</th><th>状态</th><th></th>
@@ -222,7 +222,7 @@
                 <td>{@render expandButton(row)}</td>
               </tr>
               {#if expanded[row.row_id]}
-                <tr><td colspan="14" class="p-2 bg-surface-2/40">{@render detail(row)}</td></tr>
+                <tr><td colspan="14" class="p-2 bg-muted/40">{@render detail(row)}</td></tr>
               {/if}
             {/each}
           </tbody>
@@ -234,13 +234,13 @@
   <section aria-label="持仓中" class="space-y-2">
     <h2 class="font-semibold text-sm">持仓中 {holdingRows.length}</h2>
     {#if holdingRows.length === 0}
-      <p class="text-sm text-muted">当前无持仓</p>
+      <p class="text-sm text-muted-foreground">当前无持仓</p>
     {:else if narrow}
       {@render cards(holdingRows, 'holding')}
     {:else}
       <div class="overflow-x-auto">
         <table aria-label="持仓计划" class="text-xs w-full min-w-[1000px]">
-          <thead><tr class="text-left text-muted align-bottom">
+          <thead><tr class="text-left text-muted-foreground align-bottom">
             <th>标的</th><th>链与版本</th><th>动作</th><th>入场类型与区间</th><th>止损</th><th>T1</th><th>建议股数</th><th>有效期</th>
             <th>持仓状态</th><th>指令</th><th>本计划何时作废</th><th>状态</th><th></th>
           </tr></thead>
@@ -262,7 +262,7 @@
                 <td>{@render expandButton(row)}</td>
               </tr>
               {#if expanded[row.row_id]}
-                <tr><td colspan="13" class="p-2 bg-surface-2/40">{@render detail(row)}</td></tr>
+                <tr><td colspan="13" class="p-2 bg-muted/40">{@render detail(row)}</td></tr>
               {/if}
             {/each}
           </tbody>
@@ -276,7 +276,7 @@
       <button type="button" class="underline" aria-expanded={endedOpen} aria-controls="plan-table-ended" onclick={toggleEnded}>已结束 {endedRows.length}</button>
     </h2>
     {#if endedOpen}
-      <div id="plan-table-ended" data-testid="ended-group" class="text-muted">
+      <div id="plan-table-ended" data-testid="ended-group" class="text-muted-foreground">
         {#if endedRows.length === 0}
           <p class="text-sm">最近 5 个交易日内没有结束的计划</p>
         {:else if narrow}

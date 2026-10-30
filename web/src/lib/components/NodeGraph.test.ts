@@ -56,7 +56,7 @@ describe('NodeGraph', () => {
       expect(button.querySelector('[aria-hidden="true"]')?.textContent).toBeTruthy()  // 另有图标
     }
     // 颜色取主题变量，不写死色值
-    expect(screen.getByRole('button', { name: '信号：失败' }).className).toContain('border-danger')
+    expect(screen.getByRole('button', { name: '信号：失败' }).className).toContain('border-destructive')
     expect(screen.getByRole('button', { name: 'Agent：未开始' }).className).toContain('border-dashed')
     expect(screen.getByRole('button', { name: '每日复查：运行中' }).className).toContain('node-running')
   })

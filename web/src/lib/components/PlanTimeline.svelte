@@ -118,37 +118,37 @@
   const revisionStatus = (r: tl.PlanReview) => (r.detail?.revision_status as string | undefined) ?? null
 </script>
 
-<section aria-label="版本链" class="border border-border rounded p-3 bg-surface text-sm space-y-3">
+<section aria-label="版本链" class="border border-border rounded-sm p-3 bg-card text-sm space-y-3">
   {#if error}
     <h2 class="font-semibold">版本链</h2>
     <p role="alert" class="text-sm text-red-600">{error}</p>
   {:else if loading && !chain}
     <h2 class="font-semibold">版本链</h2>
-    <p class="text-xs text-muted">加载中…</p>
+    <p class="text-xs text-muted-foreground">加载中…</p>
   {:else if chain}
     {#if current && !current.is_head}
       <p class="text-sm text-amber-700"><span>这是第 {current.version_no} 版，最新为第 {chain.version_no} 版</span>
-        <a class="text-accent underline ml-2" href={`#plan/${chain.head_plan_id}`}>查看最新版</a></p>
+        <a class="text-primary underline ml-2" href={`#plan/${chain.head_plan_id}`}>查看最新版</a></p>
     {/if}
     <div class="flex flex-wrap items-center gap-2">
       <h2 class="font-semibold">版本链</h2>
-      <span class="text-xs px-1.5 py-0.5 rounded bg-accent/10 text-accent">{tl.CHAIN_STATE_TEXT[chain.state.state] ?? chain.state.state}</span>
+      <span class="text-xs px-1.5 py-0.5 rounded-sm bg-primary/10 text-primary">{tl.CHAIN_STATE_TEXT[chain.state.state] ?? chain.state.state}</span>
       <ConceptTerm id={T.chainState}>链状态</ConceptTerm>
-      <span class="text-xs text-muted">{chain.state.basis}</span>
-      <button class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50"
+      <span class="text-xs text-muted-foreground">{chain.state.basis}</span>
+      <button class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted disabled:opacity-50"
               disabled={!active || recheck.busy}
               title={exiting ? wb.CHAIN_EXITING_TEXT : active ? '' : '只有入场期或持仓期的链可以重新复查'} onclick={runRecheck}>重新复查</button>
       {#if recheck.text}<span class="text-xs">{recheck.text}</span>{/if}
     </div>
 
     {#if chain.retriggers?.length}
-      <p class="text-xs text-muted">并入的单元：{chain.retriggers.map(r => `${r.unit_signal_date}（${r.rule_ids.map(wb.ruleLabel).join('、')}）`).join('；')}</p>
+      <p class="text-xs text-muted-foreground">并入的单元：{chain.retriggers.map(r => `${r.unit_signal_date}（${r.rule_ids.map(wb.ruleLabel).join('、')}）`).join('；')}</p>
     {/if}
 
     <ol aria-label="版本" class="space-y-2">
       {#each chain.versions as v (v.plan_id)}
         <li class="border-l-2 border-border pl-2 space-y-1">
-          <p><button class="font-medium text-accent underline" aria-expanded={!!open[v.version_no]}
+          <p><button class="font-medium text-primary underline" aria-expanded={!!open[v.version_no]}
                      onclick={() => open[v.version_no] = !open[v.version_no]}>第 {v.version_no} 版</button>
             <span> · {versionLine(v)}</span>
             <span class="text-xs"><ConceptTerm id={T.origin}>来源</ConceptTerm> <ConceptTerm id={T.shadow}>影子</ConceptTerm></span></p>
@@ -165,7 +165,7 @@
       <h3 class="font-semibold">持仓状态</h3>
       <div class="overflow-x-auto">
         <table aria-label="持仓状态" class="text-xs w-full min-w-[640px]">
-          <thead><tr class="text-left text-muted">
+          <thead><tr class="text-left text-muted-foreground">
             <th>日期</th><th>持有</th><th>收盘</th><th>止损</th><th>距止损</th><th>距 T1</th><th>现</th><th>指令</th><th>理由</th>
           </tr></thead>
           <tbody>
@@ -196,22 +196,22 @@
             {#if isRetrigger(r)}<p class="text-xs text-amber-700">{tl.retriggerText(r, chain?.retriggers, wb.ruleLabel)}</p>{/if}
             {#if reviewReason(r)}<p>{reviewReason(r)}</p>{/if}
             {#if r.outcome !== 'skipped'}
-              <p class="text-xs text-muted">信号：{firedText(r)} <ConceptTerm id={T.signals}>信号说明</ConceptTerm></p>
-              {#if r.conditions?.length}<p class="text-xs text-muted">条件：{conditionsText(r)} <ConceptTerm id={T.conditions}>条件说明</ConceptTerm></p>{/if}
+              <p class="text-xs text-muted-foreground">信号：{firedText(r)} <ConceptTerm id={T.signals}>信号说明</ConceptTerm></p>
+              {#if r.conditions?.length}<p class="text-xs text-muted-foreground">条件：{conditionsText(r)} <ConceptTerm id={T.conditions}>条件说明</ConceptTerm></p>{/if}
             {/if}
             {#if r.user_input_ids?.length}
-              <p class="text-xs text-muted">给模型的新输入：{r.user_input_ids.map(id => `user:${id}`).join('、')} <ConceptTerm id={T.userInput}>用户输入</ConceptTerm></p>
+              <p class="text-xs text-muted-foreground">给模型的新输入：{r.user_input_ids.map(id => `user:${id}`).join('、')} <ConceptTerm id={T.userInput}>用户输入</ConceptTerm></p>
             {/if}
-            {#if userRefs(r).length}<p class="text-xs text-muted">引用：{userRefs(r).join('、')}</p>{/if}
+            {#if userRefs(r).length}<p class="text-xs text-muted-foreground">引用：{userRefs(r).join('、')}</p>{/if}
             {#if revisionStatus(r)}<p class="text-xs text-amber-700">修订未通过：{tl.revisionReasonText(revisionStatus(r)!)}</p>{/if}
             {#if r.review_agent_run_id || r.revision_agent_run_id}
               <p class="text-xs flex flex-wrap gap-x-3">
                 {#if r.review_agent_run_id}
-                  <button type="button" class="text-accent underline" aria-expanded={!!reasoningOpen[`${r.id}|review`]}
+                  <button type="button" class="text-primary underline" aria-expanded={!!reasoningOpen[`${r.id}|review`]}
                           onclick={() => reasoningOpen[`${r.id}|review`] = !reasoningOpen[`${r.id}|review`]}>看复查推理</button>
                 {/if}
                 {#if r.revision_agent_run_id}
-                  <button type="button" class="text-accent underline" aria-expanded={!!reasoningOpen[`${r.id}|revision`]}
+                  <button type="button" class="text-primary underline" aria-expanded={!!reasoningOpen[`${r.id}|revision`]}
                           onclick={() => reasoningOpen[`${r.id}|revision`] = !reasoningOpen[`${r.id}|revision`]}>看修订推理</button>
                 {/if}
               </p>
@@ -222,7 +222,7 @@
         {/each}
       </ol>
     {:else}
-      <p class="text-xs text-muted">还没有复查记录</p>
+      <p class="text-xs text-muted-foreground">还没有复查记录</p>
     {/if}
   {/if}
 </section>
@@ -231,11 +231,11 @@
   {#if callDrawer.call}
     {@const c = callDrawer.call}
     <h2 class="font-semibold">工具调用 call:{c.seq}</h2>
-    <p class="text-xs text-muted">工具 {c.tool} · 阶段 {c.phase} · {wb.dateTime(c.called_at)}</p>
+    <p class="text-xs text-muted-foreground">工具 {c.tool} · 阶段 {c.phase} · {wb.dateTime(c.called_at)}</p>
     <p class="text-xs break-all">参数 {JSON.stringify(c.args)}</p>
     <p class="text-xs break-all">哈希 {c.result_sha256.slice(0, 8)}</p>
     <pre class="text-xs mt-2 whitespace-pre-wrap break-all">{JSON.stringify(c.result, null, 2)}</pre>
   {:else}
-    <p class="text-sm text-muted">未找到该编号的工具调用</p>
+    <p class="text-sm text-muted-foreground">未找到该编号的工具调用</p>
   {/if}
 </Drawer>

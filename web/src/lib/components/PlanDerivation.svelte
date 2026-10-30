@@ -45,10 +45,10 @@
   const mainSteps = $derived(steps.filter(s => !s.key.startsWith('tr_')))
 
   const BADGE_CLASS: Record<string, string> = {
-    consistent: 'bg-accent/10 text-accent', mismatch: 'bg-red-100 text-red-700', incomplete: 'bg-amber-100 text-amber-800',
+    consistent: 'bg-primary/10 text-primary', mismatch: 'bg-red-100 text-red-700', incomplete: 'bg-amber-100 text-amber-800',
   }
   const clauseClass = (result: string): string =>
-    result === 'violated' ? 'text-red-600' : result === 'not_frozen' ? 'text-amber-700' : 'text-muted'
+    result === 'violated' ? 'text-red-600' : result === 'not_frozen' ? 'text-amber-700' : 'text-muted-foreground'
   const sourceLabel = (step: Step): string => {
     const refs = step.refs?.length ? ` ${step.refs.join('、')}` : ''
     return `${SOURCE_TEXT[step.source] ?? step.source}${refs}`
@@ -58,7 +58,7 @@
 {#snippet stepTable(label: string, rows: Step[])}
   <div class="overflow-x-auto">
     <table aria-label={label} class="w-full text-xs text-left whitespace-nowrap">
-      <thead><tr class="text-muted">
+      <thead><tr class="text-muted-foreground">
         <th class="pr-2 py-1">项目</th><th class="pr-2 py-1">公式</th><th class="pr-2 py-1">代入</th>
         <th class="pr-2 py-1">结果</th><th class="pr-2 py-1">已存</th><th class="pr-2 py-1">一致</th>
       </tr></thead>
@@ -70,7 +70,7 @@
             <td class="pr-2 py-1 whitespace-normal">{pairs(step.substitutions)}</td>
             <td class="pr-2 py-1">{text(step.result)}</td>
             <td class="pr-2 py-1">{text(step.stored)}</td>
-            <td class="pr-2 py-1 {step.consistent === false ? 'text-red-600' : 'text-muted'}">
+            <td class="pr-2 py-1 {step.consistent === false ? 'text-red-600' : 'text-muted-foreground'}">
               {step.consistent == null ? '—' : step.consistent ? '一致' : '不一致'}
             </td>
           </tr>
@@ -84,13 +84,13 @@
   {#if error}
     <p role="alert" class="text-xs text-red-600">{error}</p>
   {:else if loading}
-    <p class="text-xs text-muted">推导加载中…</p>
+    <p class="text-xs text-muted-foreground">推导加载中…</p>
   {:else}
     {#if consistency}
       <p class="flex flex-wrap items-center gap-2">
-        <span class="text-xs px-1.5 py-0.5 rounded {BADGE_CLASS[consistency.status]}">{CONSISTENCY_TEXT[consistency.status]}</span>
+        <span class="text-xs px-1.5 py-0.5 rounded-sm {BADGE_CLASS[consistency.status]}">{CONSISTENCY_TEXT[consistency.status]}</span>
         <span class="text-xs"><ConceptTerm id={D.consistency}>推导核对</ConceptTerm></span>
-        <span class="text-xs text-muted">{plan?.derivation_version ?? triggerOnly?.derivation_version}</span>
+        <span class="text-xs text-muted-foreground">{plan?.derivation_version ?? triggerOnly?.derivation_version}</span>
       </p>
       {#each consistency.mismatches as m (m.key)}
         <p class="text-xs text-red-600">差异 {m.key}：推导 {text(m.result)} ≠ 已存 {text(m.stored)}</p>
@@ -99,17 +99,17 @@
         <p class="text-xs text-amber-700">缺失 {item}</p>
       {/each}
     {/if}
-    <p class="text-xs text-muted">{plan?.evidence ?? triggerOnly?.evidence} <ConceptTerm id={D.evidence} /></p>
+    <p class="text-xs text-muted-foreground">{plan?.evidence ?? triggerOnly?.evidence} <ConceptTerm id={D.evidence} /></p>
 
     <details open class="space-y-1">
       <summary class="cursor-pointer font-medium text-xs">触发</summary>
-      {#if triggerNote}<p class="text-xs text-muted">{triggerNote}</p>{/if}
+      {#if triggerNote}<p class="text-xs text-muted-foreground">{triggerNote}</p>{/if}
       {#each candidates as c (c.candidate_id)}
         <div class="space-y-0.5">
           <p class="text-xs"><ConceptTerm id={ruleConcept(c.rule_id)}>{c.rule_id}</ConceptTerm> · v{c.rule_version} · {c.action}{c.note ? ` · ${c.note}` : ''}</p>
           <div class="overflow-x-auto">
             <table aria-label="触发条件 {c.rule_id}" class="w-full text-xs text-left whitespace-nowrap">
-              <thead><tr class="text-muted">
+              <thead><tr class="text-muted-foreground">
                 <th class="pr-2 py-1">条件句</th><th class="pr-2 py-1">冻结取值</th><th class="pr-2 py-1">结果</th>
               </tr></thead>
               <tbody>
@@ -125,7 +125,7 @@
           </div>
         </div>
       {:else}
-        <p class="text-xs text-muted">无候选</p>
+        <p class="text-xs text-muted-foreground">无候选</p>
       {/each}
     </details>
 
@@ -162,7 +162,7 @@
             <p class="text-xs"><ConceptTerm id={D.bars} /></p>
             <div class="overflow-x-auto">
               <table aria-label="输入日线" class="w-full text-xs text-left whitespace-nowrap">
-                <thead><tr class="text-muted">
+                <thead><tr class="text-muted-foreground">
                   <th class="pr-2 py-1">日期</th><th class="pr-2 py-1">开</th><th class="pr-2 py-1">高</th>
                   <th class="pr-2 py-1">低</th><th class="pr-2 py-1">收</th><th class="pr-2 py-1">修订号</th>
                 </tr></thead>
@@ -195,7 +195,7 @@
         {#if mainSteps.length}
           {@render stepTable('逐项计算', mainSteps)}
         {:else}
-          <p class="text-xs text-muted">无可推导项</p>
+          <p class="text-xs text-muted-foreground">无可推导项</p>
         {/if}
       </details>
 
@@ -203,14 +203,14 @@
         <summary class="cursor-pointer font-medium text-xs">校验</summary>
         {#each plan.checks as check (check.key)}
           <p class="text-xs">{check.label}：{check.formula}（{pairs(check.substitutions)}）
-            <span class={check.holds ? 'text-muted' : 'text-red-600'}>{check.holds ? '成立' : '不成立'}</span></p>
+            <span class={check.holds ? 'text-muted-foreground' : 'text-red-600'}>{check.holds ? '成立' : '不成立'}</span></p>
         {:else}
-          <p class="text-xs text-muted">无校验项</p>
+          <p class="text-xs text-muted-foreground">无校验项</p>
         {/each}
       </details>
 
       {#if plan.run}
-        <p class="text-xs text-muted"><span class="font-medium"><ConceptTerm id={D.run}>运行证据：</ConceptTerm></span>
+        <p class="text-xs text-muted-foreground"><span class="font-medium"><ConceptTerm id={D.run}>运行证据：</ConceptTerm></span>
           {#if !plan.run.ready}
             <span>{text(plan.run.note)}</span>
           {:else if plan.run.run_id}

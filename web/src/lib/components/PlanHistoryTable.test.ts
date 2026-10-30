@@ -43,7 +43,7 @@ describe('PlanHistoryTable', () => {
     expect(bodies[1].className).toContain('border-t-4')              // the divider between chains
     const first = [...bodies[0].querySelectorAll('tr')]
     expect(first[0].getAttribute('data-kind')).toBe('chain_open')
-    expect(first[0].className).toContain('bg-surface-2')             // grey
+    expect(first[0].className).toContain('bg-muted')             // grey
     expect(first.at(-1)!.getAttribute('data-kind')).toBe('chain_end')
     expect(first.at(-1)).toHaveTextContent('已过期未执行（2026-10-24）')
   })

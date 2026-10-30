@@ -30,7 +30,7 @@
 </script>
 
 <span class="inline-flex flex-wrap items-center gap-2">
-  <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50"
+  <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted disabled:opacity-50"
           disabled={busy} onclick={start}>{text}</button>
   {#if error}<span role="alert" class="text-xs text-red-600">{error}</span>{/if}
 </span>

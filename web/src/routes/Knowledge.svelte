@@ -165,55 +165,55 @@
   {#if mode === 'browse'}
     <header>
       <h1 class="text-lg font-semibold">概念</h1>
-      <p class="text-xs text-muted">概念卡随代码版本更新，<code>{index?.knowledge_version ?? 'knowledge-1'}</code>；所有规则与 Agent 都未经验证</p>
-      <p class="text-xs text-muted">你自己的经验在 <a class="text-accent underline" href="#knowledge/mine">我的知识</a></p>
+      <p class="text-xs text-muted-foreground">概念卡随代码版本更新，<code>{index?.knowledge_version ?? 'knowledge-1'}</code>；所有规则与 Agent 都未经验证</p>
+      <p class="text-xs text-muted-foreground">你自己的经验在 <a class="text-primary underline" href="#knowledge/mine">我的知识</a></p>
     </header>
     {#if failure}
       {@render failureBlock()}
     {:else if loading && !index}
-      <p class="text-sm text-muted">加载中…</p>
+      <p class="text-sm text-muted-foreground">加载中…</p>
     {:else if index}
       {#if index.concepts.length === 0}
-        <p class="text-sm text-muted">还没有概念卡</p>
+        <p class="text-sm text-muted-foreground">还没有概念卡</p>
       {:else}
         <input type="search" aria-label="过滤" placeholder="按 id、标题或摘要过滤"
-               class="text-sm border border-border rounded px-2 py-1 bg-bg w-full max-w-sm" bind:value={filter} />
+               class="text-sm border border-border rounded-sm px-2 py-1 bg-background w-full max-w-sm" bind:value={filter} />
         {#each groups as g (g.id)}
           <section aria-label={GROUP_TEXT[g.id] ?? g.title} class="space-y-1">
             <h2 class="font-semibold"><CodeText text={g.title} /> · {g.rows.length} 张</h2>
             <ul class="space-y-1 text-sm">
               {#each g.rows as c (c.id)}
-                <li class="border border-border rounded p-2 bg-surface">
-                  <a class="font-medium text-accent underline" href={`#knowledge/${c.id}`}>{c.title}</a>
-                  <code class="text-xs text-muted">{c.id}</code>
-                  {#each c.applies_to as version}<span class="text-xs px-1 rounded bg-surface-2">{version}</span>{/each}
-                  <p class="text-xs text-muted">{c.summary}</p>
+                <li class="border border-border rounded-sm p-2 bg-card">
+                  <a class="font-medium text-primary underline" href={`#knowledge/${c.id}`}>{c.title}</a>
+                  <code class="text-xs text-muted-foreground">{c.id}</code>
+                  {#each c.applies_to as version}<span class="text-xs px-1 rounded-sm bg-muted">{version}</span>{/each}
+                  <p class="text-xs text-muted-foreground">{c.summary}</p>
                 </li>
               {/each}
             </ul>
           </section>
         {:else}
-          <p class="text-sm text-muted">没有匹配的概念卡</p>
+          <p class="text-sm text-muted-foreground">没有匹配的概念卡</p>
         {/each}
       {/if}
     {/if}
 
   {:else if mode === 'card'}
-    <p><a class="text-xs text-accent underline" href="#knowledge">返回概念列表</a></p>
+    <p><a class="text-xs text-primary underline" href="#knowledge">返回概念列表</a></p>
     {#if failure?.status === 404}
       <p class="text-sm">没有这张概念卡：{cardId(sub ?? '')}</p>
     {:else if failure}
       {@render failureBlock()}
     {:else if loading && !card}
-      <p class="text-sm text-muted">加载中…</p>
+      <p class="text-sm text-muted-foreground">加载中…</p>
     {:else if card}
       {#if card.stale}<p class="text-sm text-amber-700">{card.stale.note}</p>{/if}
       <header class="space-y-1">
         <h1 class="text-lg font-semibold">{card.title}</h1>
-        <p class="text-xs text-muted flex flex-wrap items-center gap-2">
+        <p class="text-xs text-muted-foreground flex flex-wrap items-center gap-2">
           <span><CodeText text={GROUP_TEXT[card.group] ?? card.group} /></span>
           <code>{card.ref}</code>
-          {#each card.applies_to as version}<span class="px-1 rounded bg-surface-2">{version}</span>{/each}
+          {#each card.applies_to as version}<span class="px-1 rounded-sm bg-muted">{version}</span>{/each}
         </p>
         <p class="text-sm">{card.summary}</p>
       </header>
@@ -222,7 +222,7 @@
         <section aria-label="相关" class="space-y-1">
           <h2 class="font-semibold text-sm">相关</h2>
           <ul class="flex flex-wrap gap-2 text-sm">
-            {#each card.related_cards as r (r.id)}<li><a class="text-accent underline" href={`#knowledge/${r.id}`}>{r.title}</a></li>{/each}
+            {#each card.related_cards as r (r.id)}<li><a class="text-primary underline" href={`#knowledge/${r.id}`}>{r.title}</a></li>{/each}
           </ul>
         </section>
       {/if}
@@ -230,23 +230,23 @@
         <section aria-label="被这些卡提到" class="space-y-1">
           <h2 class="font-semibold text-sm">被这些卡提到</h2>
           <ul class="flex flex-wrap gap-2 text-sm">
-            {#each card.backlinks as r (r.id)}<li><a class="text-accent underline" href={`#knowledge/${r.id}`}>{r.title}</a></li>{/each}
+            {#each card.backlinks as r (r.id)}<li><a class="text-primary underline" href={`#knowledge/${r.id}`}>{r.title}</a></li>{/each}
           </ul>
         </section>
       {/if}
       <section aria-label="挂在这张卡上的我的知识" class="space-y-1">
         <h2 class="font-semibold text-sm">挂在这张卡上的我的知识</h2>
         {#if attached.error}
-          <p class="text-xs text-muted">{attached.error}</p>
+          <p class="text-xs text-muted-foreground">{attached.error}</p>
         {:else if attached.items === null}
-          <p class="text-xs text-muted">加载中…</p>
+          <p class="text-xs text-muted-foreground">加载中…</p>
         {:else if attached.items.length === 0}
-          <p class="text-xs text-muted">还没有挂在这张卡上的经验</p>
+          <p class="text-xs text-muted-foreground">还没有挂在这张卡上的经验</p>
         {:else}
           <ul class="text-sm space-y-0.5">
             {#each attached.items as e (e.id)}
-              <li><a class="text-accent underline" href={`#knowledge/mine/${e.id}`}>{e.title}</a>
-                <span class="text-xs text-muted"> · 第 {e.current_version} 版 · {e.scope}</span></li>
+              <li><a class="text-primary underline" href={`#knowledge/mine/${e.id}`}>{e.title}</a>
+                <span class="text-xs text-muted-foreground"> · 第 {e.current_version} 版 · {e.scope}</span></li>
             {/each}
           </ul>
         {/if}
@@ -257,48 +257,48 @@
     {#if minePage.page === 'list'}
       <header class="space-y-1">
         <h1 class="text-lg font-semibold">我的知识</h1>
-        <p class="text-xs text-muted">你审定过的经验：判断，不是事实。Agent 只能读到截止时间之前写入的版本；
+        <p class="text-xs text-muted-foreground">你审定过的经验：判断，不是事实。Agent 只能读到截止时间之前写入的版本；
           <ConceptTerm id={ATTACH.myKnowledge.item}>说明</ConceptTerm>
-          · <a class="text-accent underline" href="#knowledge">返回概念</a></p>
+          · <a class="text-primary underline" href="#knowledge">返回概念</a></p>
       </header>
       <KnowledgeList />
     {:else if minePage.page === 'new'}
-      <p><a class="text-xs text-accent underline" href="#knowledge/mine">返回我的知识</a></p>
+      <p><a class="text-xs text-primary underline" href="#knowledge/mine">返回我的知识</a></p>
       <h1 class="text-lg font-semibold">写一条经验</h1>
-      <div class="border border-border rounded p-3">
+      <div class="border border-border rounded-sm p-3">
         <KnowledgeForm initial={{ tickers: prefillTicker() }} onSubmit={createEntry} />
       </div>
     {:else if minePage.page === 'drafts'}
-      <p><a class="text-xs text-accent underline" href="#knowledge/mine">返回我的知识</a></p>
+      <p><a class="text-xs text-primary underline" href="#knowledge/mine">返回我的知识</a></p>
       <h1 class="text-lg font-semibold">待审定的草稿</h1>
       {#if draftsError}
         <p role="alert" class="text-sm text-red-600">{draftsError}</p>
       {:else if drafts === null}
-        <p class="text-sm text-muted">加载中…</p>
+        <p class="text-sm text-muted-foreground">加载中…</p>
       {:else if drafts.length === 0}
-        <p class="text-sm text-muted">没有待审定的草稿</p>
+        <p class="text-sm text-muted-foreground">没有待审定的草稿</p>
       {:else}
         <ul class="space-y-3">
           {#each drafts as d (d.id)}
-            <li class="border border-border rounded p-3 text-sm space-y-1">
+            <li class="border border-border rounded-sm p-3 text-sm space-y-1">
               <p class="font-medium">{d.title}</p>
               <p class="whitespace-pre-wrap">{d.body}</p>
-              <p class="text-xs"><span class="text-muted">适用范围</span> {d.scope}</p>
-              <p class="text-xs"><span class="text-muted">反例</span> {d.counter_examples}</p>
+              <p class="text-xs"><span class="text-muted-foreground">适用范围</span> {d.scope}</p>
+              <p class="text-xs"><span class="text-muted-foreground">反例</span> {d.counter_examples}</p>
               {#if d.target_knowledge_id != null}
-                <p class="text-xs text-muted">改写 <a class="text-accent underline" href={knowHref(`know:${d.target_knowledge_id}@${d.target_version}`)}>know:{d.target_knowledge_id}@{d.target_version}</a></p>
+                <p class="text-xs text-muted-foreground">改写 <a class="text-primary underline" href={knowHref(`know:${d.target_knowledge_id}@${d.target_version}`)}>know:{d.target_knowledge_id}@{d.target_version}</a></p>
               {/if}
               {#if d.origin === 'review_card'}
                 <p class="text-xs">来自复盘卡的草稿只能在卡上审定：
-                  <a class="text-accent underline" href={`#review/cards/${d.card_id}`}>到复盘卡审定</a></p>
+                  <a class="text-primary underline" href={`#review/cards/${d.card_id}`}>到复盘卡审定</a></p>
               {:else}
                 {@const stale = staleDraftText(d)}
                 {#if stale}<p class="text-xs text-amber-700">{stale}</p>{/if}
                 <div class="flex gap-2">
-                  <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50"
+                  <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted disabled:opacity-50"
                           disabled={!!stale} title={stale ?? undefined}
                           onclick={() => adopting[d.id] = true}>采纳</button>
-                  <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2"
+                  <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted"
                           onclick={() => dismiss(d)}>不采纳</button>
                 </div>
                 {#if dismissError[d.id]}<p role="alert" class="text-xs text-red-600">{dismissError[d.id]}</p>{/if}
@@ -314,32 +314,32 @@
         </ul>
       {/if}
     {:else}
-      <p><a class="text-xs text-accent underline" href="#knowledge/mine">返回我的知识</a></p>
+      <p><a class="text-xs text-primary underline" href="#knowledge/mine">返回我的知识</a></p>
       {#key sub}<KnowledgeItem id={minePage.id} version={minePage.version} />{/key}
     {/if}
 
   {:else}
     <header class="flex flex-wrap items-center gap-3">
       <h1 class="text-lg font-semibold">{principles?.title ?? '原理'}</h1>
-      <input type="date" aria-label="日期" class="text-xs border border-border rounded px-1 py-0.5 bg-bg"
+      <input type="date" aria-label="日期" class="text-xs border border-border rounded-sm px-1 py-0.5 bg-background"
              value={date} onchange={e => date = (e.currentTarget as HTMLInputElement).value} />
-      <span class="text-xs text-muted">{date ? '' : '默认最近已收盘交易日'}</span>
+      <span class="text-xs text-muted-foreground">{date ? '' : '默认最近已收盘交易日'}</span>
     </header>
     {#if failure?.status === 404}
-      <p class="text-sm text-muted">还没有原理页</p>
+      <p class="text-sm text-muted-foreground">还没有原理页</p>
     {:else if failure}
       {@render failureBlock()}
     {:else if loading && !principles}
-      <p class="text-sm text-muted">加载中…</p>
+      <p class="text-sm text-muted-foreground">加载中…</p>
     {:else if principles}
       {#each principles.sections as section, i (i)}
         <section aria-label={section.heading} class="space-y-2">
           <h2 class="font-semibold">{section.heading}</h2>
           <div class="knowledge-body text-sm space-y-2">{@html section.html}</div>
           {#if section.stage}
-            <div data-testid="stage-box" class="border border-border rounded p-2 bg-surface space-y-1">
+            <div data-testid="stage-box" class="border border-border rounded-sm p-2 bg-card space-y-1">
               <RunOverview session={date || undefined} compact onlyStage={section.stage} />
-              <a class="text-xs text-accent underline" href="#today">在『今日』看完整运行一览</a>
+              <a class="text-xs text-primary underline" href="#today">在『今日』看完整运行一览</a>
             </div>
           {/if}
         </section>
@@ -353,8 +353,8 @@
   .knowledge-body :global(p), .knowledge-body :global(ul), .knowledge-body :global(ol) { margin: 0.25rem 0; }
   .knowledge-body :global(ul) { list-style: disc; margin-left: 1.25rem; }
   .knowledge-body :global(ol) { list-style: decimal; margin-left: 1.25rem; }
-  .knowledge-body :global(a) { color: var(--accent); text-decoration: underline; }
-  .knowledge-body :global(code) { padding: 0 0.2rem; border-radius: 0.2rem; background: var(--surface-2); }
+  .knowledge-body :global(a) { color: var(--primary); text-decoration: underline; }
+  .knowledge-body :global(code) { padding: 0 0.2rem; border-radius: 0.2rem; background: var(--muted); }
   .knowledge-body :global(table) { border-collapse: collapse; font-size: 0.75rem; }
   .knowledge-body :global(th), .knowledge-body :global(td) { border: 1px solid var(--border); padding: 0.2rem 0.5rem; }
 </style>

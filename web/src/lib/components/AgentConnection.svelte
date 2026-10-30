@@ -157,50 +157,50 @@
   <h2 class="text-lg font-semibold">Agent 连接</h2>
 
   {#if view?.provider_setting === 'off'}
-    <p class="text-xs text-muted">Agent 已关闭（WORKBENCH_AGENT_PROVIDER=off）</p>
+    <p class="text-xs text-muted-foreground">Agent 已关闭（WORKBENCH_AGENT_PROVIDER=off）</p>
   {/if}
 
   {#if loadError && !view}
-    <p role="alert" class="text-sm text-danger">{loadError}</p>
+    <p role="alert" class="text-sm text-destructive">{loadError}</p>
   {:else if !view}
-    <p class="text-xs text-muted">加载中…</p>
+    <p class="text-xs text-muted-foreground">加载中…</p>
   {:else if view.status === 'pending'}
     <div class="flex flex-wrap items-center gap-3">
       <p>等待你在浏览器里完成登录（{remainingMinutes} 分钟内有效）</p>
-      <button type="button" class="rounded border border-border px-2 py-1 text-xs hover:bg-surface-2 disabled:opacity-50"
+      <button type="button" class="rounded-sm border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
               disabled={busy} onclick={cancel}>取消</button>
     </div>
   {:else if view.status === 'needs_login'}
     <div class="flex flex-wrap items-center gap-3">
-      <p role="alert" class="rounded bg-danger/10 px-2 py-1 text-danger">ChatGPT 连接已失效，请重新连接</p>
-      <button type="button" class="rounded border border-accent/30 px-2 py-1 text-xs text-accent disabled:opacity-50"
+      <p role="alert" class="rounded-sm bg-destructive/10 px-2 py-1 text-destructive">ChatGPT 连接已失效，请重新连接</p>
+      <button type="button" class="rounded-sm border border-primary/30 px-2 py-1 text-xs text-primary disabled:opacity-50"
               disabled={busy} onclick={connect}>重新连接</button>
     </div>
   {:else if view.status === 'connected' || view.status === 'no_sharing'}
     {#if sharingMissing}
-      <p class="rounded bg-warn/10 px-2 py-1 text-warn">已登录，但这个账号没有开启计划用量共享</p>
+      <p class="rounded-sm bg-warn/10 px-2 py-1 text-warn">已登录，但这个账号没有开启计划用量共享</p>
     {/if}
     <div class="flex flex-wrap items-center gap-3">
       {#if !sharingMissing}
         <p>已连接：{view.email_masked ?? '—'} · 登录有效至 {day(view.refresh_expires_at)}（每次运行自动续期）· 上次续期 {fmtBeijing(view.last_refresh_at)}</p>
       {:else if view.email_masked}
-        <p class="text-xs text-muted">{view.email_masked}</p>
+        <p class="text-xs text-muted-foreground">{view.email_masked}</p>
       {/if}
-      <button type="button" class="rounded border border-border px-2 py-1 text-xs hover:bg-surface-2 disabled:opacity-50"
+      <button type="button" class="rounded-sm border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
               disabled={busy} onclick={disconnect}>断开</button>
     </div>
   {:else if view.status === 'unknown'}
-    <p role="alert" class="text-danger">连接状态不可读</p>
+    <p role="alert" class="text-destructive">连接状态不可读</p>
   {:else}
     <div class="flex flex-wrap items-center gap-3">
       <p>未连接 ChatGPT</p>
-      <button type="button" class="rounded border border-accent/30 px-2 py-1 text-xs text-accent disabled:opacity-50"
+      <button type="button" class="rounded-sm border border-primary/30 px-2 py-1 text-xs text-primary disabled:opacity-50"
               disabled={busy} onclick={connect}>连接 ChatGPT</button>
     </div>
   {/if}
 
   {#if view?.last_error && view.status !== 'connected'}
-    <p class="text-xs text-muted">最近错误：{view.last_error}</p>
+    <p class="text-xs text-muted-foreground">最近错误：{view.last_error}</p>
   {/if}
 
   {#if view?.status === 'connected' && !sharingMissing}
@@ -208,24 +208,24 @@
       <label class="flex flex-wrap items-center gap-2">
         <span>模型</span>
         {#if models !== null}
-          <select aria-label="模型" class="rounded border border-border bg-surface px-2 py-1 text-sm"
+          <select aria-label="模型" class="rounded-sm border border-border bg-card px-2 py-1 text-sm"
                   value={view.model ?? ''} disabled={busy} onchange={e => chooseModel((e.currentTarget as HTMLSelectElement).value, e.currentTarget as HTMLSelectElement)}>
             {#if !view.model}<option value="" disabled>请选择模型</option>{/if}
             {#if modelMissing}<option value={view.model}>{view.model}（已不在可用清单里）</option>{/if}
             {#each models as m (m.slug)}<option value={m.slug}>{m.display_name}</option>{/each}
           </select>
         {:else if modelsError}
-          <span class="text-xs text-danger">{modelsError}</span>
+          <span class="text-xs text-destructive">{modelsError}</span>
         {:else}
-          <span class="text-xs text-muted">加载中…</span>
+          <span class="text-xs text-muted-foreground">加载中…</span>
         {/if}
       </label>
       {#if modelMissing}<p class="text-xs text-warn">当前所选模型已不在可用清单里，请重新选择</p>{/if}
-      {#if modelSaved}<p class="text-xs text-muted">{modelSaved}</p>{/if}
+      {#if modelSaved}<p class="text-xs text-muted-foreground">{modelSaved}</p>{/if}
     </div>
   {/if}
 
-  {#if notice}<p class="text-xs text-muted">{notice}</p>{/if}
-  {#if actionError}<p role="alert" class="text-xs text-danger">{actionError}</p>{/if}
-  {#if loadError && view}<p role="alert" class="text-xs text-danger">{loadError}</p>{/if}
+  {#if notice}<p class="text-xs text-muted-foreground">{notice}</p>{/if}
+  {#if actionError}<p role="alert" class="text-xs text-destructive">{actionError}</p>{/if}
+  {#if loadError && view}<p role="alert" class="text-xs text-destructive">{loadError}</p>{/if}
 </section>

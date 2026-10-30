@@ -65,42 +65,42 @@
 
 {#if verdict}
   <div class="space-y-2 text-sm">
-    <p class="text-xs"><span class="font-medium">已审定</span> <span class="text-muted">{fmtBeijing(verdict.created_at)}</span></p>
+    <p class="text-xs"><span class="font-medium">已审定</span> <span class="text-muted-foreground">{fmtBeijing(verdict.created_at)}</span></p>
     {#if verdict.note}
       <div>
-        <p class="text-xs text-muted">我的复盘</p>
+        <p class="text-xs text-muted-foreground">我的复盘</p>
         <p class="whitespace-pre-wrap">{verdict.note}</p>
       </div>
     {/if}
     <ul class="space-y-0.5 text-xs">
       {#each verdict.lessons as lesson, i (i)}
-        <li class={lesson.action === 'dismiss' ? 'text-muted' : ''}>
+        <li class={lesson.action === 'dismiss' ? 'text-muted-foreground' : ''}>
           <span>{lesson.title}</span>
           {#if lesson.action === 'approve' && lesson.ref}
-            → <a class="text-accent underline" href={knowHref(lesson.ref)}>{lesson.ref}</a>
+            → <a class="text-primary underline" href={knowHref(lesson.ref)}>{lesson.ref}</a>
           {:else if lesson.action === 'dismiss'}· 不采纳{/if}
         </li>
       {:else}
-        <li class="text-muted">没有教训</li>
+        <li class="text-muted-foreground">没有教训</li>
       {/each}
     </ul>
   </div>
 {:else}
   <div class="space-y-3 text-sm">
     {#each drafts as d, i (d.id)}
-      <fieldset aria-label={`教训草稿 ${i + 1}：${d.title}`} class="border border-border rounded p-3 space-y-2 min-w-0">
-        <legend class="px-1 text-xs text-muted">教训草稿 {i + 1}</legend>
+      <fieldset aria-label={`教训草稿 ${i + 1}：${d.title}`} class="border border-border rounded-sm p-3 space-y-2 min-w-0">
+        <legend class="px-1 text-xs text-muted-foreground">教训草稿 {i + 1}</legend>
         <p class="font-medium">{d.title}</p>
         <p class="whitespace-pre-wrap">{d.body}</p>
-        <p class="text-xs"><span class="text-muted">适用范围</span> {d.scope}</p>
-        <p class="text-xs"><span class="text-muted">反例</span> {d.counter_examples}</p>
-        {#if d.refs?.length}<p class="text-xs text-muted">依据<RefList refs={d.refs} {runId} {onFact} /></p>{/if}
+        <p class="text-xs"><span class="text-muted-foreground">适用范围</span> {d.scope}</p>
+        <p class="text-xs"><span class="text-muted-foreground">反例</span> {d.counter_examples}</p>
+        {#if d.refs?.length}<p class="text-xs text-muted-foreground">依据<RefList refs={d.refs} {runId} {onFact} /></p>{/if}
         <div class="flex gap-2">
           <button type="button" aria-pressed={choice[d.id] === 'approve'}
-                  class="text-xs px-2 py-1 border rounded {choice[d.id] === 'approve' ? 'border-accent bg-accent/10 text-accent' : 'border-border hover:bg-surface-2'}"
+                  class="text-xs px-2 py-1 border rounded-sm {choice[d.id] === 'approve' ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:bg-muted'}"
                   onclick={() => choice[d.id] = 'approve'}>采纳</button>
           <button type="button" aria-pressed={choice[d.id] === 'dismiss'}
-                  class="text-xs px-2 py-1 border rounded {choice[d.id] === 'dismiss' ? 'border-accent bg-accent/10 text-accent' : 'border-border hover:bg-surface-2'}"
+                  class="text-xs px-2 py-1 border rounded-sm {choice[d.id] === 'dismiss' ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:bg-muted'}"
                   onclick={() => choice[d.id] = 'dismiss'}>不采纳</button>
         </div>
         {#if choice[d.id] === 'approve'}
@@ -110,26 +110,26 @@
     {/each}
 
     {#each extras as extra, i (extra.key)}
-      <fieldset aria-label={`另写的教训 ${i + 1}`} class="border border-border rounded p-3 space-y-2 min-w-0">
-        <legend class="px-1 text-xs text-muted">另写的教训 {i + 1}</legend>
+      <fieldset aria-label={`另写的教训 ${i + 1}`} class="border border-border rounded-sm p-3 space-y-2 min-w-0">
+        <legend class="px-1 text-xs text-muted-foreground">另写的教训 {i + 1}</legend>
         <KnowledgeForm hideSubmit onChange={(values, problem) => extra.edit = { values, problem }} />
-        <button type="button" class="text-xs px-2 py-1 border border-border rounded"
+        <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm"
                 onclick={() => extras = extras.filter(x => x.key !== extra.key)}>移除这一条</button>
       </fieldset>
     {/each}
-    <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2"
+    <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted"
             onclick={() => extras = [...extras, { key: nextKey++, edit: null }]}>另写一条</button>
 
     <label class="flex flex-col">我的复盘（0–2000 字）
-      <textarea aria-label="我的复盘" rows="3" class="border border-border rounded px-2 py-1 bg-bg" bind:value={note}></textarea>
+      <textarea aria-label="我的复盘" rows="3" class="border border-border rounded-sm px-2 py-1 bg-background" bind:value={note}></textarea>
     </label>
 
     {#if unhandled > 0}<p class="text-xs text-amber-700">还有 {unhandled} 条教训草稿没有处理</p>{/if}
     {#if error}<p role="alert" class="text-xs text-red-600">{error}</p>{/if}
     <div class="flex items-center gap-2">
-      <button type="button" class="px-3 py-1 rounded bg-accent text-white disabled:opacity-50"
+      <button type="button" class="px-3 py-1 rounded-sm bg-primary text-white disabled:opacity-50"
               disabled={busy || unhandled > 0} onclick={submit}>提交审定</button>
-      <span class="text-xs text-muted">审定后不能再审定；之后要改经验，到「我的知识」改版本。</span>
+      <span class="text-xs text-muted-foreground">审定后不能再审定；之后要改经验，到「我的知识」改版本。</span>
     </div>
   </div>
 {/if}

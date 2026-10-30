@@ -71,12 +71,12 @@
   const changeField = (field: string) => tl.CHANGE_FIELD_TEXT[field] ?? field
 </script>
 
-{#snippet refList(list: string[] | undefined)}{#if list?.length}（{#each list as ref, i}{#if i}、{/if}{#if tl.isCallRef(ref)}<button class="underline" onclick={() => onCall(ref)}>{ref}</button>{:else if isKnowRef(ref)}<a class="text-accent underline" href={knowHref(ref)}>{ref}</a>{:else}<span>{ref}</span>{/if}{/each}）{/if}{/snippet}
+{#snippet refList(list: string[] | undefined)}{#if list?.length}（{#each list as ref, i}{#if i}、{/if}{#if tl.isCallRef(ref)}<button class="underline" onclick={() => onCall(ref)}>{ref}</button>{:else if isKnowRef(ref)}<a class="text-primary underline" href={knowHref(ref)}>{ref}</a>{:else}<span>{ref}</span>{/if}{/each}）{/if}{/snippet}
 
 {#snippet derivation()}
   {#if plan}
     <div class="space-y-1">
-      <button class="text-xs text-accent underline" aria-expanded={derivationOpen}
+      <button class="text-xs text-primary underline" aria-expanded={derivationOpen}
               onclick={() => derivationOpen = !derivationOpen}>展开推导</button>
       {#if derivationOpen}<PlanDerivation planId={plan.id} />{/if}
     </div>
@@ -88,7 +88,7 @@
     <p class="font-medium">Agent 未给出计划：{reasonText(failed.reason)} <ConceptTerm id={A.rejectReasons}>作废原因</ConceptTerm></p>
     {#if legacy}<p class="text-xs text-amber-700">agent-1（旧版，不参与复查） <ConceptTerm id={A.legacy}>旧版说明</ConceptTerm></p>{/if}
     {#if onRerun}
-      <button class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2" onclick={onRerun}>重新运行 Agent</button>
+      <button class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted" onclick={onRerun}>重新运行 Agent</button>
     {/if}
   {:else if run && legacy}
     <!-- agent-1：原样展示（v2.4 的块），只加旧版标注。 -->
@@ -97,12 +97,12 @@
     {#if output?.levels}
       {@const levels = output.levels}
       <p>入场区间 {levels.entry_low.value}–{levels.entry_high.value} · 止损 {levels.stop.value} · T1 {levels.target1.value}</p>
-      <p class="text-xs text-muted">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}（{#each levels[key].refs as ref, i}{#if i}、{/if}<button class="underline" onclick={() => onCall(ref)}>{ref}</button>{/each}）{/each} <ConceptTerm id={A.citation}>引用编号</ConceptTerm></p>
+      <p class="text-xs text-muted-foreground">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}（{#each levels[key].refs as ref, i}{#if i}、{/if}<button class="underline" onclick={() => onCall(ref)}>{ref}</button>{/each}）{/each} <ConceptTerm id={A.citation}>引用编号</ConceptTerm></p>
     {/if}
     {#if plan?.sizing?.shares != null}<p>建议 {plan.sizing.shares} 股</p>{/if}
     {#if output?.summary}<p>{output.summary}</p>{/if}
     {#if output?.thesis?.length}
-      <ul class="list-disc ml-5 text-xs text-muted">
+      <ul class="list-disc ml-5 text-xs text-muted-foreground">
         {#each output.thesis as t}<li>{t.text}{@render refList(t.refs)}</li>{/each}
       </ul>
     {/if}
@@ -117,28 +117,28 @@
     <p class="font-medium">Agent 不建议买入：{output?.summary ?? ''}</p>
   {:else if run}
     <p class="font-medium">{title} <span class="text-xs font-normal"><ConceptTerm id={A.version}>版本链</ConceptTerm> <ConceptTerm id={A.cutoff}>截止时间</ConceptTerm></span></p>
-    <p class="text-xs text-muted">模型 {run.model} · {run.agent_version}{chain?.mode ? ` · ${tl.MODE_TEXT[chain.mode]}` : ''}</p>
+    <p class="text-xs text-muted-foreground">模型 {run.model} · {run.agent_version}{chain?.mode ? ` · ${tl.MODE_TEXT[chain.mode]}` : ''}</p>
     {#if exiting}<p class="text-xs text-red-600">退出期：已发出退出指令（{wb.INSTRUCTION_TEXT.exit}），不再复查。</p>{/if}
     {#if output?.levels}
       {@const levels = output.levels}
       <p>{levelsLine} <ConceptTerm id={A.levels}>动作与价位</ConceptTerm></p>
       {#if entryTypeLine}<p class="text-xs">{entryTypeLine}</p>{/if}
-      <p class="text-xs text-muted">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}{@render refList(levels[key].refs)}{/each} <ConceptTerm id={A.citation}>引用编号</ConceptTerm></p>
+      <p class="text-xs text-muted-foreground">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}{@render refList(levels[key].refs)}{/each} <ConceptTerm id={A.citation}>引用编号</ConceptTerm></p>
     {/if}
     {#if plan?.sizing?.shares != null}<p>建议 {plan.sizing.shares} 股</p>{/if}
     {#if output?.summary}<p>{output.summary}</p>{/if}
 
     {#if output?.thesis?.length}
-      <p class="text-xs text-muted"><ConceptTerm id={A.thesis}>论点</ConceptTerm> · <ConceptTerm id={A.counter}>反方</ConceptTerm></p>
+      <p class="text-xs text-muted-foreground"><ConceptTerm id={A.thesis}>论点</ConceptTerm> · <ConceptTerm id={A.counter}>反方</ConceptTerm></p>
       <ol aria-label="论点" class="ml-1 space-y-1">
         {#each output.thesis as t, i}
           <li>
-            <span class="text-xs px-1 rounded bg-surface-2">{t.id ?? `T${i + 1}`}</span> {t.text}{@render refList(t.refs)}
+            <span class="text-xs px-1 rounded-sm bg-muted">{t.id ?? `T${i + 1}`}</span> {t.text}{@render refList(t.refs)}
             <ul class="ml-5 text-xs">
               {#each countersOf(i + 1) as c}
                 <li>反证：{c.text}{@render refList(c.refs)}</li>
               {:else}
-                <li class="text-muted">反方未对此论点给出反证</li>
+                <li class="text-muted-foreground">反方未对此论点给出反证</li>
               {/each}
             </ul>
           </li>
@@ -150,7 +150,7 @@
     {/if}
 
     {#if output?.invalidation?.length}
-      <p class="text-xs text-muted"><ConceptTerm id={A.invalidation}>失效条件</ConceptTerm></p>
+      <p class="text-xs text-muted-foreground"><ConceptTerm id={A.invalidation}>失效条件</ConceptTerm></p>
       <ul aria-label="失效条件" class="list-disc ml-5 text-xs">
         {#each output.invalidation as cond, i}
           {@const result = resultOf('invalidation', i)}
@@ -158,7 +158,7 @@
         {/each}
       </ul>
     {/if}
-    <p class="text-xs text-muted"><ConceptTerm id={A.reviewWhen}>下次复查条件</ConceptTerm></p>
+    <p class="text-xs text-muted-foreground"><ConceptTerm id={A.reviewWhen}>下次复查条件</ConceptTerm></p>
     <ul aria-label="下次复查条件" class="list-disc ml-5 text-xs">
       {#each output?.review_when ?? [] as cond}
         <li>{tl.conditionText(cond.kind, cond.params)}</li>
@@ -170,26 +170,26 @@
     {#if versionNo != null && versionNo >= 1}
       <div role="region" aria-label={`相对第 ${versionNo - 1} 版`} class="text-xs grid md:grid-cols-2 gap-2">
         <div>
-          <p class="text-muted"><ConceptTerm id={A.changes}>相对第 {versionNo - 1} 版 · 宿主差异</ConceptTerm></p>
+          <p class="text-muted-foreground"><ConceptTerm id={A.changes}>相对第 {versionNo - 1} 版 · 宿主差异</ConceptTerm></p>
           {#if chain?.diff}
             <ul class="list-disc ml-5">
               {#each chain.diff as d}
                 <li>{changeField(d.field)} {tl.diffValueText(d.field, d.before)} → {tl.diffValueText(d.field, d.after)}{d.host_only ? '（宿主）' : ''}</li>
               {:else}
-                <li class="text-muted">无</li>
+                <li class="text-muted-foreground">无</li>
               {/each}
             </ul>
           {:else if plan}
-            <p><a class="text-accent underline" href={`#plan/${plan.id}`}>见计划页版本链</a></p>
+            <p><a class="text-primary underline" href={`#plan/${plan.id}`}>见计划页版本链</a></p>
           {/if}
         </div>
         <div>
-          <p class="text-muted">模型说明</p>
+          <p class="text-muted-foreground">模型说明</p>
           <ul class="list-disc ml-5">
             {#each output?.changes ?? [] as c}
               <li>{changeField(c.field)}：{c.text}{@render refList(c.refs)}</li>
             {:else}
-              <li class="text-muted">无</li>
+              <li class="text-muted-foreground">无</li>
             {/each}
           </ul>
         </div>
@@ -209,11 +209,11 @@
     {@render derivation()}
   {/if}
   <KnowledgeRefs refs={agent.knowledge_refs ?? []} />
-  <p class="text-xs text-muted">证据：未验证 <ConceptTerm id={A.evidence}>证据状态</ConceptTerm></p>
+  <p class="text-xs text-muted-foreground">证据：未验证 <ConceptTerm id={A.evidence}>证据状态</ConceptTerm></p>
   <!-- v2.6 §8.6：看生成这一版的那次运行；展开时才请求 -->
   <div class="space-y-1">
     <div class="flex flex-wrap items-center gap-3">
-      <button type="button" class="text-xs text-accent underline" aria-expanded={reasoningOpen}
+      <button type="button" class="text-xs text-primary underline" aria-expanded={reasoningOpen}
               onclick={() => reasoningOpen = !reasoningOpen}>看推理过程</button>
       {#if plan}<DiscussButton context={{ kind: 'plan', plan_id: plan.id }} />{/if}
     </div>

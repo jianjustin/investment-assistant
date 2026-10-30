@@ -120,7 +120,7 @@ describe('ended group', () => {
     await fireEvent.click(toggle)
     expect(localStorage.getItem('workbench.today.ended_open')).toBe('1')
     const group = screen.getByTestId('ended-group')
-    expect(group.className).toContain('text-muted')
+    expect(group.className).toContain('text-muted-foreground')
     const table = within(group).getByRole('table', { name: '已结束计划' })
     expect(table.querySelector('td.opacity-60')).not.toBeNull()
     // the status cell keeps its colour: it is not dimmed and carries its own colour class

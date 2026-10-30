@@ -115,9 +115,9 @@
   ].join(' · ')
 </script>
 
-<section aria-label="我的补充" class="border border-border rounded p-3 bg-surface text-sm space-y-2">
+<section aria-label="我的补充" class="border border-border rounded-sm p-3 bg-card text-sm space-y-2">
   <h2 class="font-semibold">我的补充</h2>
-  <p class="text-xs text-muted">补充只作为证据给 Agent 复查参考，不是指令，不会改变规则、价位口径或校验。</p>
+  <p class="text-xs text-muted-foreground">补充只作为证据给 Agent 复查参考，不是指令，不会改变规则、价位口径或校验。</p>
 
   <form class="space-y-2" onsubmit={e => { e.preventDefault(); void submit() }}>
     {#if draft.supersedes}
@@ -126,47 +126,47 @@
     {/if}
     <div class="flex flex-wrap gap-2">
       <label class="flex items-center gap-1 text-xs">类型
-        <select aria-label="类型" class="border border-border rounded px-2 py-1 bg-bg" bind:value={draft.kind}>
+        <select aria-label="类型" class="border border-border rounded-sm px-2 py-1 bg-background" bind:value={draft.kind}>
           {#each KINDS as k}<option value={k}>{tl.USER_INPUT_KIND_TEXT[k]}</option>{/each}
         </select>
       </label>
       {#if !signalDate && !draft.supersedes}
         <label class="flex items-center gap-1 text-xs">作用于
-          <select aria-label="作用于" class="border border-border rounded px-2 py-1 bg-bg" bind:value={draft.scope}>
+          <select aria-label="作用于" class="border border-border rounded-sm px-2 py-1 bg-background" bind:value={draft.scope}>
             <option value="">整个标的</option>
             {#each chains as c (c.signal_date)}<option value={c.signal_date}>{c.label}</option>{/each}
           </select>
         </label>
       {/if}
     </div>
-    <textarea aria-label="正文" rows="3" class="w-full border border-border rounded p-2 bg-bg"
+    <textarea aria-label="正文" rows="3" class="w-full border border-border rounded-sm p-2 bg-background"
               placeholder="研报要点、新闻或你的判断（1–4000 字）" bind:value={draft.body}></textarea>
-    <input aria-label="链接" class="w-full border border-border rounded px-2 py-1 bg-bg" placeholder="可选链接（http/https）"
+    <input aria-label="链接" class="w-full border border-border rounded-sm px-2 py-1 bg-background" placeholder="可选链接（http/https）"
            bind:value={draft.url} />
     <div class="flex items-center gap-2">
-      <button type="submit" class="text-sm px-3 py-1 rounded bg-accent text-white disabled:opacity-50" disabled={busy}>提交补充</button>
+      <button type="submit" class="text-sm px-3 py-1 rounded-sm bg-primary text-white disabled:opacity-50" disabled={busy}>提交补充</button>
       {#if error}<span role="alert" class="text-xs text-red-600">{error}</span>{/if}
-      {#if notice}<span class="text-xs text-muted">{notice}</span>{/if}
+      {#if notice}<span class="text-xs text-muted-foreground">{notice}</span>{/if}
     </div>
   </form>
 
   {#if loadError}
     <p class="text-xs text-red-600">{loadError}</p>
   {:else if loading && !inputs.length}
-    <p class="text-xs text-muted">加载中…</p>
+    <p class="text-xs text-muted-foreground">加载中…</p>
   {:else if !inputs.length}
-    <p class="text-xs text-muted">还没有补充</p>
+    <p class="text-xs text-muted-foreground">还没有补充</p>
   {:else}
     <ul aria-label="补充列表" class="space-y-2">
       {#each inputs as item (item.id)}
         <li class="border-l-2 border-border pl-2">
-          <p class="text-xs text-muted">{headline(item)}</p>
-          <p class="whitespace-pre-wrap break-words">{item.body}</p>
+          <p class="text-xs text-muted-foreground">{headline(item)}</p>
+          <p class="whitespace-pre-wrap wrap-break-word">{item.body}</p>
           {#if item.source_url}<a class="text-xs underline break-all" href={item.source_url} target="_blank" rel="noreferrer">{item.source_url}</a>{/if}
           {#if (item.status ?? 'active') === 'active' && item.kind !== 'retract'}
             <div class="flex gap-2 text-xs">
-              <button class="text-accent underline" onclick={() => correct(item)}>更正</button>
-              <button class="text-accent underline" onclick={() => retract(item)}>撤回</button>
+              <button class="text-primary underline" onclick={() => correct(item)}>更正</button>
+              <button class="text-primary underline" onclick={() => retract(item)}>撤回</button>
             </div>
           {/if}
         </li>

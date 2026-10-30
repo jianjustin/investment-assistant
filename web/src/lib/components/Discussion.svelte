@@ -156,43 +156,43 @@
   {#if loadError}
     <p role="alert" class="text-sm text-red-600">{`讨论加载失败：${loadError}`}</p>
   {:else if !disc}
-    <p class="text-sm text-muted">加载中…</p>
+    <p class="text-sm text-muted-foreground">加载中…</p>
   {:else}
     <header bind:this={header} data-testid="discussion-header" class="space-y-1">
       <h1 class="text-lg font-semibold">讨论 · {disc.ticker} · {disc.signal_date}</h1>
-      <p class="text-xs text-muted flex flex-wrap items-center gap-x-3 gap-y-1">
+      <p class="text-xs text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1">
         {#if disc.context_kind === 'plan'}
           {#if disc.context?.version_no != null}<span>第 {disc.context.version_no} 版</span>{/if}
           {#if disc.context?.generated_at}<span>生成于 {fmtBeijing(disc.context.generated_at)}</span>{/if}
           {#if disc.context?.cutoff_at}<span>截止 {fmtBeijing(disc.context.cutoff_at)}</span>{/if}
-          {#if disc.plan_id}<a class="text-accent underline" href={`#plan/${disc.plan_id}`}>回到计划页</a>{/if}
+          {#if disc.plan_id}<a class="text-primary underline" href={`#plan/${disc.plan_id}`}>回到计划页</a>{/if}
         {:else}
           {#if disc.context?.end_kind}<span>{endText(disc.context.end_kind)}</span>{/if}
           {#if disc.context?.end_session}<span>结束日 {disc.context.end_session}</span>{/if}
-          {#if disc.card_id != null}<a class="text-accent underline" href={`#review/cards/${disc.card_id}`}>回到复盘卡</a>{/if}
+          {#if disc.card_id != null}<a class="text-primary underline" href={`#review/cards/${disc.card_id}`}>回到复盘卡</a>{/if}
         {/if}
-        <a class="text-accent underline" href={`#instrument/${encodeURIComponent(disc.ticker)}`}>标的页</a>
+        <a class="text-primary underline" href={`#instrument/${encodeURIComponent(disc.ticker)}`}>标的页</a>
       </p>
-      <p class="text-xs text-muted">回答只读截止时间之前的数据；它不能改任何东西，计划修订只能由你点「重新复查」。证据：未验证</p>
+      <p class="text-xs text-muted-foreground">回答只读截止时间之前的数据；它不能改任何东西，计划修订只能由你点「重新复查」。证据：未验证</p>
     </header>
 
     <ol class="space-y-3">
       {#each disc.turns as turn, index (turn.id)}
-        <li data-testid="turn" class="border border-border rounded p-3 space-y-1 text-sm {turn.role === 'user' ? 'bg-surface' : ''}">
+        <li data-testid="turn" class="border border-border rounded-sm p-3 space-y-1 text-sm {turn.role === 'user' ? 'bg-card' : ''}">
           {#if turn.role === 'user'}
-            <p class="text-xs text-muted">你 · {fmtBeijing(turn.created_at)}</p>
+            <p class="text-xs text-muted-foreground">你 · {fmtBeijing(turn.created_at)}</p>
             <p class="whitespace-pre-wrap">{turn.body}</p>
-            {#if turn.attachment}<p class="text-xs text-muted">附件：{attachmentLabel(turn.attachment)}</p>{/if}
+            {#if turn.attachment}<p class="text-xs text-muted-foreground">附件：{attachmentLabel(turn.attachment)}</p>{/if}
             {#if turn.user_input_id != null || savedInput[turn.id] != null}
               <p class="text-xs">已存为补充信息 <span>user:{turn.user_input_id ?? savedInput[turn.id]}</span></p>
             {:else if turn.request_id}
               <p class="text-xs flex flex-wrap items-center gap-2">
-                <select aria-label="补充信息类型" class="border border-border rounded px-1 py-0.5 bg-bg"
+                <select aria-label="补充信息类型" class="border border-border rounded-sm px-1 py-0.5 bg-background"
                         value={saveKind[turn.id] ?? 'judgment'}
                         onchange={e => saveKind[turn.id] = (e.currentTarget as HTMLSelectElement).value as UserInputKind}>
                   {#each KINDS as kind (kind)}<option value={kind}>{USER_INPUT_KIND_TEXT[kind]}</option>{/each}
                 </select>
-                <button type="button" class="px-2 py-0.5 border border-border rounded hover:bg-surface-2"
+                <button type="button" class="px-2 py-0.5 border border-border rounded-sm hover:bg-muted"
                         onclick={() => saveAsInput(turn)}>存为补充信息</button>
               </p>
               {#if saveError[turn.id]}<p role="alert" class="text-xs text-red-600">{saveError[turn.id]}</p>{/if}
@@ -203,86 +203,86 @@
               {:else if timedOut}
                 <p class="text-xs text-amber-700">{DISCUSS_TIMEOUT_TEXT}</p>
               {:else}
-                <p class="text-xs text-muted">回答中…</p>
+                <p class="text-xs text-muted-foreground">回答中…</p>
               {/if}
             {/if}
           {:else}
-            <p class="text-xs text-muted">回答{turn.cutoff_at ? ` · 截止 ${fmtBeijing(turn.cutoff_at)}` : ''}</p>
+            <p class="text-xs text-muted-foreground">回答{turn.cutoff_at ? ` · 截止 ${fmtBeijing(turn.cutoff_at)}` : ''}</p>
             {#if turn.status === 'ok'}
               <p data-answer class="whitespace-pre-wrap">{turn.body}</p>
-              {#if turn.refs?.length}<p class="text-xs text-muted">引用<RefList refs={turn.refs} runId={turn.agent_run_id} onFact={scrollToContext} /></p>{/if}
+              {#if turn.refs?.length}<p class="text-xs text-muted-foreground">引用<RefList refs={turn.refs} runId={turn.agent_run_id} onFact={scrollToContext} /></p>{/if}
             {:else if turn.status === 'rejected'}
               <p class="text-xs text-amber-700">这条回答没有通过校验：{reasonText(turn.reason)}</p>
               <details class="text-xs">
-                <summary class="cursor-pointer text-accent">仍要看原文（未通过校验）</summary>
-                <p class="whitespace-pre-wrap text-muted">{turn.body}</p>
+                <summary class="cursor-pointer text-primary">仍要看原文（未通过校验）</summary>
+                <p class="whitespace-pre-wrap text-muted-foreground">{turn.body}</p>
               </details>
             {:else}
               <p class="text-xs text-amber-700">这一轮没有得到回答：{reasonText(turn.reason)}</p>
             {/if}
             {#if turn.agent_run_id}
-              <button type="button" class="text-xs text-accent underline" aria-expanded={!!reasoningOpen[turn.id]}
+              <button type="button" class="text-xs text-primary underline" aria-expanded={!!reasoningOpen[turn.id]}
                       onclick={() => reasoningOpen[turn.id] = !reasoningOpen[turn.id]}>看这次回答读了什么</button>
               {#if reasoningOpen[turn.id]}<AgentReasoning runId={turn.agent_run_id} />{/if}
             {/if}
             {#if turn.detail?.draft_dropped}
-              <p class="text-xs text-muted">经验草稿未通过校验，已丢弃：{reasonText(String(turn.detail.draft_dropped))}</p>
+              <p class="text-xs text-muted-foreground">经验草稿未通过校验，已丢弃：{reasonText(String(turn.detail.draft_dropped))}</p>
             {/if}
             {#if turn.knowledge_draft}
               {@const draft = turn.knowledge_draft}
-              <section aria-label="经验草稿" class="border border-border rounded p-2 text-xs space-y-0.5">
+              <section aria-label="经验草稿" class="border border-border rounded-sm p-2 text-xs space-y-0.5">
                 <p class="font-medium">{draft.title}</p>
                 <p class="whitespace-pre-wrap">{draft.body}</p>
-                <p><span class="text-muted">适用范围</span> {draft.scope}</p>
-                <p><span class="text-muted">反例</span> {draft.counter_examples}</p>
+                <p><span class="text-muted-foreground">适用范围</span> {draft.scope}</p>
+                <p><span class="text-muted-foreground">反例</span> {draft.counter_examples}</p>
                 {#if draft.target_knowledge_id != null}
-                  <p class="text-muted">改写 <a class="text-accent underline" href={`#knowledge/mine/${draft.target_knowledge_id}@${draft.target_version}`}>know:{draft.target_knowledge_id}@{draft.target_version}</a></p>
+                  <p class="text-muted-foreground">改写 <a class="text-primary underline" href={`#knowledge/mine/${draft.target_knowledge_id}@${draft.target_version}`}>know:{draft.target_knowledge_id}@{draft.target_version}</a></p>
                 {/if}
                 {#if draft.verdict?.action === 'approve'}
-                  <p>已采纳{#if draft.verdict.ref} <a class="text-accent underline" href={knowHref(draft.verdict.ref)}>{draft.verdict.ref}</a>{/if}</p>
+                  <p>已采纳{#if draft.verdict.ref} <a class="text-primary underline" href={knowHref(draft.verdict.ref)}>{draft.verdict.ref}</a>{/if}</p>
                 {:else if draft.verdict?.action === 'dismiss'}
-                  <p class="text-muted">已不采纳</p>
+                  <p class="text-muted-foreground">已不采纳</p>
                 {:else}
-                  <a class="text-accent underline" href="#knowledge/mine/drafts">去审定</a>
+                  <a class="text-primary underline" href="#knowledge/mine/drafts">去审定</a>
                 {/if}
               </section>
             {/if}
           {/if}
         </li>
       {:else}
-        <li class="text-xs text-muted">还没有提问。问题只限于这个{disc.context_kind === 'card' ? '复盘卡' : '计划'}。</li>
+        <li class="text-xs text-muted-foreground">还没有提问。问题只限于这个{disc.context_kind === 'card' ? '复盘卡' : '计划'}。</li>
       {/each}
     </ol>
 
     <div class="space-y-2 text-sm">
       <label class="flex flex-col">你的问题（1–4000 字）
-        <textarea aria-label="你的问题" rows="3" class="border border-border rounded px-2 py-1 bg-bg" bind:value={question}></textarea>
+        <textarea aria-label="你的问题" rows="3" class="border border-border rounded-sm px-2 py-1 bg-background" bind:value={question}></textarea>
       </label>
       {#if attachment}
         <p class="text-xs flex items-center gap-2"><span>附件：{attachment.label}</span>
-          <button type="button" aria-label="移除附件" class="text-muted hover:text-red-600" onclick={() => attachment = null}>×</button></p>
+          <button type="button" aria-label="移除附件" class="text-muted-foreground hover:text-red-600" onclick={() => attachment = null}>×</button></p>
       {/if}
       <div class="flex flex-wrap items-center gap-2">
-        <button type="button" class="px-3 py-1 rounded bg-accent text-white disabled:opacity-50" disabled={busy} onclick={ask}>提问</button>
-        <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2" aria-expanded={pickerOpen}
+        <button type="button" class="px-3 py-1 rounded-sm bg-primary text-white disabled:opacity-50" disabled={busy} onclick={ask}>提问</button>
+        <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted" aria-expanded={pickerOpen}
                 onclick={togglePicker}>就这条改写</button>
       </div>
       {#if pickerOpen}
-        <section aria-label="选一条作为附件" class="border border-border rounded p-2 text-xs space-y-1">
+        <section aria-label="选一条作为附件" class="border border-border rounded-sm p-2 text-xs space-y-1">
           {#if !picker}
-            <p class="text-muted">加载中…</p>
+            <p class="text-muted-foreground">加载中…</p>
           {:else}
             <ul class="space-y-0.5">
               {#each picker.entries as e (e.id)}
-                <li><button type="button" class="text-accent underline" onclick={() => pickKnowledge(e)}>{e.title}（第 {e.current_version} 版）</button></li>
+                <li><button type="button" class="text-primary underline" onclick={() => pickKnowledge(e)}>{e.title}（第 {e.current_version} 版）</button></li>
               {/each}
               {#each picker.drafts as d (d.id)}
-                <li><button type="button" class="text-accent underline" onclick={() => pickDraft(d)}>草稿：{d.title}</button></li>
+                <li><button type="button" class="text-primary underline" onclick={() => pickDraft(d)}>草稿：{d.title}</button></li>
               {/each}
             </ul>
-            {#if !picker.entries.length && !picker.drafts.length}<p class="text-muted">还没有可选的知识或草稿</p>{/if}
+            {#if !picker.entries.length && !picker.drafts.length}<p class="text-muted-foreground">还没有可选的知识或草稿</p>{/if}
           {/if}
-          <p class="text-muted">附件是你提供的材料，不是证据，回答不能引用它。</p>
+          <p class="text-muted-foreground">附件是你提供的材料，不是证据，回答不能引用它。</p>
         </section>
       {/if}
       {#if askError}<p role="alert" class="text-xs text-red-600">{askError}</p>{/if}

@@ -40,22 +40,22 @@
 <span class="refs">（{#each refs as ref, i (i)}{#if i}、{/if}{#if refKind(ref) === 'fact' && onFact}<button type="button" class="underline"
         onclick={() => onFact?.(ref.slice('fact:'.length))}>{ref}</button>{:else if refKind(ref) === 'call' && runId}<button
         type="button" class="underline" aria-expanded={!!open[seqOf(ref)]} onclick={() => toggle(ref)}>{ref}</button>{:else if refKind(ref) === 'know'}<a
-        class="text-accent underline" href={knowHref(ref)}>{ref}</a>{:else if refKind(ref) === 'concept'}<ConceptTerm
+        class="text-primary underline" href={knowHref(ref)}>{ref}</a>{:else if refKind(ref) === 'concept'}<ConceptTerm
         id={conceptId(ref)}>{ref}</ConceptTerm>{:else}<span>{ref}</span>{/if}{/each}）</span>
 {#each openSeqs as seq (seq)}
   {@const call = calls?.get(seq)}
-  <div role="region" aria-label={`工具调用 call:${seq}`} class="my-1 p-2 border border-border rounded bg-surface text-xs space-y-1">
+  <div role="region" aria-label={`工具调用 call:${seq}`} class="my-1 p-2 border border-border rounded-sm bg-card text-xs space-y-1">
     {#if error}
       <p class="text-red-600">{error}</p>
     {:else if !calls}
-      <p class="text-muted">加载中…</p>
+      <p class="text-muted-foreground">加载中…</p>
     {:else if call}
-      <p class="text-muted">工具 {call.tool} · 阶段 {call.phase} · {wb.dateTime(call.called_at)}</p>
+      <p class="text-muted-foreground">工具 {call.tool} · 阶段 {call.phase} · {wb.dateTime(call.called_at)}</p>
       <p class="break-all">参数 {JSON.stringify(call.args)}</p>
-      <p class="break-all text-muted">哈希 {call.result_sha256.slice(0, 8)}</p>
+      <p class="break-all text-muted-foreground">哈希 {call.result_sha256.slice(0, 8)}</p>
       <pre class="whitespace-pre-wrap break-all max-h-64 overflow-auto">{JSON.stringify(call.result, null, 2)}</pre>
     {:else}
-      <p class="text-muted">未找到该编号的工具调用</p>
+      <p class="text-muted-foreground">未找到该编号的工具调用</p>
     {/if}
   </div>
 {/each}

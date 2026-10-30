@@ -66,9 +66,9 @@
 
 <div data-testid="row-detail" class="space-y-3 text-sm">
   <div role="group" aria-label="布局" class="flex items-center gap-1 text-xs">
-    <span class="text-muted">布局：</span>
+    <span class="text-muted-foreground">布局：</span>
     {#each [['agent_first', 'Agent 优先'], ['legacy', '规则优先（旧）']] as [value, label]}
-      <button type="button" class="px-2 py-1 border border-border rounded {layout === value ? 'bg-accent/10 text-accent' : 'hover:bg-surface-2'}"
+      <button type="button" class="px-2 py-1 border border-border rounded-sm {layout === value ? 'bg-primary/10 text-primary' : 'hover:bg-muted'}"
               aria-pressed={layout === value} onclick={() => setLayout(value as Layout)}>{label}</button>
     {/each}
   </div>
@@ -81,18 +81,18 @@
         <AgentPlanCard {agent} onCall={showCall} />
         {#if callError}<p class="text-xs text-red-600">{callError}</p>{/if}
       {:else}
-        <p class="text-xs text-muted">加载中…</p>
+        <p class="text-xs text-muted-foreground">加载中…</p>
       {/if}
     {:else}
-      <p class="text-xs text-muted">这一行没有 Agent 计划链。</p>
+      <p class="text-xs text-muted-foreground">这一行没有 Agent 计划链。</p>
     {/if}
   {/snippet}
   {#snippet baselineBlock()}
     {#if b}
-      <div data-testid="rule-baseline" class="border-l-2 border-accent/40 pl-2 space-y-1">
+      <div data-testid="rule-baseline" class="border-l-2 border-primary/40 pl-2 space-y-1">
         <p>规则基线 {b.plan_version}：入场 {b.entry_low}–{b.entry_high} · 止损 {b.stop} · T1 {b.target1}{b.shares != null ? ` · 建议 ${b.shares} 股` : ''}（{b.status === 'invalid' ? '已作废' : '有效'}）
-          <a class="text-xs text-accent underline" href={`#plan/${b.plan_id}`}>查看</a>
-          <button type="button" class="text-xs text-accent underline" aria-expanded={derivationOpen}
+          <a class="text-xs text-primary underline" href={`#plan/${b.plan_id}`}>查看</a>
+          <button type="button" class="text-xs text-primary underline" aria-expanded={derivationOpen}
                   onclick={() => derivationOpen = !derivationOpen}>展开推导</button></p>
         {#if wb.activeChainText(row)}<p class="text-xs text-amber-700">{wb.activeChainText(row)}</p>{/if}
         {#if derivationOpen}<PlanDerivation planId={b.plan_id} />{/if}
@@ -109,12 +109,12 @@
 
   <div class="flex flex-wrap items-center gap-3">
     {#if row.chain}
-      <a class="text-xs text-accent underline" href={`#plan/${row.chain.head_plan_id}`}>第 {row.chain.version_no} 版计划页</a>
+      <a class="text-xs text-primary underline" href={`#plan/${row.chain.head_plan_id}`}>第 {row.chain.version_no} 版计划页</a>
     {:else if row.plan}
-      <a class="text-xs text-accent underline" href={`#plan/${row.plan.plan_id}`}>{row.plan.plan_version} 计划页</a>
+      <a class="text-xs text-primary underline" href={`#plan/${row.plan.plan_id}`}>{row.plan.plan_version} 计划页</a>
     {/if}
     {#if row.chain}
-      <button type="button" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50"
+      <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted disabled:opacity-50"
               disabled={!reviewable || recheck?.busy}
               title={exiting ? wb.CHAIN_EXITING_TEXT : reviewable ? '' : '只有入场期或持仓期的链可以重新复查'}
               onclick={onRecheck}>重新复查</button>
@@ -135,12 +135,12 @@
     {#if callDrawer.call}
       {@const c = callDrawer.call}
       <h2 class="font-semibold">工具调用 call:{c.seq}</h2>
-      <p class="text-xs text-muted">工具 {c.tool} · 阶段 {c.phase === 'propose' ? '建议' : '反方'} · {wb.dateTime(c.called_at)}</p>
+      <p class="text-xs text-muted-foreground">工具 {c.tool} · 阶段 {c.phase === 'propose' ? '建议' : '反方'} · {wb.dateTime(c.called_at)}</p>
       <p class="text-xs break-all">参数 {JSON.stringify(c.args)}</p>
       <p class="text-xs break-all">哈希 {c.result_sha256.slice(0, 8)}</p>
       <pre class="text-xs mt-2 whitespace-pre-wrap break-all">{JSON.stringify(c.result, null, 2)}</pre>
     {:else}
-      <p class="text-sm text-muted">未找到该编号的工具调用</p>
+      <p class="text-sm text-muted-foreground">未找到该编号的工具调用</p>
     {/if}
   </Drawer>
 </div>

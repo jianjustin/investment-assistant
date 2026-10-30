@@ -99,7 +99,7 @@ describe('app routing', () => {
   it('the 我的知识 child is current under #knowledge/mine/…', async () => {
     location.hash = '#knowledge/mine/3@2'
     const { getByRole } = render(App)
-    expect(getByRole('link', { name: '我的知识' }).className).toMatch(/text-accent/)
+    expect(getByRole('link', { name: '我的知识' }).className).toMatch(/text-primary/)
     expect(getByRole('link', { name: '概念' }).className).not.toMatch(/font-medium/)
   })
 

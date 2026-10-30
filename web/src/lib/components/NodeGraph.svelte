@@ -30,10 +30,10 @@
     success: 'border-success text-success',
     degraded: 'border-warn text-warn',
     partial: 'border-warn text-warn',
-    failed: 'border-danger text-danger',
-    skipped: 'border-border text-muted',
-    pending: 'border-dashed border-border text-muted',
-    running: 'border-accent text-accent node-running',
+    failed: 'border-destructive text-destructive',
+    skipped: 'border-border text-muted-foreground',
+    pending: 'border-dashed border-border text-muted-foreground',
+    running: 'border-primary text-primary node-running',
   }
   const statusText = (status: string) => NODE_STATUS_TEXT[status] ?? status
   const showArrow = (index: number) =>
@@ -49,20 +49,20 @@
               aria-label={`${node.title}：${statusText(node.status)}`}
               aria-pressed={selected === node.id}
               onclick={() => onselect(node.id)}
-              class="relative flex w-full flex-col items-center gap-0.5 rounded border-2 bg-surface px-1 py-2 text-center text-xs
-                     {TONE[node.status] ?? 'border-border text-muted'} {selected === node.id ? 'ring-2 ring-accent' : ''}">
+              class="relative flex w-full flex-col items-center gap-0.5 rounded-sm border-2 bg-card px-1 py-2 text-center text-xs
+                     {TONE[node.status] ?? 'border-border text-muted-foreground'} {selected === node.id ? 'ring-2 ring-primary' : ''}">
         <span aria-hidden="true" class="text-base leading-none">{ICON[node.status] ?? '?'}</span>
-        <span class="max-w-full break-words font-medium text-ink">{node.title}</span>
+        <span class="max-w-full wrap-break-word font-medium text-foreground">{node.title}</span>
         <span class="text-[11px]">{statusText(node.status)}</span>
-        <span class="min-h-4 text-[11px] text-muted">{durationText(node.duration_ms)}</span>
+        <span class="min-h-4 text-[11px] text-muted-foreground">{durationText(node.duration_ms)}</span>
         {#if node.attempt > 1}
-          <span class="absolute -right-1 -top-2 rounded bg-surface-2 px-1 text-[11px] font-medium text-ink border border-border"
+          <span class="absolute -right-1 -top-2 rounded-sm bg-muted px-1 text-[11px] font-medium text-foreground border border-border"
                 title={`第 ${node.attempt} 次尝试`}>×{node.attempt}</span>
         {/if}
       </button>
       {#if showArrow(index)}
         <svg data-arrow viewBox="0 0 20 12" aria-hidden="true" focusable="false"
-             class="absolute top-1/2 h-3 w-4 -translate-y-1/2 text-muted" style="right: -1.15rem">
+             class="absolute top-1/2 h-3 w-4 -translate-y-1/2 text-muted-foreground" style="right: -1.15rem">
           <path d="M0 6h16M11 1l6 5-6 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
       {/if}

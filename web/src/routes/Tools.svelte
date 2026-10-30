@@ -174,23 +174,23 @@
 {#if view === 'detail' && detailRunId}
   {#key detailRunId}<RunDetail runId={detailRunId} />{/key}
 {:else}
-<div class="mb-4 space-y-2 rounded border border-border bg-surface p-3 text-sm" role="status">
+<div class="mb-4 space-y-2 rounded-sm border border-border bg-card p-3 text-sm" role="status">
   <div class="flex items-center justify-between gap-3">
     <p class:text-success={scheduler?.status === 'up'} class:text-warn={scheduler?.status !== 'up'} class="font-medium">{schedulerLabel}</p>
-    <button class="text-accent text-xs" disabled={refreshing} onclick={load}>{refreshing ? '刷新中…' : '刷新'}</button>
+    <button class="text-primary text-xs" disabled={refreshing} onclick={load}>{refreshing ? '刷新中…' : '刷新'}</button>
   </div>
-  <p class="text-xs text-muted">{scheduler?.detail ?? (loading ? '正在读取调度状态…' : '服务未返回调度状态，请刷新后重试。')}</p>
+  <p class="text-xs text-muted-foreground">{scheduler?.detail ?? (loading ? '正在读取调度状态…' : '服务未返回调度状态，请刷新后重试。')}</p>
   {#if scheduler && !scheduler.meta.enabled}
-    <p class="text-xs text-muted">总开关关闭时，已启用的任务也不会自动运行。</p>
+    <p class="text-xs text-muted-foreground">总开关关闭时，已启用的任务也不会自动运行。</p>
   {/if}
   {#if scheduler?.meta.last_tick_at}
-    <p class="text-xs text-muted">最近调度检查：{fmtBeijing(scheduler.meta.last_tick_at)}</p>
+    <p class="text-xs text-muted-foreground">最近调度检查：{fmtBeijing(scheduler.meta.last_tick_at)}</p>
   {/if}
   {#if scheduler?.meta.tick_in_progress && scheduler.meta.tick_started_at}
-    <p class="text-xs text-muted">本轮开始：{fmtBeijing(scheduler.meta.tick_started_at)}</p>
+    <p class="text-xs text-muted-foreground">本轮开始：{fmtBeijing(scheduler.meta.tick_started_at)}</p>
   {/if}
 </div>
-{#if loadError}<p role="alert" class="mb-3 text-sm text-danger">{loadError}。当前数据已保留，可刷新重试。</p>{/if}
+{#if loadError}<p role="alert" class="mb-3 text-sm text-destructive">{loadError}。当前数据已保留，可刷新重试。</p>{/if}
 
 {#if loading && view !== 'filings'}
   <Skeleton />
@@ -200,14 +200,14 @@
 {:else if view === 'tasks'}
   <div class="space-y-4">
     {#if actionMsg}
-      <p class="text-xs text-muted">{actionMsg}
+      <p class="text-xs text-muted-foreground">{actionMsg}
         {#if dailyRunId && RUN_ID_RE.test(dailyRunId) && actionMsg.startsWith('daily 已提交')}
-          <a class="text-accent underline" href={runHref(dailyRunId)}>运行详情</a>
+          <a class="text-primary underline" href={runHref(dailyRunId)}>运行详情</a>
         {/if}
       </p>
     {/if}
     <table class="w-full text-sm">
-      <thead><tr class="text-muted text-left"><th>任务</th><th>计划</th><th>下次</th><th>上次</th><th>状态</th><th></th></tr></thead>
+      <thead><tr class="text-muted-foreground text-left"><th>任务</th><th>计划</th><th>下次</th><th>上次</th><th>状态</th><th></th></tr></thead>
       <tbody>
         {#each jobs as j}
           <tr class="border-t border-border">
@@ -215,7 +215,7 @@
               {j.name}
               {#if j.description}
                 <button
-                  class="inline-flex items-center justify-center w-4 h-4 ml-1 rounded-full border border-border text-muted text-[10px] align-middle hover:border-accent hover:text-accent transition-colors"
+                  class="inline-flex items-center justify-center w-4 h-4 ml-1 rounded-full border border-border text-muted-foreground text-[10px] align-middle hover:border-primary hover:text-primary transition-colors"
                   aria-label={`${j.name} 说明`}
                   onclick={() => helpJob = j.name}
                 >?</button>
@@ -235,9 +235,9 @@
             <td>{j.manual_only ? '只手动' : j.enabled ? '任务启用' : '任务停用'}</td>
             <td class="whitespace-nowrap text-right space-x-3">
               {#if DATE_FETCH[j.name]}
-                <button class="text-accent text-xs" onclick={() => dateJob = j.name}>按日期运行</button>
+                <button class="text-primary text-xs" onclick={() => dateJob = j.name}>按日期运行</button>
               {:else if !j.manual_only}
-                <button class="text-accent text-xs" disabled={runningName === j.name} onclick={() => runNow(j.name)}>立即运行</button>
+                <button class="text-primary text-xs" disabled={runningName === j.name} onclick={() => runNow(j.name)}>立即运行</button>
               {/if}
             </td>
           </tr>
@@ -260,28 +260,28 @@
       {#if helpJob && jobs.find((j) => j.name === helpJob)?.description}
         {@const info = jobs.find((j) => j.name === helpJob)!.description}
         <p class="text-sm font-medium mb-3">{info.goal}</p>
-        <ul class="space-y-2 text-sm text-muted list-disc pl-4">
+        <ul class="space-y-2 text-sm text-muted-foreground list-disc pl-4">
           {#each info.details as d}
             <li>{d}</li>
           {/each}
         </ul>
-        <p class="mt-3 text-xs text-muted">手动运行：{info.manual_note}</p>
+        <p class="mt-3 text-xs text-muted-foreground">手动运行：{info.manual_note}</p>
       {/if}
     </Modal>
-    <p class="text-xs text-muted">改运行时间 / 开关请到「设置 · 定时任务」。</p>
+    <p class="text-xs text-muted-foreground">改运行时间 / 开关请到「设置 · 定时任务」。</p>
   </div>
 {:else}
   <div class="space-y-3">
     <div class="flex items-center gap-3">
-      <select aria-label="筛选任务" bind:value={filterTask} onchange={load} class="text-sm border border-border rounded px-2 py-1 bg-surface">
+      <select aria-label="筛选任务" bind:value={filterTask} onchange={load} class="text-sm border border-border rounded-sm px-2 py-1 bg-card">
         <option value="">全部</option>
         {#each TASK_FILTERS as [value, label] (value)}<option {value}>{label}</option>{/each}
       </select>
-      <span class="text-xs text-muted">每 15 秒自动刷新</span>
+      <span class="text-xs text-muted-foreground">每 15 秒自动刷新</span>
     </div>
     <table class="w-full text-sm">
       <thead>
-        <tr class="text-muted text-left">
+        <tr class="text-muted-foreground text-left">
           <th>任务</th><th>状态</th><th>触发</th><th>运行时间</th><th>耗时</th><th>指定日期</th><th></th>
         </tr>
       </thead>
@@ -296,12 +296,12 @@
             <td>{fmtTargetDates(r)}</td>
             <td class="text-right">
               {#if RUN_ID_RE.test(String(r.run_id ?? ''))}
-                <a class="text-accent text-xs underline" href={runHref(r.run_id)}>详情</a>
-              {:else}<span class="text-xs text-muted">—</span>{/if}
+                <a class="text-primary text-xs underline" href={runHref(r.run_id)}>详情</a>
+              {:else}<span class="text-xs text-muted-foreground">—</span>{/if}
             </td>
           </tr>
         {:else}
-          <tr><td colspan="7" class="py-4 text-muted text-sm">暂无运行记录</td></tr>
+          <tr><td colspan="7" class="py-4 text-muted-foreground text-sm">暂无运行记录</td></tr>
         {/each}
       </tbody>
     </table>

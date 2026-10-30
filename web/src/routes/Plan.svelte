@@ -149,9 +149,9 @@
 
 <section class="space-y-4">
   <header class="flex items-center gap-3">
-    <a href="#today" onclick={goBack} class="text-sm text-accent underline">返回</a>
+    <a href="#today" onclick={goBack} class="text-sm text-primary underline">返回</a>
     <h1 class="text-lg font-semibold">{title || '加载中…'}</h1>
-    {#if ticker}<a href={`#instrument/${encodeURIComponent(ticker)}`} class="text-sm text-accent underline">标的页</a>{/if}
+    {#if ticker}<a href={`#instrument/${encodeURIComponent(ticker)}`} class="text-sm text-primary underline">标的页</a>{/if}
     {#if ticker}<DiscussButton context={{ kind: 'plan', plan_id: sub }} />{/if}
   </header>
   {#key sub}
@@ -161,10 +161,10 @@
           <p class="flex flex-wrap items-center gap-2">
             <span>{RERUN_MODE_TEXT[row.mode]}：最近一次{RERUN_STATUS_TEXT[row.status] ?? row.status}{row.reason ? `（${AGENT_REASON_TEXT[row.reason] ?? row.reason}）` : ''}</span>
             {#if !rerunDone[row.mode]}
-              <button type="button" class="rounded border border-accent/40 px-2 py-0.5 text-xs text-accent disabled:opacity-50"
+              <button type="button" class="rounded-sm border border-primary/40 px-2 py-0.5 text-xs text-primary disabled:opacity-50"
                       disabled={rerunBusy[row.mode]} onclick={() => rerun(row)}>重新运行 Agent</button>
             {/if}
-            {#if rerunText[row.mode]}<span class="text-xs text-muted">{rerunText[row.mode]}</span>{/if}
+            {#if rerunText[row.mode]}<span class="text-xs text-muted-foreground">{rerunText[row.mode]}</span>{/if}
           </p>
         {/each}
       </section>
@@ -175,7 +175,7 @@
     {#if legacyRunId}
       <section aria-label="Agent 推理" class="space-y-2">
         <p class="text-xs text-amber-700">agent-1（旧版，不参与复查） <ConceptTerm id={ATTACH.agentCard.legacy}>旧版说明</ConceptTerm></p>
-        <button type="button" class="text-xs text-accent underline" aria-expanded={reasoningOpen}
+        <button type="button" class="text-xs text-primary underline" aria-expanded={reasoningOpen}
                 onclick={() => reasoningOpen = !reasoningOpen}>看推理过程</button>
         {#if reasoningOpen}<AgentReasoning runId={legacyRunId} />{/if}
       </section>
@@ -188,7 +188,7 @@
       {#if notesError}
         <section aria-label="备注" class="space-y-1 text-sm">
           <p class="font-medium">备注</p>
-          <p class="text-xs text-muted">备注暂不可用：{notesError}</p>
+          <p class="text-xs text-muted-foreground">备注暂不可用：{notesError}</p>
         </section>
       {:else if notes !== null}
         <PlanNotes {notes} onNote={addNote} />
@@ -198,15 +198,15 @@
       <section aria-label="讨论" class="space-y-1 text-sm">
         <p class="font-medium">讨论 <span class="text-xs font-normal"><ConceptTerm id={ATTACH.discussion.about}>说明</ConceptTerm></span></p>
         {#if discussionsError}
-          <p class="text-xs text-muted">{`讨论不可用：${discussionsError}`}</p>
+          <p class="text-xs text-muted-foreground">{`讨论不可用：${discussionsError}`}</p>
         {:else if discussions === null}
-          <p class="text-xs text-muted">加载中…</p>
+          <p class="text-xs text-muted-foreground">加载中…</p>
         {:else if discussions.length === 0}
-          <p class="text-xs text-muted">还没有讨论</p>
+          <p class="text-xs text-muted-foreground">还没有讨论</p>
         {:else}
           <ul class="text-xs space-y-0.5">
             {#each discussions as d (d.id)}
-              <li><a class="text-accent underline" href={`#discuss/${d.id}`}>{fmtBeijing(d.created_at)} · {d.turn_count} 轮{d.first_question ? ` · ${truncate(d.first_question, 40)}` : ''}</a></li>
+              <li><a class="text-primary underline" href={`#discuss/${d.id}`}>{fmtBeijing(d.created_at)} · {d.turn_count} 轮{d.first_question ? ` · ${truncate(d.first_question, 40)}` : ''}</a></li>
             {/each}
           </ul>
         {/if}

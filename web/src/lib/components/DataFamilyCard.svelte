@@ -53,12 +53,12 @@
     value == null ? '—' : value.length === 10 ? value : fmtBeijing(value)
 </script>
 
-<article aria-label={card.title} class="border border-border rounded p-3 space-y-2 bg-surface text-sm">
+<article aria-label={card.title} class="border border-border rounded-sm p-3 space-y-2 bg-card text-sm">
   <div class="flex flex-wrap items-center gap-2">
     <h2 class="font-semibold" aria-label={card.title}><ConceptTerm id={familyConcept(card.id)}><a class="hover:underline" href="#data/{card.id}">{card.title}</a></ConceptTerm></h2>
-    <span class="text-xs px-1.5 py-0.5 rounded bg-accent/10 text-accent">{kindLabel(card.kind)}</span>
+    <span class="text-xs px-1.5 py-0.5 rounded-sm bg-primary/10 text-primary">{kindLabel(card.kind)}</span>
   </div>
-  <p class="text-xs text-muted"><CodeText text={card.purpose} /></p>
+  <p class="text-xs text-muted-foreground"><CodeText text={card.purpose} /></p>
   <p>覆盖
     <span class="{card.coverage.lagging.length ? 'text-warn font-medium' : ''}">
       {card.coverage.covered} / {card.coverage.targets}</span>
@@ -66,7 +66,7 @@
       <span class="text-xs text-warn">（滞后 {card.coverage.lagging.length}）</span>
     {/if}
     · 最新 {latestText(card.latest_at)}
-    <span class="text-xs text-muted" title={card.coverage_note}>（{card.coverage_note}）</span>
+    <span class="text-xs text-muted-foreground" title={card.coverage_note}>（{card.coverage_note}）</span>
   </p>
   {#if card.current_error}
     <p class="text-xs text-warn">当前范围文件错误：{card.current_error}</p>
@@ -96,36 +96,36 @@
   {#if card.last_run}
     {@render runLine('最近全族拉取', card.last_run, false)}
   {:else}
-    <p class="text-xs text-muted">最近全族拉取 无记录</p>
+    <p class="text-xs text-muted-foreground">最近全族拉取 无记录</p>
   {/if}
   {#if card.last_ticker_run}
     {@render runLine('最近单只拉取', card.last_ticker_run, true)}
   {/if}
   {#if card.last_success_at}
-    <p class="text-xs text-muted">最近成功 {fmtBeijing(card.last_success_at)}</p>
+    <p class="text-xs text-muted-foreground">最近成功 {fmtBeijing(card.last_success_at)}</p>
   {/if}
   {#if notes.length}
     <ul class="text-xs text-amber-700 space-y-0.5">
       {#each notes as n (n)}<li>{noteText(n)}</li>{/each}
     </ul>
   {/if}
-  {#if evidence}<p class="text-xs text-muted"><CodeText text={evidence} /></p>{/if}
+  {#if evidence}<p class="text-xs text-muted-foreground"><CodeText text={evidence} /></p>{/if}
   {#if card.job}
     {@const job = card.job}
-    <p class="text-xs text-muted">所属任务
+    <p class="text-xs text-muted-foreground">所属任务
       <a class="underline" href="#tools/tasks">
         {job.name} · {job.enabled ? '开' : '关'} · 下次 {job.next_run_at ? fmtBeijing(job.next_run_at) : '—'}
       </a>
     </p>
   {:else}
-    <p class="text-xs text-muted">所属任务 无</p>
+    <p class="text-xs text-muted-foreground">所属任务 无</p>
   {/if}
   <div class="flex flex-wrap items-center gap-2">
-    <button class="text-xs px-2 py-1 rounded bg-accent text-white disabled:opacity-50"
+    <button class="text-xs px-2 py-1 rounded-sm bg-primary text-white disabled:opacity-50"
             disabled={busy} onclick={fetchAll}>
       {busy ? '采集中…' : fetchButtonLabel(card)}
     </button>
     {#if error}<span class="text-xs text-red-600">{error}</span>{/if}
-    {#if note}<span class="text-xs text-muted">{note}</span>{/if}
+    {#if note}<span class="text-xs text-muted-foreground">{note}</span>{/if}
   </div>
 </article>

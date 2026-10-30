@@ -323,7 +323,7 @@ describe('DataBrowse 单只拉取结果', () => {
     mount('bars')
     await screen.findByText('2026-10-22')
     await fireEvent.click(screen.getByRole('button', { name: '只拉这一只' }))
-    expect(await screen.findByText('仍在后台运行，稍后刷新')).toHaveClass('text-muted')
+    expect(await screen.findByText('仍在后台运行，稍后刷新')).toHaveClass('text-muted-foreground')
     expect(screen.getByRole('button', { name: '只拉这一只' })).toBeEnabled()
     expect(api.pollRun).toHaveBeenCalledWith('one', { timeoutMs: 900_000 })
   })

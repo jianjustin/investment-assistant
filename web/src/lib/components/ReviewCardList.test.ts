@@ -56,9 +56,9 @@ describe('ReviewCardList', () => {
     const settled = within(first).getByText('追高')
     const pending = within(first).getByText('过早止盈（待定）')
     expect(settled).not.toHaveAttribute('data-pending')
-    expect(settled.className).not.toMatch(/text-muted/)
+    expect(settled.className).not.toMatch(/text-muted-foreground/)
     expect(pending).toHaveAttribute('data-pending', 'true')
-    expect(pending.className).toMatch(/text-muted/)
+    expect(pending.className).toMatch(/text-muted-foreground/)
   })
 
   it('filters by status and ticker', async () => {
