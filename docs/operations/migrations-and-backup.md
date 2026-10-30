@@ -230,4 +230,14 @@ Unix socket 路径太长时启动会失败，所以用 `-k ''` 关掉 socket、�
 
 回滚：`pg_restore --clean -d "$INVESTMENT_ASSISTANT_DATABASE_URL" <上面的 dump>`，再重启到 v2.8 代码（回滚会丢掉 029 之后的所有写入，包括成交与备注）。执行记录写进 `docs/roadmap/v2.9-acceptance.md`（验收开始时新建）。
 
+#### 执行记录（2026-10-30，手动 psql 执行）
+
+| 步骤 | 结果 |
+| --- | --- |
+| 1. 确认状态 | 20:41 +0800：`agent_connections` 在（028 已执行），`chain_retriggers` 不存在；没有运行中的任务（最近一次是 11:30 的定时 `daily`，11:42 结束）；服务进程 pid 29512，10:33 启动（v2.8 代码，早于 v2.9 的第一个提交）；`public` 表数 53。v2.8 的手动 `daily` 与失败续跑演练已于同日上午完成（D37）。上线前只读核查见 [v2.9 验收记录](../roadmap/v2.9-acceptance.md) 第 1 节 |
+| 2. 全库备份 | 20:42:02 +0800，`.local/us-workbench/backups/investment_assistant-before-029-20261030-204202.dump`（6,995,224 字节，sha256 `52db024683502ea558c6a54d488b4f40cbfa26c1431ba5639f7d20471703bd43`）；`pg_restore --list` 可读，53 张表与线上一致 |
+| 3. 执行 | 20:42:17 +0800，`psql --single-transaction -v ON_ERROR_STOP=1 -f migrations/029_executable_plans.sql`，退出码 0（15 个 `ALTER TABLE`、2 个 `DO` 块、3 个 `CREATE TABLE`、3 个 `CREATE INDEX`）；六条 `NOTICE` 都是首次执行时 `DROP CONSTRAINT IF EXISTS` 找不到具名约束，属预期 |
+| 4. 核对 | `repository.executable_ready` 与 `daily_ready` 为真；`trades` 有 `plan_id` 与 `trades_link_one_check`；`trade_plans` 有 `entry_type`、`max_hold_sessions`、`trade_plans_entry_type_check`、`trade_plans_max_hold_check`、`trade_plans_exec_fields_check` 与新的 `trade_plans_levels_check`（017 的旧价位约束已删，只剩这一条）；17 行旧计划两列全为空；`plan_reviews_agent_run_check` 允许 `decided_by = 'host'`；`chain_retriggers`、`holding_status`、`plan_notes` 各 0 行；`public` 表数 53 → 56；`trades` 0、`trade_plans` 17、`plan_reviews` 2、`signal_decisions` 4、`agent_plan_versions` 3、`job_reports` 84、`stage_runs` 105、`agent_runs` 23，与执行前一致 |
+| 5. 重启服务 | `web/dist` 原是 18:55 的构建，早于发布提交 `c370103`（19:09），所以在 `main@676842b` 重新构建（20:42:43）；20:42:48 `launchctl kickstart -k`，新进程 pid 92196 启动于 20:43:18（v2.9 代码）。`/api/health` 与 v2.8 时一致：数据库、调度线程、Filings、SEC、Yahoo、Discord、FRED 均 up，3 项 `systemctl` 检查在 macOS 上为 down。`/api/jobs/scheduled` 只有 `daily`（下次 2026-10-31 11:30 +08）；`/api/settings/agent-connection` 为 `connected`（`gpt-6-astra`）；`/api/workbench/today`、`plan-table`、`holding-status`、`instruments/FER/plan-history`、`trades/linkable-plans`、`/api/data/families` 均 200；`POST /api/workbench/decisions` 返回 410 `decisions_retired`。`.env` 与 LaunchAgent plist 未改（本版无配置变化） |
+
 **测试库**：`tests/conftest.WORKBENCH_MIGRATIONS` 已含 029。
