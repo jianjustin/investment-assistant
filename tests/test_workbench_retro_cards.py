@@ -63,7 +63,7 @@ def make_plan(db, ticker: str, signal_date: date, *, status='ok', reasons=(), va
 def make_decision(db, ticker, signal_date, plan_id, *, decision='accept', decided_at=None, action='buy',
                   supersedes_id=None):
     final = {'accept': action, 'reject': 'ignore', 'downgrade': 'watch'}[decision]
-    return repository.insert_decision(db, {
+    return repository._insert_decision_for_tests(db, {
         'request_id': uuid.uuid4(), 'ticker': ticker, 'signal_date': signal_date, 'candidate_ids': [uuid.uuid4()],
         'brief_id': None, 'proposed_action': action, 'final_action': final, 'decision': decision,
         'reason': '合成样例决定', 'supersedes_id': supersedes_id, 'plan_id': plan_id},

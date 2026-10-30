@@ -145,7 +145,7 @@ def test_plan_context_includes_reviews_decision_and_trades(db, scripted_model):
         'signals': [{'kind': 'new_8k', 'fired': True, 'detail': 'x'}, {'kind': 'abnormal_move', 'fired': False}],
         'conditions': [], 'user_input_ids': [], 'outcome': 'maintain', 'decided_by': 'host', 'reason': '维持',
         'refs': [], 'detail': {}, 'attempt': 1, 'cutoff_at': NOW})
-    dec = repository.insert_decision(db, {
+    dec = repository._insert_decision_for_tests(db, {
         'request_id': uuid.uuid4(), 'ticker': 'AAA', 'signal_date': SESSION, 'candidate_ids': [uuid.uuid4()],
         'brief_id': None, 'proposed_action': 'buy', 'final_action': 'buy', 'decision': 'accept', 'reason': '照做',
         'supersedes_id': None, 'plan_id': plan['id']}, 'h', decided_at=NOW)

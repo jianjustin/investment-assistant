@@ -234,7 +234,7 @@ def record_decision(conn, payload: dict[str, Any], *, now: datetime) -> dict[str
     if rec['own_plan'] is not None:
         plan_id = _record_own_plan(conn, rec, rule, now=now)['id']
     rec = {**rec, 'plan_id': plan_id}
-    record = repository.insert_decision(conn, rec, digest, decided_at=now)
+    record = repository._insert_decision_for_tests(conn, rec, digest, decided_at=now)
     if ready:      # same keys whichever INSERT ran
         record = {**record, 'agent_plan_id': record.get('agent_plan_id'), 'review_view': record.get('review_view')}
     return {'status': 'created', 'record': record}

@@ -215,8 +215,8 @@ def lock(conn, key: str) -> None:
 
 _DECISION_COLUMNS = ('id, request_id, request_hash, ticker, signal_date, candidate_ids, brief_id, proposed_action, '
                      'final_action, decision, reason, decided_at, supersedes_id, plan_id')
-_TRADE_COLUMNS = ('id, request_id, request_hash, ticker, side, quantity, price, fee, executed_at, decision_id, note, '
-                  'recorded_at, voided_at, void_reason')
+_TRADE_COLUMNS = ('id, request_id, request_hash, ticker, side, quantity, price, fee, executed_at, decision_id, '
+                  'plan_id, note, recorded_at, voided_at, void_reason')
 
 
 def _one(conn, sql: str, params) -> dict[str, Any] | None:
@@ -283,8 +283,12 @@ def brief_in_unit(conn, brief_id, ticker: str, signal_date: date) -> bool:
                         (brief_id, ticker, signal_date)).fetchone() is not None
 
 
-def insert_decision(conn, rec: dict[str, Any], digest: str, *, decided_at: datetime) -> dict[str, Any]:
-    """`agent_plan_id` / `review_view` (migration 026) are written, and returned, only when one is
+def _insert_decision_for_tests(conn, rec: dict[str, Any], digest: str, *,
+                               decided_at: datetime) -> dict[str, Any]:
+    """Test fixtures only (v2.9 D5): production code no longer records decisions, `signal_decisions` is read-only
+    there. `ledger.record_decision` still calls this until it is deleted (Task 4).
+
+    `agent_plan_id` / `review_view` (migration 026) are written, and returned, only when one is
     set; without them the statement is the pre-026 one, so old callers and an unmigrated database
     behave as before."""
     if rec.get('agent_plan_id') is not None or rec.get('review_view') is not None:
@@ -316,18 +320,46 @@ def trade_by_id(conn, trade_id):
     return _one(conn, f'SELECT {_TRADE_COLUMNS} FROM trades WHERE id = %s', (trade_id,))
 
 
-def list_trades(conn, ticker: str | None = None) -> list[dict[str, Any]]:
+def _trades_where(conn, clause: str | None, params: list[Any], cutoff: datetime | None) -> list[dict[str, Any]]:
+    clauses = [clause] if clause else []
+    params = list(params)
+    if cutoff is not None:
+        clauses.append('recorded_at <= %s AND executed_at <= %s')
+        params.extend([cutoff, cutoff])
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
+    rows = _all(conn, f'SELECT {_TRADE_COLUMNS} FROM trades{where} ORDER BY executed_at, id', params)
+    if cutoff is not None:                     # a void made after the cutoff is not known yet
+        rows = [{**row, 'voided_at': None, 'void_reason': None} if row['voided_at'] and row['voided_at'] > cutoff
+                else row for row in rows]
+    return rows
+
+
+def list_trades(conn, ticker: str | None = None, *, cutoff: datetime | None = None) -> list[dict[str, Any]]:
+    """Trades oldest first. With `cutoff` only what was both executed and recorded by then (a later back-fill of an
+    earlier trade is invisible), and a void recorded after `cutoff` is not applied yet (v2.9 D33)."""
     if ticker is None:
-        return _all(conn, f'SELECT {_TRADE_COLUMNS} FROM trades ORDER BY executed_at, id', ())
-    return _all(conn, f'SELECT {_TRADE_COLUMNS} FROM trades WHERE ticker = %s ORDER BY executed_at, id', (ticker.upper(),))
+        return _trades_where(conn, None, [], cutoff)
+    return _trades_where(conn, 'ticker = %s', [ticker.upper()], cutoff)
 
 
 def insert_trade(conn, rec: dict[str, Any], digest: str, *, recorded_at: datetime) -> dict[str, Any]:
+    """`plan_id` (migration 029) is the plan version the trade followed; it and the legacy `decision_id` never both
+    carry a value (`trades_link_one_check`). Both default to None."""
     return _one(conn,
                 'INSERT INTO trades (request_id, request_hash, ticker, side, quantity, price, fee, executed_at, '
-                f'decision_id, note, recorded_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING {_TRADE_COLUMNS}',
+                'decision_id, plan_id, note, recorded_at) '
+                f'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING {_TRADE_COLUMNS}',
                 (rec['request_id'], digest, rec['ticker'], rec['side'], rec['quantity'], rec['price'], rec['fee'],
-                 rec['executed_at'], rec['decision_id'], rec['note'], recorded_at))
+                 rec['executed_at'], rec.get('decision_id'), rec.get('plan_id'), rec['note'], recorded_at))
+
+
+def trades_by_plan_ids(conn, plan_ids, *, cutoff: datetime | None = None) -> list[dict[str, Any]]:
+    """Trades (voided ones included; the caller filters) linked to any of the plan versions, oldest first.
+    `cutoff` as in `list_trades`."""
+    ids = list(plan_ids)
+    if not ids:
+        return []
+    return _trades_where(conn, 'plan_id = ANY(%s)', [ids], cutoff)
 
 
 def mark_trade_voided(conn, trade_id, reason: str, *, voided_at: datetime) -> dict[str, Any]:
@@ -367,7 +399,8 @@ def insert_weekly_review(conn, week_start: date, calc_version: str, stats: dict[
 
 _PLAN_COLUMNS = ('id, ticker, signal_date, kind, based_on_id, plan_version, ref_price, atr, entry_low, '
                  'entry_high, stop, target1, trail_atr_multiple, valid_from, valid_until, sizing, status, '
-                 'invalid_reasons, warnings, inputs, request_id, request_hash, created_at')
+                 'invalid_reasons, warnings, inputs, request_id, request_hash, created_at, entry_type, '
+                 'max_hold_sessions')
 
 
 def _plan_json(value: Any) -> str:
@@ -403,15 +436,17 @@ def insert_plan(conn, plan: dict[str, Any]) -> dict[str, Any]:
     return _one(conn,
                 'INSERT INTO trade_plans (ticker, signal_date, kind, based_on_id, plan_version, ref_price, atr, '
                 'entry_low, entry_high, stop, target1, trail_atr_multiple, valid_from, valid_until, sizing, '
-                'status, invalid_reasons, warnings, inputs, request_id, request_hash) '
+                'status, invalid_reasons, warnings, inputs, request_id, request_hash, entry_type, '
+                'max_hold_sessions) '
                 'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s::jsonb, '
-                f'%s, %s) RETURNING {_PLAN_COLUMNS}',
+                f'%s, %s, %s, %s) RETURNING {_PLAN_COLUMNS}',
                 (plan['ticker'], plan['signal_date'], plan['kind'], plan.get('based_on_id'),
                  plan.get('plan_version', 'plan-1'), plan['ref_price'], plan['atr'], plan['entry_low'],
                  plan['entry_high'], plan['stop'], plan['target1'], plan['trail_atr_multiple'],
                  plan['valid_from'], plan['valid_until'], _plan_json(plan['sizing']), plan['status'],
                  plan['invalid_reasons'], plan['warnings'], _plan_json(plan['inputs']),
-                 plan.get('request_id'), plan.get('request_hash')))
+                 plan.get('request_id'), plan.get('request_hash'), plan.get('entry_type'),
+                 plan.get('max_hold_sessions')))
 
 
 def plan_for_buy_trades(conn, trade_ids: list) -> dict[Any, dict[str, Any]]:
@@ -430,10 +465,12 @@ def plan_by_request(conn, request_id) -> dict[str, Any] | None:
     return _one(conn, f'SELECT {_PLAN_COLUMNS} FROM trade_plans WHERE request_id = %s', (request_id,))
 
 
-def rule_plan(conn, ticker: str, signal_date: date, plan_version: str = 'plan-1') -> dict[str, Any] | None:
+def rule_plan(conn, ticker: str, signal_date: date, plan_version: str | None = None) -> dict[str, Any] | None:
+    """The unit's rule plan: the newest of any version (`plan_version=None`, v2.9 R7), or of the given one."""
+    version_clause = '' if plan_version is None else 'AND plan_version = %s '
+    params = (ticker.upper(), signal_date) + (() if plan_version is None else (plan_version,))
     return _one(conn, f'SELECT {_PLAN_COLUMNS} FROM trade_plans WHERE ticker = %s AND signal_date = %s '
-                      "AND kind = 'rule' AND plan_version = %s ORDER BY created_at DESC, id DESC LIMIT 1",
-                (ticker.upper(), signal_date, plan_version))
+                      f"AND kind = 'rule' {version_clause}ORDER BY created_at DESC, id DESC LIMIT 1", params)
 
 
 def plan_by_id(conn, plan_id) -> dict[str, Any] | None:
@@ -1939,3 +1976,212 @@ def insert_turn(conn, row: dict[str, Any]) -> dict[str, Any]:
 def turns(conn, discussion_id: int) -> list[dict[str, Any]]:
     return _all(conn, f'SELECT {_TURN_COLUMNS} FROM discussion_turns WHERE discussion_id = %s ORDER BY seq',
                 (discussion_id,))
+
+
+# --- executable plans (v2.9, migration 029): chain_retriggers, holding_status, plan_notes, trades.plan_id ---
+# Three append-only tables, deliberately not in WORKBENCH_TABLES; an unmigrated database is detected through
+# executable_ready() (the readers answer 503, `daily` refuses to run, spec D36).
+
+_RETRIGGER_COLUMNS = ('id, ticker, unit_signal_date, chain_signal_date, chain_state, rule_ids, baseline_plan_id, '
+                      'entry_cap, run_id, timeline_version, created_at')
+_HOLDING_STATUS_COLUMNS = ('id, ticker, session, chain_signal_date, plan_id, review_id, run_id, quantity, avg_cost, '
+                           'last_close, stop, target1, stop_mode, t1_reached, reached_1r, to_stop_pct, to_t1_pct, '
+                           'r_now, held_sessions, max_hold_sessions, remaining_sessions, instruction, exit_reason, '
+                           'reason, detail, timeline_version, created_at')
+_PLAN_NOTE_COLUMNS = ('id, request_id, request_hash, ticker, chain_signal_date, plan_id, kind, body, supersedes_id, '
+                      'created_at')
+
+
+def executable_ready(conn) -> bool:
+    """True when migration 029 has run: the three new tables, `trades.plan_id` and the two execution columns of
+    `trade_plans` all exist (spec §8). A pure existence check; never raises on a missing table."""
+    tables = conn.execute("SELECT to_regclass('chain_retriggers'), to_regclass('holding_status'), "
+                          "to_regclass('plan_notes'), to_regclass('trades'), to_regclass('trade_plans')").fetchone()
+    if any(item is None for item in tables):
+        return False
+    wanted = {('trades', 'plan_id'), ('trade_plans', 'entry_type'), ('trade_plans', 'max_hold_sessions')}
+    found = conn.execute(
+        'SELECT attrelid::regclass::text, attname FROM pg_attribute '
+        "WHERE attrelid IN (to_regclass('trades'), to_regclass('trade_plans')) "
+        "AND attname IN ('plan_id', 'entry_type', 'max_hold_sessions') AND NOT attisdropped").fetchall()
+    return wanted <= {(table.rsplit('.', 1)[-1], name) for table, name in found}
+
+
+def insert_chain_retrigger(conn, row: dict[str, Any]) -> dict[str, Any]:
+    """Append one retrigger (a new unit merged into an active chain). `(ticker, unit_signal_date)` is unique: a
+    second write returns the stored row with `replayed` True and changes nothing.
+
+    `row` keys: ticker, unit_signal_date, chain_signal_date, chain_state, rule_ids, baseline_plan_id (may be
+    None), entry_cap (entry state only), run_id, timeline_version."""
+    ticker = row['ticker'].upper()
+    inserted = _one(conn,
+                    'INSERT INTO chain_retriggers (ticker, unit_signal_date, chain_signal_date, chain_state, '
+                    'rule_ids, baseline_plan_id, entry_cap, run_id, timeline_version) '
+                    'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (ticker, unit_signal_date) DO NOTHING '
+                    f'RETURNING {_RETRIGGER_COLUMNS}',
+                    (ticker, row['unit_signal_date'], row['chain_signal_date'], row['chain_state'],
+                     list(row['rule_ids']), row.get('baseline_plan_id'), row.get('entry_cap'), row['run_id'],
+                     row['timeline_version']))
+    if inserted is not None:
+        return {**inserted, 'replayed': False}
+    return {**retrigger_for_unit(conn, ticker, row['unit_signal_date']), 'replayed': True}
+
+
+def retrigger_for_unit(conn, ticker: str, unit_signal_date: date) -> dict[str, Any] | None:
+    """The retrigger row of one unit (the unit was merged into a chain), or None."""
+    return _one(conn, f'SELECT {_RETRIGGER_COLUMNS} FROM chain_retriggers WHERE ticker = %s AND unit_signal_date = %s',
+                (ticker.upper(), unit_signal_date))
+
+
+def chain_retriggers_for(conn, ticker: str, *, chain_signal_date: date | None = None,
+                         until_session: date | None = None, cutoff: datetime | None = None) -> list[dict[str, Any]]:
+    """A ticker's retrigger rows, oldest first. `chain_signal_date` keeps one chain's, `until_session` those whose
+    unit signal date is on or before it, `cutoff` those written at or before it (a row written later is invisible)."""
+    clauses, params = ['ticker = %s'], [ticker.upper()]
+    if chain_signal_date is not None:
+        clauses.append('chain_signal_date = %s')
+        params.append(chain_signal_date)
+    if until_session is not None:
+        clauses.append('unit_signal_date <= %s')
+        params.append(until_session)
+    if cutoff is not None:
+        clauses.append('created_at <= %s')
+        params.append(cutoff)
+    return _all(conn, f"SELECT {_RETRIGGER_COLUMNS} FROM chain_retriggers WHERE {' AND '.join(clauses)} "
+                      'ORDER BY created_at, id', params)
+
+
+def insert_holding_status(conn, row: dict[str, Any]) -> dict[str, Any]:
+    """Append one holding-status row. `(ticker, session)` is unique: a second write of the same session returns the
+    stored row with `replayed` True and changes nothing.
+
+    `row` keys: the §8.4 columns except id / created_at; ticker, session, run_id, quantity, avg_cost, held_sessions,
+    instruction, reason and timeline_version are required, the rest default to NULL (`detail` to {})."""
+    ticker = row['ticker'].upper()
+    inserted = _one(conn,
+                    'INSERT INTO holding_status (ticker, session, chain_signal_date, plan_id, review_id, run_id, '
+                    'quantity, avg_cost, last_close, stop, target1, stop_mode, t1_reached, reached_1r, to_stop_pct, '
+                    'to_t1_pct, r_now, held_sessions, max_hold_sessions, remaining_sessions, instruction, '
+                    'exit_reason, reason, detail, timeline_version) '
+                    'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, '
+                    '%s, %s, %s::jsonb, %s) ON CONFLICT (ticker, session) DO NOTHING '
+                    f'RETURNING {_HOLDING_STATUS_COLUMNS}',
+                    (ticker, row['session'], row.get('chain_signal_date'), row.get('plan_id'), row.get('review_id'),
+                     row['run_id'], row['quantity'], row['avg_cost'], row.get('last_close'), row.get('stop'),
+                     row.get('target1'), row.get('stop_mode'), row.get('t1_reached'), row.get('reached_1r'),
+                     row.get('to_stop_pct'), row.get('to_t1_pct'), row.get('r_now'), row['held_sessions'],
+                     row.get('max_hold_sessions'), row.get('remaining_sessions'), row['instruction'],
+                     row.get('exit_reason'), row['reason'], _plan_json(row.get('detail') or {}),
+                     row['timeline_version']))
+    if inserted is not None:
+        return {**inserted, 'replayed': False}
+    existing = _one(conn, f'SELECT {_HOLDING_STATUS_COLUMNS} FROM holding_status WHERE ticker = %s AND session = %s',
+                    (ticker, row['session']))
+    return {**existing, 'replayed': True}
+
+
+def holding_status_for(conn, *, session: date | None = None, ticker: str | None = None,
+                       chain_signal_date: date | None = None) -> list[dict[str, Any]]:
+    """Holding-status rows matching every given filter, oldest session first (then ticker)."""
+    clauses, params = [], []
+    if session is not None:
+        clauses.append('session = %s')
+        params.append(session)
+    if ticker is not None:
+        clauses.append('ticker = %s')
+        params.append(ticker.upper())
+    if chain_signal_date is not None:
+        clauses.append('chain_signal_date = %s')
+        params.append(chain_signal_date)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
+    return _all(conn, f'SELECT {_HOLDING_STATUS_COLUMNS} FROM holding_status{where} ORDER BY session, ticker, id',
+                params)
+
+
+def plan_note_by_request(conn, request_id) -> dict[str, Any] | None:
+    return _one(conn, f'SELECT {_PLAN_NOTE_COLUMNS} FROM plan_notes WHERE request_id = %s', (request_id,))
+
+
+def insert_plan_note(conn, row: dict[str, Any]) -> dict[str, Any]:
+    """Append one note (kind 'note') or retraction (kind 'retract', needs `supersedes_id`); a correction is a 'note'
+    row with `supersedes_id`. Idempotent on `request_id`: the same `request_hash` returns the stored row with
+    `replayed` True, a different one raises `ledger.Conflict`.
+
+    `row` keys: request_id, request_hash, ticker, chain_signal_date XOR plan_id, kind, body, supersedes_id."""
+    def known() -> dict[str, Any] | None:
+        existing = plan_note_by_request(conn, row['request_id'])
+        if existing is None:
+            return None
+        if existing['request_hash'] != row['request_hash']:
+            from investment_assistant.workbench.ledger import Conflict      # ledger imports this module
+            raise Conflict('request_id was already used with different content')
+        return {**existing, 'replayed': True}
+
+    if (replayed := known()) is not None:
+        return replayed
+    inserted = _one(conn,
+                    'INSERT INTO plan_notes (request_id, request_hash, ticker, chain_signal_date, plan_id, kind, '
+                    'body, supersedes_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) '
+                    f'ON CONFLICT (request_id) DO NOTHING RETURNING {_PLAN_NOTE_COLUMNS}',
+                    (row['request_id'], row['request_hash'], row['ticker'].upper(), row.get('chain_signal_date'),
+                     row.get('plan_id'), row['kind'], row['body'], row.get('supersedes_id')))
+    if inserted is not None:
+        return {**inserted, 'replayed': False}
+    return known()
+
+
+def plan_notes_for(conn, ticker: str, *, chain_signal_date: date | None = None, plan_id=None,
+                   cutoff: datetime | None = None) -> list[dict[str, Any]]:
+    """A ticker's notes (kind 'note' rows only), oldest first, each with `status` and `superseded_by`.
+
+    `status` is 'retracted' when a retraction points at the note, 'corrected' when a newer note does, else 'active';
+    `superseded_by` is the earliest row that points at it. Scope: `chain_signal_date` (a chain's notes), `plan_id`
+    (a non-chain plan's notes), both (either), neither (all of the ticker's). With `cutoff` only rows written at
+    or before it exist, so a correction made later does not take effect yet."""
+    cut = '' if cutoff is None else ' AND s.created_at <= %(cutoff)s'
+    scope = ['n.ticker = %(ticker)s', "n.kind = 'note'"]
+    params: dict[str, Any] = {'ticker': ticker.upper(), 'cutoff': cutoff}
+    if cutoff is not None:
+        scope.append('n.created_at <= %(cutoff)s')
+    targets = []
+    if chain_signal_date is not None:
+        targets.append('n.chain_signal_date = %(chain)s')
+        params['chain'] = chain_signal_date
+    if plan_id is not None:
+        targets.append('n.plan_id = %(plan)s')
+        params['plan'] = plan_id
+    if targets:
+        scope.append(f"({' OR '.join(targets)})")
+    columns = ', '.join('n.' + c.strip() for c in _PLAN_NOTE_COLUMNS.split(','))
+    return _all(conn,
+                f'SELECT {columns}, '
+                "CASE WHEN EXISTS (SELECT 1 FROM plan_notes s WHERE s.supersedes_id = n.id "
+                f"AND s.kind = 'retract'{cut}) "
+                f'THEN \'retracted\' WHEN EXISTS (SELECT 1 FROM plan_notes s WHERE s.supersedes_id = n.id{cut}) '
+                f'THEN \'corrected\' ELSE \'active\' END AS status, '
+                f'(SELECT min(s.id) FROM plan_notes s WHERE s.supersedes_id = n.id{cut}) AS superseded_by '
+                f"FROM plan_notes n WHERE {' AND '.join(scope)} ORDER BY n.created_at, n.id", params)
+
+
+def chains_for_ticker(conn, ticker: str, *, cutoff: datetime | None = None) -> list[dict[str, Any]]:
+    """One row per agent chain of the ticker (oldest first), summarised from `agent_plan_versions` for `timeline-2`:
+    `ticker`, `signal_date`, `first_schema_version` (version 0), `head_schema_version`, `head_plan_id`,
+    `head_version_no`, `version_count`, `first_created_at`. With `cutoff` only versions created at or before it
+    count, and a chain whose first version is later is absent."""
+    clause, params = '', [ticker.upper()]
+    if cutoff is not None:
+        clause = ' AND created_at <= %s'
+        params.append(cutoff)
+    return _all(conn,
+                'SELECT ticker, signal_date, '
+                '(array_agg(schema_version ORDER BY version_no))[1] AS first_schema_version, '
+                '(array_agg(schema_version ORDER BY version_no DESC))[1] AS head_schema_version, '
+                '(array_agg(plan_id ORDER BY version_no DESC))[1] AS head_plan_id, '
+                'max(version_no) AS head_version_no, count(*)::int AS version_count, '
+                'min(created_at) AS first_created_at '
+                f'FROM agent_plan_versions WHERE ticker = %s{clause} '
+                'GROUP BY ticker, signal_date ORDER BY signal_date', params)
+
+
+# --- v2.9 additions ---
+# Tasks 3 and 4 append their queries below this line without touching the functions above.

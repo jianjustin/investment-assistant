@@ -358,7 +358,11 @@ def test_known_versions_cover_code_constants():
     # v2.8 adds four literals, each with its constant
     assert {'stages-4', 'daily-1', 'fetch-1', 'siwc-1'} <= knowledge.KNOWN_VERSIONS
     assert fetch_policy.FETCH_POLICY_VERSION == 'fetch-1' and chatgpt.CHATGPT_PROTOCOL_VERSION == 'siwc-1'
-    assert isinstance(knowledge.KNOWN_VERSIONS, frozenset) and len(knowledge.KNOWN_VERSIONS) == 36
+    # v2.9 adds fifteen literals (fourteen new versions plus the old `discipline-1` still present in old rows)
+    assert {'timeline-2', 'condition-2', 'plan-2', 'plan-shadow-2', 'agent-3', 'agent-review-2', 'agent-retro-2',
+            'entry-1', 'execution-1', 'discipline-1', 'discipline-2', 'tracks-2', 'retro-2', 'review-8',
+            'monthly-4'} <= knowledge.KNOWN_VERSIONS
+    assert isinstance(knowledge.KNOWN_VERSIONS, frozenset) and len(knowledge.KNOWN_VERSIONS) == 51
 
 
 def test_knowledge_module_does_not_import_agent_or_service_at_top_level():

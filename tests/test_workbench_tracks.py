@@ -276,7 +276,7 @@ def _decide(conn, ticker, *, plan_id=None, agent_plan_id=None, final='buy'):
            'brief_id': None, 'proposed_action': 'buy', 'final_action': final,
            'decision': 'accept' if final == 'buy' else 'reject', 'reason': '测试', 'supersedes_id': None,
            'plan_id': plan_id, 'agent_plan_id': agent_plan_id, 'review_view': None}
-    return repository.insert_decision(conn, rec, 'h', decided_at=NOW - timedelta(days=4))
+    return repository._insert_decision_for_tests(conn, rec, 'h', decided_at=NOW - timedelta(days=4))
 
 
 def _rows(conn):

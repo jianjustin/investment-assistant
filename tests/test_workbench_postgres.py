@@ -306,7 +306,7 @@ def test_monthly_ignores_stop_events_outside_the_month(workbench_db, monkeypatch
         'target1': D('108'), 'trail_atr_multiple': D('3'), 'valid_from': date(2026, 10, 22),
         'valid_until': date(2026, 10, 27), 'sizing': {}, 'status': 'ok', 'invalid_reasons': [], 'warnings': [],
         'inputs': {}, 'request_id': None, 'request_hash': None})
-    decision = repository.insert_decision(workbench_db, {
+    decision = repository._insert_decision_for_tests(workbench_db, {
         'request_id': uuid.uuid4(), 'ticker': 'NVDA', 'signal_date': unit_day,
         'candidate_ids': [], 'brief_id': None, 'proposed_action': 'buy', 'final_action': 'buy',
         'decision': 'accept', 'reason': '合成', 'supersedes_id': None, 'plan_id': plan['id']},
@@ -862,7 +862,7 @@ def _mt_plan(conn, ticker, day, stop, entry=None):
 def _mt_round_trip(conn, ticker, day, plan_id, *, sell_day, sell_price):
     from decimal import Decimal as D
     from investment_assistant.workbench import repository
-    decision = repository.insert_decision(conn, {
+    decision = repository._insert_decision_for_tests(conn, {
         'request_id': uuid.uuid4(), 'ticker': ticker, 'signal_date': day, 'candidate_ids': [],
         'brief_id': None, 'proposed_action': 'buy', 'final_action': 'buy', 'decision': 'accept',
         'reason': '合成', 'supersedes_id': None, 'plan_id': plan_id}, 'h',
@@ -1266,13 +1266,13 @@ def test_insert_decision_writes_agent_plan_columns(workbench_db):
     rec = {'request_id': uuid.uuid4(), 'ticker': 'NVDA', 'signal_date': date(2026, 10, 21), 'candidate_ids': [],
            'brief_id': None, 'proposed_action': 'buy', 'final_action': 'buy', 'decision': 'accept',
            'reason': 'trend intact', 'supersedes_id': None, 'plan_id': head['plan_id']}
-    plain = repository.insert_decision(conn, rec, 'h1', decided_at=NOW)        # old callers: no new keys
+    plain = repository._insert_decision_for_tests(conn, rec, 'h1', decided_at=NOW)        # old callers: no new keys
     assert 'agent_plan_id' not in plain
     stored = conn.execute('SELECT agent_plan_id, review_view FROM signal_decisions WHERE id = %s',
                           [plain['id']]).fetchone()
     assert stored == (None, None)
     view = {'layout': 'agent_first', 'baseline_expanded': False, 'agent_version_no': 0}
-    record = repository.insert_decision(conn, {**rec, 'request_id': uuid.uuid4(), 'supersedes_id': plain['id'],
+    record = repository._insert_decision_for_tests(conn, {**rec, 'request_id': uuid.uuid4(), 'supersedes_id': plain['id'],
                                                'agent_plan_id': head['plan_id'], 'review_view': view},
                                         'h2', decided_at=NOW + timedelta(minutes=1))
     assert record['agent_plan_id'] == head['plan_id'] and record['review_view'] == view

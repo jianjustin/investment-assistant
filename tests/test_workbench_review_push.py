@@ -62,7 +62,7 @@ def _snapshot(db, *, as_of, recorded_at, equity='100000'):
 
 
 def _decision(db, *, decided_at):
-    repository.insert_decision(db, {'request_id': str(uuid.uuid4()), 'ticker': 'NVDA',
+    repository._insert_decision_for_tests(db, {'request_id': str(uuid.uuid4()), 'ticker': 'NVDA',
                                     'signal_date': decided_at.date(), 'candidate_ids': [], 'brief_id': None,
                                     'proposed_action': 'watch', 'final_action': 'watch', 'decision': 'accept',
                                     'reason': '启用判断用例', 'supersedes_id': None}, 'h', decided_at=decided_at)

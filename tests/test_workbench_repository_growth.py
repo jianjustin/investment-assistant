@@ -15,7 +15,7 @@ DAY = date(2026, 10, 20)
 def decision(conn, ticker='NVDA', signal_date=DAY, *, decision='accept', action='buy', supersedes_id=None,
              plan_id=None, decided_at=NOW):
     final = {'accept': action, 'reject': 'ignore', 'downgrade': 'watch'}[decision]
-    return repository.insert_decision(conn, {
+    return repository._insert_decision_for_tests(conn, {
         'request_id': uuid.uuid4(), 'ticker': ticker, 'signal_date': signal_date, 'candidate_ids': [uuid.uuid4()],
         'brief_id': None, 'proposed_action': action, 'final_action': final, 'decision': decision,
         'reason': 'because', 'supersedes_id': supersedes_id, 'plan_id': plan_id}, 'h', decided_at=decided_at)
