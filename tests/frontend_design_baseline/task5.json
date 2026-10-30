@@ -1,0 +1,44 @@
+{
+  "owner": "Task 5",
+  "checks": {
+    "raw_palette": {
+      "lib/components/AgentPlanCard.svelte": 8,
+      "lib/components/AgentReasoning.svelte": 10,
+      "lib/components/DiscussButton.svelte": 1,
+      "lib/components/Discussion.svelte": 9,
+      "lib/components/PlanDerivation.svelte": 11,
+      "lib/components/PlanNotes.svelte": 2,
+      "lib/components/PlanRowDetail.svelte": 3,
+      "lib/components/PlanTable.svelte": 9,
+      "lib/components/PlanTimeline.svelte": 7,
+      "lib/components/RefList.svelte": 1,
+      "lib/components/RuleBaseline.svelte": 2,
+      "lib/components/RunOverview.svelte": 3,
+      "lib/components/UserInputs.svelte": 4,
+      "routes/Plan.svelte": 1,
+      "routes/Today.svelte": 3
+    },
+    "emoji": {
+      "lib/components/AppShell.svelte": 2,
+      "lib/components/SideNav.svelte": 10
+    },
+    "native_button": {
+      "lib/components/AgentPlanCard.svelte": 5,
+      "lib/components/AgentReasoning.svelte": 5,
+      "lib/components/AppShell.svelte": 1,
+      "lib/components/DiscussButton.svelte": 1,
+      "lib/components/Discussion.svelte": 7,
+      "lib/components/PlanNotes.svelte": 1,
+      "lib/components/PlanRowDetail.svelte": 3,
+      "lib/components/PlanTable.svelte": 3,
+      "lib/components/PlanTimeline.svelte": 4,
+      "lib/components/RefList.svelte": 2,
+      "lib/components/RuleBaseline.svelte": 3,
+      "lib/components/RunOverview.svelte": 2,
+      "lib/components/SideNav.svelte": 3,
+      "lib/components/UserInputs.svelte": 4,
+      "routes/Plan.svelte": 2,
+      "routes/Today.svelte": 3
+    }
+  }
+}
