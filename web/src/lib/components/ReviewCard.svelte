@@ -9,13 +9,13 @@
   import { ATTACH } from '../knowledge'
   import {
     actualRText, CARD_STATUS_TEXT, DISCIPLINE_FLAGS, DISCIPLINE_TEXT, endText, growthError, knowHref, PENDING_TEXT, REDRAFT_PENDING_TEXT,
-    REDRAFT_POLL_MS, ROLE_TEXT, truncate, VERSION_BASIS_TEXT,
+    FILL_BASIS_TEXT, REDRAFT_POLL_MS, ROLE_TEXT, truncate, VERSION_BASIS_TEXT,
   } from '../growth'
-  import type { CardDraftRow, FactDiscipline, FactTrack, ReviewCardView } from '../growth'
-  import { AGENT_REASON_TEXT, KIND_TEXT, rText } from '../workbench'
+  import type { CardDraftRow, FactDiscipline, FactHolding, FactTrack, ReviewCardView } from '../growth'
+  import { AGENT_REASON_TEXT, EXIT_REASON_TEXT, KIND_TEXT, rText } from '../workbench'
 
   // 复盘卡页（spec §4.7）：页头 → 预期 vs 实际（冻结事实表在前，Agent 叙述在后，引用可点开）→ 三条轨道 →
-  // 你的决定与纪律（检测时 / 现在）→ 教训草稿与审定 → 看起草过程；草稿作废 / 出错时显示原因与「重新起草」。
+  // 你的执行与纪律（retro-2；retro-1 的旧卡原样显示「你的决定与纪律」）（检测时 / 现在）→ 教训草稿与审定 → 看起草过程；草稿作废 / 出错时显示原因与「重新起草」。
   // 数字都来自冻结的 facts；叙述与教训一律按纯文本显示。
   let { id }: { id: number } = $props()
 
@@ -69,6 +69,16 @@
     if (!el) return
     highlight = key
     ;(el as HTMLElement).scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+  }
+
+  // 持仓：持有 n 个交易日 · 退出指令 <日期>（原因） · 实际卖出 <日期>（没有卖出写「尚未卖出」）
+  const holdingText = (h: FactHolding) => {
+    const parts = [h.held_sessions != null ? `持有 ${h.held_sessions} 个交易日` : '持有天数未知']
+    if (h.exit_instruction_date)
+      parts.push(`退出指令 ${h.exit_instruction_date}${h.exit_reason ? `（${EXIT_REASON_TEXT[h.exit_reason] ?? h.exit_reason}）` : ''}`)
+    if (h.sold_date) parts.push(`实际卖出 ${h.sold_date}`)
+    else if (h.exit_instruction_date) parts.push('尚未卖出')
+    return `持仓：${parts.join(' · ')}`
   }
 
   const touched = (key: string) => {
@@ -172,7 +182,11 @@
               <li><span class="whitespace-pre-wrap">{line.text}</span><RefList refs={line.refs} runId={okDraft?.agent_run_id} onFact={scrollToFact} /></li>
             {/each}
           </ol>
-          <p><span class="text-xs text-muted">决定回顾</span> <span class="whitespace-pre-wrap">{narrative.decision_review.text}</span><RefList refs={narrative.decision_review.refs} runId={okDraft?.agent_run_id} onFact={scrollToFact} /></p>
+          {#if narrative.execution_review}
+            <p><span class="text-xs text-muted">执行回顾</span> <span class="whitespace-pre-wrap">{narrative.execution_review.text}</span><RefList refs={narrative.execution_review.refs} runId={okDraft?.agent_run_id} onFact={scrollToFact} /></p>
+          {:else if narrative.decision_review}
+            <p><span class="text-xs text-muted">决定回顾</span> <span class="whitespace-pre-wrap">{narrative.decision_review.text}</span><RefList refs={narrative.decision_review.refs} runId={okDraft?.agent_run_id} onFact={scrollToFact} /></p>
+          {/if}
         {:else}
           <p class="text-xs text-muted">还没有叙述草稿。</p>
         {/if}
@@ -186,15 +200,28 @@
           <li>{trackLine('规则', facts.tracks.rule)}{#if facts.tracks.rule.plan_id} · <a class="text-accent underline" href={`#plan/${facts.tracks.rule.plan_id}`}>看计划</a>{/if}</li>
         {/if}
         {#if facts.tracks.agent}
-          <li>{trackLine(`Agent${facts.tracks.agent.version_no != null ? ` 第 ${facts.tracks.agent.version_no} 版` : ''}`, facts.tracks.agent)}{#if facts.tracks.agent.version_basis}（{VERSION_BASIS_TEXT[facts.tracks.agent.version_basis] ?? facts.tracks.agent.version_basis}）{/if}{#if facts.tracks.agent.plan_id} · <a class="text-accent underline" href={`#plan/${facts.tracks.agent.plan_id}`}>看计划</a>{/if}</li>
+          <li>{trackLine(`Agent${facts.tracks.agent.version_no != null ? ` 第 ${facts.tracks.agent.version_no} 版` : ''}`, facts.tracks.agent)}{#if facts.tracks.agent.version_basis}（{VERSION_BASIS_TEXT[facts.tracks.agent.version_basis] ?? FILL_BASIS_TEXT[facts.tracks.agent.version_basis] ?? facts.tracks.agent.version_basis}）{/if}{#if facts.tracks.agent.plan_id} · <a class="text-accent underline" href={`#plan/${facts.tracks.agent.plan_id}`}>看计划</a>{/if}</li>
         {/if}
         <li>{actualLine(facts.tracks.actual)}{#if facts.tracks.actual.plan_kind} · 照{KIND_TEXT[facts.tracks.actual.plan_kind] ?? facts.tracks.actual.plan_kind}计划{/if}</li>
       </ul>
     </section>
 
-    <section aria-label="你的决定与纪律" class="space-y-2 text-sm">
-      <h3 class="font-semibold">你的决定与纪律</h3>
-      <p data-fact="decision" class={hl('decision')}>决定：{facts.decision.text}{#if facts.decision.reason}<span class="block text-xs text-muted whitespace-pre-wrap">理由：{facts.decision.reason}</span>{/if}</p>
+    <section aria-label={facts.execution ? '你的执行与纪律' : '你的决定与纪律'} class="space-y-2 text-sm">
+      {#if facts.execution}
+        {@const ex = facts.execution}
+        <h3 class="font-semibold">你的执行与纪律 <span class="text-xs font-normal"><ConceptTerm id={ATTACH.today.basis}>执行状态说明</ConceptTerm></span></h3>
+        <p data-fact="execution" class={hl('execution')}>执行：{ex.text}
+          {#if ex.plan_id} · <a class="text-accent underline" href={`#plan/${ex.plan_id}`}>看计划</a>{/if}
+          {#each ex.notes ?? [] as n (n.id)}<span class="block text-xs text-muted whitespace-pre-wrap">备注（{fmtBeijing(n.created_at)}）：{n.body}</span>{/each}
+          {#if ex.legacy_decision}<span class="block text-xs text-muted whitespace-pre-wrap">旧决定：{ex.legacy_decision.text}{ex.legacy_decision.reason ? `（理由：${ex.legacy_decision.reason}）` : ''}</span>{/if}</p>
+        {#if facts.holding}
+          {@const h = facts.holding}
+          <p data-fact="holding" class="text-xs {hl('holding')}">{holdingText(h)}</p>
+        {/if}
+      {:else if facts.decision}
+        <h3 class="font-semibold">你的决定与纪律</h3>
+        <p data-fact="decision" class={hl('decision')}>决定：{facts.decision.text}{#if facts.decision.reason}<span class="block text-xs text-muted whitespace-pre-wrap">理由：{facts.decision.reason}</span>{/if}</p>
+      {/if}
       <ul data-fact="trades" class="text-xs space-y-0.5 {hl('trades')}">
         {#each facts.trades.trades as t (t.id)}
           <li>{t.side === 'buy' ? '买入' : '卖出'} {t.quantity} @ {t.price}（费 {t.fee}）· {fmtBeijing(t.executed_at)}</li>

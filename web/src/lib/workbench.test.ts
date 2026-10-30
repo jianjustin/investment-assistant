@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  WorkbenchError, decisionPayload, describeError, finalAction, getAccount, getDiscipline, getMonthly,
-  getPlanShadow, getToday, levelsError, pct, publishedText, pushToday, RULE_LABELS, ruleLabel, timeline,
+  AGENT_REASON_TEXT, CONFLICT_TEXT, DECISIONS_RETIRED_TEXT, DECISION_LINK_RETIRED_TEXT, ENTRY_TYPE_TEXT,
+  EXECUTION_TEXT, INSTRUCTION_TEXT, MIGRATION_029_TEXT, OPEN_CASE_TEXT, OPEN_SCENARIO_TEXT, STALE_HOLDING_TEXT, WorkbenchError,
+  describeError, executionText, getAccount, getDiscipline, getHoldingStatus, getLinkablePlans, getMonthly,
+  getPlanHistory, getPlanNotes, getPlanShadow, getPlanTable, getToday, holdingLine, levelsError, openCaseText,
+  pct, postPlanNote, postTrade, publishedText, pushToday, RULE_LABELS, ruleLabel, signedPct, timeline,
+  tradePlanText,
 } from './workbench'
 import type { DisciplineTrade, Plan, PlanShadow } from './workbench'
 
@@ -19,44 +23,11 @@ const basePlan = {
   valid_from: '2026-10-23', valid_until: '2026-10-27', sizing: null, invalid_reasons: [], warnings: [],
 }
 
-describe('decision payload', () => {
-  it('maps the choice to the final action the ledger expects', () => {
-    expect(finalAction('buy', 'accept')).toBe('buy')
-    expect(finalAction('sell', 'reject')).toBe('ignore')
-    expect(finalAction('buy', 'downgrade')).toBe('watch')
-  })
-
-  it('carries the request id, candidates and brief, and trims the reason', () => {
-    expect(decisionPayload(unit as any, 'accept', '  趋势修复 ', 'req-1')).toEqual({
-      request_id: 'req-1', ticker: 'NVDA', signal_date: '2026-10-22', candidate_ids: ['c1', 'c2'], brief_id: 'b1',
-      proposed_action: 'buy', final_action: 'buy', decision: 'accept', reason: '趋势修复',
-      plan_id: null, own_plan: null,
-    })
-  })
-
-  it('sends plan_id when accepting against a healthy rule plan', () => {
-    const withPlan = { ...unit, plan: { id: 'p1', status: 'ok', kind: 'rule' } }
-    expect(decisionPayload(withPlan as any, 'accept', 'r', 'req-2')).toMatchObject({ plan_id: 'p1' })
-  })
-
-  it('sends own_plan with its own request id when levels are custom', () => {
-    const payload = decisionPayload(unit as any, 'accept', 'r', 'req-3', {
-      request_id: 'own-1', entry_low: '98.5', entry_high: '101.5', stop: '94', target1: '112',
-    })
-    expect(payload.own_plan).toEqual({ request_id: 'own-1', entry_low: '98.5', entry_high: '101.5',
-                                       stop: '94', target1: '112' })
-    expect(payload.plan_id).toBeNull()
-  })
-
+describe('own levels', () => {
   it('rejects own levels that break the ordering', () => {
     expect(levelsError({ entry_low: '99', entry_high: '101.5', stop: '100', target1: '112' })).toContain('止损')
     expect(levelsError({ entry_low: 'abc', entry_high: '101.5', stop: '94', target1: '112' })).toBeTruthy()
     expect(levelsError({ entry_low: '98.5', entry_high: '101.5', stop: '94', target1: '112' })).toBeNull()
-  })
-
-  it('does not cite a brief that was rejected as invalid', () => {
-    const payload = decisionPayload({ ...unit, brief: { id: 'b2', status: 'error' } } as any, 'reject', 'x', 'r')
-    expect(payload.brief_id).toBeNull()
   })
 })
 
@@ -67,11 +38,6 @@ describe('requests', () => {
     expect(error).toBeInstanceOf(WorkbenchError)
     expect(error.status).toBe(503)
     expect(describeError(error)).toBe('数据库未就绪：工作台数据表未就绪')
-  })
-
-  it('shows only the sentence of a 409 agent_plan_stale', () => {
-    expect(describeError(new WorkbenchError('agent_plan_stale: Agent 计划已更新到第 2 版，请刷新后再决定', 409)))
-      .toBe('Agent 计划已更新到第 2 版，请刷新后再决定')
   })
 
   it('explains a 409 as a newer record', () => {
@@ -139,7 +105,9 @@ describe('agent track', () => {
       'retro_malformed', 'lesson_invalid', 'answer_malformed', 'migration_027_missing', 'discussion_busy',
       'draft_exists',
       // v2.8 §8.8
-      'not_connected', 'model_unavailable'].sort())
+      'not_connected', 'model_unavailable',
+      // v2.9 §5.5 + R3
+      'invalid_entry_type', 'invalid_max_hold', 'stop_lowered', 'stop_above_close', 'active_chain'].sort())
   })
 
   it('AGENT_REASON_TEXT has not_connected and model_unavailable (v2.8 §8.8, verbatim)', async () => {
@@ -167,28 +135,6 @@ describe('agent track', () => {
     })
   })
 
-  it('decision payload carries agent_plan_id and review_view when given', async () => {
-    const { decisionPayload } = await import('./workbench')
-    const view = { layout: 'agent_first' as const, baseline_expanded: true, agent_version_no: 2 }
-    expect(decisionPayload(unit as any, 'reject', 'r', 'req', null, 'rule', 'head-2', view)).toMatchObject({
-      agent_plan_id: 'head-2', review_view: view, plan_id: null })
-    const bare = decisionPayload(unit as any, 'reject', 'r', 'req')
-    expect('agent_plan_id' in bare).toBe(false)
-    expect('review_view' in bare).toBe(false)
-  })
-
-  it('agent basis submits agent plan id', async () => {
-    const { decisionPayload } = await import('./workbench')
-    const agentPlan: Plan = { ...basePlan, id: 'ap1', kind: 'agent' }
-    const withBoth = { ...unit, plan: { ...basePlan, kind: 'rule' as const },
-                       agent: { id: 'r1', status: 'ok' as const, model: 'gpt-test', agent_version: 'agent-1',
-                                output: null, counter: null, plan: agentPlan, input_tokens: 0,
-                                output_tokens: 0, created_at: '2026-10-22T23:00:00Z' } }
-    expect(decisionPayload(withBoth, 'accept', 'r', 'req', null, 'agent')).toMatchObject({ plan_id: 'ap1' })
-    expect(decisionPayload(withBoth, 'accept', 'r', 'req', null, 'rule')).toMatchObject({ plan_id: 'p1' })
-    expect(decisionPayload(withBoth, 'accept', 'r', 'req', null, 'own')).toMatchObject({ plan_id: null })
-  })
-
   it('plans, shadows and discipline trades carry the agent kind', async () => {
     const wb = await import('./workbench')
     const plan: Plan = { ...basePlan, kind: 'agent', plan_version: 'agent-1' }
@@ -209,7 +155,7 @@ import { rText, TRACK_STATUS_TEXT } from './workbench'
 
 it('TRACK_STATUS_TEXT covers every status', () => {
   expect(Object.keys(TRACK_STATUS_TEXT).sort()).toEqual(['closed', 'expired', 'missing', 'no_plan',
-    'not_executable', 'not_executed', 'open', 'pass', 'pending'].sort())
+    'not_executable', 'not_executed', 'open', 'pass', 'pending', 'merged'].sort())
   expect(TRACK_STATUS_TEXT.missing).toBe('缺失')
   expect(TRACK_STATUS_TEXT.not_executed).toBe('未执行')
 })
@@ -242,5 +188,154 @@ describe('rule labels', () => {
     // the original eight keep their wording
     expect(RULE_LABELS.trend_reclaim).toBe('趋势回踩修复')
     expect(Object.keys(RULE_LABELS)).toHaveLength(10)
+  })
+})
+
+
+// --- v2.9 executable plans ---
+
+const jsonRes = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
+const urls = () => (fetch as any).mock.calls.map((c: unknown[]) => String(c[0]))
+
+describe('v2.9 texts (verbatim from the spec)', () => {
+  it('entry types and opening cases', () => {
+    expect(ENTRY_TYPE_TEXT).toEqual({ zone_limit: '区间限价', breakout_stop: '突破买入', next_open: '次日开盘' })
+    expect(OPEN_CASE_TEXT).toEqual({ in_zone: '区间内', gap_up: '高开', gap_down: '低开' })
+    expect(OPEN_SCENARIO_TEXT.in_zone).toBe('开在 {L}–{U}：开盘买入 {N} 股')
+    expect(OPEN_SCENARIO_TEXT.gap_up).toEqual({
+      zone_limit: '高开过 {U}：不追，挂 {U} 限价等回落', breakout_stop: '高开过 {U}：不追，挂 {U} 限价等回落',
+      next_open: '高开过 {U}：不买，本计划作废' })
+    expect(OPEN_SCENARIO_TEXT.gap_down).toEqual({
+      zone_limit: '低开：≤ {S} 作废；否则回升到 {L} 时买入', breakout_stop: '低开：≤ {S} 作废；否则升破 {L} 时买入',
+      next_open: '低开过 {L}：不买，本计划作废' })
+  })
+
+  it('fills L / U / S / N and shows an unknown share count as a dash', () => {
+    const vars = { entry_low: '95.10', entry_high: '97.30', stop: '91.40', shares: 120 }
+    expect(openCaseText('in_zone', 'zone_limit', vars)).toBe('开在 95.10–97.30：开盘买入 120 股')
+    expect(openCaseText('gap_up', 'breakout_stop', vars)).toBe('高开过 97.30：不追，挂 97.30 限价等回落')
+    expect(openCaseText('gap_down', 'zone_limit', vars)).toBe('低开：≤ 91.40 作废；否则回升到 95.10 时买入')
+    expect(openCaseText('gap_down', 'next_open', vars)).toBe('低开过 95.10：不买，本计划作废')
+    expect(openCaseText('in_zone', 'next_open', { ...vars, shares: null })).toBe('开在 95.10–97.30：开盘买入 — 股')
+  })
+
+  it('instructions and execution states', () => {
+    expect(INSTRUCTION_TEXT).toEqual({
+      hold: '继续持有', sell_half: '到 T1：卖出一半，余下按移动止损', exit: '次一交易日开盘卖出',
+      no_plan: '无计划持仓（回撤规则看护）' })
+    expect(EXECUTION_TEXT).toEqual({
+      adopted: '已采纳（{date} 成交 {quantity} 股）', out_of_validity: '有效期外成交', pending: '入场期，未成交',
+      not_executed: '未执行', executed: '已执行' })
+    expect(executionText('adopted', { date: '10-31', quantity: 120 })).toBe('已采纳（10-31 成交 120 股）')
+    expect(executionText('adopted')).toBe('已采纳')
+    expect(executionText('pending')).toBe('入场期，未成交')
+    expect(executionText('executed')).toBe('已执行')
+    expect(executionText('unplanned')).toBe('计划外成交')
+    expect(executionText(null)).toBe('')
+  })
+
+  it('the five new void reasons', () => {
+    expect(AGENT_REASON_TEXT).toMatchObject({
+      invalid_entry_type: '入场类型不在允许的三种之内', invalid_max_hold: '最长持有须为 5–20 个交易日',
+      stop_lowered: '持仓期不能下移止损', stop_above_close: '持仓期止损不能高于最新收盘',
+      active_chain: '已有进行中的计划链，这次触发已并入' })
+  })
+
+  it('410 / 409 / 400 / 503 messages', () => {
+    expect(DECISIONS_RETIRED_TEXT).toBe('decisions_retired: v2.9 起不再记录决定，采纳由成交推导；可在计划上写备注')
+    expect(describeError(new WorkbenchError(DECISIONS_RETIRED_TEXT, 410)))
+      .toBe('v2.9 起不再记录决定，采纳由成交推导；可在计划上写备注')
+    expect(describeError(new WorkbenchError('decision_link_retired', 400))).toBe(DECISION_LINK_RETIRED_TEXT)
+    expect(describeError(new WorkbenchError('migration_029_missing', 503))).toBe(MIGRATION_029_TEXT)
+    expect(describeError(new WorkbenchError('迁移 029 未执行', 503))).toBe('迁移 029 未执行')
+    expect(describeError(new WorkbenchError('plan_stale: 成交时这条链已是第 3 版，请关联第 3 版', 409)))
+      .toBe('成交时这条链已是第 3 版，请关联第 3 版')
+    expect(describeError(new WorkbenchError('plan_after_fill', 409))).toBe('这一版生成于成交之后，不可能是你照着做的那一版')
+    expect(describeError(new WorkbenchError('chain_exiting', 409))).toBe(CONFLICT_TEXT.chain_exiting)
+    expect(describeError(new WorkbenchError('active_chain: MU 已有进行中的计划链（10-29 第 2 版），这次触发已并入', 409)))
+      .toBe('MU 已有进行中的计划链（10-29 第 2 版），这次触发已并入')
+    expect(STALE_HOLDING_TEXT).toBe('今日持仓状态未写入（每日复查失败），以下为现算')
+  })
+})
+
+describe('v2.9 holding line', () => {
+  const h = { ticker: 'MU', quantity: 10, avg_cost: 90, last_close: 100, stop: 94.8, stop_mode: 'initial', target1: 108.1,
+    t1_reached: false, to_stop_pct: -5.2, to_t1_pct: 8.1, held_sessions: 4, max_hold_sessions: 10, remaining_sessions: 6,
+    r_now: 0.6, reached_1r: false, instruction: 'hold', exit_reason: null, reason: '无新信号，复查条件未满足' } as const
+  it('follows the spec example', () => {
+    expect(holdingLine(h as any)).toBe('MU 持有 4/10 天 · 距止损 −5.20% · 距 T1 +8.10% · 现 +0.6R · 继续持有：无新信号，复查条件未满足')
+  })
+  it('marks T1 reached, 1R reached, exit and no-plan holdings', () => {
+    expect(holdingLine({ ...h, t1_reached: true, to_t1_pct: null, reached_1r: true } as any))
+      .toContain('已触 T1 · 现 +0.6R · 已到 1R，时间止损解除')
+    expect(holdingLine({ ...h, instruction: 'exit', reason: '止损触及' } as any)).toContain('次一交易日开盘卖出：止损触及')
+    expect(holdingLine({ ...h, instruction: 'no_plan', to_stop_pct: null, reason: null } as any))
+      .toBe('MU 持有 10 股 · 无计划持仓（回撤规则看护）')
+    expect(holdingLine({ ...h, line: '后端拼好的一句' } as any)).toBe('后端拼好的一句')
+  })
+  it('formats signed percent points', () => {
+    expect(signedPct(8.1)).toBe('+8.10%')
+    expect(signedPct('-5.2')).toBe('−5.20%')
+    expect(signedPct(null)).toBe('—')
+  })
+  it('names the plan a trade followed', () => {
+    expect(tradePlanText({ plan_id: 'p1', plan_label: 'Agent MU·10-29 第 2 版', decision_id: null })).toBe(' · 关联计划：Agent MU·10-29 第 2 版')
+    expect(tradePlanText({ plan_id: 'p1', decision_id: null })).toBe(' · 关联计划：p1')
+    expect(tradePlanText({ plan_id: null, decision_id: 'd1' })).toBe(' · 关联旧决定')
+    expect(tradePlanText({ plan_id: null, decision_id: null })).toBe('')
+  })
+})
+
+describe('v2.9 api', () => {
+  afterEach(() => vi.unstubAllGlobals())
+  const stub = (body: unknown = {}) => vi.stubGlobal('fetch', vi.fn(async () => jsonRes(body)))
+
+  it('getPlanTable sends session and include_extended only when set', async () => {
+    stub()
+    await getPlanTable()
+    await getPlanTable('2026-10-29', true)
+    expect(urls()).toEqual(['/api/workbench/plan-table', '/api/workbench/plan-table?session=2026-10-29&include_extended=true'])
+  })
+
+  it('getPlanHistory sends the two switches only when on', async () => {
+    stub()
+    await getPlanHistory('MU')
+    await getPlanHistory('MU', { include_reviews: true, include_baselines: true })
+    await getPlanHistory('MU', { include_baselines: true })
+    expect(urls()).toEqual([
+      '/api/workbench/instruments/MU/plan-history',
+      '/api/workbench/instruments/MU/plan-history?include_reviews=true&include_baselines=true',
+      '/api/workbench/instruments/MU/plan-history?include_baselines=true'])
+  })
+
+  it('holding status, linkable plans and notes', async () => {
+    stub()
+    await getHoldingStatus('2026-10-29')
+    await getLinkablePlans('MU', '2026-10-29T14:00:00.000Z')
+    await getPlanNotes({ ticker: 'MU', chain_signal_date: '2026-10-29' })
+    await getPlanNotes({ plan_id: 'p1' })
+    expect(urls()).toEqual([
+      '/api/workbench/holding-status?session=2026-10-29',
+      '/api/workbench/trades/linkable-plans?ticker=MU&executed_at=2026-10-29T14%3A00%3A00.000Z',
+      '/api/workbench/plan-notes?ticker=MU&chain_signal_date=2026-10-29',
+      '/api/workbench/plan-notes?plan_id=p1'])
+  })
+
+  it('posts notes and trades with the new body', async () => {
+    stub()
+    await postPlanNote({ request_id: 'r', body: '写给自己', ticker: 'MU', chain_signal_date: '2026-10-29' })
+    await postTrade({ request_id: 'r', ticker: 'MU', side: 'buy', quantity: '5', price: '100', fee: '0',
+      executed_at: '2026-10-29T14:00:00.000Z', note: null, plan_id: 'p1' })
+    const calls = (fetch as any).mock.calls
+    expect(calls[0][0]).toBe('/api/workbench/plan-notes')
+    expect(calls[0][1].method).toBe('POST')
+    expect(JSON.parse(calls[1][1].body)).toMatchObject({ plan_id: 'p1' })
+    expect('decision_id' in JSON.parse(calls[1][1].body)).toBe(false)
+  })
+
+  it('no decision write remains in the client', async () => {
+    const wb = await import('./workbench')
+    expect('postDecision' in wb).toBe(false)
+    expect('decisionPayload' in wb).toBe(false)
   })
 })

@@ -43,9 +43,16 @@
   let backcheckNote = $state('')
   let backcheckError = $state('')
 
-  const emptyForm = () => ({ ticker: '', side: 'buy', quantity: '', price: '', fee: '0', executed: '', decisionId: '', note: '',
+  // 关联计划（spec §6.1）：'' = 没动过（按默认项），NONE = 无计划，OWN = 自定，其余是计划行 id
+  const NONE = '__none__'
+  const OWN = '__own__'
+  const emptyForm = () => ({ ticker: '', side: 'buy', quantity: '', price: '', fee: '0', executed: '', planChoice: '', note: '',
+                             own: { entry_low: '', entry_high: '', stop: '', target1: '', max_hold: '' },
                              requestId: wb.newRequestId() })
   let form = $state(emptyForm())
+  let linkable = $state<wb.LinkablePlansView | null>(null)
+  let linkableError = $state('')
+  let linkableSeq = 0
   let formError = $state('')
   let voiding = $state<string | null>(null)
   let voidReason = $state('')
@@ -104,10 +111,9 @@
     error = ''
     try {
       if (which === 'trades') {
-        const [list, reviewed, decided] = await Promise.all([wb.getTrades(), wb.getTradeReview(), wb.getShadow()])
+        const [list, reviewed] = await Promise.all([wb.getTrades(), wb.getTradeReview()])
         trades = list.trades
         tradeReview = reviewed
-        shadow = decided
       } else if (which === 'shadow') {
         shadow = await wb.getShadow()
       } else if (which === 'cards') {
@@ -132,24 +138,71 @@
 
   $effect(() => { load(tab) })
 
-  const linkable = $derived((shadow?.units ?? []).filter(
-    u => u.ticker === form.ticker.trim().toUpperCase() && (u.final_action === 'buy' || u.final_action === 'sell')))
+  const tickerKey = $derived(form.ticker.trim().toUpperCase())
+
+  // 可关联的计划按成交时刻取（该标的活跃链的最新版、有效期覆盖成交日的规则基线、最近的自定计划）；
+  // 代码或成交时间变了就重新取，晚到的旧响应丢弃。
+  async function loadLinkable(ticker: string, executed: string) {
+    const seq = ++linkableSeq
+    const at = new Date(executed)
+    try {
+      const res = await wb.getLinkablePlans(ticker, (Number.isNaN(at.getTime()) ? new Date() : at).toISOString())
+      if (seq !== linkableSeq) return
+      linkable = { plans: Array.isArray(res?.plans) ? res.plans : [], default_plan_id: res?.default_plan_id ?? null }
+      linkableError = ''
+    } catch (e) {
+      if (seq !== linkableSeq) return
+      linkable = null
+      linkableError = wb.describeError(e)
+    }
+  }
+  $effect(() => {
+    const ticker = tickerKey
+    const executed = form.executed
+    if (!ticker) { linkableSeq++; linkable = null; linkableError = ''; return }
+    const timer = setTimeout(() => { void loadLinkable(ticker, executed) }, 250)   // 输入代码时不逐字请求
+    return () => clearTimeout(timer)
+  })
+
+  // 买入默认选活跃链最新版，没有时「无计划」；卖出可不关联（平仓按 FIFO 配对）
+  const planChoice = $derived(form.planChoice
+    || (form.side === 'buy' && linkable?.default_plan_id && linkable.plans.some(p => p.plan_id === linkable!.default_plan_id)
+        ? linkable.default_plan_id : NONE))
+  const ownError = $derived.by(() => {
+    if (planChoice !== OWN) return null
+    const o = form.own
+    if (o.entry_low.trim() === '' && o.entry_high.trim() === '' && o.stop.trim() === '' && o.target1.trim() === '') return null
+    const levels = wb.levelsError(o)
+    if (levels) return levels
+    const hold = o.max_hold.trim()
+    if (hold !== '' && !/^[1-9][0-9]*$/.test(hold)) return '最长持有须为正整数（交易日）'
+    return null
+  })
+  const ownBlank = $derived(planChoice === OWN && form.own.entry_low.trim() === '')
 
   async function recordTrade(e: Event) {
     e.preventDefault()
     formError = ''
     const executed = new Date(form.executed)
     if (Number.isNaN(executed.getTime())) { formError = '请填写成交时间'; return }
+    if (planChoice === OWN && (ownBlank || ownError)) { formError = ownError ?? '自定计划需要填写四个价位'; return }
+    const link: Partial<wb.TradeBody> = planChoice === OWN
+      ? { own_plan: { entry_low: form.own.entry_low.trim(), entry_high: form.own.entry_high.trim(), stop: form.own.stop.trim(),
+                      target1: form.own.target1.trim(),
+                      ...(form.own.max_hold.trim() ? { max_hold_sessions: Number(form.own.max_hold.trim()) } : {}) } }
+      : planChoice !== NONE ? { plan_id: planChoice } : {}
     try {
       await wb.postTrade({
-        request_id: form.requestId, ticker: form.ticker.trim().toUpperCase(), side: form.side,
+        request_id: form.requestId, ticker: tickerKey, side: form.side as 'buy' | 'sell',
         quantity: String(form.quantity), price: String(form.price), fee: String(form.fee || '0'),
-        executed_at: executed.toISOString(), decision_id: form.decisionId || null, note: form.note || null,
+        executed_at: executed.toISOString(), note: form.note || null, ...link,
       })
       form = emptyForm()
       await load('trades')
     } catch (err) {
       formError = wb.describeError(err)
+      // 409 plan_stale / plan_after_fill：可关联的版本变了，重新取一次让用户改选
+      if (err instanceof wb.WorkbenchError && err.status === 409 && tickerKey) void loadLinkable(tickerKey, form.executed)
     }
   }
 
@@ -296,15 +349,28 @@
       <label class="flex flex-col">成交价<input aria-label="成交价" inputmode="decimal" class="border border-border rounded px-2 py-1 bg-bg" bind:value={form.price} /></label>
       <label class="flex flex-col">费用<input aria-label="费用" inputmode="decimal" class="border border-border rounded px-2 py-1 bg-bg" bind:value={form.fee} /></label>
       <label class="flex flex-col">成交时间（本机时区）<input aria-label="成交时间" type="datetime-local" class="border border-border rounded px-2 py-1 bg-bg" bind:value={form.executed} /></label>
-      <label class="flex flex-col">关联决定
-        <select aria-label="关联决定" class="border border-border rounded px-2 py-1 bg-bg" bind:value={form.decisionId}>
-          <option value="">无（无信号交易）</option>
-          {#each linkable as u}<option value={u.id}>{u.signal_date} {wb.ACTION_LABELS[u.final_action]}</option>{/each}
+      <label class="flex flex-col">关联计划
+        <select aria-label="关联计划" class="border border-border rounded px-2 py-1 bg-bg" value={planChoice}
+                onchange={e => form.planChoice = (e.currentTarget as HTMLSelectElement).value}>
+          <option value={NONE}>无计划</option>
+          {#each linkable?.plans ?? [] as p (p.plan_id)}<option value={p.plan_id}>{p.label}</option>{/each}
+          <option value={OWN}>自定</option>
         </select>
       </label>
       <label class="flex flex-col">备注<input aria-label="备注" class="border border-border rounded px-2 py-1 bg-bg" bind:value={form.note} /></label>
+      {#if linkableError}<p class="col-span-full text-xs text-muted">可关联的计划暂不可用：{linkableError}</p>{/if}
+      {#if planChoice === OWN}
+        <div class="col-span-full grid grid-cols-2 md:grid-cols-5 gap-2" role="group" aria-label="自定计划">
+          <label class="flex flex-col">入场下沿<input aria-label="入场下沿" inputmode="decimal" class="border border-border rounded px-2 py-1 bg-bg" bind:value={form.own.entry_low} /></label>
+          <label class="flex flex-col">入场上沿<input aria-label="入场上沿" inputmode="decimal" class="border border-border rounded px-2 py-1 bg-bg" bind:value={form.own.entry_high} /></label>
+          <label class="flex flex-col">止损<input aria-label="止损" inputmode="decimal" class="border border-border rounded px-2 py-1 bg-bg" bind:value={form.own.stop} /></label>
+          <label class="flex flex-col">T1<input aria-label="T1" inputmode="decimal" class="border border-border rounded px-2 py-1 bg-bg" bind:value={form.own.target1} /></label>
+          <label class="flex flex-col">最长持有（交易日，缺省 10）<input aria-label="最长持有" inputmode="numeric" class="border border-border rounded px-2 py-1 bg-bg" bind:value={form.own.max_hold} /></label>
+          {#if ownError}<p class="col-span-full text-xs text-red-600">{ownError}</p>{/if}
+        </div>
+      {/if}
       <div class="col-span-full flex items-center gap-2">
-        <button type="submit" class="px-3 py-1 rounded bg-accent text-white">记录成交</button>
+        <button type="submit" class="px-3 py-1 rounded bg-accent text-white disabled:opacity-50" disabled={!!ownError}>记录成交</button>
         {#if formError}<span class="text-xs text-red-600">{formError}</span>{/if}
       </div>
     </form>
@@ -328,7 +394,8 @@
     <ul class="text-sm space-y-1">
       {#each trades as t (t.id)}
         <li class={t.voided_at ? 'line-through text-muted' : ''}>
-          {wb.dateTime(t.executed_at)} {t.ticker} {t.side === 'buy' ? '买入' : '卖出'} {t.quantity} @ {t.price}（费 {t.fee}）{t.decision_id ? '' : ' · 无信号'}
+          {wb.dateTime(t.executed_at)} {t.ticker} {t.side === 'buy' ? '买入' : '卖出'} {t.quantity} @ {t.price}（费 {t.fee}）
+          <span data-testid="trade-plan" class="text-xs text-muted">· 关联计划：{#if t.plan_id}<a class="text-accent underline" href={`#plan/${t.plan_id}`}>{t.plan_label ?? t.plan_id}</a>{:else if t.decision_id}旧决定{:else if t.side === 'buy'}无计划（计划外）{:else}—{/if}</span>
           {#if t.voided_at}<span class="no-underline">（已作废：{t.void_reason}）</span>
           {:else if voiding === t.id}
             <input aria-label="作废理由" class="border border-border rounded px-1 text-xs bg-bg" bind:value={voidReason} />
@@ -404,19 +471,21 @@
     </form>
     {#each weekly as r (r.id)}
       <article class="border border-border rounded p-3 text-sm space-y-2">
-        <h2 class="font-semibold">{r.stats.week?.start ?? r.week_start} 周 · 已决定 {r.stats.units?.decided ?? 0} · 未处理 {r.stats.units?.undecided ?? 0}
+        <h2 class="font-semibold">{r.stats.week?.start ?? r.week_start} 周 ·
+          {#if r.stats.units?.executed !== undefined}已执行 {r.stats.units.executed} · 未执行 {r.stats.units?.not_executed ?? 0}
+          {:else}已决定 {r.stats.units?.decided ?? 0} · 未处理 {r.stats.units?.undecided ?? 0}{/if}
           <button class="ml-2 px-2 py-0.5 rounded bg-accent text-white text-xs" onclick={() => push('weekly', r.week_start)}>推送到 Discord</button>
           {#if pushResults['weekly:' + r.week_start]}<span class="text-xs text-muted">{pushResults['weekly:' + r.week_start]}</span>
           {:else if lastPushText('weekly', r.week_start)}<span class="text-xs text-muted">{lastPushText('weekly', r.week_start)}</span>{/if}
         </h2>
         <p class="text-xs text-muted">{r.stats.note} 口径 {r.calc_version} · 生成于 {wb.dateTime(r.created_at)}{r.supersedes_id ? ' · 更正版' : ''}</p>
         {#if r.notes}<p>{r.notes}</p>{/if}
-        {#each [['按规则', r.stats.by_rule], ['按决定', r.stats.by_decision]] as [title, groups]}
+        {#each [['按规则', r.stats.by_rule], ['按决定', r.stats.by_decision], ['按执行', r.stats.by_execution]] as [title, groups]}
           {#if groups && Object.keys(groups).length}
             <p class="text-xs text-muted">{title}（超额收益：均值 / 中位数 · 成熟数/总数）</p>
             <ul>
               {#each Object.entries(groups) as [name, windows]}
-                <li>{title === '按规则' ? wb.ruleLabel(name) : wb.CHOICE_LABELS[name as wb.Choice] ?? name}：
+                <li>{title === '按规则' ? wb.ruleLabel(name) : title === '按执行' ? (wb.executionText(name) || name) : wb.CHOICE_LABELS[name as wb.Choice] ?? name}：
                   {#each ['5', '10', '20'] as n}{@const s = (windows as any)[n]}
                     {n} 日 {wb.pct(s?.mean)} / {wb.pct(s?.median)}（{s?.mature ?? 0}/{s?.count ?? 0}）{' '}
                   {/each}
@@ -479,7 +548,7 @@
               <ul class="text-xs space-y-0.5">
                 {#each L.cards as c (c.card_id)}
                   <li><a class="text-accent underline" href={`#review/cards/${c.card_id}`}>{c.ticker} {c.end_text}</a>
-                    · 实际 {actualRText(c)} · {c.decision_text}{c.headline ? ` · ${c.headline}` : ''}</li>
+                    · 实际 {actualRText(c)} · {c.execution_text ?? c.decision_text}{c.headline ? ` · ${c.headline}` : ''}</li>
                 {/each}
               </ul>
               <p>被检验的知识 {L.knowledge.length} 条</p>

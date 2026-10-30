@@ -6,6 +6,7 @@
   import DiscussButton from '../lib/components/DiscussButton.svelte'
   import Fundamentals from '../lib/components/Fundamentals.svelte'
   import PlanDerivation from '../lib/components/PlanDerivation.svelte'
+  import PlanHistoryTable from '../lib/components/PlanHistoryTable.svelte'
   import UserInputs from '../lib/components/UserInputs.svelte'
   import VolumeBars from '../lib/components/VolumeBars.svelte'
   import { ATTACH, ruleConcept } from '../lib/knowledge'
@@ -43,11 +44,32 @@
       }
     }
   }
-  const activeChains = $derived(chains.filter(c => tl.ACTIVE_STATES.includes(c.state))
+  // 「我的补充」只能作用于会被复查的链（入场期 / 持仓期）；进行中的列表还包括退出期（R10）
+  const activeChains = $derived(chains.filter(c => tl.REVIEWABLE_STATES.includes(c.state))
     .map(c => ({ signal_date: c.signal_date, label: `${c.signal_date} · 第 ${c.version_no} 版` })))
   const I = ATTACH.instrument
   const liveChains = $derived(chains.filter(c => tl.ACTIVE_STATES.includes(c.state)))
-  const endedChains = $derived(chains.filter(c => !tl.ACTIVE_STATES.includes(c.state)))
+
+  // v2.9 §10.3：计划历史；两个开关是请求参数，默认关。读不到只影响这一段（029 未执行 → 503 文案）。
+  let planHistory = $state<wb.PlanHistoryView | null>(null)
+  let historyError = $state('')
+  let historyOpts = $state({ include_reviews: false, include_baselines: false })
+  let historyGeneration = 0
+  async function loadHistory(next: string, token: number) {
+    const gen = ++historyGeneration
+    try {
+      const res = await wb.getPlanHistory(next, historyOpts)
+      if (token !== generation || gen !== historyGeneration) return
+      planHistory = { ticker: next, rows: Array.isArray(res?.rows) ? res.rows : [], chains: Array.isArray(res?.chains) ? res.chains : [] }
+      historyError = ''
+    } catch (e) {
+      if (token === generation && gen === historyGeneration) { planHistory = null; historyError = wb.describeError(e) }
+    }
+  }
+  function changeHistory(next: { include_reviews: boolean; include_baselines: boolean }) {
+    historyOpts = next
+    void loadHistory(ticker, generation)
+  }
   let rechecks = $state<Record<string, { busy: boolean; text: string }>>({})
   let triggerOpen = $state<Record<string, boolean>>({})
 
@@ -124,7 +146,11 @@
     timelineMissing = false
     rechecks = {}
     triggerOpen = {}
+    planHistory = null
+    historyError = ''
+    historyOpts = { include_reviews: false, include_baselines: false }
     void loadChains(next, token)
+    void loadHistory(next, token)
     try {
       const loaded = await wb.getInstrument(next)
       if (token !== generation) return
@@ -220,7 +246,8 @@
               {@const rk = rechecks[c.signal_date]}
               <li>{chainLine(c)}{#if head} · {planLine(head)}{/if} · <a class="text-accent underline" href={`#plan/${c.head_plan_id}`}>查看</a>
                 <button type="button" class="text-xs px-2 py-0.5 border border-border rounded hover:bg-surface-2 disabled:opacity-50"
-                        disabled={rk?.busy} onclick={() => recheck(c)}>重新复查</button>
+                        disabled={rk?.busy || c.state === 'exiting'} title={c.state === 'exiting' ? wb.CHAIN_EXITING_TEXT : ''}
+                        onclick={() => recheck(c)}>重新复查</button>
                 <DiscussButton context={{ kind: 'plan', plan_id: c.head_plan_id }} />
                 {#if rk?.text}<span class="text-xs">{rk.text}</span>{/if}
                 {#if c.latest_review?.reason}<p class="text-xs text-muted">{c.latest_review.reason}</p>{/if}
@@ -228,21 +255,9 @@
             {/each}
           </ul>
         {:else if chains.length}
-          <p class="text-xs text-muted">没有进行中的 Agent 计划</p>
+          <p class="text-xs text-muted">没有进行中的 Agent 计划，已结束的见下方计划历史</p>
         {:else}
           <p class="text-xs text-muted">该标的还没有 Agent 版本链</p>
-        {/if}
-        {#if endedChains.length}
-          <details>
-            <summary class="cursor-pointer text-xs"><ConceptTerm id={I.chainState}>已结束的链</ConceptTerm>（{endedChains.length}）</summary>
-            <ul aria-label="已结束的链" class="space-y-1">
-              {#each endedChains as c (c.signal_date)}
-                <li>{chainLine(c)} · <a class="text-accent underline" href={`#plan/${c.head_plan_id}`}>查看</a>
-                  {#if c.latest_review?.reason}<p class="text-xs text-muted">{c.latest_review.reason}</p>{/if}
-                </li>
-              {/each}
-            </ul>
-          </details>
         {/if}
       </div>
 
@@ -291,6 +306,19 @@
           <UserInputs ticker={view.ticker} chains={activeChains} />
         {/key}
       {/if}
+
+      <section aria-label="计划历史" class="space-y-1">
+        <h3 class="font-medium">计划历史 <span class="text-xs font-normal"><ConceptTerm id={I.chain}>说明</ConceptTerm></span></h3>
+        {#if historyError}
+          <p class="text-xs text-muted">计划历史暂不可用：{historyError}</p>
+        {:else if planHistory}
+          <PlanHistoryTable rows={planHistory.rows} chains={planHistory.chains} ticker={view.ticker}
+                            includeReviews={historyOpts.include_reviews} includeBaselines={historyOpts.include_baselines}
+                            onToggle={changeHistory} />
+        {:else}
+          <p class="text-xs text-muted">加载中…</p>
+        {/if}
+      </section>
     </section>
 
     <!-- ①' 我的知识：挂在这个标的上的有效经验（v2.7） -->

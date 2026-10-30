@@ -15,6 +15,8 @@ export interface ReviewCardRow {
   id: number; ticker: string; subject: 'unit' | 'trade'; signal_date: string | null
   end_kind: EndKind; exit_basis: ExitBasis | null; end_session: string
   decision_text: string; actual_r: number | null; filled?: boolean; rule_r: number | null; agent_r: number | null
+  // retro-2 (v2.9 D29): the sentence is the execution state; retro-1 rows only carry `decision_text`
+  execution_text?: string | null
   flags: string[]; immature: string[]; status: CardStatus; headline: string | null
 }
 export interface ReviewCardsView { cards: ReviewCardRow[]; counts: Partial<Record<CardStatus, number>> }
@@ -38,6 +40,17 @@ export interface FactDiscipline {
   totals: { chase: number; early_take: number; held_loser: number; unplanned: number; pending: number }
   as_of: string
 }
+/** retro-2 `facts.execution` (spec §6.3): the execution state, the plan followed, the notes at card time and any old decision. */
+export interface FactExecution {
+  status: string; text: string; plan_kind?: string | null; plan_id?: string | null; version_no?: number | null
+  notes?: { id: number; body: string; created_at: string }[]
+  legacy_decision?: { text: string; reason?: string | null } | null
+}
+/** retro-2 `facts.holding`: days held, when the exit instruction came and when the shares were actually sold. */
+export interface FactHolding {
+  held_sessions: number | null; exit_instruction_date?: string | null; exit_reason?: string | null
+  sold_date?: string | null
+}
 export interface Facts {
   subject: {
     kind: 'unit' | 'trade'; ticker: string; signal_date: string | null; pool: string; end_kind: EndKind
@@ -51,11 +64,14 @@ export interface Facts {
   }
   shadow: Record<string, FactShadow>
   tracks: { rule?: FactTrack; agent?: FactTrack; actual: FactTrack }
-  decision: {
+  // retro-1 cards freeze `decision`; retro-2 cards (v2.9 D29) freeze `execution` and `holding` instead
+  decision?: {
     decision: string | null; final_action: string | null; plan_kind: string | null; plan_id: string | null
     agent_plan_id: string | null; agent_version_no: number | null; reason: string | null
     decided_at: string | null; text: string
   }
+  execution?: FactExecution
+  holding?: FactHolding | null
   trades: {
     trades: { id: string; side: 'buy' | 'sell'; quantity: string | number; price: string | number; fee: string | number; executed_at: string }[]
     segments: { buy_trade_id: string; sell_trade_id: string; quantity: string | number; r?: number | null }[]
@@ -76,7 +92,8 @@ export interface LessonDraft {
 }
 /** The `output` of an ok review_card_drafts row (spec §4.4). */
 export interface CardDraft {
-  headline: string; expected_vs_actual: Ref[]; decision_review: Ref; lessons: LessonDraft[]
+  // agent-retro-2 writes 「你的执行」; older drafts keep `decision_review`
+  headline: string; expected_vs_actual: Ref[]; decision_review?: Ref; execution_review?: Ref; lessons: LessonDraft[]
 }
 export interface CardDraftRow {
   id: number; attempt: number; trigger: 'batch' | 'manual'; agent_run_id: string | null
@@ -199,7 +216,7 @@ export interface Discussion {
 export interface WeeklyLearning {
   discipline: { cards: number; chase: number; early_take: number; held_loser: number; unplanned: number; pending: number }
   cards: {
-    card_id: number; ticker: string; end_kind: EndKind; end_text: string; decision_text: string
+    card_id: number; ticker: string; end_kind: EndKind; end_text: string; decision_text: string; execution_text?: string | null
     actual_r: number | null; filled?: boolean; rule_r: number | null; agent_r: number | null; flags: string[]
     status: CardStatus; headline: string | null
   }[]
@@ -230,6 +247,8 @@ export const DECISION_TEXT = {
 } as const
 /** retro.BASIS_TEXT: which Agent version a track follows (`facts.tracks.agent.version_basis` is the code). */
 export const VERSION_BASIS_TEXT: Record<string, string> = { decision: '决定时看到的版本', first: '首版' }
+/** tracks-2 `version_basis = fill` (v2.9 D27): the version the buy trade was linked to. */
+export const FILL_BASIS_TEXT: Record<string, string> = { fill: '成交时关联的版本' }
 /** The four discipline flags and 「待定」 (spec §4.3, §13). */
 export const DISCIPLINE_TEXT: Record<string, string> = {
   chase: '追高', early_take: '过早止盈', held_loser: '死扛亏损', unplanned: '计划外', pending: '待定',
@@ -239,8 +258,8 @@ export const DISCIPLINE_FLAGS: DisciplineFlag[] = ['chase', 'early_take', 'held_
 export const PENDING_TEXT: Record<string, string> = {
   early_take: '待定（卖出后 20 个交易日才能判定）', held_loser: '待定（止损次日之后判定）',
 }
-export const FACT_KEYS = ['subject', 'plans', 'bars_after', 'shadow', 'tracks', 'decision', 'trades', 'discipline',
-                          'reviews', 'knowledge'] as const
+export const FACT_KEYS = ['subject', 'plans', 'bars_after', 'shadow', 'tracks', 'decision', 'execution', 'holding', 'trades',
+                          'discipline', 'reviews', 'knowledge'] as const
 export const ROLE_TEXT: Record<string, string> = {
   reference: '参考计划', executed: '执行的计划', seen_at_decision: '决定时看到', first: '首版', head: '最新版',
 }

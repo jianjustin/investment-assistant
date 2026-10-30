@@ -64,6 +64,22 @@ export const facts = (over: Partial<Facts> = {}): Facts => ({
   ...over,
 })
 
+/** retro-2 facts (v2.9 D29): `execution` and `holding` instead of `decision`. */
+export const executionFacts = (over: Partial<Facts> = {}): Facts => {
+  const { decision: _decision, ...rest } = facts()
+  return {
+    ...rest,
+    tracks: { ...rest.tracks, agent: { status: 'open', status_text: '未平仓', r: null, plan_id: 'p-agent', version_no: 2, version_basis: 'fill' } },
+    execution: {
+      status: 'adopted', text: '采纳（照 Agent 第 2 版）', plan_kind: 'agent', plan_id: 'p-agent', version_no: 2,
+      notes: [{ id: 3, body: '等回踩再进，别追', created_at: '2026-10-14T21:00:00Z' }],
+      legacy_decision: { text: '否决', reason: '旧决定的理由' },
+    },
+    holding: { held_sessions: 6, exit_instruction_date: '2026-10-22', exit_reason: 'stop_touched', sold_date: '2026-10-23' },
+    ...over,
+  }
+}
+
 export const lessonRows = (): LessonDraftRow[] => [
   { id: 101, lesson_index: 0, title: '回踩不追高', body: '价格高于入场上沿就等回落。', scope: '趋势回踩修复触发后',
     counter_examples: '放量突破时追高可能是对的', concepts: ['review.discipline_chase'], tickers: ['NVDA'], refs: ['fact:discipline'] },

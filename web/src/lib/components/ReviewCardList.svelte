@@ -68,7 +68,7 @@
   {:else}
     <table class="text-sm w-full">
       <thead><tr class="text-left text-xs text-muted">
-        <th>标的</th><th>结束</th><th>你的决定</th><th>实际 R</th><th>规则 / Agent R</th><th>纪律</th><th>状态</th><th>一句话</th>
+        <th>标的</th><th>结束</th><th>你的执行 / 决定</th><th>实际 R</th><th>规则 / Agent R</th><th>纪律</th><th>状态</th><th>一句话</th>
       </tr></thead>
       <tbody>
         {#each cards as row (row.id)}
@@ -76,7 +76,7 @@
             <td><a class="text-accent underline" href={`#review/cards/${row.id}`}>{row.ticker}</a>
               {#if row.signal_date}<span class="block text-xs text-muted">{row.signal_date}</span>{/if}</td>
             <td class="text-xs">{endText(row.end_kind, row.exit_basis)}<span class="block text-muted">{row.end_session}</span></td>
-            <td class="text-xs">{row.decision_text}</td>
+            <td class="text-xs">{row.execution_text ?? row.decision_text}</td>
             <td class="text-xs">{actualRText(row)}</td>
             <td class="text-xs">规则 {rText(row.rule_r)}<span class="block">Agent {rText(row.agent_r)}</span></td>
             <td class="text-xs">

@@ -3,6 +3,7 @@
   import ConceptTerm from '../lib/components/ConceptTerm.svelte'
   import DiscussButton from '../lib/components/DiscussButton.svelte'
   import PlanDerivation from '../lib/components/PlanDerivation.svelte'
+  import PlanNotes from '../lib/components/PlanNotes.svelte'
   import PlanTimeline from '../lib/components/PlanTimeline.svelte'
   import UserInputs from '../lib/components/UserInputs.svelte'
   import * as api from '../lib/api'
@@ -11,7 +12,8 @@
   import { growthError, truncate } from '../lib/growth'
   import type { DiscussionListItem } from '../lib/growth'
   import { fmtBeijing } from '../lib/format'
-  import { AGENT_REASON_TEXT, describeError, newRequestId } from '../lib/workbench'
+  import { AGENT_REASON_TEXT, describeError, getPlanNotes, newRequestId, postPlanNote } from '../lib/workbench'
+  import type { PlanNote } from '../lib/workbench'
 
   // 整页渲染 PlanDerivation（spec 2026-10-27 §10）。标题取推导里的标的与日期，
   // 所以页面自己再请求一次；取不到（404/400/503）时退化为 id，错误文案交给组件呈现，不白屏。
@@ -36,6 +38,32 @@
   const rerunIds: Record<string, string> = {}
   const RERUN_MODE_TEXT: Record<string, string> = { propose: 'Agent 建议', interpret: 'Agent 简报解读' }
   const RERUN_STATUS_TEXT: Record<string, string> = { error: '出错', skipped: '跳过' }
+  // v2.9 §6.5：备注作用于一条链（agent-2 / agent-3 计划）或一份非链计划（规则基线 / 自定）；agent-1 不挂备注
+  type NoteTarget = { ticker: string; chain_signal_date: string } | { plan_id: string }
+  let noteTarget = $state<NoteTarget | null>(null)
+  let notes = $state<PlanNote[] | null>(null)
+  let notesError = $state('')
+  let noteSeq = 0     // bumps whenever the page's plan changes: a late notes read of the old plan is dropped
+  const isChainVersion = (v: string | null | undefined) => v === 'agent-2' || v === 'agent-3'
+  const noteQuery = (t: NoteTarget) => ('plan_id' in t ? { plan_id: t.plan_id } : t)
+
+  async function loadNotes(target: NoteTarget, alive: () => boolean) {
+    try {
+      const res = await getPlanNotes(noteQuery(target))
+      if (!alive()) return
+      notes = Array.isArray(res?.notes) ? res.notes : []
+      notesError = ''
+    } catch (e) {
+      if (alive()) { notes = null; notesError = describeError(e) }
+    }
+  }
+  async function addNote(body: string, requestId: string) {
+    const target = noteTarget
+    if (!target) return
+    const seq = noteSeq
+    await postPlanNote({ request_id: requestId, body, ...target })
+    await loadNotes(target, () => noteSeq === seq)
+  }
 
   $effect(() => {
     const id = sub
@@ -50,6 +78,10 @@
     rerunRows = []
     rerunText = {}
     rerunDone = {}
+    noteTarget = null
+    notes = null
+    notesError = ''
+    const seq = ++noteSeq
     void api.getDiscussions({ plan_id: id })
       .then(res => { if (alive) discussions = Array.isArray(res?.discussions) ? res.discussions : [] })
       .catch((e: unknown) => { if (alive) discussionsError = growthError(e) })
@@ -58,8 +90,12 @@
         if (!alive) return
         title = `${d.plan.ticker ?? '—'} · ${d.plan.signal_date ?? '—'}`
         ticker = d.plan.ticker ?? ''
-        unit = d.plan.plan_version === 'agent-2' && d.plan.ticker && d.plan.signal_date
+        unit = isChainVersion(d.plan.plan_version) && d.plan.ticker && d.plan.signal_date
           ? { ticker: d.plan.ticker, signal_date: d.plan.signal_date } : null
+        const target: NoteTarget | null = unit ? { ticker: unit.ticker, chain_signal_date: unit.signal_date }
+          : d.plan.plan_version === 'agent-1' ? null : { plan_id: id }
+        noteTarget = target
+        if (target) void loadNotes(target, () => alive && noteSeq === seq)
         if (d.plan.ticker && d.plan.signal_date) {
           const found = { ticker: d.plan.ticker, signal_date: d.plan.signal_date }
           void api.getAgentRuns(found.signal_date).then(res => {
@@ -147,6 +183,16 @@
     <PlanDerivation planId={sub} />
     {#if unit}
       <UserInputs ticker={unit.ticker} signalDate={unit.signal_date} />
+    {/if}
+    {#if noteTarget}
+      {#if notesError}
+        <section aria-label="备注" class="space-y-1 text-sm">
+          <p class="font-medium">备注</p>
+          <p class="text-xs text-muted">备注暂不可用：{notesError}</p>
+        </section>
+      {:else if notes !== null}
+        <PlanNotes {notes} onNote={addNote} />
+      {/if}
     {/if}
     {#if ticker}
       <section aria-label="讨论" class="space-y-1 text-sm">

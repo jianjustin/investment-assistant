@@ -557,3 +557,189 @@ describe('growth loop', () => {
   })
 })
 
+
+
+// ---- v2.9: 关联计划 (spec §6.1, §10.4) ----
+
+describe('trade form · 关联计划', () => {
+  const linkableView = {
+    ticker: 'NVDA',
+    plans: [
+      { plan_id: 'ap2', label: 'Agent NVDA·10-22 第 2 版（入场期，有效至 10-27）', kind: 'agent', chain_signal_date: '2026-10-22', version_no: 2 },
+      { plan_id: 'rp1', label: '规则基线 plan-2 NVDA·10-23（有效至 10-27）', kind: 'rule' },
+      { plan_id: 'op1', label: '自定 NVDA·10-20', kind: 'own' }],
+    default_plan_id: 'ap2',
+  }
+  const isPost = (c: { url: string; init?: RequestInit }) => c.url === '/api/workbench/trades' && c.init?.method === 'POST'
+  const postBody = () => JSON.parse(String(calls.find(isPost)!.init!.body))
+  const linkableCalls = () => calls.filter(c => c.url.startsWith('/api/workbench/trades/linkable-plans'))
+
+  async function fill(extra: Record<string, string> = {}) {
+    render(Review, { sub: 'trades' })
+    await screen.findByText(/浮动盈亏/)
+    await fireEvent.input(screen.getByLabelText('代码'), { target: { value: 'nvda' } })
+    await fireEvent.input(screen.getByLabelText('数量'), { target: { value: '5' } })
+    await fireEvent.input(screen.getByLabelText('成交价'), { target: { value: '102' } })
+    await fireEvent.input(screen.getByLabelText('成交时间'), { target: { value: extra.executed ?? '2026-10-23T10:15' } })
+  }
+  const withLinkable = (view: unknown = linkableView) => {
+    const base = respond
+    respond = async (url, init) => url.startsWith('/api/workbench/trades/linkable-plans') ? json(view) : base(url, init)
+  }
+
+  it('asks for the plans linkable at the fill time and defaults to the active chain head', async () => {
+    withLinkable()
+    await fill()
+    await waitFor(() => expect(linkableCalls()).toHaveLength(1))
+    const url = new URL(linkableCalls()[0].url, 'http://x')
+    expect(url.searchParams.get('ticker')).toBe('NVDA')
+    expect(url.searchParams.get('executed_at')).toMatch(/^2026-10-23T\d{2}:15:00\.000Z$/)
+    const select = screen.getByLabelText('关联计划') as HTMLSelectElement
+    await waitFor(() => expect(select.value).toBe('ap2'))
+    expect([...select.options].map(o => o.textContent)).toEqual([
+      '无计划', 'Agent NVDA·10-22 第 2 版（入场期，有效至 10-27）', '规则基线 plan-2 NVDA·10-23（有效至 10-27）', '自定 NVDA·10-20', '自定'])
+    expect(screen.queryByText('关联决定')).toBeNull()
+    await fireEvent.click(screen.getByRole('button', { name: '记录成交' }))
+    await waitFor(() => expect(calls.some(isPost)).toBe(true))
+    const body = postBody()
+    expect(body).toMatchObject({ plan_id: 'ap2', ticker: 'NVDA', side: 'buy' })
+    expect('decision_id' in body).toBe(false)
+    expect('own_plan' in body).toBe(false)
+  })
+
+  it('defaults to 无计划 without an active chain, and sends neither link', async () => {
+    withLinkable({ ticker: 'NVDA', plans: [], default_plan_id: null })
+    await fill()
+    await waitFor(() => expect(linkableCalls()).toHaveLength(1))
+    expect((screen.getByLabelText('关联计划') as HTMLSelectElement).value).toBe('__none__')
+    await fireEvent.click(screen.getByRole('button', { name: '记录成交' }))
+    await waitFor(() => expect(calls.some(isPost)).toBe(true))
+    const body = postBody()
+    for (const key of ['plan_id', 'own_plan', 'decision_id']) expect(key in body).toBe(false)
+  })
+
+  it('a sell is not linked by default, and a chosen plan wins over the default', async () => {
+    withLinkable()
+    await fill()
+    await waitFor(() => expect((screen.getByLabelText('关联计划') as HTMLSelectElement).value).toBe('ap2'))
+    await fireEvent.change(screen.getByLabelText('关联计划'), { target: { value: 'rp1' } })
+    await fireEvent.click(screen.getByRole('button', { name: '记录成交' }))
+    await waitFor(() => expect(calls.some(isPost)).toBe(true))
+    expect(postBody().plan_id).toBe('rp1')
+  })
+
+  it('does not link a sell by default', async () => {
+    withLinkable()
+    await fill()
+    await fireEvent.change(screen.getByLabelText('方向'), { target: { value: 'sell' } })
+    await waitFor(() => expect(linkableCalls().length).toBeGreaterThan(0))
+    expect((screen.getByLabelText('关联计划') as HTMLSelectElement).value).toBe('__none__')
+  })
+
+  it('自定 opens the four levels and the max hold, validates them, and posts own_plan', async () => {
+    withLinkable()
+    await fill()
+    await waitFor(() => expect((screen.getByLabelText('关联计划') as HTMLSelectElement).value).toBe('ap2'))
+    await fireEvent.change(screen.getByLabelText('关联计划'), { target: { value: '__own__' } })
+    const group = screen.getByRole('group', { name: '自定计划' })
+    expect(within(group).getByLabelText('最长持有')).toBeInTheDocument()
+    await fireEvent.input(within(group).getByLabelText('入场下沿'), { target: { value: '99' } })
+    await fireEvent.input(within(group).getByLabelText('入场上沿'), { target: { value: '101' } })
+    await fireEvent.input(within(group).getByLabelText('止损'), { target: { value: '100' } })
+    await fireEvent.input(within(group).getByLabelText('T1'), { target: { value: '112' } })
+    expect(group).toHaveTextContent('价位需满足：止损 < 入场下限 ≤ 入场上限 < T1')
+    expect(screen.getByRole('button', { name: '记录成交' })).toBeDisabled()
+    await fireEvent.input(within(group).getByLabelText('止损'), { target: { value: '94' } })
+    await fireEvent.input(within(group).getByLabelText('最长持有'), { target: { value: '7.5' } })
+    expect(group).toHaveTextContent('最长持有须为正整数（交易日）')
+    await fireEvent.input(within(group).getByLabelText('最长持有'), { target: { value: '12' } })
+    expect(screen.getByRole('button', { name: '记录成交' })).toBeEnabled()
+    await fireEvent.click(screen.getByRole('button', { name: '记录成交' }))
+    await waitFor(() => expect(calls.some(isPost)).toBe(true))
+    const body = postBody()
+    expect(body.own_plan).toEqual({ entry_low: '99', entry_high: '101', stop: '94', target1: '112', max_hold_sessions: 12 })
+    expect('plan_id' in body).toBe(false)
+  })
+
+  it('an empty own plan omits the max hold (the backend defaults to 10) and blocks blank levels', async () => {
+    withLinkable()
+    await fill()
+    await fireEvent.change(screen.getByLabelText('关联计划'), { target: { value: '__own__' } })
+    await fireEvent.click(screen.getByRole('button', { name: '记录成交' }))
+    expect(await screen.findByText('自定计划需要填写四个价位')).toBeInTheDocument()
+    expect(calls.some(isPost)).toBe(false)
+    const group = screen.getByRole('group', { name: '自定计划' })
+    for (const [label, value] of [['入场下沿', '99'], ['入场上沿', '101'], ['止损', '94'], ['T1', '112']])
+      await fireEvent.input(within(group).getByLabelText(label), { target: { value } })
+    await fireEvent.click(screen.getByRole('button', { name: '记录成交' }))
+    await waitFor(() => expect(calls.some(isPost)).toBe(true))
+    expect('max_hold_sessions' in postBody().own_plan).toBe(false)
+  })
+
+  it.each([
+    [409, 'plan_stale: 成交时这条链已是第 3 版，请关联第 3 版', '成交时这条链已是第 3 版，请关联第 3 版'],
+    [409, 'plan_after_fill', '这一版生成于成交之后，不可能是你照着做的那一版'],
+    [400, 'decision_link_retired', 'v2.9 起成交不再关联决定，请改为关联计划'],
+    [503, 'migration_029_missing', '迁移 029 未执行'],
+  ])('shows the %s %s text and keeps the form', async (status, error, text) => {
+    withLinkable()
+    const base = respond
+    respond = async (url, init) => url === '/api/workbench/trades' && init?.method === 'POST' ? json({ error }, status) : base(url, init)
+    await fill()
+    await waitFor(() => expect((screen.getByLabelText('关联计划') as HTMLSelectElement).value).toBe('ap2'))
+    await fireEvent.click(screen.getByRole('button', { name: '记录成交' }))
+    expect(await screen.findByText(text)).toBeInTheDocument()
+    expect((screen.getByLabelText('数量') as HTMLInputElement).value).toBe('5')
+    if (status === 409) await waitFor(() => expect(linkableCalls().length).toBeGreaterThanOrEqual(2))   // re-read after a stale link
+  })
+
+  it('keeps the form usable when the linkable list cannot be read', async () => {
+    const base = respond
+    respond = async (url, init) => url.startsWith('/api/workbench/trades/linkable-plans')
+      ? json({ error: 'migration_029_missing' }, 503) : base(url, init)
+    await fill()
+    expect(await screen.findByText('可关联的计划暂不可用：迁移 029 未执行')).toBeInTheDocument()
+    expect((screen.getByLabelText('关联计划') as HTMLSelectElement).value).toBe('__none__')
+    expect([...(screen.getByLabelText('关联计划') as HTMLSelectElement).options].map(o => o.textContent)).toEqual(['无计划', '自定'])
+  })
+
+  it('no longer loads the decisions shadow on the trades tab, and lists the plan each trade followed', async () => {
+    const base = respond
+    respond = async (url, init) => url === '/api/workbench/trades' && init?.method !== 'POST'
+      ? json({ trades: [
+          { ...trade, plan_id: 'ap2', plan_label: 'Agent NVDA·10-22 第 2 版' },
+          { ...trade, id: 't2', plan_id: null, decision_id: 'd1' },
+          { ...trade, id: 't3', plan_id: null, decision_id: null },
+          { ...trade, id: 't4', side: 'sell', plan_id: null, decision_id: null }] })
+      : base(url, init)
+    render(Review, { sub: 'trades' })
+    await screen.findByText(/浮动盈亏/)
+    const cells = (await screen.findAllByTestId('trade-plan')).map(el => el.textContent)
+    expect(cells).toEqual(['· 关联计划：Agent NVDA·10-22 第 2 版', '· 关联计划：旧决定', '· 关联计划：无计划（计划外）', '· 关联计划：—'])
+    expect(screen.getByRole('link', { name: 'Agent NVDA·10-22 第 2 版' })).toHaveAttribute('href', '#plan/ap2')
+    expect(calls.some(c => c.url.includes('/review/shadow'))).toBe(false)
+  })
+})
+
+describe('weekly review-8 snapshots', () => {
+  it('read executed / not executed and by_execution, while review-7 snapshots keep the decision wording', async () => {
+    const weeklyRow = (id: string, stats: Record<string, unknown>) => ({
+      id, week_start: '2026-10-19', calc_version: 'review-8', notes: '', supersedes_id: null, created_at: '2026-10-26T02:00:00Z', stats })
+    const w = (a: number, b: number) => ({ '5': { mean: a, median: b, mature: 1, count: 1 } })
+    const base = respond
+    respond = async url => url.includes('/weekly-reviews') ? json({ reviews: [
+      weeklyRow('w8', { week: { start: '2026-10-19' }, units: { executed: 3, not_executed: 4 }, by_rule: {}, by_decision: {},
+                        by_execution: { adopted: w(0.02, 0.01), not_executed: w(0.04, 0.03) }, note: '描述性统计' }),
+      { ...weeklyRow('w7', { week: { start: '2026-10-12' }, units: { decided: 2, undecided: 1 }, by_rule: {},
+                              by_decision: { reject: w(0.01, 0.01) }, note: '描述性统计' }), calc_version: 'review-7', week_start: '2026-10-12' }] })
+      : base(url)
+    render(Review, { sub: 'weekly' })
+    const articles = await screen.findAllByRole('article')
+    expect(articles[0]).toHaveTextContent('已执行 3 · 未执行 4')
+    expect(articles[0]).toHaveTextContent('按执行')
+    expect(articles[0]).toHaveTextContent('未执行： 5 日 +4.00% / +3.00%')
+    expect(articles[0]).not.toHaveTextContent('已决定')
+    expect(articles[1]).toHaveTextContent('已决定 2 · 未处理 1')
+    expect(articles[1]).toHaveTextContent('否决')
+  })
+})

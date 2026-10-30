@@ -80,7 +80,7 @@ describe('ATTACH', () => {
     expect(ATTACH.agentCard.noAdd).toBe('plan.sizing')
     expect(ATTACH.ruleBaseline.status).toBe('plan.status')
     expect(ATTACH.timeline.shadow).toBe('review.plan_shadow')
-    expect(ATTACH.today.basis).toBe('system.decision')
+    expect(ATTACH.today.basis).toBe('review.execution_status')
     expect(ATTACH.overview.stages).toBe('system.stages')
     expect(ATTACH.overview.status).toBe('system.stage_status')
   })

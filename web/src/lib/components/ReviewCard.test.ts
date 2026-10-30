@@ -5,7 +5,7 @@ import * as api from '../api'
 import * as wb from '../workbench'
 import { WorkbenchError } from '../workbench'
 import { resetConceptIndex } from '../knowledge'
-import { cardView, discipline, draftRow, facts } from '../growth-fixtures'
+import { cardView, discipline, draftOutput, draftRow, executionFacts, facts } from '../growth-fixtures'
 
 const load = (view = cardView()) => { vi.mocked(api.getReviewCard).mockResolvedValue(view) }
 
@@ -262,5 +262,59 @@ describe('ReviewCard', () => {
     vi.mocked(api.getReviewCard).mockRejectedValue(new WorkbenchError('迁移 027 未执行', 503))
     render(ReviewCard, { id: 12 })
     expect(await screen.findByText('迁移 027 未执行')).toBeInTheDocument()
+  })
+})
+
+describe('ReviewCard · retro-2 (你的执行与纪律) and retro-1 side by side', () => {
+  it('a retro-2 card shows the execution, the notes frozen at card time, the old decision and the holding summary', async () => {
+    load(cardView({ facts: executionFacts() }))
+    render(ReviewCard, { id: 12 })
+    const section = await screen.findByRole('region', { name: '你的执行与纪律' })
+    expect(within(section).getByRole('heading', { name: /你的执行与纪律/ })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '你的决定与纪律' })).toBeNull()
+    expect(section).toHaveTextContent('执行：采纳（照 Agent 第 2 版）')
+    expect(within(section).getByRole('link', { name: '看计划' })).toHaveAttribute('href', '#plan/p-agent')
+    expect(section).toHaveTextContent('备注（')
+    expect(section).toHaveTextContent('等回踩再进，别追')
+    expect(section).toHaveTextContent('旧决定：否决（理由：旧决定的理由）')
+    expect(section).toHaveTextContent('持仓：持有 6 个交易日 · 退出指令 2026-10-22（止损触及） · 实际卖出 2026-10-23')
+    expect(section.querySelector('[data-fact="decision"]')).toBeNull()
+    // trades and discipline are unchanged
+    expect(section).toHaveTextContent('买入 10 @ 101.00')
+    expect(within(section).getByRole('table', { name: '纪律判定' })).toBeInTheDocument()
+  })
+
+  it('names the fill basis of the Agent track, and says when the shares were not sold yet', async () => {
+    load(cardView({ facts: executionFacts({ holding: { held_sessions: 2, exit_instruction_date: '2026-10-22', exit_reason: 'time_stop' } }) }))
+    render(ReviewCard, { id: 12 })
+    const tracks = await screen.findByRole('region', { name: '三条轨道' })
+    expect(tracks).toHaveTextContent('（成交时关联的版本）')
+    expect(tracks).not.toHaveTextContent('（fill）')
+    const section = screen.getByRole('region', { name: '你的执行与纪律' })
+    expect(section).toHaveTextContent('退出指令 2026-10-22（时间止损） · 尚未卖出')
+  })
+
+  it('a card without a holding record and without notes shows only the execution line', async () => {
+    load(cardView({ facts: executionFacts({ holding: null, execution: { status: 'not_executed', text: '未执行' } }) }))
+    render(ReviewCard, { id: 12 })
+    const section = await screen.findByRole('region', { name: '你的执行与纪律' })
+    expect(section).toHaveTextContent('执行：未执行')
+    expect(section).not.toHaveTextContent('持仓：')
+    expect(section).not.toHaveTextContent('备注（')
+  })
+
+  it('the narrative reads 执行回顾 for agent-retro-2 drafts and 决定回顾 for older ones', async () => {
+    const out = draftOutput()
+    const { decision_review: _old, ...rest } = out
+    load(cardView({ facts: executionFacts(), drafts: [draftRow({ output: { ...rest, execution_review: { text: '照 Agent 第 2 版执行，买价贴近上沿', refs: ['fact:execution', 'fact:holding'] } } })] }))
+    const first = render(ReviewCard, { id: 12 })
+    const narrative = await screen.findByRole('region', { name: '复盘叙述' })
+    expect(narrative).toHaveTextContent('执行回顾 照 Agent 第 2 版执行，买价贴近上沿')
+    expect(narrative).not.toHaveTextContent('决定回顾')
+    await fireEvent.click(within(narrative).getByRole('button', { name: 'fact:execution' }))
+    first.unmount()
+    load(cardView())
+    render(ReviewCard, { id: 12 })
+    expect(await screen.findByRole('region', { name: '复盘叙述' })).toHaveTextContent('决定回顾 决定照规则计划')
   })
 })

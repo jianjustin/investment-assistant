@@ -220,4 +220,73 @@ describe('Plan', () => {
       expect(screen.queryByRole('alert')).toBeNull()
     })
   })
+
+  describe('备注与 agent-3 (v2.9)', () => {
+    const chainStub = () => vi.spyOn(api, 'getChain').mockResolvedValue({
+      ticker: 'NVDA', signal_date: '2026-10-22', session: '2026-10-24',
+      state: { state: 'entry', mode: 'entry', basis: '尚未成交' }, head_plan_id: 'p1', version_no: 0,
+      latest_review: null, shadow_version: 'plan-shadow-2', versions: [], reviews: [], inputs: [] } as any)
+    const notesFetch = (notes: unknown[], onPost?: (body: any) => void) => {
+      const calls: { url: string; init?: RequestInit }[] = []
+      vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url: String(url), init })
+        if (String(url) === '/api/workbench/plan-notes' && init?.method === 'POST') {
+          onPost?.(JSON.parse(String(init.body)))
+          return new Response(JSON.stringify({ status: 'created', record: { id: 9 } }), { status: 200 })
+        }
+        if (String(url).startsWith('/api/workbench/plan-notes')) return new Response(JSON.stringify({ notes }), { status: 200 })
+        return new Response('{}', { status: 200 })
+      }))
+      return calls
+    }
+    afterEach(() => vi.unstubAllGlobals())
+
+    it('an agent-3 plan gets the version chain, my input and the notes of its chain', async () => {
+      vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation({
+        plan: { id: 'p1', ticker: 'NVDA', signal_date: '2026-10-22', kind: 'agent', plan_version: 'agent-3', status: 'ok' } }))
+      const getChain = chainStub()
+      vi.spyOn(api, 'getUserInputs').mockResolvedValue({ inputs: [] })
+      const calls = notesFetch([{ id: 3, body: '等回踩', created_at: '2026-10-30T10:00:00Z' }])
+      render(Plan, { sub: 'p1' })
+      expect(await screen.findByRole('region', { name: '版本链' })).toBeInTheDocument()
+      expect(getChain).toHaveBeenCalledWith('NVDA', '2026-10-22')
+      const notes = await screen.findByRole('region', { name: '备注' })
+      expect(notes).toHaveTextContent('等回踩')
+      expect(notes).toHaveTextContent('备注只给你自己看；要让 Agent 参考，请用『我的补充』')
+      expect(calls.some(c => c.url === '/api/workbench/plan-notes?ticker=NVDA&chain_signal_date=2026-10-22')).toBe(true)
+    })
+
+    it('a rule plan has notes on the plan itself and posts them with plan_id', async () => {
+      vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation({
+        plan: { id: 'p1', ticker: 'NVDA', signal_date: '2026-10-22', kind: 'rule', plan_version: 'plan-2', status: 'ok' } }))
+      let posted: any = null
+      const calls = notesFetch([], body => { posted = body })
+      render(Plan, { sub: 'p1' })
+      const notes = await screen.findByRole('region', { name: '备注' })
+      expect(notes).toHaveTextContent('还没有备注')
+      expect(calls.some(c => c.url === '/api/workbench/plan-notes?plan_id=p1')).toBe(true)
+      await fireEvent.input(within(notes).getByLabelText('备注正文'), { target: { value: '规则基线备注' } })
+      await fireEvent.click(within(notes).getByRole('button', { name: '保存备注' }))
+      await waitFor(() => expect(posted).not.toBeNull())
+      expect(posted).toMatchObject({ body: '规则基线备注', plan_id: 'p1' })
+      expect(posted.request_id).toBeTruthy()
+      await waitFor(() => expect(calls.filter(c => c.url.startsWith('/api/workbench/plan-notes?')).length).toBe(2))
+    })
+
+    it('an agent-1 plan has no notes section, and a failing notes read only affects that section', async () => {
+      vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation({
+        plan: { id: 'p1', ticker: 'ROP', signal_date: '2026-10-26', kind: 'agent', plan_version: 'agent-1', status: 'ok' } }))
+      notesFetch([])
+      const first = render(Plan, { sub: 'p1' })
+      await screen.findByRole('heading', { name: 'ROP · 2026-10-26' })
+      expect(screen.queryByRole('region', { name: '备注' })).toBeNull()
+      first.unmount()
+
+      vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation())
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'migration_029_missing' }), { status: 503 })))
+      render(Plan, { sub: 'p1' })
+      expect(await screen.findByText('备注暂不可用：迁移 029 未执行')).toBeInTheDocument()
+      expect(screen.getByRole('heading', { name: 'NVDA · 2026-10-22' })).toBeInTheDocument()
+    })
+  })
 })

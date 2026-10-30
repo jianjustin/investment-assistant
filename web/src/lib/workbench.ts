@@ -34,6 +34,8 @@ export interface Plan {
             risk_amount?: number | null; snapshot_as_of?: string | null } | null
   invalid_reasons: string[]; warnings: string[]; based_on_id?: string | null
   inputs?: { context?: PlanContext }
+  // v2.9 §5.1: execution fields; absent on plan-1 / agent-2 rows
+  entry_type?: EntryType | null; max_hold_sessions?: number | null
 }
 export interface Holding {
   ticker: string; quantity: number; avg_cost: number; plan_id: string | null
@@ -178,7 +180,7 @@ export interface ScreenReport {
   setups_more?: number; results?: unknown[]
 }
 export interface TodayView {
-  session: string; units: Unit[]; extended_units: ExtendedUnit[]; holdings: Holding[]
+  session: string; units?: Unit[]; extended_units?: ExtendedUnit[]; holdings?: Holding[]
   market: MarketContext | null; screen: ScreenReport | null
   chains?: ChainRow[]; timeline_ready?: boolean     // v2.5 §10.2; false = migration 026 missing
 }
@@ -190,6 +192,8 @@ export interface Trade {
   id: string; ticker: string; side: 'buy' | 'sell'; quantity: number; price: number; fee: number
   executed_at: string; decision_id: string | null; note: string | null; recorded_at: string
   voided_at: string | null; void_reason: string | null
+  // v2.9 §6.1: the plan version this trade followed; `plan_label` is the backend's sentence for it
+  plan_id?: string | null; plan_label?: string | null
 }
 export interface ChartBar {
   price_date: string; open: number; high: number; low: number; close: number; volume: number
@@ -235,9 +239,8 @@ export const getToday = () => request<TodayView>('/api/workbench/today')
 export const getScreen = (session?: string, full = false) =>
   request<{ report: ScreenReport | null }>(`/api/workbench/screen${session ? `?session=${encodeURIComponent(session)}` : '?'}${full ? `${session ? '&' : ''}full=1` : ''}`)
 export const getInstrument = (ticker: string) => request<InstrumentView>(`/api/workbench/instruments/${encodeURIComponent(ticker)}`)
-export const postDecision = (body: object) => post<{ status: string; record: Decision }>('/api/workbench/decisions', body)
 export const getTrades = () => request<{ trades: Trade[] }>('/api/workbench/trades')
-export const postTrade = (body: object) => post<{ status: string; record: Trade }>('/api/workbench/trades', body)
+export const postTrade = (body: TradeBody) => post<{ status: string; record: Trade }>('/api/workbench/trades', body)
 export const voidTrade = (id: string, reason: string) => post<Trade>(`/api/workbench/trades/${id}/void`, { reason })
 export const getShadow = () => request<ShadowView>('/api/workbench/review/shadow')
 export const getTradeReview = () => request<TradeReview>('/api/workbench/review/trades')
@@ -260,12 +263,28 @@ export const pushToday = () => post<{ session: string; sent: boolean; messages?:
 export const getBackchecks = () => request<{ backchecks: Backcheck[] }>('/api/workbench/backchecks')
 export const runBackcheck = (tickers?: string[]) => post<Backcheck>('/api/workbench/backchecks', { tickers: tickers ?? null })
 
+/** The sentence after a `code: sentence` error body, else null. */
+function sentenceAfter(message: string, code: string): string | null {
+  if (!message.startsWith(code)) return null
+  const rest = message.slice(code.length)
+  if (rest !== '' && !rest.startsWith(':') && !rest.startsWith('：')) return null
+  return rest.slice(1).trim() || null
+}
+
 export function describeError(error: unknown): string {
   if (error instanceof WorkbenchError) {
+    // v2.9 (§6.4, §13, §21.4): retired decisions, trade links, migration 029
+    if (error.status === 410 && error.message.startsWith('decisions_retired'))
+      return sentenceAfter(error.message, 'decisions_retired') ?? DECISIONS_RETIRED_SENTENCE
+    if (error.status === 400 && error.message.startsWith('decision_link_retired')) return DECISION_LINK_RETIRED_TEXT
+    if (error.status === 503 && (error.message.startsWith('migration_029_missing') || error.message.includes('迁移 029')))
+      return MIGRATION_029_TEXT
+    if (error.status === 409) {
+      for (const code of Object.keys(CONFLICT_TEXT)) {
+        if (error.message.startsWith(code)) return sentenceAfter(error.message, code) ?? CONFLICT_TEXT[code]
+      }
+    }
     if (error.status === 503) return `数据库未就绪：${error.message}`
-    // v2.5 §9.3: 'agent_plan_stale: <sentence>' — the sentence after the code is shown as is.
-    if (error.status === 409 && error.message.startsWith('agent_plan_stale:'))
-      return error.message.slice('agent_plan_stale:'.length).trim()
     if (error.status === 409) return `已有更新的记录，请刷新后基于最新记录操作（${error.message}）`
     if (error.status === 400) return `输入有误：${error.message}`
   }
@@ -274,44 +293,13 @@ export function describeError(error: unknown): string {
 
 export const newRequestId = () => crypto.randomUUID()
 
-export function finalAction(proposed: Action, choice: Choice): FinalAction {
-  return choice === 'accept' ? proposed : choice === 'reject' ? 'ignore' : 'watch'
-}
-
 export interface OwnPlanInput { entry_low: string; entry_high: string; stop: string; target1: string }
-export type Basis = 'rule' | 'own' | 'agent'
-/** What the page showed when deciding (v2.5 §9.3); acceptance stats only. */
-export interface ReviewView { layout: 'agent_first' | 'legacy'; baseline_expanded: boolean; agent_version_no: number | null }
 
 export function levelsError(input: OwnPlanInput): string | null {
   const [low, high, stop, target1] = [input.entry_low, input.entry_high, input.stop, input.target1].map(Number)
   if (![low, high, stop, target1].every(n => Number.isFinite(n) && n > 0)) return '四个价位都必须是正数'
   if (!(stop < low && low <= high && high < target1)) return '价位需满足：止损 < 入场下限 ≤ 入场上限 < T1'
   return null
-}
-
-export function decisionPayload(unit: Unit, choice: Choice, reason: string, requestId: string,
-                                ownPlan: ({ request_id: string } & OwnPlanInput) | null = null,
-                                basis: Basis = 'rule', agentPlanId: string | null = null,
-                                reviewView: ReviewView | null = null) {
-  const agent = unit.agent
-  const agentPlan = agent && 'plan' in agent ? agent.plan : null
-  const planId = choice === 'accept' && !ownPlan
-    ? (basis === 'agent'
-         ? (agentPlan && agentPlan.status === 'ok' ? agentPlan.id : null)
-         : (basis === 'rule' && unit.plan && unit.plan.status === 'ok' ? unit.plan.id : null))
-    : null
-  return {
-    request_id: requestId, ticker: unit.ticker, signal_date: unit.signal_date, candidate_ids: unit.candidate_ids,
-    brief_id: unit.brief && unit.brief.status !== 'error' ? unit.brief.id : null,
-    proposed_action: unit.proposed_action, final_action: finalAction(unit.proposed_action, choice),
-    decision: choice, reason: reason.trim(),
-    plan_id: planId,
-    own_plan: ownPlan,
-    // v2.5: the Agent version the page showed (409 agent_plan_stale when no longer the head); sent only when known.
-    ...(agentPlanId ? { agent_plan_id: agentPlanId } : {}),
-    ...(reviewView ? { review_view: reviewView } : {}),
-  }
 }
 
 export const RULE_LABELS: Record<string, string> = {
@@ -350,6 +338,10 @@ export const AGENT_REASON_TEXT: Record<string, string> = {
   discussion_busy: '上一个问题还在回答', draft_exists: '这张卡已有成功的草稿',
   // v2.8 ChatGPT connection (spec §8.8, verbatim; same as backend agent.REASON_TEXT)
   not_connected: 'ChatGPT 未连接', model_unavailable: '所选模型不可用',
+  // v2.9 agent-3 (spec §5.5 + §21.4 R3, verbatim; same as backend agent.REASON_TEXT)
+  invalid_entry_type: '入场类型不在允许的三种之内', invalid_max_hold: '最长持有须为 5–20 个交易日',
+  stop_lowered: '持仓期不能下移止损', stop_above_close: '持仓期止损不能高于最新收盘',
+  active_chain: '已有进行中的计划链，这次触发已并入',
 }
 
 export const ruleLabel = (id: string) => RULE_LABELS[id] ?? id
@@ -367,6 +359,13 @@ export function publishedText(value: string | null): string {
   return value ? dateTime(value) : '发布时间未知'
 }
 
+/** 「历史」时间线与成交列表里成交关联的计划（v2.9 §10.3）；旧成交只带决定。 */
+export function tradePlanText(t: Pick<Trade, 'plan_id' | 'plan_label' | 'decision_id'>): string {
+  if (t.plan_id) return ` · 关联计划：${t.plan_label ?? t.plan_id}`
+  if (t.decision_id) return ' · 关联旧决定'
+  return ''
+}
+
 export interface TimelineItem { kind: 'filing' | 'news' | 'candidate' | 'decision' | 'trade'; at: string; text: string; url?: string }
 
 export function timeline(view: InstrumentView): TimelineItem[] {
@@ -380,7 +379,7 @@ export function timeline(view: InstrumentView): TimelineItem[] {
     ...view.decisions.map(d => ({ kind: 'decision' as const, at: d.decided_at,
       text: `${d.signal_date} ${CHOICE_LABELS[d.decision]} → ${ACTION_LABELS[d.final_action]}：${d.reason}` })),
     ...view.trades.map(t => ({ kind: 'trade' as const, at: t.executed_at,
-      text: `${t.side === 'buy' ? '买入' : '卖出'} ${t.quantity} @ ${t.price}${t.voided_at ? `（已作废：${t.void_reason}）` : ''}` })),
+      text: `${t.side === 'buy' ? '买入' : '卖出'} ${t.quantity} @ ${t.price}${t.voided_at ? `（已作废：${t.void_reason}）` : ''}${tradePlanText(t)}` })),
   ]
   return items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
 }
@@ -389,7 +388,7 @@ export function timeline(view: InstrumentView): TimelineItem[] {
 // --- three-track comparison and review pushes (P4 design §4, §6) ---
 
 export type TrackStatus = 'missing' | 'not_executable' | 'pending' | 'expired' | 'open' | 'closed' | 'pass'
-  | 'not_executed' | 'no_plan'
+  | 'not_executed' | 'no_plan' | 'merged'
 export interface TrackResult { status: TrackStatus; r: number | null }
 export interface RuleTrack extends TrackResult { plan_id: string | null }
 export interface AgentTrack extends TrackResult { run_id: string | null; run_status: string | null; run_reason: string | null; plan_id: string | null }
@@ -416,6 +415,7 @@ export interface ReviewPush {
 export const TRACK_STATUS_TEXT: Record<TrackStatus, string> = {
   missing: '缺失', not_executable: '计划作废', pending: '待定', expired: '到期未成交',
   open: '未平仓', closed: '已平仓', pass: '不建议', not_executed: '未执行', no_plan: '无计划成交',
+  merged: '并入其他链',   // tracks-2 (v2.9 D27): the unit's trigger was merged into another chain
 }
 
 export const getTracks = (since?: string, until?: string) => request<TracksView>(
@@ -428,4 +428,244 @@ export const postReviewPush = (kind: 'weekly' | 'monthly', period: string) =>
 export function rText(r: number | null): string {
   if (r === null || !Number.isFinite(r)) return '—'
   return `${r >= 0 ? '+' : ''}${r.toFixed(2)}R`
+}
+
+
+// =====================================================================================================
+// v2.9 executable plans (spec docs/specs/2026-10-30-v2.9-executable-plans-design.md §5–§10, §21)
+// Texts below are copied character for character from the spec; tests/test_executable_frontend_sync.py (Task 6)
+// compares them with the backend constants.
+// =====================================================================================================
+
+export type EntryType = 'zone_limit' | 'breakout_stop' | 'next_open'
+export type OpenCase = 'in_zone' | 'gap_up' | 'gap_down'
+export type Instruction = 'hold' | 'sell_half' | 'exit' | 'no_plan'
+export type ExecutionStatus = 'adopted' | 'out_of_validity' | 'pending' | 'not_executed'
+export type RowGroup = 'entry' | 'holding' | 'ended'
+
+/** entry_rules.ENTRY_TYPES labels (§5.2 table headings). */
+export const ENTRY_TYPE_TEXT: Record<EntryType, string> = {
+  zone_limit: '区间限价', breakout_stop: '突破买入', next_open: '次日开盘',
+}
+/** entry_rules.OPEN_CASE_TEXT: column heads of the three opening cases (§10.1). */
+export const OPEN_CASE_TEXT: Record<OpenCase, string> = { in_zone: '区间内', gap_up: '高开', gap_down: '低开' }
+/** entry_rules.TEXT (§5.2, verbatim): {L} = entry_low, {U} = entry_high, {S} = stop, {N} = shares; see `openCaseText`. */
+export const OPEN_SCENARIO_TEXT = {
+  in_zone: '开在 {L}–{U}：开盘买入 {N} 股',
+  gap_up: {
+    zone_limit: '高开过 {U}：不追，挂 {U} 限价等回落', breakout_stop: '高开过 {U}：不追，挂 {U} 限价等回落',
+    next_open: '高开过 {U}：不买，本计划作废',
+  },
+  gap_down: {
+    zone_limit: '低开：≤ {S} 作废；否则回升到 {L} 时买入', breakout_stop: '低开：≤ {S} 作废；否则升破 {L} 时买入',
+    next_open: '低开过 {L}：不买，本计划作废',
+  },
+} as const
+/** timeline.INSTRUCTION_TEXT (§7.3). */
+export const INSTRUCTION_TEXT: Record<Instruction, string> = {
+  hold: '继续持有', sell_half: '到 T1：卖出一半，余下按移动止损', exit: '次一交易日开盘卖出',
+  no_plan: '无计划持仓（回撤规则看护）',
+}
+/** execution.EXECUTION_TEXT (§6.2 page column; `{date}` / `{quantity}` filled by `executionText`). */
+export const EXECUTION_TEXT = {
+  adopted: '已采纳（{date} 成交 {quantity} 股）', out_of_validity: '有效期外成交', pending: '入场期，未成交',
+  not_executed: '未执行', executed: '已执行',
+} as const
+/** timeline.EXIT_REASON_TEXT: §7.3 `exit_reason` codes in words. */
+export const EXIT_REASON_TEXT: Record<string, string> = {
+  stop_touched: '止损触及', time_stop: '时间止损', invalidation: '失效条件成立', agent_invalidate: 'Agent 判作废',
+}
+export const STOP_MODE_TEXT: Record<string, string> = { initial: '初始', trailing: '移动' }
+
+/** §6.4 error body sentence (after `decisions_retired: `). */
+export const DECISIONS_RETIRED_SENTENCE = 'v2.9 起不再记录决定，采纳由成交推导；可在计划上写备注'
+export const DECISIONS_RETIRED_TEXT = `decisions_retired: ${DECISIONS_RETIRED_SENTENCE}`
+/** 400 `decision_link_retired` (§6.1; the spec names the code only, the sentence is this page's own). */
+export const DECISION_LINK_RETIRED_TEXT = 'v2.9 起成交不再关联决定，请改为关联计划'
+/** 503 `migration_029_missing` (§13). */
+export const MIGRATION_029_TEXT = '迁移 029 未执行'
+/** 409 reasons (§6.1 + R6, §4.7 + R10); the backend sends `code: sentence` with n filled in, these are the fallbacks. */
+export const CONFLICT_TEXT: Record<string, string> = {
+  plan_stale: '成交时这条链已是更新的一版，请关联最新的那一版，或选自定',
+  plan_after_fill: '这一版生成于成交之后，不可能是你照着做的那一版',
+  chain_exiting: '这条链已发出退出指令，不再复查',
+  active_chain: '已有进行中的计划链，这次触发已并入',
+}
+export const CHAIN_EXITING_TEXT = CONFLICT_TEXT.chain_exiting
+/** R18: a holding without a `holding_status` row today is computed on the fly. */
+export const STALE_HOLDING_TEXT = '今日持仓状态未写入（每日复查失败），以下为现算'
+/** §5.5 / §21: an agent-2 version has no execution fields. */
+export const DEFAULTS_APPLIED_TEXT = '旧版计划，执行字段按默认值显示'
+/** §10.4 note hint under the input. */
+export const NOTE_HINT_TEXT = '备注只给你自己看；要让 Agent 参考，请用『我的补充』'
+export const NOTE_MAX_CHARS = 1000
+
+const OPEN_VAR = /\{([LUSN])\}/g
+
+/** The sentence of one opening case with {L} / {U} / {S} / {N} replaced (shares unknown -> 「—」). */
+export function openCaseText(
+  kase: OpenCase, entryType: EntryType,
+  vars: { entry_low: string | number; entry_high: string | number; stop: string | number; shares?: number | null },
+): string {
+  const map: Record<string, string> = {
+    L: String(vars.entry_low), U: String(vars.entry_high), S: String(vars.stop), N: vars.shares == null ? '—' : String(vars.shares),
+  }
+  const template: string = kase === 'in_zone' ? OPEN_SCENARIO_TEXT.in_zone : OPEN_SCENARIO_TEXT[kase][entryType]
+  return template.replace(OPEN_VAR, (_m, ch: string) => map[ch])
+}
+
+/** §6.2 page text of an execution state; `detail` fills 「已采纳（<日期> 成交 n 股）」 when the backend sends it. */
+export function executionText(status: string | null | undefined, detail?: { date?: string | null; quantity?: number | string | null } | null): string {
+  if (!status) return ''
+  if (status === 'adopted') {
+    if (detail?.date && detail.quantity != null)
+      return EXECUTION_TEXT.adopted.replace('{date}', detail.date).replace('{quantity}', String(detail.quantity))
+    return '已采纳'
+  }
+  if (status === 'unplanned') return '计划外成交'      // weekly by_execution key (§6.3); the page's own wording
+  return (EXECUTION_TEXT as Record<string, string>)[status] ?? status
+}
+
+// ---- types (spec §9.1) ----
+
+export interface RowRetrigger { unit_signal_date: string; rule_ids: string[] }
+export interface RowChain {
+  signal_date: string; version_no: number; head_plan_id: string; state: string; label: string; retriggers: RowRetrigger[]
+}
+export interface RowPlan {
+  plan_id: string; kind: 'rule' | 'own' | 'agent'; plan_version: string; action: 'buy' | 'pass' | string
+  entry_type: EntryType | null; entry_type_text: string | null
+  entry_low: string; entry_high: string; stop: string; target1: string
+  shares: number | null; shares_note: string | null; valid_from: string; valid_until: string
+  max_hold_sessions: number | null; status: string; defaults_applied: boolean
+}
+export interface RowBaseline {
+  plan_id: string; plan_version: string; entry_low: string; entry_high: string; stop: string; target1: string
+  shares: number | null; status: string; active_chain: boolean
+}
+export interface OpenScenario { case: OpenCase; action: string; text: string }
+export interface VoidWhen { source: 'validity' | 'gap' | 'invalidation' | 'max_hold' | 'stop' | string; text: string; last_result?: string | null }
+export interface RowStatus {
+  label: string; execution: ExecutionStatus | null
+  execution_detail?: { date?: string | null; quantity?: number | string | null } | null
+  latest_review?: { outcome: string; decided_by: string | null; reason: string | null; session: string; via?: string | null } | null
+  today_signals?: string[]; changes_text?: string[]; diff?: { field: string; before: unknown; after: unknown }[]
+}
+export interface PlanNote { id: number; body: string; created_at: string; ticker?: string; chain_signal_date?: string | null; plan_id?: string | null; supersedes_id?: number | null }
+/** One `holding_status` row (§7.3 / §8.4); percentages are percent points (−5.2 = −5.20%). */
+export interface HoldingStatus {
+  ticker: string; session?: string; quantity: number | string; avg_cost: number | string; last_close: number | string | null
+  stop: number | string | null; stop_mode: 'initial' | 'trailing' | string | null
+  target1: number | string | null; t1_reached: boolean
+  to_stop_pct: number | string | null; to_t1_pct: number | string | null
+  held_sessions: number | null; max_hold_sessions: number | null; remaining_sessions: number | null
+  r_now: number | string | null; reached_1r: boolean | null
+  instruction: Instruction; exit_reason: string | null; reason: string | null
+  review_id?: number | null; plan_id?: string | null; chain_signal_date?: string | null
+  stale?: boolean; line?: string | null; detail?: Record<string, unknown> | null
+}
+export interface PlanTableRow {
+  row_id: string; group: RowGroup; ticker: string; pool: 'core' | 'extended' | 'screen' | string
+  chain: RowChain | null; plan: RowPlan | null; baseline: RowBaseline | null
+  open_scenarios: OpenScenario[]; void_when: VoidWhen[]; status: RowStatus
+  holding: HoldingStatus | null; notes: PlanNote[]
+  links: { plan: string | null; instrument: string }
+  ended_at?: string | null
+}
+export interface PlanTableGroups { entry: PlanTableRow[]; holding: PlanTableRow[]; ended: PlanTableRow[] }
+export interface PlanTableView {
+  session: string; groups: PlanTableGroups; other_units: Unit[]
+  counts?: Partial<Record<RowGroup, number>>; errors?: Record<string, string>
+}
+export interface HistoryLevels { entry_low: string; entry_high: string; stop: string; target1: string }
+export type HistoryKind = 'chain_open' | 'version' | 'retrigger' | 'review' | 'fill' | 'chain_end'
+export interface HistoryRow {
+  kind: HistoryKind; at: string; session: string; chain_signal_date: string | null; version_no?: number | null
+  levels?: HistoryLevels | null; validity?: { valid_from: string; valid_until: string } | null
+  diff?: { field: string; before: unknown; after: unknown }[] | null
+  changes?: ({ field?: string; text: string } | string)[] | null
+  reason?: string | null; decided_by?: string | null; signals_fired?: string[] | null
+  end?: unknown; text: string
+}
+export interface HistoryChain {
+  signal_date: string; state: string; versions: number; ended_at: string | null; end: unknown
+}
+export interface PlanHistoryView { ticker: string; rows: HistoryRow[]; chains: HistoryChain[] }
+export interface LinkablePlan {
+  plan_id: string; label: string; kind?: 'agent' | 'rule' | 'own'; chain_signal_date?: string | null
+  version_no?: number | null
+}
+export interface LinkablePlansView { ticker?: string; plans: LinkablePlan[]; default_plan_id: string | null }
+export interface OwnPlanBody extends OwnPlanInput { max_hold_sessions?: number }
+/** POST /trades (§6.1): at most one of `plan_id` / `own_plan`; `decision_id` is gone (400 `decision_link_retired`). */
+export interface TradeBody {
+  request_id: string; ticker: string; side: 'buy' | 'sell'; quantity: string; price: string; fee: string
+  executed_at: string; note: string | null; plan_id?: string | null; own_plan?: OwnPlanBody | null
+}
+export interface PlanNoteBody {
+  request_id: string; body: string; ticker?: string; chain_signal_date?: string; plan_id?: string
+}
+
+// ---- API (spec §9.1) ----
+
+const query = (params: Record<string, string | number | boolean | null | undefined>): string => {
+  const parts = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')
+    .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
+  return parts.length ? `?${parts.join('&')}` : ''
+}
+
+/** GET /plan-table?session=&include_extended= (read-only; `include_extended` is sent only when true). */
+export const getPlanTable = (session?: string, includeExtended = false) =>
+  request<PlanTableView>(`/api/workbench/plan-table${query({ session, include_extended: includeExtended ? 'true' : undefined })}`)
+/** GET /instruments/{ticker}/plan-history?include_reviews=&include_baselines= (each sent only when true). */
+export const getPlanHistory = (ticker: string, opts: { include_reviews?: boolean; include_baselines?: boolean } = {}) =>
+  request<PlanHistoryView>(`/api/workbench/instruments/${encodeURIComponent(ticker)}/plan-history${query({
+    include_reviews: opts.include_reviews ? 'true' : undefined, include_baselines: opts.include_baselines ? 'true' : undefined })}`)
+/** GET /holding-status?session= */
+export const getHoldingStatus = (session?: string) =>
+  request<{ session: string; rows: HoldingStatus[] }>(`/api/workbench/holding-status${query({ session })}`)
+/** GET /trades/linkable-plans?ticker=&executed_at= (executed_at is an ISO instant). */
+export const getLinkablePlans = (ticker: string, executedAt: string) =>
+  request<LinkablePlansView>(`/api/workbench/trades/linkable-plans${query({ ticker, executed_at: executedAt })}`)
+/** POST /plan-notes */
+export const postPlanNote = (body: PlanNoteBody) =>
+  post<{ status: string; record: PlanNote }>('/api/workbench/plan-notes', body)
+/** GET /plan-notes?ticker=&chain_signal_date=&plan_id= */
+export const getPlanNotes = (q: { ticker?: string; chain_signal_date?: string; plan_id?: string }) =>
+  request<{ notes: PlanNote[] }>(`/api/workbench/plan-notes${query(q)}`)
+
+// ---- one-line displays ----
+
+/** Percent points with two decimals and an explicit sign (U+2212 for minus, as the spec's example). */
+export function signedPct(value: number | string | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '—'
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '—'
+  return `${n < 0 ? '−' : '+'}${Math.abs(n).toFixed(2)}%`
+}
+function signedR(value: number | string | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '—'
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '—'
+  return `${n < 0 ? '−' : '+'}${Math.abs(n).toFixed(1)}R`
+}
+
+/** §7.3 one-line holding status: 「MU 持有 4/10 天 · 距止损 −5.20% · 距 T1 +8.10% · 现 +0.6R · 继续持有：<维持理由>」. */
+export function holdingLine(h: HoldingStatus): string {
+  if (h.line) return h.line
+  const parts: string[] = []
+  if (h.instruction === 'no_plan') {
+    parts.push(`${h.ticker} 持有 ${h.quantity} 股`)
+    if (h.to_stop_pct != null) parts.push(`距止损 ${signedPct(h.to_stop_pct)}`)
+  } else {
+    parts.push(`${h.ticker} 持有 ${h.held_sessions ?? '—'}/${h.max_hold_sessions ?? '—'} 天`)
+    parts.push(`距止损 ${signedPct(h.to_stop_pct)}`)
+    parts.push(h.t1_reached || h.to_t1_pct == null ? '已触 T1' : `距 T1 ${signedPct(h.to_t1_pct)}`)
+    parts.push(`现 ${signedR(h.r_now)}`)
+    if (h.reached_1r) parts.push('已到 1R，时间止损解除')
+  }
+  const head = parts.join(' · ')
+  const tail = h.reason ? `：${h.reason}` : ''
+  const verb = INSTRUCTION_TEXT[h.instruction] ?? h.instruction
+  return `${head} · ${verb}${tail}`
 }

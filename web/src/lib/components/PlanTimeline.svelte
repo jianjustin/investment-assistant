@@ -15,7 +15,6 @@
 
   const SHADOW_TEXT: Record<string, string> = { pending: '待成交', expired: '到期未成交', open: '持仓中', closed: '已平仓' }
   const LIST_TEXT: Record<string, string> = { invalidation: '失效', review_when: '复查' }
-  const VALID_OUTCOMES = ['maintain', 'revise', 'invalidate']
 
   let chain = $state<tl.Chain | null>(null)
   let error = $state('')
@@ -41,7 +40,9 @@
   onMount(() => { void load() })
 
   const current = $derived(chain?.versions.find(v => v.plan_id === currentPlanId) ?? null)
-  const active = $derived(chain ? tl.ACTIVE_STATES.includes(chain.state.state) : false)
+  // R10: only entry / holding chains are rechecked; an exiting chain has issued its exit instruction.
+  const active = $derived(chain ? tl.REVIEWABLE_STATES.includes(chain.state.state) : false)
+  const exiting = $derived(chain?.state.state === 'exiting')
 
   async function runRecheck() {
     if (!chain || recheck.busy) return
@@ -70,40 +71,38 @@
     }
   }
 
-  /** The last valid review that judged this version (its conditions belong to this version). */
-  const reviewOf = (v: tl.Version) =>
-    [...(chain?.reviews ?? [])].reverse().find(r => r.head_plan_id === v.plan_id && VALID_OUTCOMES.includes(r.outcome)) ?? null
+  const versionAgent = (v: tl.Version): tl.AgentView => tl.versionAgentView(chain!, v)
 
-  function versionAgent(v: tl.Version): tl.AgentView {
-    const r = reviewOf(v)
-    return {
-      id: v.run.id, status: v.run.status === 'pass' ? 'pass' : 'ok', model: v.run.model,
-      agent_version: v.run.agent_version, output: v.run.output, counter: v.run.counter, plan: v.plan,
-      input_tokens: v.run.input_tokens, output_tokens: v.run.output_tokens, created_at: v.created_at,
-      chain: {
-        version_no: v.version_no, head_plan_id: chain!.head_plan_id,
-        // 只有最新版带链状态（作废只作用于最新版）；旧版按入场期展示。
-        state: v.is_head ? chain!.state.state : 'entry', mode: chain!.state.mode, basis: chain!.state.basis,
-        latest_review: r ? { ...r, revision_status: (r.detail?.revision_status as string | undefined) ?? null,
-                             conditions: r.conditions ?? [] } : null,
-        cutoff_at: v.cutoff_at, diff: v.diff,
-      },
-      knowledge_refs: v.knowledge_refs ?? [],
-    } as tl.AgentView
+  // v2.9 §10.2: 入场类型、最长持有、执行状态三列；agent-2 版本没有执行字段，按默认值显示并注明（§5.5）
+  const executionParts = (v: tl.Version) => {
+    const defaulted = v.plan.entry_type == null
+    return [
+      `入场类型 ${wb.ENTRY_TYPE_TEXT[v.plan.entry_type ?? 'zone_limit']}`,
+      `最长持有 ${v.plan.max_hold_sessions ?? 10} 个交易日`,
+      `执行 ${v.execution ? wb.executionText(v.execution.status, v.execution) || '—' : '—'}`,
+      ...(defaulted ? [wb.DEFAULTS_APPLIED_TEXT] : []),
+    ]
   }
-
   const versionLine = (v: tl.Version) => [
     tl.ORIGIN_TEXT[v.origin] ?? v.origin, `生成 ${fmtBeijing(v.created_at)}`, `截止 ${fmtBeijing(v.cutoff_at)}`,
     `入场 ${v.plan.entry_low}–${v.plan.entry_high}`, `止损 ${v.plan.stop}`, `T1 ${v.plan.target1}`,
     `有效期至 ${v.plan.valid_until}`, `影子 ${v.shadow ? SHADOW_TEXT[v.shadow.status] ?? v.shadow.status : '—'}`,
+    ...executionParts(v),
     ...(v.plan.status === 'invalid' ? [`已作废（${v.plan.invalid_reasons.join('、')}）`] : []),
     ...(v.is_head ? ['最新'] : []), ...(v.plan_id === currentPlanId ? ['当前查看'] : []),
   ].join(' · ')
   const diffLine = (v: tl.Version) => (v.diff ?? []).map(d =>
     `${tl.CHANGE_FIELD_TEXT[d.field] ?? d.field} ${tl.diffValueText(d.field, d.before)} → ${tl.diffValueText(d.field, d.after)}`).join('；')
 
+  // 持仓期作废在 timeline-2 下是退出指令（spec §10.2），不再叫「作废」
+  const outcomeText = (r: tl.PlanReview) => {
+    if (!tl.isExitReview(r)) return tl.OUTCOME_TEXT[r.outcome] ?? r.outcome
+    const why = r.detail?.exit_reason as string | undefined
+    return why ? `退出指令（${wb.EXIT_REASON_TEXT[why] ?? why}）` : '退出指令'
+  }
+  const isRetrigger = (r: tl.PlanReview) => r.detail?.via === 'retrigger'
   const reviewHead = (r: tl.PlanReview) => [
-    r.session, tl.TRIGGER_TEXT[r.trigger] ?? r.trigger, tl.OUTCOME_TEXT[r.outcome] ?? r.outcome,
+    r.session, tl.TRIGGER_TEXT[r.trigger] ?? r.trigger, outcomeText(r),
     ...(r.decided_by ? [tl.DECIDED_BY_TEXT[r.decided_by] ?? r.decided_by] : []),
     `第 ${r.head_version_no ?? '?'} 版${r.new_version_no != null ? ` → 第 ${r.new_version_no} 版` : ''}`,
     fmtBeijing(r.created_at),
@@ -138,9 +137,13 @@
       <span class="text-xs text-muted">{chain.state.basis}</span>
       <button class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50"
               disabled={!active || recheck.busy}
-              title={active ? '' : '只有入场期或持仓期的链可以重新复查'} onclick={runRecheck}>重新复查</button>
+              title={exiting ? wb.CHAIN_EXITING_TEXT : active ? '' : '只有入场期或持仓期的链可以重新复查'} onclick={runRecheck}>重新复查</button>
       {#if recheck.text}<span class="text-xs">{recheck.text}</span>{/if}
     </div>
+
+    {#if chain.retriggers?.length}
+      <p class="text-xs text-muted">并入的单元：{chain.retriggers.map(r => `${r.unit_signal_date}（${r.rule_ids.map(wb.ruleLabel).join('、')}）`).join('；')}</p>
+    {/if}
 
     <ol aria-label="版本" class="space-y-2">
       {#each chain.versions as v (v.plan_id)}
@@ -158,12 +161,39 @@
     </ol>
     {#if callError}<p class="text-xs text-red-600">{callError}</p>{/if}
 
+    {#if chain.holding_status?.length}
+      <h3 class="font-semibold">持仓状态</h3>
+      <div class="overflow-x-auto">
+        <table aria-label="持仓状态" class="text-xs w-full min-w-[640px]">
+          <thead><tr class="text-left text-muted">
+            <th>日期</th><th>持有</th><th>收盘</th><th>止损</th><th>距止损</th><th>距 T1</th><th>现</th><th>指令</th><th>理由</th>
+          </tr></thead>
+          <tbody>
+            {#each chain.holding_status as h, i (`${h.session}|${i}`)}
+              <tr class="align-top border-t border-border" data-instruction={h.instruction}>
+                <td class="whitespace-nowrap">{h.session ?? '—'}</td>
+                <td>{h.held_sessions ?? '—'}/{h.max_hold_sessions ?? '—'} 天</td>
+                <td>{h.last_close ?? '—'}</td>
+                <td>{h.stop ?? '—'}{h.stop_mode ? `（${wb.STOP_MODE_TEXT[h.stop_mode] ?? h.stop_mode}）` : ''}</td>
+                <td>{wb.signedPct(h.to_stop_pct)}</td>
+                <td>{h.t1_reached ? '已触 T1' : wb.signedPct(h.to_t1_pct)}</td>
+                <td>{h.r_now == null ? '—' : `${Number(h.r_now) < 0 ? '−' : '+'}${Math.abs(Number(h.r_now)).toFixed(1)}R`}{h.reached_1r ? '（已到 1R，时间止损解除）' : ''}</td>
+                <td class={h.instruction === 'exit' ? 'text-red-600 font-semibold' : h.instruction === 'sell_half' ? 'text-orange-600 font-semibold' : ''}>{wb.INSTRUCTION_TEXT[h.instruction] ?? h.instruction}{h.exit_reason ? `（${wb.EXIT_REASON_TEXT[h.exit_reason] ?? h.exit_reason}）` : ''}</td>
+                <td>{h.reason ?? ''}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+
     <h3 class="font-semibold">复查记录</h3>
     {#if chain.reviews.length}
       <ol aria-label="复查记录" class="space-y-2">
         {#each chain.reviews as r (r.id)}
           <li class="border-l-2 border-border pl-2 space-y-0.5">
             <p class="font-medium">{reviewHead(r)} <span class="text-xs font-normal"><ConceptTerm id={T.outcome}>复查结论</ConceptTerm></span></p>
+            {#if isRetrigger(r)}<p class="text-xs text-amber-700">{tl.retriggerText(r, chain?.retriggers, wb.ruleLabel)}</p>{/if}
             {#if reviewReason(r)}<p>{reviewReason(r)}</p>{/if}
             {#if r.outcome !== 'skipped'}
               <p class="text-xs text-muted">信号：{firedText(r)} <ConceptTerm id={T.signals}>信号说明</ConceptTerm></p>

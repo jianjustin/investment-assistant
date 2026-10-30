@@ -148,7 +148,7 @@ describe('PlanTimeline', () => {
     await waitFor(() => expect(calls.filter(c => c.url === '/api/workbench/chains/NVDA/2026-10-22').length).toBe(2))
     unmount()
 
-    for (const state of ['expired', 'invalidated', 'position_closed', 'closed_by_decision']) {
+    for (const state of ['expired', 'invalidated', 'position_closed', 'closed_by_decision', 'exiting', 'superseded']) {
       respond = async () => json(chain({ state: { state, mode: null, basis: '已结束' } }))
       const r = render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
       expect(await screen.findByRole('button', { name: '重新复查' })).toBeDisabled()
@@ -243,5 +243,98 @@ describe('PlanTimeline', () => {
     const refs = await screen.findByRole('region', { name: '引用的知识' })
     expect(within(refs).getByRole('link', { name: 'know:3@1' })).toHaveAttribute('href', '#knowledge/mine/3@1')
     expect(refs).toHaveTextContent('当前已是第 2 版')
+  })
+
+  // ---- v2.9: three execution columns, retrigger / exit wording, holding status ----
+
+  const v3Plan = (id: string, over: Record<string, unknown> = {}) => planRow(id, {
+    plan_version: 'agent-3', entry_type: 'breakout_stop', max_hold_sessions: 12, ...over })
+
+  it('adds entry type, max hold and execution status to every version row (agent-2 rows get the defaults note)', async () => {
+    const base = chain()
+    respond = async () => json(chain({ versions: [
+      { ...base.versions[0], plan: planRow('p0') },
+      { ...base.versions[1], plan: v3Plan('p1'), execution: { status: 'adopted', date: '10-24', quantity: 120 } }] }))
+    render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
+    const rows = (await screen.findByRole('list', { name: '版本' })).querySelectorAll(':scope > li')
+    expect(rows[0]).toHaveTextContent('入场类型 区间限价 · 最长持有 10 个交易日 · 执行 — · 旧版计划，执行字段按默认值显示')
+    expect(rows[1]).toHaveTextContent('入场类型 突破买入 · 最长持有 12 个交易日 · 执行 已采纳（10-24 成交 120 股）')
+    expect(rows[1]).not.toHaveTextContent('旧版计划')
+  })
+
+  it('shows execution states of the other kinds', async () => {
+    const base = chain()
+    respond = async () => json(chain({ versions: [
+      { ...base.versions[0], plan: v3Plan('p0', { entry_type: 'next_open' }), execution: { status: 'not_executed' } },
+      { ...base.versions[1], plan: v3Plan('p1'), execution: { status: 'pending' } }] }))
+    render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
+    const rows = (await screen.findByRole('list', { name: '版本' })).querySelectorAll(':scope > li')
+    expect(rows[0]).toHaveTextContent('入场类型 次日开盘')
+    expect(rows[0]).toHaveTextContent('执行 未执行')
+    expect(rows[1]).toHaveTextContent('执行 入场期，未成交')
+  })
+
+  it('writes a retrigger review as 「再次触发（规则，信号日）→ 直接修订」 and lists the merged units', async () => {
+    respond = async () => json(chain({
+      retriggers: [{ unit_signal_date: '2026-10-23', rule_ids: ['trend_reclaim'] }],
+      reviews: [review({ session: '2026-10-23', detail: { via: 'retrigger' } })] }))
+    render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
+    const row = (await screen.findByRole('list', { name: '复查记录' })).querySelectorAll(':scope > li')[0]
+    expect(row).toHaveTextContent('再次触发（趋势回踩修复，2026-10-23）→ 直接修订')
+    expect(screen.getByText('并入的单元：2026-10-23（趋势回踩修复）')).toBeInTheDocument()
+  })
+
+  it('a holding-period invalidation under timeline-2 reads as an exit instruction with its reason', async () => {
+    respond = async () => json(chain({
+      state: { state: 'exiting', mode: 'holding', basis: '退出期' },
+      reviews: [
+        review({ mode: 'holding', timeline_version: 'timeline-2', outcome: 'invalidate', decided_by: 'host',
+                 reason: '止损触及（91.00）：应已按止损卖出；仍持有则次一交易日开盘卖出', new_plan_id: null,
+                 new_version_no: null, detail: { exit_reason: 'stop_touched' } }),
+        review({ id: 14, mode: 'entry', timeline_version: 'timeline-1', outcome: 'invalidate', decided_by: 'host',
+                 reason: '失效条件成立', new_plan_id: null, new_version_no: null })] }))
+    render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
+    const rows = (await screen.findByRole('list', { name: '复查记录' })).querySelectorAll(':scope > li')
+    expect(rows[0]).toHaveTextContent('退出指令（止损触及）')
+    expect(rows[0]).not.toHaveTextContent('作废')
+    expect(rows[1]).toHaveTextContent('作废')
+    expect(screen.getAllByText('退出期').length).toBeGreaterThan(0)
+    const button = screen.getByRole('button', { name: '重新复查' })
+    expect(button).toBeDisabled()
+    expect(button).toHaveAttribute('title', '这条链已发出退出指令，不再复查')
+  })
+
+  it('lists the chain holding status, one row per day', async () => {
+    const h = (over: Record<string, unknown>) => ({
+      ticker: 'NVDA', session: '2026-10-27', quantity: 10, avg_cost: '100.00', last_close: '104.00', stop: '95.00',
+      stop_mode: 'initial', target1: '108.00', t1_reached: false, to_stop_pct: -8.65, to_t1_pct: 3.85, held_sessions: 2,
+      max_hold_sessions: 10, remaining_sessions: 8, r_now: 0.8, reached_1r: false, instruction: 'hold', exit_reason: null,
+      reason: '无新信号', ...over })
+    respond = async () => json(chain({ state: { state: 'holding', mode: 'holding', basis: '持仓中' }, holding_status: [
+      h({}), h({ session: '2026-10-28', held_sessions: 3, instruction: 'sell_half', t1_reached: true, to_t1_pct: null, stop_mode: 'trailing', reached_1r: true }),
+      h({ session: '2026-10-29', instruction: 'exit', exit_reason: 'time_stop', reason: '时间止损' })] }))
+    render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
+    const table = await screen.findByRole('table', { name: '持仓状态' })
+    const rows = table.querySelectorAll('tbody tr')
+    expect(rows).toHaveLength(3)
+    expect(rows[0]).toHaveTextContent('2026-10-27')
+    expect(rows[0]).toHaveTextContent('2/10 天')
+    expect(rows[0]).toHaveTextContent('95.00（初始）')
+    expect(rows[0]).toHaveTextContent('−8.65%')
+    expect(rows[0]).toHaveTextContent('+3.85%')
+    expect(rows[0]).toHaveTextContent('+0.8R')
+    expect(rows[0]).toHaveTextContent('继续持有')
+    expect(rows[1]).toHaveTextContent('已触 T1')
+    expect(rows[1]).toHaveTextContent('95.00（移动）')
+    expect(rows[1]).toHaveTextContent('已到 1R，时间止损解除')
+    expect(rows[1]).toHaveTextContent('到 T1：卖出一半，余下按移动止损')
+    expect(rows[2]).toHaveTextContent('次一交易日开盘卖出（时间止损）')
+    expect(rows[2].querySelector('td.text-red-600')).not.toBeNull()
+  })
+
+  it('has no holding status section while the chain is in its entry period', async () => {
+    render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
+    await screen.findByRole('list', { name: '版本' })
+    expect(screen.queryByRole('table', { name: '持仓状态' })).toBeNull()
   })
 })

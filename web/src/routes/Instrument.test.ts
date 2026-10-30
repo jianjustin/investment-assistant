@@ -65,12 +65,10 @@ it('shows 我的补充 and agent chains list', async () => {
   expect(await screen.findByRole('heading', { name: '我的补充' })).toBeInTheDocument()
   const list = await screen.findByRole('list', { name: 'Agent 计划' })
   const rows = list.querySelectorAll(':scope > li')
-  expect(rows).toHaveLength(1)                       // 进行中的链；已结束的另在折叠里
+  expect(rows).toHaveLength(1)                       // 进行中的链；已结束的在计划历史里
   expect(rows[0]).toHaveTextContent('2026-10-22 · 持仓期 · 第 2 版 · 最近复查 维持 · 系统规则')
   expect(rows[0].querySelector('a')!.getAttribute('href')).toBe('#plan/hp-1')
-  const ended = screen.getByRole('list', { name: '已结束的链', hidden: true })
-  expect(ended.closest('details')).not.toHaveAttribute('open')
-  expect(ended.querySelectorAll(':scope > li')[0]).toHaveTextContent('2026-10-10 · 已到期 · 第 0 版 · 尚未复查')
+  expect(screen.queryByRole('list', { name: '已结束的链', hidden: true })).toBeNull()      // replaced by the plan history
   expect(urls).toContain('/api/workbench/chains?ticker=NVDA')
   expect(urls).toContain('/api/workbench/user-inputs?ticker=NVDA')
   // 只有有效链（入场期 / 持仓期）可以作为补充的作用对象
@@ -465,19 +463,104 @@ it('holding without a plan and a failed holding block', async () => {
   expect(screen.queryByLabelText('持仓止损')).toBeNull()
 })
 
-it('ended chains keep their latest review reason', async () => {
+// ---- v2.9: plan history (spec §10.3) ----
+
+const historyRows = [
+  { kind: 'chain_open', at: '2026-10-10T22:30:00Z', session: '2026-10-10', chain_signal_date: '2026-10-10',
+    text: '新开链 NVDA·10-10：规则 趋势回踩修复；此前没有计划链' },
+  { kind: 'version', at: '2026-10-10T22:31:00Z', session: '2026-10-10', chain_signal_date: '2026-10-10', version_no: 0,
+    levels: { entry_low: '98.50', entry_high: '101.50', stop: '95.00', target1: '108.00' }, text: '第 0 版' },
+  { kind: 'chain_end', at: '2026-10-20T22:30:00Z', session: '2026-10-20', chain_signal_date: '2026-10-10',
+    end: { kind: 'invalidated' }, text: '作废：失效条件成立：收盘跌破 95.00' },
+]
+const withHistory = (history: (url: string) => Response) => vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  urls.push(String(url))
+  if (String(url).startsWith('/api/watchlist')) return json({ rows: [{ ticker: 'NVDA' }] })
+  if (String(url).startsWith('/api/us-research/')) return json(fundamentalsView('NVDA'))
+  if (String(url).startsWith('/api/workbench/chains?')) return json(chainsView)
+  if (String(url).startsWith('/api/workbench/user-inputs')) return json({ inputs: [] })
+  if (String(url).includes('/plan-history')) return history(String(url))
+  return json(richView('NVDA'))
+}))
+
+it('plan history is the last part of 信号与计划 and replaces the ended-chain fold', async () => {
+  withHistory(() => json({ ticker: 'NVDA', rows: historyRows, chains: [
+    { signal_date: '2026-10-10', state: 'invalidated', versions: 1, ended_at: '2026-10-20', end: { kind: 'invalidated' } }] }))
+  render(Instrument, { sub: 'NVDA' })
+  const section = await screen.findByRole('region', { name: '计划历史' })
+  expect(await within(section).findByText('作废：失效条件成立：收盘跌破 95.00')).toBeInTheDocument()
+  expect(within(section).getByRole('table', { name: '计划历史' })).toHaveTextContent('NVDA·10-10 第 0 版')
+  expect(urls).toContain('/api/workbench/instruments/NVDA/plan-history')
+  const parent = screen.getByRole('region', { name: '信号与计划' })
+  expect(parent.contains(section)).toBe(true)
+  expect(parent.lastElementChild).toBe(section)
+  expect(screen.queryByText(/已结束的链/)).toBeNull()
+})
+
+it('the two history switches re-request with query parameters', async () => {
+  withHistory(() => json({ ticker: 'NVDA', rows: historyRows, chains: [] }))
+  render(Instrument, { sub: 'NVDA' })
+  const section = await screen.findByRole('region', { name: '计划历史' })
+  await fireEvent.click(await within(section).findByRole('checkbox', { name: '显示每日维持的复查' }))
+  await waitFor(() => expect(urls).toContain('/api/workbench/instruments/NVDA/plan-history?include_reviews=true'))
+  await fireEvent.click(within(section).getByRole('checkbox', { name: '显示规则基线' }))
+  await waitFor(() => expect(urls).toContain('/api/workbench/instruments/NVDA/plan-history?include_reviews=true&include_baselines=true'))
+})
+
+it('an exiting chain stays in the live list but cannot be rechecked', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     if (String(url).startsWith('/api/watchlist')) return json({ rows: [{ ticker: 'NVDA' }] })
     if (String(url).startsWith('/api/us-research/')) return json(fundamentalsView('NVDA'))
     if (String(url).startsWith('/api/workbench/chains?')) return json({ ticker: 'NVDA', chains: [
-      { signal_date: '2026-10-10', state: 'invalidated', mode: null, version_no: 1, head_plan_id: 'hp-0',
-        latest_review: { outcome: 'invalidate', decided_by: 'agent', created_at: '2026-10-20T22:40:00Z', reason: '失效条件成立：收盘跌破 95.00' } }] })
+      { signal_date: '2026-10-22', state: 'exiting', mode: 'holding', version_no: 2, head_plan_id: 'hp-1', latest_review: null }] })
     if (String(url).startsWith('/api/workbench/user-inputs')) return json({ inputs: [] })
+    if (String(url).includes('/plan-history')) return json({ ticker: 'NVDA', rows: [], chains: [] })
     return json(richView('NVDA'))
   }))
   render(Instrument, { sub: 'NVDA' })
-  const ended = await screen.findByRole('list', { name: '已结束的链', hidden: true })
-  expect(ended).toHaveTextContent('失效条件成立：收盘跌破 95.00')
+  const list = await screen.findByRole('list', { name: 'Agent 计划' })
+  expect(list).toHaveTextContent('退出期')
+  const button = within(list).getByRole('button', { name: '重新复查' })
+  expect(button).toBeDisabled()
+  expect(button).toHaveAttribute('title', '这条链已发出退出指令，不再复查')
+  // my input can only target a reviewable chain
+  const scope = screen.getByLabelText('作用于') as HTMLSelectElement
+  expect([...scope.options].map(o => o.textContent)).toEqual(['整个标的'])
+})
+
+it('a failing plan history only affects its own part (migration 029 text on a 503)', async () => {
+  withHistory(() => json({ error: 'migration_029_missing' }, 503))
+  render(Instrument, { sub: 'NVDA' })
+  const section = await screen.findByRole('region', { name: '计划历史' })
+  expect(await within(section).findByText('计划历史暂不可用：迁移 029 未执行')).toBeInTheDocument()
+  expect(await screen.findByRole('list', { name: 'Agent 计划' })).toBeInTheDocument()
+  expect(screen.getByTestId('instrument-chart')).toBeInTheDocument()
+})
+
+it('an older backend without plan-history just shows the empty history', async () => {
+  render(Instrument, { sub: 'NVDA' })          // the default stub answers every unknown url with the instrument view
+  const section = await screen.findByRole('region', { name: '计划历史' })
+  expect(await within(section).findByText('该标的还没有计划历史')).toBeInTheDocument()
+})
+
+it('trade rows in the 历史 timeline name the plan version they followed', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (String(url).startsWith('/api/watchlist')) return json({ rows: [{ ticker: 'NVDA' }] })
+    if (String(url).startsWith('/api/us-research/')) return json(fundamentalsView('NVDA'))
+    if (String(url).startsWith('/api/workbench/chains?')) return json({ ticker: 'NVDA', chains: [] })
+    if (String(url).startsWith('/api/workbench/user-inputs')) return json({ inputs: [] })
+    if (String(url).includes('/plan-history')) return json({ ticker: 'NVDA', rows: [], chains: [] })
+    return json({ ...richView('NVDA'), trades: [
+      { id: 't1', ticker: 'NVDA', side: 'buy', quantity: 10, price: 100.1, fee: 0, executed_at: '2026-10-23T14:00:00Z',
+        decision_id: null, note: null, recorded_at: '2026-10-23T15:00:00Z', voided_at: null, void_reason: null,
+        plan_id: 'hp-1', plan_label: 'Agent NVDA·10-22 第 2 版' },
+      { id: 't2', ticker: 'NVDA', side: 'buy', quantity: 5, price: 99, fee: 0, executed_at: '2026-10-02T14:00:00Z',
+        decision_id: 'd9', note: null, recorded_at: '2026-10-02T15:00:00Z', voided_at: null, void_reason: null }] })
+  }))
+  render(Instrument, { sub: 'NVDA' })
+  const history = await screen.findByRole('region', { name: '历史' })
+  expect(history).toHaveTextContent('买入 10 @ 100.1 · 关联计划：Agent NVDA·10-22 第 2 版')
+  expect(history).toHaveTextContent('买入 5 @ 99 · 关联旧决定')
 })
 
 // ---- v2.7: 我的知识 and 就此讨论 ----

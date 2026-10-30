@@ -305,3 +305,49 @@ describe('AgentPlanCard · v2.7 growth loop', () => {
     expect(screen.queryByRole('button', { name: '就此计划讨论' })).toBeNull()
   })
 })
+
+describe('AgentPlanCard · executable fields (v2.9)', () => {
+  const v3 = (over: Record<string, any> = {}, planOver: Record<string, unknown> = {}) => agent2({
+    agent_version: 'agent-3', plan: agentPlan({ plan_version: 'agent-3', entry_type: 'breakout_stop', max_hold_sessions: 14, ...planOver }),
+    ...over })
+
+  it('shows the entry type and the max hold of an agent-3 version', async () => {
+    render(AgentPlanCard, { agent: v3() as any, onCall: () => {} })
+    expect(await screen.findByText('入场类型 突破买入 · 最长持有 14 个交易日')).toBeInTheDocument()
+  })
+
+  it('an agent-2 version shows the defaults and says so', async () => {
+    render(AgentPlanCard, { agent: agent2() as any, onCall: () => {} })
+    expect(await screen.findByText('入场类型 区间限价 · 最长持有 10 个交易日 · 旧版计划，执行字段按默认值显示')).toBeInTheDocument()
+  })
+
+  it('marks the entry fields as not applicable in the holding period', async () => {
+    const base = v3()
+    render(AgentPlanCard, { agent: { ...base, chain: { ...base.chain, mode: 'holding', state: 'holding' } } as any, onCall: () => {} })
+    expect(await screen.findByText('入场类型 突破买入 · 最长持有 14 个交易日 · 入场类型与区间持仓期不适用')).toBeInTheDocument()
+  })
+
+  it('an exiting chain says the exit instruction is out and no more reviews follow', async () => {
+    const base = v3()
+    render(AgentPlanCard, { agent: { ...base, chain: { ...base.chain, mode: 'holding', state: 'exiting' } } as any, onCall: () => {} })
+    expect(await screen.findByText(/退出期：已发出退出指令（次一交易日开盘卖出），不再复查/)).toBeInTheDocument()
+  })
+
+  it('a renewal diff lists the host-only fields with a mark', async () => {
+    const base = v3()
+    render(AgentPlanCard, { agent: { ...base, output: { ...base.output, changes: [] }, chain: { ...base.chain, diff: [
+      { field: 'valid_until', before: '2026-10-28', after: '2026-11-03', host_only: true },
+      { field: 'entry_cap', before: '2026-11-05', after: '2026-11-12', host_only: true }] } } as any, onCall: () => {} })
+    const region = await screen.findByRole('region', { name: '相对第 0 版' })
+    expect(region).toHaveTextContent('有效期至 2026-10-28 → 2026-11-03（宿主）')
+    expect(region).toHaveTextContent('入场期上限 2026-11-05 → 2026-11-12（宿主）')
+  })
+
+  it('has no decision form', async () => {
+    render(AgentPlanCard, { agent: v3() as any, onCall: () => {} })
+    await screen.findByRole('region', { name: 'Agent 计划' })
+    expect(screen.queryByRole('button', { name: '提交决定' })).toBeNull()
+    expect(screen.queryByLabelText('理由')).toBeNull()
+  })
+})
+

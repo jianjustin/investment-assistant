@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CONDITION_RESULT_TEXT, DECIDED_BY_TEXT, MODE_TEXT, ORIGIN_TEXT, OUTCOME_TEXT, SIGNAL_TEXT,
-  conditionText, recheckConflictText, revisionFailureText, staleText, staleVersion,
+  ACTIVE_STATES, CHAIN_STATE_TEXT, CONDITION_RESULT_TEXT, DECIDED_BY_TEXT, MODE_TEXT, ORIGIN_TEXT, OUTCOME_TEXT,
+  REVIEWABLE_STATES, SIGNAL_TEXT, conditionText, isExitReview, recheckConflictText, retriggerText,
+  revisionFailureText, versionAgentView,
 } from './timeline'
-import { WorkbenchError } from './workbench'
+import { ruleLabel } from './workbench'
 
 // 模板与后端 investment_assistant/workbench/agent/conditions.py 的 CONDITIONS / describe 逐字一致。
 describe('conditionText', () => {
@@ -43,16 +44,7 @@ describe('texts', () => {
     expect(ORIGIN_TEXT).toEqual({ signal: '信号日', review: '每日复查', recheck: '重新复查' })
     expect(CONDITION_RESULT_TEXT).toEqual({ met: '成立', not_met: '未成立', unknown: '无法判定' })
     expect(Object.keys(SIGNAL_TEXT).sort()).toEqual(['abnormal_move', 'expiry_near', 'new_8k', 'regime_change',
-      'stop_touched', 't1_touched', 'user_input'])
-  })
-
-  it('reads the stale version from the reason code or the sentence', () => {
-    expect(staleVersion(new WorkbenchError('agent_plan_stale: Agent 计划已更新到第 2 版，请刷新后再决定', 409))).toBe(2)
-    expect(staleVersion(new WorkbenchError('agent_plan_stale: 3', 409))).toBe(3)
-    expect(staleVersion(new WorkbenchError('Agent 计划已更新到第 4 版，请刷新后再决定', 409))).toBe(4)
-    expect(staleVersion(new WorkbenchError('newer decision', 409))).toBeNull()
-    expect(staleVersion(new WorkbenchError('agent_plan_stale: 2', 400))).toBeNull()
-    expect(staleText(2)).toBe('Agent 计划已更新到第 2 版，请刷新后再决定')
+      'retrigger', 'stop_touched', 't1_touched', 'user_input'])
   })
 
   it('explains failed revisions and recheck conflicts', () => {
@@ -65,5 +57,39 @@ describe('texts', () => {
     expect(recheckConflictText('review_in_progress')).toBe('正在复查')
     expect(recheckConflictText('agent_unavailable: disabled')).toBe('Agent 不可用：已关闭')
     expect(recheckConflictText('chain_not_active')).toContain('不在入场期或持仓期')
+    expect(recheckConflictText('chain_exiting')).toBe('这条链已发出退出指令，不再复查')
+  })
+})
+
+describe('timeline-2 (v2.9)', () => {
+  it('has nine chain states and splits reviewable from active', () => {
+    expect(Object.keys(CHAIN_STATE_TEXT).sort()).toEqual(['closed_by_decision', 'entry', 'exiting', 'expired', 'holding',
+      'invalidated', 'legacy', 'position_closed', 'superseded'])
+    expect(CHAIN_STATE_TEXT.exiting).toBe('退出期')
+    expect(REVIEWABLE_STATES).toEqual(['entry', 'holding'])
+    expect(ACTIVE_STATES).toEqual(['entry', 'holding', 'exiting'])
+  })
+
+  it('reads a holding invalidate under timeline-2 as an exit instruction', () => {
+    expect(isExitReview({ mode: 'holding', outcome: 'invalidate', timeline_version: 'timeline-2' })).toBe(true)
+    expect(isExitReview({ mode: 'holding', outcome: 'invalidate', timeline_version: 'timeline-1' })).toBe(false)
+    expect(isExitReview({ mode: 'entry', outcome: 'invalidate', timeline_version: 'timeline-2' })).toBe(false)
+  })
+
+  it('writes the retrigger sentence with the merged rules and date', () => {
+    const r = { session: '2026-10-30' } as any
+    expect(retriggerText(r, [{ unit_signal_date: '2026-10-30', rule_ids: ['trend_reclaim'] }], ruleLabel))
+      .toBe('再次触发（趋势回踩修复，2026-10-30）→ 直接修订')
+    expect(retriggerText(r, [], ruleLabel)).toBe('再次触发→ 直接修订')
+  })
+
+  it('builds the head Agent block from a chain view', () => {
+    const chain = { head_plan_id: 'p1', state: { state: 'holding', mode: 'holding', basis: 'b' }, reviews: [] } as any
+    const v = { version_no: 1, plan_id: 'p1', is_head: true, cutoff_at: 'c', created_at: 'x', diff: null,
+      plan: { id: 'p1' }, run: { id: 'r', status: 'ok', model: 'm', agent_version: 'agent-3', output: null, counter: null,
+        input_tokens: 1, output_tokens: 1 } } as any
+    const view = versionAgentView(chain, v) as any
+    expect(view.chain).toMatchObject({ version_no: 1, state: 'holding', head_plan_id: 'p1' })
+    expect(versionAgentView(chain, { ...v, is_head: false } as any).chain!.state).toBe('entry')
   })
 })

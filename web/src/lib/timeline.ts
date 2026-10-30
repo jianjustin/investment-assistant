@@ -1,9 +1,13 @@
 /** v2.5 plan timeline: chain / version / review types and their Chinese labels (spec §4, §5, §7, §11). */
-import { AGENT_REASON_TEXT, WorkbenchError } from './workbench'
-import type { AgentRunFailed, AgentRunOk, Plan, PlanShadowOutcome } from './workbench'
+import { AGENT_REASON_TEXT, CHAIN_EXITING_TEXT, ENTRY_TYPE_TEXT } from './workbench'
+import type {
+  AgentRunFailed, AgentRunOk, EntryType, ExecutionStatus, HoldingStatus, Plan, PlanNote, PlanShadowOutcome, RowRetrigger,
+} from './workbench'
 import type { KnowledgeRefItem } from './growth'
 
-export type ChainState = 'legacy' | 'invalidated' | 'closed_by_decision' | 'holding' | 'position_closed' | 'expired' | 'entry'
+// timeline-2 (v2.9 §4.1) adds `exiting` and `superseded`
+export type ChainState = 'legacy' | 'invalidated' | 'closed_by_decision' | 'exiting' | 'holding' | 'position_closed'
+  | 'superseded' | 'expired' | 'entry'
 export type ChainMode = 'entry' | 'holding'
 export type Outcome = 'maintain' | 'revise' | 'invalidate' | 'skipped' | 'error'
 export type DecidedBy = 'agent' | 'host'
@@ -19,7 +23,7 @@ export interface ConditionResult {
   result: ConditionResultValue; detail?: string | null
 }
 export interface Signal { kind: string; fired: boolean; detail?: string | null; evidence?: unknown }
-export interface DiffItem { field: string; before: unknown; after: unknown }
+export interface DiffItem { field: string; before: unknown; after: unknown; host_only?: boolean }
 export interface Change { field: string; text: string; refs: string[] }
 
 /** `latest_review` of the today / chain views; `conditions` only where the backend sends the full row. */
@@ -65,6 +69,8 @@ export interface Version {
   cutoff_at: string; as_of_session: string; created_at: string; is_head: boolean
   diff: DiffItem[] | null; changes: Change[]; plan: Plan; run: VersionRun; shadow: PlanShadowOutcome | null
   knowledge_refs?: KnowledgeRefItem[]
+  // v2.9 §10.2: execution state of this version (execution-1); absent on an older backend
+  execution?: { status: ExecutionStatus; date?: string | null; quantity?: number | string | null } | null
 }
 
 export interface UserInput {
@@ -80,9 +86,11 @@ export interface UserInputBody {
 /** GET /api/workbench/chains/{ticker}/{signal_date}. */
 export interface Chain {
   ticker: string; signal_date: string; session: string
-  state: { state: ChainState; mode: ChainMode | null; basis: string }
+  state: { state: ChainState; mode: ChainMode | null; basis: string; active?: boolean; timeline_version?: string }
   head_plan_id: string; version_no: number; latest_review: LatestReview | null; shadow_version: string
   versions: Version[]; reviews: PlanReview[]; inputs: UserInput[]
+  // v2.9 §9.1: merged units, the chain's holding_status rows and plan notes
+  retriggers?: RowRetrigger[]; holding_status?: HoldingStatus[]; notes?: PlanNote[]
 }
 
 /** today()['chains'] rows (§10.2). */
@@ -105,7 +113,7 @@ export const OUTCOME_TEXT: Record<Outcome, string> = {
 export const DECIDED_BY_TEXT: Record<DecidedBy, string> = { agent: 'Agent', host: '系统规则' }
 export const SIGNAL_TEXT: Record<string, string> = {
   new_8k: '新 8-K', abnormal_move: '异常波动', stop_touched: '触及止损', t1_touched: '触及 T1',
-  expiry_near: '临近到期', regime_change: '区制变化', user_input: '新的用户输入',
+  expiry_near: '临近到期', regime_change: '区制变化', user_input: '新的用户输入', retrigger: '再次触发',
 }
 export const MODE_TEXT: Record<ChainMode, string> = { entry: '入场期', holding: '持仓期' }
 export const ORIGIN_TEXT: Record<Origin, string> = { signal: '信号日', review: '每日复查', recheck: '重新复查' }
@@ -113,16 +121,20 @@ export const CONDITION_RESULT_TEXT: Record<ConditionResultValue, string> = { met
 export const TRIGGER_TEXT: Record<string, string> = { batch: '批处理', recheck: '重新复查' }
 export const CHAIN_STATE_TEXT: Record<ChainState, string> = {
   entry: '入场期', holding: '持仓期', invalidated: '已作废', closed_by_decision: '已决定不买',
-  position_closed: '已平仓', expired: '已到期', legacy: '旧版',
+  position_closed: '已平仓', expired: '已到期', legacy: '旧版', exiting: '退出期', superseded: '被取代',
 }
 export const CHANGE_FIELD_TEXT: Record<string, string> = {
   action: '动作', entry: '入场区间', stop: '止损', target1: 'T1', thesis: '论点', invalidation: '失效条件',
   review_when: '复查条件',
+  // agent-3 (v2.9 §5.5): model fields and the two host-only fields
+  entry_type: '入场类型', max_hold_sessions: '最长持有', valid_until: '有效期至', entry_cap: '入场期上限',
 }
 export const USER_INPUT_KIND_TEXT: Record<UserInputKind, string> = {
   research: '研报要点', news: '新闻', judgment: '我的判断', other: '其他', retract: '撤回',
 }
-export const ACTIVE_STATES: ChainState[] = ['entry', 'holding']
+// R10: reviews and rechecks only cover entry / holding; uniqueness and retriggers also count `exiting`.
+export const REVIEWABLE_STATES: ChainState[] = ['entry', 'holding']
+export const ACTIVE_STATES: ChainState[] = ['entry', 'holding', 'exiting']
 
 // --- condition text: the same templates and param rendering as backend conditions.describe ---
 
@@ -187,15 +199,6 @@ export function conditionText(kind: string, params: Record<string, unknown> | nu
 
 // --- messages ---
 
-/** The head version number from a 409 `agent_plan_stale` (reason code or the backend sentence); else null. */
-export function staleVersion(error: unknown): number | null {
-  if (!(error instanceof WorkbenchError) || error.status !== 409) return null
-  const match = /agent_plan_stale:\s*(\d+)/.exec(error.message) ?? /Agent 计划已更新到第\s*(\d+)\s*版/.exec(error.message)
-  return match ? Number(match[1]) : null
-}
-
-export const staleText = (versionNo: number) => `Agent 计划已更新到第 ${versionNo} 版，请刷新后再决定`
-
 /** Reason text of a failed revision (`detail.revision_status` = '<status>: <reason>'). */
 export function revisionReasonText(status: string): string {
   const [head, ...rest] = status.split(': ')
@@ -232,6 +235,7 @@ export function recheckDoneText(run: { status: string; result?: unknown; error?:
 /** 409 reasons of POST …/recheck in Chinese. */
 export function recheckConflictText(reason: string): string {
   if (reason === 'chain_not_active') return '这条链不在入场期或持仓期'
+  if (reason.startsWith('chain_exiting')) return CHAIN_EXITING_TEXT
   if (reason.startsWith('agent_unavailable')) {
     const why = reason.split(':').slice(1).join(':').trim()
     return `Agent 不可用${why ? `：${AGENT_REASON_TEXT[why] ?? why}` : ''}`
@@ -242,6 +246,7 @@ export function recheckConflictText(reason: string): string {
 /** Text of a host diff side: entry pairs, condition lists and thesis lists rendered for reading. */
 export function diffValueText(field: string, value: unknown): string {
   if (value === null || value === undefined) return '—'
+  if (field === 'entry_type' && typeof value === 'string') return ENTRY_TYPE_TEXT[value as EntryType] ?? value
   if (Array.isArray(value)) {
     if (field === 'invalidation' || field === 'review_when')
       return value.map(c => conditionText((c as Condition)?.kind, (c as Condition)?.params)).join('；') || '无'
@@ -251,3 +256,35 @@ export function diffValueText(field: string, value: unknown): string {
 }
 
 export const isCallRef = (ref: string) => ref.startsWith('call:')
+
+/** §6.1 / 10.2: a review whose host verdict ended a holding chain reads as an exit instruction, not 「作废」. */
+export const isExitReview = (r: Pick<PlanReview, 'mode' | 'outcome' | 'timeline_version'>) =>
+  r.mode === 'holding' && r.outcome === 'invalidate' && r.timeline_version === 'timeline-2'
+
+/** Plan page review head: 「再次触发（<规则>，<信号日>）→ 直接修订」 for `via = retrigger` (spec §10.2). */
+export function retriggerText(r: PlanReview, retriggers: RowRetrigger[] | undefined, ruleLabel: (id: string) => string): string {
+  const hit = (retriggers ?? []).find(x => x.unit_signal_date === r.session)
+  const rules = hit?.rule_ids?.length ? hit.rule_ids.map(ruleLabel).join('、') : ''
+  const inner = hit ? `（${rules ? `${rules}，` : ''}${hit.unit_signal_date}）` : ''
+  return `再次触发${inner}→ 直接修订`
+}
+
+/** The Agent block of one version of a chain (plan page and 「今日」 row expansion). */
+export function versionAgentView(chain: Chain, v: Version): AgentView {
+  const r = [...(chain.reviews ?? [])].reverse()
+    .find(x => x.head_plan_id === v.plan_id && ['maintain', 'revise', 'invalidate'].includes(x.outcome)) ?? null
+  return {
+    id: v.run.id, status: v.run.status === 'pass' ? 'pass' : 'ok', model: v.run.model,
+    agent_version: v.run.agent_version, output: v.run.output, counter: v.run.counter, plan: v.plan,
+    input_tokens: v.run.input_tokens, output_tokens: v.run.output_tokens, created_at: v.created_at,
+    chain: {
+      version_no: v.version_no, head_plan_id: chain.head_plan_id,
+      // 只有最新版带链状态（作废只作用于最新版）；旧版按入场期展示。
+      state: v.is_head ? chain.state.state : 'entry', mode: chain.state.mode, basis: chain.state.basis,
+      latest_review: r ? { ...r, revision_status: (r.detail?.revision_status as string | undefined) ?? null,
+                           conditions: r.conditions ?? [] } : null,
+      cutoff_at: v.cutoff_at, diff: v.diff,
+    },
+    knowledge_refs: v.knowledge_refs ?? [],
+  } as AgentView
+}

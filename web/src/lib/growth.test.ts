@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CARD_STATUS_TEXT, DECISION_TEXT, DISCIPLINE_TEXT, DISCUSS_POLL_MS, END_TEXT, EXIT_BASIS_TEXT,
   actualRText, changedFields, conflictText, endText, growthError, idempotentRequests, isKnowRef, knowHref, knowledgeProblem, parseKnowRef,
-  refKind, sampleLine, userInputRequestId, VERSION_BASIS_TEXT,
+  refKind, sampleLine, userInputRequestId, FILL_BASIS_TEXT, VERSION_BASIS_TEXT,
 } from './growth'
 import { WorkbenchError } from './workbench'
 import { USER_INPUT_REQUEST_ID_VECTOR } from './growth-fixtures'
@@ -26,6 +26,7 @@ describe('constants (spec 4.1, 4.3, 4.6, 13)', () => {
       none: '未决定（计划外成交）', accept: '采纳',
     })
     expect(VERSION_BASIS_TEXT).toEqual({ decision: '决定时看到的版本', first: '首版' })
+    expect(FILL_BASIS_TEXT).toEqual({ fill: '成交时关联的版本' })      // tracks-2 (v2.9 D27)
     expect(DISCIPLINE_TEXT).toEqual({
       chase: '追高', early_take: '过早止盈', held_loser: '死扛亏损', unplanned: '计划外', pending: '待定',
     })

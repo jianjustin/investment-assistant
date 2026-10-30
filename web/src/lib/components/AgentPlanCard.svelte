@@ -28,6 +28,17 @@
   const output = $derived(run?.output ?? null)
   const plan = $derived(run?.plan ?? null)
   const invalidated = $derived(chain?.state === 'invalidated')
+  const exiting = $derived(chain?.state === 'exiting')
+  // v2.9 §5.1：执行字段；agent-2 版本没有，按 zone_limit + 10 日显示并注明（§5.5）；持仓期改入场类型与区间不生效（§5.5）
+  const entryTypeLine = $derived.by(() => {
+    if (!plan) return ''
+    const defaulted = plan.entry_type == null
+    const parts = [`入场类型 ${wb.ENTRY_TYPE_TEXT[plan.entry_type ?? 'zone_limit']}`,
+                   `最长持有 ${plan.max_hold_sessions ?? 10} 个交易日`]
+    if (chain?.mode === 'holding') parts.push('入场类型与区间持仓期不适用')
+    if (defaulted) parts.push(wb.DEFAULTS_APPLIED_TEXT)
+    return parts.join(' · ')
+  })
 
   const title = $derived.by(() => {
     const parts = ['Agent 计划']
@@ -107,9 +118,11 @@
   {:else if run}
     <p class="font-medium">{title} <span class="text-xs font-normal"><ConceptTerm id={A.version}>版本链</ConceptTerm> <ConceptTerm id={A.cutoff}>截止时间</ConceptTerm></span></p>
     <p class="text-xs text-muted">模型 {run.model} · {run.agent_version}{chain?.mode ? ` · ${tl.MODE_TEXT[chain.mode]}` : ''}</p>
+    {#if exiting}<p class="text-xs text-red-600">退出期：已发出退出指令（{wb.INSTRUCTION_TEXT.exit}），不再复查。</p>{/if}
     {#if output?.levels}
       {@const levels = output.levels}
       <p>{levelsLine} <ConceptTerm id={A.levels}>动作与价位</ConceptTerm></p>
+      {#if entryTypeLine}<p class="text-xs">{entryTypeLine}</p>{/if}
       <p class="text-xs text-muted">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}{@render refList(levels[key].refs)}{/each} <ConceptTerm id={A.citation}>引用编号</ConceptTerm></p>
     {/if}
     {#if plan?.sizing?.shares != null}<p>建议 {plan.sizing.shares} 股</p>{/if}
@@ -161,7 +174,7 @@
           {#if chain?.diff}
             <ul class="list-disc ml-5">
               {#each chain.diff as d}
-                <li>{changeField(d.field)} {tl.diffValueText(d.field, d.before)} → {tl.diffValueText(d.field, d.after)}</li>
+                <li>{changeField(d.field)} {tl.diffValueText(d.field, d.before)} → {tl.diffValueText(d.field, d.after)}{d.host_only ? '（宿主）' : ''}</li>
               {:else}
                 <li class="text-muted">无</li>
               {/each}

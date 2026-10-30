@@ -235,9 +235,9 @@ export const ATTACH = {
     userInput: 'agent.user_input',
     shadow: 'review.plan_shadow',
   },
-  // 「今日」决定表单
+  // 「今日」计划表的执行状态列（v2.9 R20：决定退役，执行依据 basis 改指执行状态）
   today: {
-    basis: 'system.decision',
+    basis: 'review.execution_status',
   },
   // 「标的」页（关键数据一段的概念由接口的 key_data.concepts 给出，规则名用 ruleConcept）
   instrument: {
