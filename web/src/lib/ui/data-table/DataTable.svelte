@@ -57,6 +57,12 @@
 
   // Paging: show `pageSize` rows across the open sections, "show more" adds another page.
   let extra = $state(0)
+  // New data (identity change of rows / groups) starts again at the first page.
+  $effect.pre(() => {
+    void rows
+    void groups
+    extra = 0
+  })
   const limit = $derived(pageSize === 0 ? Infinity : pageSize + extra)
   const view = $derived.by(() => {
     let left = limit
@@ -68,7 +74,10 @@
       if (open) hidden += s.rows.length - take
       return { section: s, open, shown: s.rows.slice(0, take) }
     })
-    return { sections: out, hidden }
+    // A group whose rows all fall beyond the page limit gets no header yet; its rows still count as hidden.
+    // Collapsed groups and genuinely empty groups keep their header.
+    const visible = out.filter((x) => !(x.open && x.shown.length === 0 && x.section.rows.length > 0))
+    return { sections: visible, hidden }
   })
 
   function toggleRow(row: T) {
@@ -181,7 +190,7 @@
       {#if headerGroups}
         <Table.Row class="hover:bg-transparent">
           {#if expandable}<Table.Head class={cn('w-8', sticky && 'sticky top-0 z-10 bg-card')}></Table.Head>{/if}
-          {#each headerGroups as g (g.label)}
+          {#each headerGroups as g, i (i)}
             <Table.Head
               colspan={g.span}
               class={cn('text-center', sticky && 'sticky top-0 z-10 bg-card')}

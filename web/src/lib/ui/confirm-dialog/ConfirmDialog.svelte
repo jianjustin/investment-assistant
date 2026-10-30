@@ -50,8 +50,14 @@
   }
 </script>
 
-<Dialog.Root {open} {onOpenChange}>
-  <Dialog.Content showCloseButton={false} onCloseAutoFocus={restoreFocus}>
+<!-- Function binding: Bits writes through onOpenChange only, so its inner state can never diverge from `open`. -->
+<Dialog.Root bind:open={() => open, (value) => onOpenChange(value)}>
+  <Dialog.Content
+    showCloseButton={false}
+    onCloseAutoFocus={restoreFocus}
+    escapeKeydownBehavior={busy ? 'ignore' : 'close'}
+    interactOutsideBehavior={busy ? 'ignore' : 'close'}
+  >
     <Dialog.Header>
       <Dialog.Title>{title}</Dialog.Title>
       <Dialog.Description>{consequence}</Dialog.Description>

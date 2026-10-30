@@ -21,6 +21,8 @@
 	<Sonner
 		{theme}
 		class="toaster group"
+		closeButtonAriaLabel="关闭"
+		containerAriaLabel="通知"
 		style="--normal-bg: var(--popover); --normal-text: var(--popover-foreground); --normal-border: var(--border); --border-radius: var(--radius);"
 		{...restProps}
 	>

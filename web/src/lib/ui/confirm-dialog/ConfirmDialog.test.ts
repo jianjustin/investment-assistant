@@ -73,6 +73,37 @@ describe('ConfirmDialog', () => {
     expect(action.className).toMatch(/bg-destructive/)
   })
 
+  it('busy ignores Esc and overlay', async () => {
+    const onCancel = vi.fn()
+    render(ConfirmDialog, { ...base, busy: true, onCancel })
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
+    await fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    const overlay = document.querySelector('[data-slot="dialog-overlay"]')!
+    await fireEvent.pointerDown(overlay)
+    await fireEvent.pointerUp(overlay)
+    await fireEvent.click(overlay)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(onCancel).not.toHaveBeenCalled()
+  })
+
+  it('after a non-busy Esc close the outer open is false and re-opening works', async () => {
+    const onCancel = vi.fn()
+    const { rerender } = render(ConfirmDialog, { ...base, open: true, onCancel })
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
+    await fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    // The component wrote open=false itself; asking for open=true again must show the dialog again.
+    await rerender({ ...base, open: true, onCancel })
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    await fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(onCancel).toHaveBeenCalledTimes(2)
+  })
+
   it('busy disables both buttons', async () => {
     render(ConfirmDialog, { ...base, busy: true })
     const action = await screen.findByRole('button', { name: '从此节点继续' })

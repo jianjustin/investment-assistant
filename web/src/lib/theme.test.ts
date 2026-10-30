@@ -68,6 +68,21 @@ describe('theme', () => {
     expect(getTheme()).toBe('light')
   })
 
+  it('onThemeChange stays quiet when the attribute is rewritten with the same value', async () => {
+    document.documentElement.setAttribute('data-theme', 'light')
+    const seen: string[] = []
+    const off = onThemeChange((t) => seen.push(t))
+    document.documentElement.setAttribute('data-theme', 'light')
+    await new Promise((r) => setTimeout(r, 10))
+    expect(seen).toEqual([])
+    document.documentElement.setAttribute('data-theme', 'dark')
+    await vi.waitFor(() => expect(seen).toEqual(['dark']))
+    document.documentElement.setAttribute('data-theme', 'dark')
+    await new Promise((r) => setTimeout(r, 10))
+    expect(seen).toEqual(['dark'])
+    off()
+  })
+
   it('onThemeChange fires on data-theme change and can be unsubscribed', async () => {
     const seen: string[] = []
     const off = onThemeChange((t) => seen.push(t))

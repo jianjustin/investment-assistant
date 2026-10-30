@@ -71,7 +71,13 @@ export function toggleTheme(): void {
 
 /** Fires whenever `data-theme` on <html> changes (toggle, system change, tests). */
 export function onThemeChange(callback: (theme: Theme) => void): () => void {
-  const observer = new MutationObserver(() => callback(getTheme()))
+  let last = getTheme()
+  const observer = new MutationObserver(() => {
+    const next = getTheme()
+    if (next === last) return
+    last = next
+    callback(next)
+  })
   observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
   return () => observer.disconnect()
 }

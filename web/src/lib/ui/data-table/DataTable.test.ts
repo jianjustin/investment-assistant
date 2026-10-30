@@ -157,4 +157,42 @@ describe('DataTable', () => {
     render(DataTable<Row>, { columns: [{ key: 'id', header: '编号', cell }], rows, rowKey })
     expect(screen.getByText('#2')).toBeInTheDocument()
   })
+
+  it('header groups with the same label all render', () => {
+    render(DataTable<Row>, { columns, rows, rowKey, headerGroups: [{ label: '组', span: 1 }, { label: '组', span: 1 }] })
+    expect(screen.getAllByRole('columnheader', { name: '组' })).toHaveLength(2)
+  })
+
+  it('show more resets when rows change', async () => {
+    const make = (n: number, p: string): Row[] => Array.from({ length: n }, (_, i) => ({ id: i + 1, name: `${p}${i + 1}`, qty: i }))
+    const { rerender } = render(DataTable<Row>, { columns, rows: make(120, 'A'), rowKey })
+    await fireEvent.click(screen.getByRole('button', { name: '显示更多（还有 70 行）' }))
+    expect(screen.getAllByRole('row')).toHaveLength(101)
+    await rerender({ columns, rows: make(120, 'B'), rowKey })
+    expect(screen.getAllByRole('row')).toHaveLength(51)
+    expect(screen.getByRole('button', { name: '显示更多（还有 70 行）' })).toBeInTheDocument()
+  })
+
+  it('a group entirely beyond the page limit has no header yet, its rows count as hidden', async () => {
+    const a: Row[] = Array.from({ length: 5 }, (_, i) => ({ id: i + 1, name: `A${i + 1}`, qty: i }))
+    const b: Row[] = Array.from({ length: 4 }, (_, i) => ({ id: i + 100, name: `B${i + 1}`, qty: i }))
+    const groups: RowGroup<Row>[] = [{ key: 'a', label: '甲组', rows: a }, { key: 'b', label: '乙组', rows: b }]
+    render(DataTable<Row>, { columns, groups, rowKey, pageSize: 5 })
+    expect(screen.getByText('甲组（5）')).toBeInTheDocument()
+    expect(screen.queryByText('乙组（4）')).toBeNull()
+    await fireEvent.click(screen.getByRole('button', { name: '显示更多（还有 4 行）' }))
+    expect(screen.getByText('乙组（4）')).toBeInTheDocument()
+    expect(screen.getByText('B4')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /显示更多/ })).toBeNull()
+  })
+
+  it('a collapsed group keeps its header even when the page is full', () => {
+    const a: Row[] = Array.from({ length: 5 }, (_, i) => ({ id: i + 1, name: `A${i + 1}`, qty: i }))
+    const groups: RowGroup<Row>[] = [
+      { key: 'a', label: '甲组', rows: a },
+      { key: 'b', label: '乙组', rows: [rows[0]], collapsible: true, open: false },
+    ]
+    render(DataTable<Row>, { columns, groups, rowKey, pageSize: 5 })
+    expect(screen.getByRole('button', { name: /乙组/ })).toBeInTheDocument()
+  })
 })

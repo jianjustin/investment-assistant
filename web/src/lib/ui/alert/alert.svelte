@@ -26,6 +26,7 @@
 		ref = $bindable(null),
 		class: className,
 		variant = "info",
+		role,
 		children,
 		...restProps
 	}: WithElementRef<HTMLAttributes<HTMLDivElement>> & {
@@ -36,7 +37,7 @@
 <div
 	bind:this={ref}
 	data-slot="alert"
-	role="alert"
+	role={role ?? (variant === "info" ? "status" : "alert")}
 	class={cn(alertVariants({ variant }), className)}
 	{...restProps}
 >
