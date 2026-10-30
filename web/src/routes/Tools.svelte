@@ -189,6 +189,16 @@
     { key: 'state', header: '状态', value: j => (j.manual_only ? '只手动' : j.enabled ? '任务启用' : '任务停用') },
     { key: 'actions', header: '操作', cell: jobActions },
   ]
+  // 一行 = 一次执行：续跑会用同一个 run_id 再写一行，所以 key 带上开始时间；仍重复的再加序号。
+  const reportRows = $derived.by(() => {
+    const seen = new Map<string, number>()
+    return reports.map(r => {
+      const base = `${r.run_id ?? r.task}|${r.started_at ?? r.created_at ?? ''}`
+      const n = seen.get(base) ?? 0
+      seen.set(base, n + 1)
+      return { ...r, _k: n ? `${base}#${n}` : base }
+    })
+  })
   const reportColumns: Column<any>[] = [
     { key: 'task', header: '任务', value: r => taskName(r.task) },
     { key: 'status', header: '状态', cell: reportStatus },
@@ -310,7 +320,7 @@
       <span class="text-xs text-muted-foreground">每 15 秒自动刷新</span>
     </div>
     {#if reports.length}
-      <DataTable columns={reportColumns} rows={reports} rowKey={(r) => r.run_id ?? `${r.task}-${r.started_at}`} ariaLabel="运行记录" />
+      <DataTable columns={reportColumns} rows={reportRows} rowKey={(r) => r._k} ariaLabel="运行记录" />
     {:else}
       <DataBlock state="empty" message="暂无运行记录" />
     {/if}

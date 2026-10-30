@@ -157,7 +157,7 @@
 
   const remainingMinutes = $derived(view?.pending
     ? Math.max(0, Math.ceil((Date.parse(view.pending.expires_at) - now) / 60000)) : 0)
-  const day = (iso: string | null) => (iso ? fmtBeijing(iso).slice(0, 10) : '—')
+  const day = (iso: string | null) => (iso ? fmtBeijing(iso).slice(0, 10) : '未提供')
   const sharingMissing = $derived(view?.status === 'no_sharing' || (view?.status === 'connected' && view.scopes_ok === false))
   const modelMissing = $derived(!!view?.model && models !== null && !models.some(m => m.slug === view!.model))
   const waitedSeconds = $derived(Math.max(0, Math.floor((now - pollStart) / 1000)))

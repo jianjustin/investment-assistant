@@ -157,7 +157,7 @@
           <div class={section.muted ? 'text-muted-foreground' : ''}>{@render groupLabel(section, open)}</div>
         {/if}
         {#if open}
-          <ul role="list" aria-label={ariaLabel} class="grid gap-2">
+          <ul role="list" aria-label={section.label !== undefined ? section.label : ariaLabel} class="grid gap-2">
             {#each shown as row (rowKey(row))}
               <li
                 class={cn(
@@ -190,7 +190,7 @@
     {/each}
   </div>
 {:else}
-  <Table.Root aria-label={ariaLabel} containerClass="max-lg:overflow-x-auto lg:overflow-visible">
+  <Table.Root aria-label={ariaLabel} containerClass="max-lg:overflow-x-auto lg:overflow-visible lg:in-data-[slot=card]:overflow-x-auto">
     {#if caption}<Table.Caption class="caption-top">{caption}</Table.Caption>{/if}
     <Table.Header>
       {#if headerGroups}

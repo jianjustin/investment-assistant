@@ -28,6 +28,10 @@ describe('status vocabulary', () => {
     expect(Object.keys(LABELS).sort()).toEqual(domains)
   })
 
+  it('agent pass is the agent declining to buy (agent/graph.py), not 维持', () => {
+    expect(LABELS.agent.pass).toBe('不建议买入')
+  })
+
   it('labels reuse the existing constants', () => {
     // node is a copy plus missing / not_recorded (below), like execution
     expect(LABELS.run).toBe(RUN_STATUS_TEXT)

@@ -44,6 +44,16 @@ describe('Discussion · page', () => {
     expect(turns[1]).toHaveTextContent('截止 2026-10-28 18:00:00 北京')       // answers carry the cutoff they read under
   })
 
+  it('a plan discussion without generated_at / cutoff_at shows neither piece, not a 没算 badge', async () => {
+    vi.mocked(api.getDiscussion).mockResolvedValue(discussion([], { context: { version_no: 2 } }))
+    render(Discussion, { id: 5 })
+    const header = await screen.findByTestId('discussion-header')
+    expect(header).toHaveTextContent('第 2 版')
+    expect(header).not.toHaveTextContent('生成于')
+    expect(header).not.toHaveTextContent(/截止 /)
+    expect(header).not.toHaveTextContent('没算')
+  })
+
   it('a card discussion shows the end kind and links back to the card', async () => {
     vi.mocked(api.getDiscussion).mockResolvedValue(discussion([], {
       context_kind: 'card', plan_id: null, card_id: 12,

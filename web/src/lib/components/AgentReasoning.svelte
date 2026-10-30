@@ -54,7 +54,7 @@
     && !data.steps.some(step => CONTENT_KINDS.includes(step.kind)))
   const toolName = (call: ReasoningCall) => call.tool_text ?? TOOL_TEXT[call.tool] ?? call.tool
   const text = (value: unknown): string =>
-    typeof value === 'string' ? value : value == null ? '—' : JSON.stringify(value)
+    typeof value === 'string' ? value : value == null ? '无' : JSON.stringify(value)
   const implicatedNote = (step: ReasoningStep): string | null => {
     if (step.note) return step.note
     const names = (step.items ?? []).filter(item => item.result === 'implicated').map(item => String(item.text))

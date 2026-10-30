@@ -179,8 +179,8 @@
       {#snippet meta()}
         {#if disc!.context_kind === 'plan'}
           {#if disc!.context?.version_no != null}<VersionChip version={disc!.context.version_no} />{/if}
-          <CutoffTime at={disc!.context?.generated_at} label="生成于" />
-          <CutoffTime at={disc!.context?.cutoff_at} />
+          {#if disc!.context?.generated_at}<CutoffTime at={disc!.context.generated_at} label="生成于" />{/if}
+          {#if disc!.context?.cutoff_at}<CutoffTime at={disc!.context.cutoff_at} />{/if}
           {#if disc!.plan_id}<a class="text-primary underline" href={`#plan/${disc!.plan_id}`}>回到计划页</a>{/if}
         {:else}
           {#if disc!.context?.end_kind}<span>{endText(disc!.context.end_kind)}</span>{/if}

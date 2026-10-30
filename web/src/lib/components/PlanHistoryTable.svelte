@@ -38,7 +38,7 @@
   const md = (d: string) => d.slice(5)
   const chainText = (r: wb.HistoryRow) => r.chain_signal_date
     ? `${ticker ? `${ticker}·` : ''}${md(r.chain_signal_date)}${r.version_no != null ? ` 第 ${r.version_no} 版` : ''}`
-    : '—'
+    : '无'
   const diffItems = (r: wb.HistoryRow) => (r.diff ?? []).map(d =>
     `${tl.CHANGE_FIELD_TEXT[d.field] ?? d.field} ${tl.diffValueText(d.field, d.before)} → ${tl.diffValueText(d.field, d.after)}`)
   const changeTexts = (r: wb.HistoryRow) => (r.changes ?? []).map(c => (typeof c === 'string' ? c : c.text)).filter(Boolean)

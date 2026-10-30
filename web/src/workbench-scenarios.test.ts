@@ -96,7 +96,7 @@ it('shows the market context card on today', async () => {
   render(App)
   expect(await screen.findByText(/市场环境/)).toBeTruthy()
   expect(screen.getByText('防守')).toBeTruthy()
-  expect(screen.getByText(/MA200 74\.0%/)).toBeTruthy()
+  expect(screen.getByText(/站上 MA50/)).toHaveTextContent(/MA200 74\.0%/)
   expect(screen.getByText('FRED 未配置')).toBeTruthy()
 })
 

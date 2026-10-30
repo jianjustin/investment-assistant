@@ -302,7 +302,7 @@ describe('market context', () => {
     respond = async () => json(todayView({ market }))
     render(Today)
     expect(await screen.findByText('防守')).toBeTruthy()
-    expect(screen.getByText(/站上 MA50 30\.0%/)).toBeTruthy()
+    expect(screen.getByText(/站上 MA50/)).toHaveTextContent(/站上 MA50 30\.0%/)
     expect(screen.getByText(/新高 3 \/ 新低 5/)).toBeTruthy()
     expect(screen.getByText(/SMH/)).toBeTruthy()
   })

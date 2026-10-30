@@ -98,7 +98,16 @@
     return out
   }
 
+  // The drawer is opened from code, so there is no trigger to give focus back to: remember the run button that opened it.
+  let callOpener: HTMLElement | null = null
+  function restoreCallFocus(event: Event) {
+    event.preventDefault()
+    callOpener?.focus()
+    callOpener = null
+  }
   async function openRun(runId: string) {
+    const active = document.activeElement
+    callOpener = active instanceof HTMLElement && active !== document.body ? active : null
     const detail = await wb.getAgentRun(runId)
     callDrawer = { open: true, calls: detail.tool_calls, call: detail.tool_calls[0] ?? null }
   }
@@ -295,9 +304,12 @@
     }
   }
 
+  let weekBusy = $state(false)
   async function generateWeekly(e: Event) {
     e.preventDefault()
+    if (weekBusy) return
     weekError = ''
+    weekBusy = true
     const head = weekly?.find(r => r.week_start === weekStart)
     try {
       await wb.postWeekly({ week_start: weekStart, notes: weekNotes, supersedes_id: head?.id ?? null })
@@ -306,6 +318,8 @@
       await load('weekly')
     } catch (err) {
       weekError = wb.describeError(err)
+    } finally {
+      weekBusy = false
     }
   }
 
@@ -313,11 +327,14 @@
   let monthFormState = $state(monthForm())
   let monthError = $state('')
 
+  let monthBusy = $state(false)
   async function generateMonthly(e: Event) {
     e.preventDefault()
+    if (monthBusy) return
     monthError = ''
     if (!/^\d{4}-\d{2}-01$/.test(monthFormState.month)) { monthError = '月份须为当月 1 日（YYYY-MM-01）'; return }
     const head = monthly?.find(r => r.month === monthFormState.month)
+    monthBusy = true
     try {
       await wb.postMonthly({ month: monthFormState.month, notes: monthFormState.notes,
                              supersedes_id: head?.id ?? null })
@@ -326,6 +343,8 @@
       await load('monthly')
     } catch (err) {
       monthError = wb.describeError(err)
+    } finally {
+      monthBusy = false
     }
   }
 
@@ -335,9 +354,13 @@
   let flow = $state(flowForm())
   let accountError = $state('')
 
+  let snapBusy = $state(false)
+  let flowBusy = $state(false)
   async function recordSnapshot(e: Event) {
     e.preventDefault()
+    if (snapBusy) return
     accountError = ''
+    snapBusy = true
     try {
       await wb.postSnapshot({ request_id: snap.requestId, as_of: snap.as_of, equity: String(snap.equity),
                               note: snap.note || null })
@@ -346,12 +369,16 @@
       account = await wb.getAccount()
     } catch (err) {
       accountError = wb.describeError(err)
+    } finally {
+      snapBusy = false
     }
   }
 
   async function recordFlow(e: Event) {
     e.preventDefault()
+    if (flowBusy) return
     accountError = ''
+    flowBusy = true
     try {
       await wb.postFlow({ request_id: flow.requestId, flow_date: flow.flow_date, amount: String(flow.amount),
                           note: flow.note || null })
@@ -360,6 +387,8 @@
       account = await wb.getAccount()
     } catch (err) {
       accountError = wb.describeError(err)
+    } finally {
+      flowBusy = false
     }
   }
 
@@ -619,7 +648,7 @@
             {#snippet children({ id, describedby })}<Textarea {id} aria-describedby={describedby} rows={2} bind:value={weekNotes} />{/snippet}
           </Field>
         </div>
-        <Button type="submit" variant="primary">生成复盘</Button>
+        <Button type="submit" variant="primary" busy={weekBusy}>生成复盘</Button>
         {#if weekError}<Alert variant="danger" class="w-auto py-1"><AlertDescription class="text-xs">{weekError}</AlertDescription></Alert>{/if}
       </form>
     </Card.Root>
@@ -734,7 +763,7 @@
             {#snippet children({ id, describedby })}<Textarea {id} aria-describedby={describedby} aria-label="月度复盘笔记" rows={2} bind:value={monthFormState.notes} />{/snippet}
           </Field>
         </div>
-        <Button type="submit" variant="primary">生成月度复盘</Button>
+        <Button type="submit" variant="primary" busy={monthBusy}>生成月度复盘</Button>
         {#if monthError}<Alert variant="danger" class="w-auto py-1"><AlertDescription class="text-xs">{monthError}</AlertDescription></Alert>{/if}
       </form>
     </Card.Root>
@@ -811,7 +840,7 @@
             <Field label="备注" id={`${uid}-snap-note`}>
               {#snippet children({ id, describedby })}<Input {id} aria-describedby={describedby} aria-label="快照备注" bind:value={snap.note} />{/snippet}
             </Field>
-            <div><Button type="submit" variant="primary" disabled={!snap.as_of || !snap.equity}>录入资金快照</Button></div>
+            <div><Button type="submit" variant="primary" busy={snapBusy} disabled={!snap.as_of || !snap.equity}>录入资金快照</Button></div>
           </form>
         </Card.Root>
         <Card.Root size="sm" class="px-3">
@@ -826,7 +855,7 @@
             <Field label="备注" id={`${uid}-flow-note`}>
               {#snippet children({ id, describedby })}<Input {id} aria-describedby={describedby} aria-label="出入金备注" bind:value={flow.note} />{/snippet}
             </Field>
-            <div><Button type="submit" variant="primary" disabled={!flow.flow_date || !flow.amount}>录入出入金</Button></div>
+            <div><Button type="submit" variant="primary" busy={flowBusy} disabled={!flow.flow_date || !flow.amount}>录入出入金</Button></div>
           </form>
         </Card.Root>
       </div>
@@ -885,7 +914,7 @@
   </ConfirmDialog>
 
   <Sheet.Root open={callDrawer.open} onOpenChange={open => { if (!open) closeCalls() }}>
-    <Sheet.Content side="right" width="sm">
+    <Sheet.Content side="right" width="sm" onCloseAutoFocus={restoreCallFocus}>
       <Sheet.Header>
         <Sheet.Title>工具调用{#if callDrawer.call} call:{callDrawer.call.seq}{/if}</Sheet.Title>
         <Sheet.Description class="sr-only">这次 Agent 运行里的工具调用</Sheet.Description>

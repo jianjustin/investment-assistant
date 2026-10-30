@@ -103,7 +103,7 @@
 | `run` | `job_reports.status`（`success` / `degraded` / `error`）+ `node` 的全部值 | 同 `node`，另 `error` 危险 |
 | `chain` | `timeline.CHAIN_STATES` | `entry` 信息；`holding` 成功；`exiting` 警告；已结束类 `legacy`、`invalidated`、`closed_by_decision`、`position_closed`、`superseded`、`expired` 全部中性 |
 | `fetch` | `data_fetch_runs.status` | `success` 成功；`partial` 警告；`failed`、`error` 危险；`skipped` 中性；`running` 运行中 |
-| `agent` | `agent.STATUSES` | `ok` 成功；`pass`（维持）、`skipped` 中性；`rejected`、`error` 危险 |
+| `agent` | `agent.STATUSES` | `ok` 成功；`pass`（不建议买入）、`skipped` 中性；`rejected`、`error` 危险 |
 | `connection` | `agent_connections.status` + `no_sharing` / `unknown` | `connected` 成功；`pending` 运行中；`needs_login` 危险；`no_sharing` 警告；`disconnected`、`unknown` 中性 |
 | `card` | `retro.CARD_STATUSES` | `reviewed` 成功；`to_review`、`drafting` 警告；`draft_failed` 危险 |
 | `retro` | 周 / 月复盘运行结果（`RETRO_STATUS_TEXT`） | `reviewed`、`generated` 成功；`to_review`、`drafting` 警告；`draft_failed`、`error` 危险；`reused`、`already_sent` 中性；`reminded` 信息 |
@@ -193,7 +193,7 @@
 
 ### 6.3 已知取舍
 
-- **`DataTable` 在 ≥ 1024px 不在容器内滚动。** 表格容器用 `max-lg:overflow-x-auto lg:overflow-visible`：只有这样粘性表头才能贴着视口顶部（容器一旦 `overflow` 非 `visible`，`sticky` 就只在容器内生效）。代价是 1024–1280px 之间列特别多的宽表会撑出页面而不是在容器内滚动；< 1024px 容器照常横向滚动。列多的页面请精简列（`hideInCards`）或 `sticky={false}` 并自行包一层滚动容器（`sticky={false}` 本身不会在 ≥ 1024px 添加滚动）。
+- **`DataTable` 在 ≥ 1024px 不在容器内滚动。** 表格容器用 `max-lg:overflow-x-auto lg:overflow-visible`：只有这样粘性表头才能贴着视口顶部（容器一旦 `overflow` 非 `visible`，`sticky` 就只在容器内生效）。代价是 1024–1280px 之间列特别多的宽表会撑出页面而不是在容器内滚动；< 1024px 容器照常横向滚动。列多的页面请精简列（`hideInCards`）或 `sticky={false}` 并自行包一层滚动容器（`sticky={false}` 本身不会在 ≥ 1024px 添加滚动）。放在 `Card` 里的 `DataTable` 例外：`Card` 自带 `overflow-hidden`（圆角裁切），粘性表头在卡片内本来就贴不到视口，所以容器多一条 `lg:in-data-[slot=card]:overflow-x-auto`，卡片里的宽表在任何宽度都在卡片内横向滚动，不被裁掉。
 - **`RefLink` 依赖 `lib/components/ConceptTerm.svelte`**（`ui/` 反向依赖了 `components/`）。Task 7 会把 `ConceptTerm` 迁到 `Popover`，之后它可以搬进 `ui/domain/`，`RefLink` 的 import 随之改路径。`RefLink` 的动作类引用（`fact:` / `call:`）是 `Button variant="link"`，用 `text-[length:inherit]` 继承所在文字的字号并允许选中文字；导航类（`know:` / `concept:`）是 `<a href>` 或 `ConceptTerm`。
 - **`StatusPill` 的文字不着状态色**，原因见第 2 节要点：淡底上的同色文字在浅色主题下对比度不足 AA。
 - **`CutoffTime` 的相对时间用原生 `title`**，不用 `Tooltip`（不依赖 Provider，任何地方可用）。`VersionChip` 的 `ref` 同理。

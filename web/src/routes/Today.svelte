@@ -148,8 +148,6 @@
     }
   }
 
-  const pctText = (value: number | null | undefined) =>
-    value == null ? '没算' : `${(value * 100).toFixed(1)}%`
   // No stored value: tell a missing key from a failed fetch (status recorded in the snapshot inputs).
   const fredMissing = (m: wb.MarketContext) => {
     const status = Object.values(m.inputs?.macro_status ?? {})
@@ -260,7 +258,7 @@
         </div>
         {#if view.market}
           {@const m = view.market}
-          <p>站上 MA50 {pctText(m.breadth?.pct_50)} · MA200 {pctText(m.breadth?.pct_200)} · 新高 {m.breadth?.new_highs ?? 0} / 新低 {m.breadth?.new_lows ?? 0}</p>
+          <p>站上 MA50 <MetricValue value={m.breadth?.pct_50} percent digits={1} /> · MA200 <MetricValue value={m.breadth?.pct_200} percent digits={1} /> · 新高 {m.breadth?.new_highs ?? 0} / 新低 {m.breadth?.new_lows ?? 0}</p>
           {#if m.sectors && Object.keys(m.sectors).length}
             <p class="text-xs text-muted-foreground">{Object.entries(m.sectors).map(([etf, v]) =>
               v == null ? `${etf} 数据不足` : `${etf} rs20 ${wb.pct(v.rs20)} ${wb.SECTOR_STATE_LABELS[v.state] ?? '数据不足'}`).join(' · ')}</p>

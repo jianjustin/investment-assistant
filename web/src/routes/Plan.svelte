@@ -98,7 +98,7 @@
     void api.getPlanDerivation(id)
       .then((d: Derivation) => {
         if (!alive) return
-        title = `${d.plan.ticker ?? '—'} · ${d.plan.signal_date ?? '—'}`
+        title = `${d.plan.ticker ?? '未知标的'} · ${d.plan.signal_date ?? '无信号日'}`
         ticker = d.plan.ticker ?? ''
         calcVersion = d.plan.plan_version ?? ''
         unit = isChainVersion(d.plan.plan_version) && d.plan.ticker && d.plan.signal_date

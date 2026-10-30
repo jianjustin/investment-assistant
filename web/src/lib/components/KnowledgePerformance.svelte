@@ -41,7 +41,7 @@
 {#snippet unitCell(row: Row)}<a class="text-primary underline" href={`#plan/${row.plan_id}`}>{row.unit.ticker} {row.unit.signal_date}</a>{/snippet}
 {#snippet planCell(row: Row)}{KIND_TEXT[row.kind] ?? row.kind}{versionText(row.version_no)}{/snippet}
 {#snippet citedCell(row: Row)}引用第 {row.cited_version} 版知识{#if row.fields.length} · {row.fields.map(f => CITED_FIELD_TEXT[f] ?? f).join('、')}{/if}{/snippet}
-{#snippet resultCell(row: Row)}{row.fill_date ?? '—'} → {row.outcome_date ?? '—'}{/snippet}
+{#snippet resultCell(row: Row)}{row.fill_date ?? '未成交'} → {row.outcome_date ?? '未出结果'}{/snippet}
 
 {#if perf}
   <section aria-label="表现回看" class="grid gap-2 text-sm">

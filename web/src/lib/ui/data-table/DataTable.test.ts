@@ -33,6 +33,25 @@ describe('DataTable names', () => {
     expect(screen.getByRole('list', { name: '入场期计划' })).toBeInTheDocument()
   })
 
+  it('grouped card lists are named by their group, the ungrouped one keeps ariaLabel', () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: true, media: q, addEventListener: () => {}, removeEventListener: () => {} }))
+    const groups: RowGroup<Row>[] = [
+      { key: 'a', label: '进行中', rows: [rows[0]] },
+      { key: 'b', label: '已结束', rows: [rows[1]] },
+    ]
+    render(DataTable<Row>, { columns, groups, rowKey, cards: 'narrow', ariaLabel: '计划' })
+    expect(screen.getByRole('list', { name: '进行中' })).toBeInTheDocument()
+    expect(screen.getByRole('list', { name: '已结束' })).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: '计划' })).toBeNull()
+  })
+
+  it('the table scroll container keeps overflow-x-auto inside a Card at lg too', () => {
+    render(DataTable<Row>, { columns, rows, rowKey })
+    const box = document.querySelector('[data-slot="table-container"]')!
+    expect(box.className).toContain('lg:overflow-visible')
+    expect(box.className).toContain('lg:in-data-[slot=card]:overflow-x-auto')
+  })
+
   it('expandLabel names each row button by its state; the default stays 展开详情', async () => {
     const expandable = createRawSnippet((row: () => Row) => ({ render: () => `<span>详情 ${row().name}</span>` }))
     const expandLabel = (row: Row, open: boolean) => `${open ? '收起' : '展开'} ${row.name}`

@@ -76,6 +76,25 @@ it('generates a weekly review for the chosen Monday', async () => {
   expect(body).toEqual({ week_start: '2026-10-19', notes: '合成笔记', supersedes_id: null })
 })
 
+it('the weekly generate button is busy while the request is in flight and cannot double-submit', async () => {
+  render(Review, { sub: 'weekly' })
+  expect(await screen.findByText(/尚无周度复盘/)).toBeInTheDocument()
+  await fireEvent.input(screen.getByLabelText('周一'), { target: { value: '2026-10-19' } })
+  let release!: (r: Response) => void
+  respond = (url, init) => url.includes('/weekly-reviews') && init?.method === 'POST'
+    ? new Promise<Response>(resolve => { release = resolve })
+    : Promise.resolve(json({ reviews: [] }))
+  const button = screen.getByRole('button', { name: '生成复盘' })
+  await fireEvent.click(button)
+  await waitFor(() => expect(button).toHaveAttribute('aria-busy', 'true'))
+  expect(button).toBeDisabled()
+  await fireEvent.submit(button.closest('form')!)
+  const posts = () => calls.filter(c => c.url === '/api/workbench/weekly-reviews' && c.init?.method === 'POST')
+  expect(posts()).toHaveLength(1)
+  release(json({ error: 'x' }, 500))
+  await waitFor(() => expect(screen.getByRole('button', { name: '生成复盘' })).not.toHaveAttribute('aria-busy', 'true'))
+})
+
 it('reports 503 instead of an empty review', async () => {
   respond = async (url) => url.startsWith('/api/watchlist') ? json({ rows: [] }) : json({ error: 'down' }, 503)
   render(Review, { sub: 'shadow' })
@@ -444,6 +463,26 @@ it('expands the second tool call from a track row', async () => {
   expect(await screen.findByText(/call:2/)).toBeInTheDocument()          // 第二个调用可达
   await fireEvent.click(screen.getByRole('button', { name: 'call:2' }))
   expect(await screen.findByText(/get_indicators/)).toBeInTheDocument()  // 点击后显示其详情
+})
+
+it('closing the tool-call drawer gives focus back to the run button that opened it', async () => {
+  respond = async (url) => {
+    if (url.includes('/review/tracks')) return json(trackView)
+    if (url.includes('/agent-runs/r1')) return json({ id: 'r1', status: 'ok', model: 'gpt-test', agent_version: 'agent-1',
+      output: null, counter: null, plan: null, input_tokens: 10, output_tokens: 5, created_at: '2026-10-21T22:00:00Z',
+      tool_calls: [{ seq: 1, phase: 'propose', tool: 'get_trigger', args: {}, result: { ref: 'call:1', data: {} },
+        result_sha256: 'a'.repeat(64), called_at: '2026-10-21T22:00:01Z' }] })
+    return json({})
+  }
+  render(Review, { sub: 'tracks' })
+  await screen.findByText('NVDA')
+  const opener = screen.getByRole('button', { name: 'r1' })
+  opener.focus()
+  await fireEvent.click(opener)
+  const dialog = await screen.findByRole('dialog')
+  await fireEvent.click(within(dialog).getByRole('button', { name: '关闭' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  await waitFor(() => expect(document.activeElement).toBe(opener))
 })
 
 // ---- v2.7: 复盘卡 tab and 你学到了什么 ----

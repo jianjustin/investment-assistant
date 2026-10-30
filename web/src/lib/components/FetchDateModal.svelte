@@ -50,6 +50,19 @@
     return ''
   })
 
+  // Opened from code by Tools / Data: remember what had focus when it opened and give it back on close.
+  let opener: HTMLElement | null = null
+  $effect.pre(() => {
+    if (!open) return
+    const active = document.activeElement
+    opener = active instanceof HTMLElement && active !== document.body ? active : null
+  })
+  function restoreFocus(event: Event) {
+    event.preventDefault()
+    opener?.focus()
+    opener = null
+  }
+
   function confirm() {
     if (error) return
     if (mode === 'default') onConfirm(defaultPayload)
@@ -58,7 +71,7 @@
   }
 </script>
 <Dialog.Root {open} onOpenChange={(next) => { if (!next) onclose() }}>
-  <Dialog.Content>
+  <Dialog.Content onCloseAutoFocus={restoreFocus}>
     <Dialog.Header>
       <Dialog.Title>{title}</Dialog.Title>
       {#if description}<Dialog.Description>{description}</Dialog.Description>{/if}

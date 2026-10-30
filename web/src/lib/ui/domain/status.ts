@@ -57,7 +57,7 @@ export const LABELS: Record<StatusDomain, Record<string, string>> = {
   run: RUN_STATUS_TEXT,
   chain: CHAIN_STATE_TEXT,
   fetch: { success: '成功', partial: '部分成功', failed: '失败', skipped: '跳过', running: '运行中', error: '失败' },
-  agent: { ok: '成功', pass: '维持', rejected: '未通过校验', error: '出错', skipped: '跳过' },
+  agent: { ok: '成功', pass: '不建议买入', rejected: '未通过校验', error: '出错', skipped: '跳过' },
   connection: {
     connected: '已连接', pending: '登录中', needs_login: '需要重新登录', disconnected: '未连接', no_sharing: '未开启共享', unknown: '未知',
   },

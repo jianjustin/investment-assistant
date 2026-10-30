@@ -84,11 +84,11 @@
     {#if run.status === 'skipped' && run.detail?.reason}
       <p class="text-warn">跳过原因：{run.detail.reason}</p>
     {/if}
-    {#each run.failures as failure}<p class="text-destructive">{failure.target}：{failure.reason}</p>{:else}{#if run.status !== 'skipped'}—{/if}{/each}
+    {#each run.failures as failure}<p class="text-destructive">{failure.target}：{failure.reason}</p>{:else}{#if run.status !== 'skipped'}无失败{/if}{/each}
   </div>
 {/snippet}
 {#snippet laggingCell(row: Coverage)}<span class={row.lagging ? 'text-warn' : 'text-muted-foreground'}>{row.lagging ? '滞后' : '否'}</span>{/snippet}
-{#snippet lastFailureCell(row: Coverage)}<span class="text-destructive">{row.last_failure ?? '—'}</span>{/snippet}
+{#snippet lastFailureCell(row: Coverage)}<span class="text-destructive">{row.last_failure ?? '无'}</span>{/snippet}
 
 <section class="grid min-w-0 gap-4">
   {#if error}

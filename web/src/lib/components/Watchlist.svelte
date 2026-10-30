@@ -17,7 +17,7 @@
   const SELECT = 'h-8 rounded-md border border-input bg-card px-2 text-sm text-foreground disabled:opacity-50'
   const columns: Column<any>[] = [
     { key: 'ticker', header: '代码 / 名称', cell: tickerCell },
-    { key: 'market', header: '市场', value: row => row.market ?? '—' },
+    { key: 'market', header: '市场', value: row => row.market ?? '未设置' },
     { key: 'status', header: '状态' },
     { key: 'thesis', header: '论点 / 标签', cell: thesisCell },
     { key: 'pool', header: '观察池', cell: poolCell },
@@ -96,7 +96,7 @@
   onMount(load)
 </script>
 {#snippet tickerCell(row: any)}<span>{row.ticker}</span><small class="mt-1 block text-xs text-muted-foreground">{row.identity_error ?? row.name ?? '名称尚未采集'}</small>{/snippet}
-{#snippet thesisCell(row: any)}<span>{row.thesis ?? '—'}</span><small class="mt-1 block text-xs text-muted-foreground">{(row.tags ?? []).join(' · ')}</small>{/snippet}
+{#snippet thesisCell(row: any)}<span>{row.thesis ?? '未填写'}</span><small class="mt-1 block text-xs text-muted-foreground">{(row.tags ?? []).join(' · ')}</small>{/snippet}
 {#snippet poolCell(row: any)}
   {#if row.market === 'US'}
     <div class="flex flex-wrap items-center gap-2">

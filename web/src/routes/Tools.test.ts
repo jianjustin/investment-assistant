@@ -145,6 +145,18 @@ describe('Tools 任务中心', () => {
     expect(api.runJob).not.toHaveBeenCalled()
   })
 
+  it('closing the fetch-date dialog gives focus back to the button that opened it', async () => {
+    vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({ jobs: [MANUAL_ONLY_BACKFILL], degraded: false })
+    render(Tools, { props: { sub: 'tasks' } })
+    const opener = await screen.findByRole('button', { name: '按日期运行' })
+    opener.focus()
+    await fireEvent.click(opener)
+    const dialog = await screen.findByRole('dialog')
+    await fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(opener))
+  })
+
   it('dated run modal rejects ranges over 92 days', async () => {
     vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
       jobs: [MANUAL_ONLY_BACKFILL],
@@ -174,6 +186,20 @@ describe('Tools 任务中心', () => {
     render(Tools, { props: { sub: 'runs' } })
     expect(await screen.findByText('2026-06-01 ~ 2026-06-30')).toBeTruthy()
     expect(screen.getByText('手动')).toBeTruthy()
+  })
+
+  it('renders two executions that share a run_id (resume) without a duplicate-key error', async () => {
+    const id = 'daily-20261030033000-1a2b3c4d'
+    vi.spyOn(api, 'getJobReports').mockResolvedValue({
+      reports: [
+        { ...scheduledReport, task: 'daily', run_id: id, trigger_source: 'resume', started_at: '2026-10-30T04:00:00+00:00' },
+        { ...scheduledReport, task: 'daily', run_id: id, trigger_source: 'scheduled', status: 'failed', started_at: '2026-10-30T03:30:00+00:00' },
+      ],
+      degraded: false,
+    })
+    render(Tools, { props: { sub: 'runs' } })
+    expect(await screen.findAllByRole('link', { name: '详情' })).toHaveLength(2)
+    expect(screen.getByText('续跑')).toBeTruthy()
   })
 
   it('runs row links to #tools/runs/<id>', async () => {

@@ -26,7 +26,7 @@
     const all = failedTargetsFirst(targetsOf(family))
     return showAll[family.family] || family.legacy ? all : all.filter(t => !t.ok)
   }
-  const cell = (value: unknown) => value === null || value === undefined || value === '' ? '—' : String(value)
+  const cell = (value: unknown) => value === null || value === undefined || value === '' ? '无' : String(value)
   const resultText = (t: FetchTarget) => t.ok ? '成功'
     : `失败${t.error_kind ? `（${t.error_kind}）` : ''}${t.http_status != null ? ` HTTP ${t.http_status}` : ''}`
 
