@@ -44,12 +44,17 @@ export interface FactDiscipline {
 export interface FactExecution {
   status: string; text: string; plan_kind?: string | null; plan_id?: string | null; version_no?: number | null
   notes?: { id: number; body: string; created_at: string }[]
-  legacy_decision?: { text: string; reason?: string | null } | null
+  legacy_decision?: {
+    text: string; decision?: string | null; final_action?: string | null; reason?: string | null; decided_at?: string | null
+    plan_id?: string | null; agent_plan_id?: string | null
+  } | null
+  first_fill?: { executed_at: string; quantity: string | number; price: string | number } | null
+  follow?: string | null; trade_ids?: string[]
 }
-/** retro-2 `facts.holding`: days held, when the exit instruction came and when the shares were actually sold. */
+/** retro-2 `facts.holding` (retro.holding_fact): days held, the first exit instruction and the day the shares were sold. */
 export interface FactHolding {
-  held_sessions: number | null; exit_instruction_date?: string | null; exit_reason?: string | null
-  sold_date?: string | null
+  held_sessions: number | null; exit?: { session: string; reason: string | null } | null
+  sell_date?: string | null; sold_before_exit?: boolean
 }
 export interface Facts {
   subject: {

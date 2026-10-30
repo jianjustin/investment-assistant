@@ -227,15 +227,33 @@ def test_resume_daily_checks_then_submits_in_that_order(monkeypatch):
     order = []
     run_id = "daily-20261030033000-1a2b3c4d"
     monkeypatch.setattr(workflow, "resume_check", lambda rid, node, *, now: order.append("check") or {"attempt": 3})
+    monkeypatch.setattr(daily, "ensure_ready", lambda: order.append("ready"))
     monkeypatch.setattr(daily, "is_running", lambda: order.append("lock") or False)
     monkeypatch.setattr(jobs.runner, "submit", lambda kind, fn: order.append(("submit", kind)) or "daily_resume-x")
     out = jobs.resume_daily({"run_id": run_id, "node": "collect", "request_id": "ignored"})
     assert out == {"run_id": run_id, "node": "collect", "status": "pending", "attempt": 3, "runner_id": "daily_resume-x"}
-    assert order == ["check", "lock", ("submit", "daily_resume")]
+    assert order == ["check", "ready", "lock", ("submit", "daily_resume")]
     monkeypatch.setattr(daily, "is_running", lambda: True)
     with pytest.raises(daily.DailyBusy):
         jobs.resume_daily({"run_id": run_id, "node": "collect"})
     assert order.count(("submit", "daily_resume")) == 1                  # a busy lock submits nothing
+
+
+def test_resume_daily_without_migration_029_is_503_and_submits_nothing(monkeypatch):
+    """Task-6 review M1: the 029 gate of the resume runs in the synchronous pre-check, so the endpoint answers 503
+    ``migration_029_missing`` instead of a 202 whose background run fails unseen."""
+    from investment_assistant.tasks import daily
+    from investment_assistant.workbench import service, workflow
+
+    def not_ready():
+        raise service.Unavailable("migration_029_missing")
+
+    monkeypatch.setattr(workflow, "resume_check", lambda rid, node, *, now: {"attempt": 1})
+    monkeypatch.setattr(daily, "ensure_ready", not_ready)
+    monkeypatch.setattr(daily, "is_running", lambda: False)
+    monkeypatch.setattr(jobs.runner, "submit", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(service.Unavailable, match="migration_029_missing"):
+        jobs.resume_daily({"run_id": "daily-20261030033000-1a2b3c4d", "node": "collect"})
 
 
 @pytest.mark.parametrize("body", [None, {}, {"run_id": "daily-20261030033000-1a2b3c4d"}, {"node": "collect"},

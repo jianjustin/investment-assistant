@@ -117,7 +117,7 @@ def resume_daily(payload: dict[str, Any] | None) -> dict[str, Any]:
 
     ``ValueError`` (body without ``run_id`` / ``node``, a malformed id, a node not of ``stages-4``), ``LookupError``
     (no such run), ``workflow.ResumeRejected`` (``not_failed`` / ``node_mismatch`` / ``resume_window_closed``),
-    ``daily.DailyBusy`` (the lock is taken) and ``service.Unavailable`` (migration 028 missing, no database) are the
+    ``daily.DailyBusy`` (the lock is taken) and ``service.Unavailable`` (migration 028 / 029 missing, no database) are the
     caller's to map."""
     from investment_assistant.tasks import daily
     from investment_assistant.workbench import run_detail, workflow
@@ -129,6 +129,7 @@ def resume_daily(payload: dict[str, Any] | None) -> dict[str, Any]:
     if not run_detail.RUN_ID_RE.match(run_id):
         raise ValueError("run_id 格式不合法")
     info = workflow.resume_check(run_id, node, now=datetime.now(UTC))     # raises before anything is written
+    daily.ensure_ready()        # migration 029 too (the background resume checks it as well): 503, not a lost 202
     if daily.is_running():
         raise daily.DailyBusy()
     runner_id = runner.submit("daily_resume", lambda: daily.resume(run_id, node))

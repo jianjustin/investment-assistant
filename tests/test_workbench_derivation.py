@@ -1017,6 +1017,32 @@ def test_plan2_derivation_consistent():
     assert derivation.RULE_ENTRY_TYPE == plans.DEFAULT_ENTRY_TYPE and derivation.RULE_MAX_HOLD_SESSIONS == plans.RULE_MAX_HOLD_SESSIONS
 
 
+def test_plan2_own_plan_derivation_consistent():
+    """Task-6 review I3: a v2.9 own plan (``plan-2`` / ``own``, written with a fill) is derived, not ``incomplete``."""
+    bars, snapshot = _bars(), _snapshot()
+    fill_day = date(2026, 10, 27)
+    rule_plan = {'id': uuid.uuid4(), 'atr': Decimal('2')}
+    plan = plans.build_own_plan(
+        rule_plan=rule_plan, levels=OWN_LEVELS, ticker='AAA', signal_date=SIGNAL, bars=bars, earnings_row=None,
+        snapshot=snapshot, exposure=_exposure(), params=WorkbenchConfig(), version=plans.PLAN_V2, fill_session=fill_day,
+        max_hold_sessions=15)
+    plan['id'] = uuid.uuid4()
+    rows = _rows(bars, None, snapshot)
+    rows.rule_plan = rule_plan
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency'] == {'status': 'consistent', 'mismatches': [], 'missing': []}, result['consistency']
+    assert (result['plan']['kind'], result['plan']['plan_version']) == ('own', 'plan-2')
+    assert _step(result, 'valid_until')['result'] == fill_day.isoformat()
+    assert _step(result, 'entry_type')['consistent'] is True
+    hold = _step(result, 'max_hold_sessions')
+    assert (hold['result'], hold['stored'], hold['consistent']) == ('15', '15', True)
+    assert derivation.MAX_HOLD_RANGE == plans.MAX_HOLD_RANGE
+    for field, value in (('max_hold_sessions', 31), ('entry_type', 'next_open'), ('valid_until', date(2026, 10, 28))):
+        bad = derivation.derive_plan({**plan, field: value}, rows)
+        assert bad['consistency']['status'] == 'mismatch', field
+        assert field in [m['key'] for m in bad['consistency']['mismatches']], field
+
+
 def _make_agent3(*, as_of=SIGNAL, version_no=0, mode='entry', entry_type='zone_limit', max_hold=10, retriggers=(),
                  cutoff=None, run_id='run-3'):
     from datetime import UTC, datetime

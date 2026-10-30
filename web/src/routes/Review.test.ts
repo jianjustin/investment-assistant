@@ -819,6 +819,16 @@ describe('review-8 vs older snapshots (D30, D26)', () => {
     expect(w7).not.toHaveTextContent('版本生成后')
   })
 
+  it('a fill of an own plan has no delay: the line says so instead of 0.0 hours (M2)', async () => {
+    const base = respond
+    respond = async url => url.includes('/weekly-reviews') ? json({ reviews: [
+      snap('w8', 'review-8', stats({ units: { executed: 1, not_executed: 0 }, execution: [{ ticker: 'MU', slippage: 0.01, delay_hours: null }] }))] }) : base(url)
+    render(Review, { sub: 'weekly' })
+    const [w8] = await screen.findAllByRole('article')
+    expect(w8).toHaveTextContent('MU 成交价较 T+1 开盘 +1.00% · 自定计划，不计延迟')
+    expect(w8).not.toHaveTextContent('0.0 小时')
+  })
+
   it('the 对照组 tab under review-8 covers all units and has no 决定 column; older snapshots are unchanged', async () => {
     const unit = (over: Record<string, unknown>) => ({ id: 'u', ticker: 'MU', signal_date: '2026-10-22', proposed_action: 'buy',
       rule_ids: ['trend_reclaim'], outcome: { status: 'entered', entry_price: 100, windows: {

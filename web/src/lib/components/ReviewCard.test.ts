@@ -285,7 +285,7 @@ describe('ReviewCard · retro-2 (你的执行与纪律) and retro-1 side by side
   })
 
   it('names the fill basis of the Agent track, and says when the shares were not sold yet', async () => {
-    load(cardView({ facts: executionFacts({ holding: { held_sessions: 2, exit_instruction_date: '2026-10-22', exit_reason: 'time_stop' } }) }))
+    load(cardView({ facts: executionFacts({ holding: { held_sessions: 2, exit: { session: '2026-10-22', reason: 'time_stop' }, sell_date: null } }) }))
     render(ReviewCard, { id: 12 })
     const tracks = await screen.findByRole('region', { name: '三条轨道' })
     expect(tracks).toHaveTextContent('（成交时关联的版本）')
@@ -316,6 +316,14 @@ describe('ReviewCard · retro-2 (你的执行与纪律) and retro-1 side by side
     load(cardView())
     render(ReviewCard, { id: 12 })
     expect(await screen.findByRole('region', { name: '复盘叙述' })).toHaveTextContent('决定回顾 决定照规则计划')
+  })
+
+  it('a retro-2 card whose draft still writes decision_review reads 执行回顾 (M3)', async () => {
+    load(cardView({ facts: executionFacts(), drafts: [draftRow({ output: draftOutput() })] }))
+    render(ReviewCard, { id: 12 })
+    const narrative = await screen.findByRole('region', { name: '复盘叙述' })
+    expect(narrative).toHaveTextContent('执行回顾 决定照规则计划')
+    expect(narrative).not.toHaveTextContent('决定回顾')
   })
 
   it('names the merged basis of the Agent track', async () => {

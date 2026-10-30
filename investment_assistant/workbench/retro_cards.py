@@ -36,6 +36,7 @@ NY = ZoneInfo('America/New_York')
 MIGRATION_MISSING = '迁移 027 未执行'
 NOTE_MAX = 2000
 CARD_LOCK = 'review-card-verdict'      # advisory lock key prefix: verdict, draft writes and skip rows of one card
+LEGACY_DECISION_KEYS = ('decision', 'final_action', 'reason', 'decided_at', 'plan_id', 'agent_plan_id')   # + `text`
 LESSON_KEYS = ('title', 'body', 'scope', 'counter_examples', 'concepts', 'tickers')
 _EPOCH = date(2000, 1, 1)
 
@@ -372,8 +373,12 @@ def _freeze_v2(conn, item: dict[str, Any], cache: _Cache, *, session: date, now:
 
     track_row = (service.unit_track_row(conn, ticker, sub['signal_date'], session=session, now=now)
                  if sub['kind'] == 'unit' else None)
-    legacy = None if decision is None else {k: decision.get(k) for k in (
-        'decision', 'final_action', 'reason', 'decided_at', 'plan_id', 'agent_plan_id')}
+    legacy = None
+    if decision is not None:
+        legacy_plan = plan_by_id.get(str(decision['plan_id'])) if decision.get('plan_id') else None
+        legacy = {k: decision.get(k) for k in LEGACY_DECISION_KEYS}
+        legacy['text'] = retro.decision_text(decision, legacy_plan,        # frozen words, as retro-1's decision.text
+                                             agent_version_no=legacy_plan.get('version_no') if legacy_plan else None)
     version_no_by_plan = {v['plan_id']: v['version_no'] for v in versions}
     for plan in plans:
         if plan.get('version_no') is not None:

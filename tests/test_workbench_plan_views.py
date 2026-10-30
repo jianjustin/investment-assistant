@@ -7,11 +7,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from test_workbench_executable_flow import exit_review, fill, renewal, spike
+from test_workbench_executable_flow import exit_review, fill, merge, renewal, spike
 from test_workbench_plan_review import S1, Market, counter, day, evening, make_model, proposal, run, signal_day, verdict
 from test_workbench_service import db   # noqa: F401  (fixture: service wired to the disposable schema)
 from investment_assistant.data.calendar import trading_days_between
-from investment_assistant.workbench import plan_views, pool as pool_module, repository, service
+from investment_assistant.workbench import plan_review, plan_views, pool as pool_module, repository, service
 
 NY = ZoneInfo('America/New_York')
 
@@ -280,6 +280,47 @@ def test_plan_table_stale_holding_rows(db):
     assert 'stale' not in stored['holding']                                      # the written row wins
 
 
+def test_a_failing_ticker_leaves_no_partial_rows(db, monkeypatch):
+    """M7: rows of a ticker that failed half way are dropped with its savepoint; the failure goes to ``errors`` and the
+    position still shows, computed by the holding section."""
+    market = Market()
+    holding_chain(db, market)
+    real_items, real_row, calls = plan_review.ticker_chain_items, plan_views._chain_row, []
+
+    def two_items(*args, **kwargs):
+        items = real_items(*args, **kwargs)
+        return [*items, items[0]]                                   # a second chain row to build after the first
+
+    def second_fails(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError('boom')
+        return real_row(*args, **kwargs)
+
+    monkeypatch.setattr(plan_review, 'ticker_chain_items', two_items)
+    monkeypatch.setattr(plan_views, '_chain_row', second_fails)
+    view = table(db, 2)
+    assert view['errors'] == {'SYNTH': 'boom'} and len(calls) == 2
+    assert [r['row_id'] for r in rows_of(view, 'holding')] == ['holding:SYNTH']          # computed, not the half row
+    assert rows_of(view, 'holding')[0]['status']['label'].startswith('无 Agent 链')
+    assert view['counts'] == {'entry': 0, 'holding': 1, 'ended': 0}
+
+
+def test_renewal_day_without_a_new_version_cannot_be_executed_tomorrow(db):
+    """M8: on ``valid_until`` a trigger keeps the chain in its entry period (R5), but when the renewal made no new
+    version the plan is out of date tomorrow: the row says so and offers no opening cases."""
+    market = Market()
+    v0 = entry_chain(db, market)                                    # valid_until = day(3)
+    merge(db, 3)                                                    # a trigger on the last valid day, no new version
+    [row] = rows_of(table(db, 3), 'entry')
+    assert row['chain']['state'] == 'entry' and row['plan']['valid_until'] == day(3)
+    assert row['status']['label'] == '入场期 · 再次触发未产生新版，本计划已到截止日，明日不可执行'
+    assert row['open_scenarios'] == []
+    [earlier] = rows_of(table(db, 2), 'entry')                      # a day earlier the plan is as usual
+    assert earlier['open_scenarios'] and earlier['status']['label'] == '入场期'
+    assert v0['plan']['id'] is not None
+
+
 def test_position_without_a_chain_is_a_holding_row(db):
     """A position whose fills follow a rule baseline (no chain) still shows in 「今日」 with the host's status."""
     market = Market()
@@ -419,6 +460,19 @@ def test_linkable_default_follows_the_head_at_fill_time(db):
     late = datetime.combine(day(2), time(10, 0), tzinfo=NY)
     assert plan_views.linkable_plans(db, 'SYNTH', executed_at=early)['default_plan_id'] == str(v0['plan']['id'])
     assert plan_views.linkable_plans(db, 'SYNTH', executed_at=late)['default_plan_id'] == str(v1['plan']['id'])
+
+
+def test_linkable_on_the_last_valid_day_and_the_day_after(db):
+    """I1: a fill on ``valid_until`` follows the plan table of the session before it, where the chain is still in its
+    entry period; the day after ``valid_until`` the chain is not offered."""
+    market = Market()
+    v0 = entry_chain(db, market)                                    # valid_until = day(3)
+    retime(db)
+    last = plan_views.linkable_plans(db, 'SYNTH', executed_at=datetime.combine(day(3), time(10, 0), tzinfo=NY))
+    assert last['default_plan_id'] == str(v0['plan']['id'])
+    assert [p['kind'] for p in last['plans']] == ['agent', 'rule']
+    after = plan_views.linkable_plans(db, 'SYNTH', executed_at=datetime.combine(day(4), time(10, 0), tzinfo=NY))
+    assert after['default_plan_id'] is None and all(p['kind'] != 'agent' for p in after['plans'])
 
 
 def test_linkable_excludes_exiting(db):

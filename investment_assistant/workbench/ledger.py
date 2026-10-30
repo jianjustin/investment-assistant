@@ -206,8 +206,12 @@ def own_plan_signal_date(conn, ticker: str, executed_at: datetime) -> date:
     from investment_assistant.workbench import plan_review
 
     fill_day = _ny_day(executed_at)
-    found = plan_review.active_chain_of(conn, ticker, session=fill_day, now=executed_at, point_in_time=True)
-    if found is not None:                           # read as the fill knew it: a chain opened later is not there
+    # judged as the plan table of the session before the fill day showed it (a chain whose last valid day is the fill
+    # day is still active, I1); read as the fill knew it: a chain opened later is not there, and a plan that expired
+    # the day before (only a trigger could renew it) is no longer the unit
+    found = plan_review.active_chain_of(conn, ticker, session=add_trading_days(fill_day, -1), now=executed_at,
+                                        point_in_time=True)
+    if found is not None and not found['renewable']:
         return found['chain']['signal_date']
     since = add_trading_days(fill_day, -OWN_PLAN_UNIT_SESSIONS)
     days = [c['signal_date'] for c in repository.read_candidates(conn, ticker, since=since)

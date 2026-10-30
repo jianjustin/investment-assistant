@@ -75,7 +75,7 @@ export const executionFacts = (over: Partial<Facts> = {}): Facts => {
       notes: [{ id: 3, body: '等回踩再进，别追', created_at: '2026-10-14T21:00:00Z' }],
       legacy_decision: { text: '否决', reason: '旧决定的理由' },
     },
-    holding: { held_sessions: 6, exit_instruction_date: '2026-10-22', exit_reason: 'stop_touched', sold_date: '2026-10-23' },
+    holding: { held_sessions: 6, exit: { session: '2026-10-22', reason: 'stop_touched' }, sell_date: '2026-10-23' },
     ...over,
   }
 }

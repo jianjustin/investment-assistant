@@ -9,10 +9,12 @@ from pathlib import Path
 
 from investment_assistant.api.routes import workbench as workbench_routes
 from investment_assistant.notify import templates
-from investment_assistant.workbench import agent, entry_rules, execution, ledger, plan_review, service, timeline
+from investment_assistant.workbench import (agent, entry_rules, execution, ledger, plan_review, retro, retro_cards,
+                                            service, timeline)
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKBENCH_TS = ROOT / 'web' / 'src' / 'lib' / 'workbench.ts'
+GROWTH_TS = ROOT / 'web' / 'src' / 'lib' / 'growth.ts'
 
 # The five void reasons v2.9 adds (spec §5.5 + §21.4).
 NEW_REASONS = ('invalid_entry_type', 'invalid_max_hold', 'stop_lowered', 'stop_above_close', 'active_chain')
@@ -125,3 +127,44 @@ def test_first_version_calcs_cover_review_8_and_monthly_4():
     assert match
     calcs = set(re.findall(r"'([^']+)'", match.group(1)))
     assert {'review-8', 'monthly-4'} <= calcs
+
+
+def _interface_keys(text: str, name: str) -> dict[str, set[str]]:
+    """The keys of `export interface <name> {...}`: `{key: keys of its inline object type}` (empty for a scalar)."""
+    start = text.index(f'export interface {name} {{') + len(f'export interface {name} ')
+    depth, end = 0, start
+    for i in range(start, len(text)):
+        depth += {'{': 1, '}': -1}.get(text[i], 0)
+        if depth == 0:
+            end = i
+            break
+    body = re.sub(r'//[^\n]*|/\*.*?\*/', '', text[start + 1:end], flags=re.S)
+    nested: dict[str, set[str]] = {}
+
+    def keep(match: re.Match) -> str:                   # `key?: { a: 1; b?: 2 }` -> `key?: OBJ`, remembering a and b
+        nested[match.group(1)] = set(re.findall(r'(\w+)\??:', match.group(3)))
+        return f'{match.group(1)}{match.group(2)}: OBJ'
+
+    flat = re.sub(r'(\w+)(\??):\s*\{([^{}]*)\}', keep, body)
+    return {key: nested.get(key, set()) for key in re.findall(r'(\w+)\??:', flat)}
+
+
+def test_retro2_fact_keys_the_front_end_reads_exist_in_the_backend():
+    """Task-6 review I2: `FactHolding` / `FactExecution` once read keys the backend never wrote (`exit_instruction_date`,
+    `sold_date`, `legacy_decision.text`). Every key the front end types read must be one the frozen fact carries."""
+    from datetime import date
+
+    text = GROWTH_TS.read_text(encoding='utf-8')
+    held = retro.holding_fact([{'session': date(2026, 10, 20), 'held_sessions': 2, 'instruction': 'exit',
+                                'exit_reason': 'time_stop', 'max_hold_sessions': 10, 'r_now': 0.5}],
+                              sell_date=date(2026, 10, 21))
+    holding = _interface_keys(text, 'FactHolding')
+    assert set(holding) <= set(held)
+    assert holding['exit'] <= set(held['exit'])
+    execution_out = retro.execution_fact(buys=[], plans_by_trade={})
+    execution_keys = _interface_keys(text, 'FactExecution')
+    assert set(execution_keys) <= set(execution_out)
+    legacy_keys = set(retro_cards.LEGACY_DECISION_KEYS) | {'text'}
+    assert execution_keys['legacy_decision'] <= legacy_keys
+    assert execution_keys['first_fill'] <= {'executed_at', 'quantity', 'price'}
+    assert execution_keys['notes'] <= {'id', 'body', 'created_at'}

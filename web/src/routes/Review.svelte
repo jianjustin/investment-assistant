@@ -529,7 +529,7 @@
         {/if}
         {#if r.stats.execution?.length}
           <p class="text-xs text-muted">执行偏差</p>
-          <ul>{#each r.stats.execution as x}<li>{x.ticker} 成交价较 T+1 开盘 {wb.pct(x.slippage)} · {wb.isExecutionReview(r.calc_version) ? '版本生成后' : '决定后'} {Number(x.delay_hours).toFixed(1)} 小时成交</li>{/each}</ul>
+          <ul>{#each r.stats.execution as x}<li>{x.ticker} 成交价较 T+1 开盘 {wb.pct(x.slippage)} · {#if x.delay_hours == null}自定计划，不计延迟{:else}{wb.isExecutionReview(r.calc_version) ? '版本生成后' : '决定后'} {Number(x.delay_hours).toFixed(1)} 小时成交{/if}</li>{/each}</ul>
         {/if}
         {#if wb.isExecutionReview(r.calc_version)}
           {@const unplanned = r.stats.unplanned_trades ?? r.stats.unsignaled_trades}

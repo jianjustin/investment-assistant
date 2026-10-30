@@ -194,6 +194,7 @@ def test_close_creates_card_and_drafts(db, scripted_model):
     assert facts['subject']['end_text'] == '平仓（自行卖出）' and facts['subject']['exit_basis'] == 'other'
     assert facts['execution']['text'] == '采纳（照规则基线）' and facts['execution']['status'] == 'adopted'
     assert facts['execution']['legacy_decision']['decision'] == 'accept'      # the old decision is kept as it was
+    assert facts['execution']['legacy_decision']['text'] == '采纳（照规则计划）'    # I2: with the retro-1 wording
     assert [p['roles'] for p in facts['plans']] == [['reference', 'executed']]
     assert facts['trades']['actual_r'] is not None and len(facts['trades']['segments']) == 1
     assert facts['discipline']['totals'] == {'chase': 1, 'early_take': 0, 'held_loser': 0, 'unplanned': 0,
@@ -296,6 +297,7 @@ def test_held_unit_whose_latest_decision_is_a_reject_keeps_the_accepted_plan(db,
     assert [(p['key'], p['roles']) for p in facts['plans']] == [(f"plan:{plan['id']}", ['reference', 'executed'])]
     assert facts['execution']['text'] == '采纳（照规则基线）'          # the buy's own decision carried the plan
     assert facts['execution']['legacy_decision']['decision'] == 'reject'      # the head decision, kept as it was
+    assert facts['execution']['legacy_decision']['text'] == '否决'
     assert acc.detail['events'] == 1 and acc.detail['no_plan'] == 0
 
 

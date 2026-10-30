@@ -27,6 +27,7 @@ from investment_assistant.workbench import (bars as bars_module, entry_rules, ex
 
 NY = ZoneInfo('America/New_York')
 ENDED_STATES = timeline.ENDED_STATES
+LAPSED_RENEWAL_TEXT = '再次触发未产生新版，本计划已到截止日，明日不可执行'     # M8 (full-review)
 POOL_ORDER = {'core': 0, 'screen': 1, 'extended': 2}
 INSTRUCTION_ORDER = {name: index for index, name in enumerate(('exit', 'sell_half', 'hold', 'no_plan'))}
 OWN_LINK_SESSIONS = execution.LINKABLE_OWN_SESSIONS
@@ -257,6 +258,8 @@ def _chain_row(conn, ticker: str, item: dict[str, Any], *, group: str, session: 
             label += ' · 今日修订（再次触发）'
         elif revised_today is not None:
             label += ' · 今日修订'
+        elif head_plan['valid_until'] <= session:      # R5: renewed by a trigger today, but no new version came of it
+            label += f' · {LAPSED_RENEWAL_TEXT}'
         elif 'retrigger' in fired:
             label += ' · 今日再次触发（未产生新版）'
         status['label'] = label
@@ -290,7 +293,8 @@ def _chain_row(conn, ticker: str, item: dict[str, Any], *, group: str, session: 
                   'retriggers': [{'unit_signal_date': r['unit_signal_date'], 'rule_ids': r['rule_ids'],
                                   'version_no': r['version_no']} for r in retriggers]},
         'plan': plan, 'baseline': baseline,
-        'open_scenarios': entry_rules.scenarios(head_plan) if group == 'entry' else [],
+        'open_scenarios': (entry_rules.scenarios(head_plan)
+                           if group == 'entry' and head_plan['valid_until'] > session else []),
         'void_when': void, 'status': status, 'holding': holding,
         'notes': _notes_of(conn, ticker, chain_signal_date=signal_date, cutoff=cut),
         'links': {'plan': f"#plan/{head_plan['id']}", 'instrument': f'#instrument/{ticker}'},
@@ -407,6 +411,10 @@ def plan_table(conn, *, session: date | None = None, include_extended: bool = Fa
         by_ticker.setdefault(chain['ticker'], []).append(chain)
     active_tickers: set[str] = set()
     for ticker in sorted(by_ticker):
+        # collected locally and merged only when the ticker's savepoint succeeded: a half-built ticker leaves no rows
+        found: list[dict] = []
+        held_seen = False
+        active = False
         try:
             with conn.transaction():
                 context = plan_review.ticker_context(conn, ticker, now=cut, point_in_time=pit)
@@ -420,7 +428,7 @@ def plan_table(conn, *, session: date | None = None, include_extended: bool = Fa
                     if name == 'entry':
                         row = _chain_row(conn, ticker, item, group='entry', session=session, cut=cut,
                                          context=context, holding=None, end=None)
-                        active_tickers.add(ticker)
+                        active = True
                     elif name in ('holding', 'exiting'):
                         latest_held = max(held_items, key=lambda i: i['chain']['signal_date']) is item
                         hs = hs_rows.get(ticker)
@@ -428,18 +436,23 @@ def plan_table(conn, *, session: date | None = None, include_extended: bool = Fa
                                                               or (hs.get('chain_signal_date') is None and latest_held))) else None
                         row = _chain_row(conn, ticker, item, group='holding', session=session, cut=cut,
                                          context=context, holding=attached, end=None)
-                        active_tickers.add(ticker)
-                        seen_tickers.add(ticker)
+                        active = held_seen = True
                     elif name in ENDED_STATES:
                         end = _end_of(item, session, segments=context['book']['closed'])
                         if _within_window(end['at'], session):
                             row = _chain_row(conn, ticker, item, group='ended', session=session, cut=cut,
                                              context=context, holding=None, end=end)
-                    if row is None:
-                        continue
-                    (entry if row['group'] == 'entry' else holding if row['group'] == 'holding' else ended).append(row)
+                    if row is not None:
+                        found.append(row)
         except Exception as exc:        # noqa: BLE001 - one ticker never takes the whole table down
             errors[ticker] = str(exc) or type(exc).__name__
+            continue                    # its position, if any, is computed by the holding section below
+        for row in found:
+            (entry if row['group'] == 'entry' else holding if row['group'] == 'holding' else ended).append(row)
+        if active:
+            active_tickers.add(ticker)
+        if held_seen:
+            seen_tickers.add(ticker)
 
     # positions that belong to no chain: the plan their fills follow, or none
     for ticker, hs in sorted(hs_rows.items()):
@@ -611,7 +624,10 @@ def linkable_plans(conn, ticker: str, *, executed_at: datetime) -> dict[str, Any
     plans: list[dict[str, Any]] = []
     default_id = None
     # read the chain as the moment of the fill knew it: the version that was the head then, the state it was in then
-    found = plan_review.active_chain_of(conn, ticker, session=day, now=executed_at, point_in_time=True)
+    # (a fill during day D follows the plan table of the session before D: the chain's state is judged after that
+    # session's close, so a plan whose last valid day is D is still in its entry period)
+    found = plan_review.active_chain_of(conn, ticker, session=add_trading_days(day, -1), now=executed_at,
+                                        point_in_time=True)
     if found is not None and found['state']['state'] in timeline.REVIEWABLE_STATES:
         chain = found['chain']
         head = chain['versions'][-1]

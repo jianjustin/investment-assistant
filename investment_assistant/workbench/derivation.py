@@ -50,6 +50,7 @@ MIN_BARS = ATR_PERIOD + 1
 CHAIN_ENTRY_SESSIONS = 10      # agent-2 entry-phase chain cap; a test keeps it equal to timeline's
 RULE_ENTRY_TYPE = 'zone_limit'            # plan-2 execution fields (v2.9 §5.4); a test keeps them equal to plans'
 RULE_MAX_HOLD_SESSIONS = 10
+MAX_HOLD_RANGE = (3, 30)                  # trade_plans.max_hold_sessions CHECK
 ENTRY_TYPES = ('zone_limit', 'breakout_stop', 'next_open')
 
 EVIDENCE_TEXT = '规则 v1 与 `plan-1` 都未经验证（Phase 0 Gate HOLD）。推导一致只说明算术正确，不说明规则有效。'
@@ -759,6 +760,39 @@ def _derive_agent3(plan: dict[str, Any], rows: Rows) -> tuple[list[dict], list[d
     return _derive_agent_chain(plan, rows, v3=True)
 
 
+def _derive_own2(plan: dict[str, Any], rows: Rows) -> tuple[list[dict], list[dict], list[str]]:
+    """``plan-2`` own plan (written with a fill, spec §6.1): the user's levels as for ``plan-1``; the validity is the
+    fill day alone (the day the plan froze as ``valid_from``), the entry type is ``zone_limit`` and the longest hold
+    is the user's 3–30 sessions (default 10)."""
+    fill = _date(plan['valid_from'])
+    validity = ([_step('valid_from', '有效期起', '成交当日（自定计划只在成交日有效）', {'fill_session': fill}, fill,
+                       _date(plan['valid_from'])),
+                 _step('valid_until', '有效期止', '成交当日（自定计划只在成交日有效）', {'fill_session': fill}, fill,
+                       _date(plan['valid_until']))], fill, fill)
+    missing = _variant_missing(plan, rows)
+    if 'bar_ids' in missing:
+        return [], [], missing
+    rule_atr = _opt_dec((rows.rule_plan or {}).get('atr'))
+    if len(rows.bars or []) < MIN_BARS and plan.get('based_on_id') is not None and rows.rule_plan is None:
+        missing.append(f"trade_plans:{plan['based_on_id']}")
+    fallback = ((rule_atr, '取规则计划', '日线不足 15 根，取规则计划的 ATR') if rule_atr is not None
+                else (Decimal(0), '无 ATR', '日线不足 15 根且无规则计划 ATR，取 0'))
+    levels = _stored_levels(plan)
+    level_steps = [_step(key, LEVEL_LABELS[key], '你的输入，不重算', {}, levels[key], source='user_input')
+                   for key in LEVEL_LABELS]
+    steps, checks, missing = _derive_from_levels(plan, rows, missing, level_steps=level_steps, levels=levels,
+                                                 fallback_atr=fallback, agent=False, validity=validity)
+    hold = _opt_int(plan.get('max_hold_sessions'))
+    in_range = hold is not None and MAX_HOLD_RANGE[0] <= hold <= MAX_HOLD_RANGE[1]
+    steps = steps + [
+        _step('entry_type', '入场类型', '自定计划恒用 zone_limit', {'RULE_ENTRY_TYPE': RULE_ENTRY_TYPE},
+              RULE_ENTRY_TYPE, plan.get('entry_type')),
+        _step('max_hold_sessions', '最长持有', f'你的输入，须在 {MAX_HOLD_RANGE[0]}–{MAX_HOLD_RANGE[1]} 个交易日内'
+              f'（缺省 {RULE_MAX_HOLD_SESSIONS}）', {'range': list(MAX_HOLD_RANGE)}, hold if in_range else RULE_MAX_HOLD_SESSIONS,
+              hold, source='user_input')]
+    return steps, checks, missing
+
+
 def _derive_rule2(plan: dict[str, Any], rows: Rows) -> tuple[list[dict], list[dict], list[str]]:
     """``plan-2``: the ``plan-1`` derivation word for word, plus the two execution fields against the rule constants."""
     steps, checks, missing = _derive_rule(plan, rows)
@@ -939,6 +973,7 @@ _DERIVERS: dict[tuple[str, str], Callable[[dict[str, Any], Rows], tuple[list[dic
     ('plan-1', 'rule'): _derive_rule,
     ('plan-2', 'rule'): _derive_rule2,
     ('plan-1', 'own'): _derive_own,
+    ('plan-2', 'own'): _derive_own2,
     ('agent-1', 'agent'): _derive_agent,
     ('agent-2', 'agent'): _derive_agent2,
     ('agent-3', 'agent'): _derive_agent3,

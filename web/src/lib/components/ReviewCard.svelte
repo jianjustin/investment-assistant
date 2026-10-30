@@ -74,10 +74,10 @@
   // 持仓：持有 n 个交易日 · 退出指令 <日期>（原因） · 实际卖出 <日期>（没有卖出写「尚未卖出」）
   const holdingText = (h: FactHolding) => {
     const parts = [h.held_sessions != null ? `持有 ${h.held_sessions} 个交易日` : '持有天数未知']
-    if (h.exit_instruction_date)
-      parts.push(`退出指令 ${h.exit_instruction_date}${h.exit_reason ? `（${EXIT_REASON_TEXT[h.exit_reason] ?? h.exit_reason}）` : ''}`)
-    if (h.sold_date) parts.push(`实际卖出 ${h.sold_date}`)
-    else if (h.exit_instruction_date) parts.push('尚未卖出')
+    if (h.exit?.session)
+      parts.push(`退出指令 ${h.exit.session}${h.exit.reason ? `（${EXIT_REASON_TEXT[h.exit.reason] ?? h.exit.reason}）` : ''}`)
+    if (h.sell_date) parts.push(`实际卖出 ${h.sell_date}`)
+    else if (h.exit?.session) parts.push('尚未卖出')
     return `持仓：${parts.join(' · ')}`
   }
 
@@ -185,7 +185,7 @@
           {#if narrative.execution_review}
             <p><span class="text-xs text-muted">执行回顾</span> <span class="whitespace-pre-wrap">{narrative.execution_review.text}</span><RefList refs={narrative.execution_review.refs} runId={okDraft?.agent_run_id} onFact={scrollToFact} /></p>
           {:else if narrative.decision_review}
-            <p><span class="text-xs text-muted">决定回顾</span> <span class="whitespace-pre-wrap">{narrative.decision_review.text}</span><RefList refs={narrative.decision_review.refs} runId={okDraft?.agent_run_id} onFact={scrollToFact} /></p>
+            <p><span class="text-xs text-muted">{facts.execution ? '执行回顾' : '决定回顾'}</span> <span class="whitespace-pre-wrap">{narrative.decision_review.text}</span><RefList refs={narrative.decision_review.refs} runId={okDraft?.agent_run_id} onFact={scrollToFact} /></p>
           {/if}
         {:else}
           <p class="text-xs text-muted">还没有叙述草稿。</p>

@@ -252,6 +252,17 @@ def test_own_plan_signal_date_fallbacks(workbench_db):
     assert ledger.own_plan_signal_date(workbench_db, 'NVDA', FILL - timedelta(days=5)) != date(2026, 10, 19)
 
 
+def test_own_plan_signal_date_on_the_last_valid_day(workbench_db):
+    """I1: a fill on the chain's ``valid_until`` is judged against the session before it, so the chain is still the
+    active one; the day after it is not."""
+    candidate(workbench_db, date(2026, 10, 20))
+    fill = datetime(2026, 10, 27, 14, 0, tzinfo=UTC)                     # 10:00 New York on valid_until
+    agent3_version(workbench_db, 0, None, datetime(2026, 10, 20, 1, 0, tzinfo=UTC), day=date(2026, 10, 19),
+                  valid_from=date(2026, 10, 20), valid_until=date(2026, 10, 27))
+    assert ledger.own_plan_signal_date(workbench_db, 'NVDA', fill) == date(2026, 10, 19)
+    assert ledger.own_plan_signal_date(workbench_db, 'NVDA', fill + timedelta(days=1)) == date(2026, 10, 20)
+
+
 def test_trade_without_signal_is_allowed(workbench_db):
     out = ledger.record_trade(workbench_db, trade_payload(), now=NOW + timedelta(days=1))
     assert out['record']['decision_id'] is None and out['record']['plan_id'] is None
