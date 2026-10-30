@@ -317,8 +317,9 @@ export const FLAG_LABELS: Record<string, string> = { chase: '追高', early_take
 export const CHOICE_LABELS: Record<Choice, string> = { accept: '采纳', reject: '否决', downgrade: '降级为观察' }
 export const KIND_TEXT: Record<string, string> = { rule: '规则', own: '自定', agent: 'Agent', agent_latest: 'Agent（最新版）' }
 // v2.5 D17: from weekly review-6 / monthly review monthly-3 on, plans.agent counts each chain's first version
-// (plans.agent_latest its head); older snapshots keep the plain「Agent」.
-const FIRST_VERSION_CALCS = new Set(['review-6', 'monthly-3'])
+// (plans.agent_latest its head); older snapshots keep the plain「Agent」. Every later calc version (review-7 / review-8,
+// monthly-4) keeps that meaning, so it is listed too.
+const FIRST_VERSION_CALCS = new Set(['review-6', 'review-7', 'review-8', 'monthly-3', 'monthly-4'])
 export function planKindText(kind: string, calcVersion: string | null | undefined): string {
   if (kind === 'agent' && calcVersion && FIRST_VERSION_CALCS.has(calcVersion)) return 'Agent（首版）'
   return KIND_TEXT[kind] ?? kind

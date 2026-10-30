@@ -1,7 +1,7 @@
 """The ChatGPT connection use cases (v2.8 spec §8, §10.2): login, refresh, disconnect, models, status.
 
 SQL tests: a throwaway schema of the disposable test database with the ``workbench_db`` migrations
-(``conftest.WORKBENCH_MIGRATIONS`` ends with 028), plus the fake authorization server of
+(``conftest.WORKBENCH_MIGRATIONS`` ends with 029), plus the fake authorization server of
 ``test_agent_chatgpt_oauth``. Every token is a ``test-…`` placeholder; the tests assert none of them ever reaches a log,
 an exception text, an event, ``last_error`` or the status view."""
 import contextlib

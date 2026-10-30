@@ -285,7 +285,7 @@ def _insert_run(conn, run_id, *, resumed=False):
 
 
 @pytest.fixture
-def db28(db):          # ``conftest.WORKBENCH_MIGRATIONS`` ends with 028 since v2.8
+def db28(db):          # ``conftest.WORKBENCH_MIGRATIONS`` ends with 029 since v2.9
     return db
 
 

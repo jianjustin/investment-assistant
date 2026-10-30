@@ -1875,7 +1875,7 @@ def test_today_chain_carries_head_cutoff_diff_and_review_conditions(db, scripted
 # ------------------------------------------------- max_attempts reset and rerun (v2.8 D26, migration 028)
 
 @pytest.fixture
-def db28(db):          # ``conftest.WORKBENCH_MIGRATIONS`` ends with 028 since v2.8
+def db28(db):          # ``conftest.WORKBENCH_MIGRATIONS`` ends with 029 since v2.9
     return db
 
 
