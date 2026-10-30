@@ -1,5 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { Alert, AlertDescription } from '$lib/ui/alert/index'
+  import { Button } from '$lib/ui/button/index'
+  import ConfirmDialog from '$lib/ui/confirm-dialog/ConfirmDialog.svelte'
+  import CutoffTime from '$lib/ui/domain/CutoffTime.svelte'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import Icon from '$lib/ui/domain/Icon.svelte'
+  import PageHeader from '$lib/ui/domain/PageHeader.svelte'
+  import StatusPill from '$lib/ui/domain/StatusPill.svelte'
+  import VersionChip from '$lib/ui/domain/VersionChip.svelte'
+  import Field from '$lib/ui/field/Field.svelte'
+  import { Input } from '$lib/ui/input/index'
   import ConceptTerm from './ConceptTerm.svelte'
   import KnowledgeForm from './KnowledgeForm.svelte'
   import KnowledgePerformance from './KnowledgePerformance.svelte'
@@ -8,7 +19,6 @@
   import { ATTACH } from '../knowledge'
   import {
     changedFields, CITED_FIELD_TEXT, conceptId, growthError, idempotentRequests, KNOWLEDGE_ORIGIN_TEXT,
-    KNOWLEDGE_STATUS_TEXT,
   } from '../growth'
   import type { KnowledgeItemView, KnowledgeValues } from '../growth'
   import { WorkbenchError } from '../workbench'
@@ -27,6 +37,8 @@
   let reason = $state('')
   let statusBusy = $state(false)
   let statusError = $state('')
+  let archiveOpen = $state(false)
+  const uid = $props.id()
   const statusRequests = idempotentRequests()
   const M = ATTACH.myKnowledge
 
@@ -98,35 +110,44 @@
       statusError = growthError(e)
     } finally {
       statusBusy = false
+      archiveOpen = false
     }
+  }
+
+  /** Archiving goes through the confirm dialog; restoring is the way back and needs no extra step. */
+  function submitStatus() {
+    if (archived) void changeStatus()
+    else archiveOpen = true
   }
 </script>
 
-<section class="space-y-4 min-w-0">
+<section class="grid min-w-0 gap-4">
   {#if notFound}
-    <p class="text-sm">没有这条知识：{id}</p>
+    <DataBlock state="empty" message={`没有这条知识：${id}`} />
   {:else if error}
-    <p role="alert" class="text-sm text-red-600">{error}</p>
+    <DataBlock state="error" message={error} />
   {:else if !view || !viewed}
-    <p class="text-sm text-muted-foreground">加载中…</p>
+    <DataBlock state="loading" skeleton="block" />
   {:else}
     {#if isOld}
-      <p class="text-sm text-amber-700"><span>这是第 {viewed.version} 版，最新为第 {latest!.version} 版</span>
-        <a class="text-primary underline ml-2" href={`#knowledge/mine/${id}`}>查看最新版</a></p>
+      <Alert variant="info">
+        <Icon name="info" />
+        <AlertDescription><span>这是第 {viewed.version} 版，最新为第 {latest!.version} 版</span>
+          <a class="ml-2 text-primary underline" href={`#knowledge/mine/${id}`}>查看最新版</a></AlertDescription>
+      </Alert>
     {/if}
-    <header class="space-y-1">
-      <h1 class="text-lg font-semibold">{viewed.title}</h1>
-      <p class="text-xs text-muted-foreground flex flex-wrap items-center gap-2">
-        <span class="px-1.5 py-0.5 rounded-sm bg-muted">{KNOWLEDGE_STATUS_TEXT[archived ? 'archived' : 'active']}</span>
-        <span>第 {viewed.version} 版</span>
-        <span>写入 {fmtBeijing(view.item.created_at)}</span>
-        <span>本版 {fmtBeijing(viewed.created_at)}</span>
+    <PageHeader title={viewed.title} level={1}>
+      {#snippet meta()}
+        <StatusPill domain="knowledge" value={archived ? 'archived' : 'active'} />
+        <VersionChip version={viewed.version} latest={isOld ? null : latest?.version ?? null} ref={`know:${id}@${viewed.version}`} />
+        <CutoffTime at={view?.item.created_at} label="写入" />
+        <CutoffTime at={viewed.created_at} label="本版" />
         <ConceptTerm id={M.item}>说明</ConceptTerm>
-      </p>
-      {#if archived && archiveReason}<p class="text-xs text-muted-foreground">归档理由：{archiveReason}</p>{/if}
-    </header>
+      {/snippet}
+    </PageHeader>
+    {#if archived && archiveReason}<p class="text-xs text-muted-foreground">归档理由：{archiveReason}</p>{/if}
 
-    <div class="space-y-2 text-sm">
+    <div class="grid gap-2 text-sm">
       <p class="whitespace-pre-wrap">{viewed.body}</p>
       <div>
         <p class="text-xs text-muted-foreground">适用范围</p>
@@ -144,53 +165,52 @@
       </p>
     </div>
 
-    <div class="space-y-2">
+    <div class="grid gap-2">
       <div class="flex flex-wrap items-center gap-2">
         {#if archived}
           <span class="text-xs text-muted-foreground">已归档，先恢复才能改</span>
-          <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted" onclick={startStatus}>恢复</button>
+          <Button size="sm" onclick={startStatus}>恢复</Button>
         {:else}
-          <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted"
-                  onclick={() => { mode = 'edit'; stale = false; reloadNote = '' }}>改</button>
-          <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted" onclick={startStatus}>归档</button>
+          <Button size="sm" onclick={() => { mode = 'edit'; stale = false; reloadNote = '' }}>改</Button>
+          <Button size="sm" onclick={startStatus}>归档</Button>
         {/if}
       </div>
 
       {#if mode === 'status'}
-        <div class="border border-border rounded-sm p-2 space-y-1 text-sm">
-          <label class="flex flex-col text-xs">理由
-            <input aria-label="理由" maxlength="300" class="border border-border rounded-sm px-2 py-1 bg-background text-sm" bind:value={reason} />
-          </label>
+        <div class="grid gap-2 rounded-md border border-border p-3 text-sm">
+          <Field label="理由" id={`${uid}-reason`}>
+            {#snippet children({ id: fieldId, describedby })}
+              <Input id={fieldId} aria-describedby={describedby} maxlength={300} bind:value={reason} />
+            {/snippet}
+          </Field>
           <div class="flex gap-2">
-            <button type="button" class="text-xs px-2 py-1 rounded-sm bg-primary text-white disabled:opacity-50" disabled={statusBusy}
-                    onclick={changeStatus}>{archived ? '确认恢复' : '确认归档'}</button>
-            <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm" onclick={() => mode = 'view'}>取消</button>
+            <Button variant="primary" size="sm" busy={statusBusy && archived} onclick={submitStatus}>{archived ? '确认恢复' : '确认归档'}</Button>
+            <Button size="sm" disabled={statusBusy} onclick={() => mode = 'view'}>取消</Button>
           </div>
-          {#if statusError}<p role="alert" class="text-xs text-red-600">{statusError}</p>{/if}
+          {#if statusError}<Alert variant="danger"><Icon name="circle-x" /><AlertDescription>{statusError}</AlertDescription></Alert>{/if}
         </div>
       {/if}
 
       {#if mode === 'edit' && latest}
-        <div class="border border-border rounded-sm p-3 space-y-2">
+        <div class="grid gap-2 rounded-md border border-border p-3">
           <p class="text-xs text-muted-foreground">改动会作为第 {latest.version + 1} 版写入，原来的版本都保留。</p>
-          {#if reloadNote}<p class="text-xs text-amber-700">{reloadNote}</p>{/if}
+          {#if reloadNote}<Alert variant="info"><Icon name="info" /><AlertDescription>{reloadNote}</AlertDescription></Alert>{/if}
           {#key formGen}
             <KnowledgeForm initial={latest} onSubmit={reviseSubmit} requestKey={`base:${latest.version}`} />
           {/key}
           <div class="flex gap-2">
             {#if stale}
-              <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted"
-                      onclick={refreshStale}>刷新</button>
+              <Button size="sm" onclick={refreshStale}>刷新</Button>
             {/if}
-            <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm" onclick={() => mode = 'view'}>取消</button>
+            <Button size="sm" onclick={() => mode = 'view'}>取消</Button>
           </div>
         </div>
       {/if}
     </div>
 
-    <section aria-label="版本历史" class="space-y-1 text-sm">
-      <h3 class="font-semibold">版本历史</h3>
-      <ol aria-label="版本历史" class="space-y-1">
+    <section aria-label="版本历史" class="grid gap-1 text-sm">
+      <h3 class="text-base font-medium">版本历史</h3>
+      <ol aria-label="版本历史" class="grid gap-1">
         {#each history as { v, changed } (v.version)}
           <li class="text-xs">
             <a class="text-primary underline" href={`#knowledge/mine/${id}@${v.version}`}>第 {v.version} 版</a>
@@ -207,10 +227,10 @@
       </ol>
     </section>
 
-    <section aria-label="被引用" class="space-y-1 text-sm">
-      <h3 class="font-semibold">被引用</h3>
+    <section aria-label="被引用" class="grid gap-1 text-sm">
+      <h3 class="text-base font-medium">被引用</h3>
       {#if view.citations.length}
-        <ul aria-label="被引用" class="space-y-0.5 text-xs">
+        <ul aria-label="被引用" class="grid gap-0.5 text-xs">
           {#each view.citations as c, i (i)}
             <li>
               {#if c.plan_id}
@@ -225,10 +245,13 @@
           {/each}
         </ul>
       {:else}
-        <p class="text-xs text-muted-foreground">还没有被计划或复查引用</p>
+        <DataBlock state="empty" message="还没有被计划或复查引用" />
       {/if}
     </section>
 
     <KnowledgePerformance {id} />
+
+    <ConfirmDialog bind:open={archiveOpen} title="归档这条知识" consequence="归档后先恢复才能再改；所有版本都保留。"
+                   actionLabel="归档" busy={statusBusy} onConfirm={changeStatus} />
   {/if}
 </section>

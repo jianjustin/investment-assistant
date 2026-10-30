@@ -66,6 +66,11 @@ const successRun = (over: Partial<RunDetailView> = {}): RunDetailView => ({
 })
 
 const click = async (name: string | RegExp) => fireEvent.click(await screen.findByRole('button', { name }))
+/** The confirm dialogs are Bits dialogs rendered in a portal: the action is named like the button that opened it. */
+const confirm = async (name: string) =>
+  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name }))
+const confirmResume = () => confirm('从此节点继续')
+const confirmRerun = () => confirm('重新运行 Agent')
 
 beforeEach(() => {
   resetConceptIndex()
@@ -160,6 +165,29 @@ describe('RunDetail · page', () => {
     await click('显示全部 3 个目标')
     const names = within(fetchBlock).getAllByRole('row').slice(1).map(r => within(r).getAllByRole('cell')[0].textContent)
     expect(names).toEqual(['NVDA', 'AAPL', 'MSFT'])
+  })
+
+  it('narrow fetch table as cards', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('max-width: 767px'), media: query,
+      addEventListener() {}, removeEventListener() {} }))
+    try {
+      render(RunDetail, { runId: RID })
+      const fetchBlock = await screen.findByRole('region', { name: '拉取 日线' })
+      // below 768px the failed-target rows are cards (one per row, field name on the left), not a scrolling table
+      expect(within(fetchBlock).queryByRole('table')).toBeNull()
+      const cards = within(fetchBlock).getAllByRole('listitem')
+      expect(cards).toHaveLength(1)
+      expect(cards[0]).toHaveTextContent('NVDA')
+      expect(cards[0]).toHaveTextContent('timeout after 30s (NVDA)')
+      expect([...cards[0].querySelectorAll('dt')].map(dt => dt.textContent)).toEqual(
+        ['目标', '结果', '尝试次数', '失败原因', '行数', '最新时点'])
+      await click('显示全部 3 个目标')
+      expect(within(fetchBlock).getAllByRole('listitem')).toHaveLength(3)
+      // the node graph wraps at the same breakpoint (two rows of five)
+      expect(screen.getByRole('list', { name: '节点状态图' })).toHaveAttribute('data-narrow', 'true')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('legacy fetch note', async () => {
@@ -283,6 +311,18 @@ describe('RunDetail · resume', () => {
     expect(screen.getByText('已过 2026-10-30 纽约 17:00，只能整次重新运行')).toBeInTheDocument()
   })
 
+  it('resume refusal reason is an alert', async () => {
+    vi.mocked(api.getRunDetail).mockResolvedValue(failedRun({
+      resume: { allowed: false, node: 'collect', deadline_at: '2026-10-30T21:00:00Z', reason: 'resume_window_closed' },
+      nodes: failedRun().nodes.map(n => ({ ...n, actions: { resume: false, rerun_agent: [] } })),
+    }))
+    render(RunDetail, { runId: RID })
+    await screen.findByRole('region', { name: '数据采集 详情' })
+    // the backend's refusal, worded by RESUME_ERROR_TEXT, is announced as an alert (not a muted line)
+    expect(screen.getByRole('alert')).toHaveTextContent('已过 2026-10-30 纽约 17:00，只能整次重新运行')
+    expect(screen.queryByRole('button', { name: '从此节点继续' })).toBeNull()
+  })
+
   it('interrupted, stage_failed and checkpoint_unavailable reasons have their own text', async () => {
     for (const [reason, text] of [['interrupted', '这次运行中途中断，只能整次重新运行'], ['stage_failed', '这一步记了失败但链已跑完，不能续跑；需要时整次重新运行'],
       ['checkpoint_unavailable', '状态库未就绪，暂时无法续跑']]) {
@@ -301,13 +341,36 @@ describe('RunDetail · resume', () => {
     const resume = vi.spyOn(api, 'resumeDaily')
     render(RunDetail, { runId: RID })
     await click('从此节点继续')
-    const box = screen.getByRole('group', { name: '确认续跑' })
-    expect(box).toHaveTextContent(
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent(
       `从「数据采集」继续这次运行？已完成的 1 个节点不会重跑；截止时间仍是 ${fmtBeijing('2026-10-30T03:30:00Z')}。`)
     // 确认前不发请求；取消回到按钮
     expect(resume).not.toHaveBeenCalled()
-    await click('取消')
+    await fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(resume).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: '从此节点继续' })).toBeInTheDocument()
+  })
+
+  it('resume confirm by keyboard', async () => {
+    const resume = vi.spyOn(api, 'resumeDaily').mockResolvedValue({
+      run_id: RID, node: 'collect', status: 'pending', attempt: 2, runner_id: 'x' })
+    render(RunDetail, { runId: RID })
+    const button = await screen.findByRole('button', { name: '从此节点继续' })
+    // reachable with Tab: an enabled native button that is not taken out of the tab order
+    expect(button).toBeEnabled()
+    expect(button.tabIndex).toBeGreaterThanOrEqual(0)
+    button.focus()
+    expect(document.activeElement).toBe(button)
+    // Enter on a focused button is a click (jsdom does not translate the key itself)
+    await fireEvent.click(button)
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))      // focus moved into the dialog
+    // Esc closes it without sending anything, and focus goes back to the button
+    await fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(resume).not.toHaveBeenCalled()
+    await waitFor(() => expect(document.activeElement).toBe(button))
   })
 
   it('resume posts run id, node and a request_id, then polls every 5s until not running', async () => {
@@ -322,7 +385,7 @@ describe('RunDetail · resume', () => {
     render(RunDetail, { runId: RID })
     await act(() => vi.advanceTimersByTimeAsync(0))
     await click('从此节点继续')
-    await click('确认继续')
+    await confirmResume()
     expect(resume).toHaveBeenCalledWith(RID, 'collect', expect.stringMatching(/^[0-9a-f-]{36}$/))
     expect(screen.getByText('已提交，第 2 次执行，页面每 5 秒刷新一次')).toBeInTheDocument()
     expect(get).toHaveBeenCalledTimes(1)
@@ -371,7 +434,7 @@ describe('RunDetail · resume', () => {
     vi.spyOn(api, 'resumeDaily').mockRejectedValue(new api.ApiError(code, 409, code))
     render(RunDetail, { runId: RID })
     await click('从此节点继续')
-    await click('确认继续')
+    await confirmResume()
     expect(await screen.findByRole('alert')).toHaveTextContent(text)
   })
 
@@ -385,7 +448,7 @@ describe('RunDetail · resume', () => {
     vi.spyOn(api, 'resumeDaily').mockRejectedValue(new api.ApiError('resume_window_closed', 409, 'resume_window_closed'))
     render(RunDetail, { runId: RID })
     await click('从此节点继续')
-    await click('确认继续')
+    await confirmResume()
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(screen.queryByRole('button', { name: '从此节点继续' })).toBeNull())
     expect(screen.getByRole('alert')).toHaveTextContent('已过 2026-10-30 纽约 17:00，只能整次重新运行')
@@ -397,7 +460,7 @@ describe('RunDetail · resume', () => {
     vi.mocked(api.resumeDaily).mockRejectedValue(new api.ApiError('not_failed', 409, 'not_failed'))
     render(RunDetail, { runId: RID })
     await click('从此节点继续')
-    await click('确认继续')
+    await confirmResume()
     await waitFor(() => expect(screen.getByTestId('headline')).toHaveTextContent('运行成功'))
     expect(screen.getByRole('alert')).toHaveTextContent('这次运行没有失败的节点')
   })
@@ -418,7 +481,7 @@ describe('RunDetail · resume', () => {
     render(RunDetail, { runId: RID })
     await act(() => vi.advanceTimersByTimeAsync(0))
     await click('从此节点继续')
-    await click('确认继续')
+    await confirmResume()
     await act(() => vi.advanceTimersByTimeAsync(15_000))
     expect(screen.getByText('未看到续跑开始，请稍后刷新')).toBeInTheDocument()
     expect(screen.queryByText(/页面每 5 秒刷新/)).toBeNull()
@@ -431,10 +494,11 @@ describe('RunDetail · resume', () => {
     vi.mocked(api.getRunDetail).mockResolvedValue(failedRun())
     render(RunDetail, { runId: RID })
     await click('从此节点继续')
-    await click('确认继续')
+    await confirmResume()
     expect(await screen.findByRole('alert')).toHaveTextContent('数据库未就绪')
-    expect(screen.getByRole('button', { name: '确认继续' })).toBeEnabled()    // 按钮状态保留，可以重试
-    await click('确认继续')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())      // the error is on the page, not behind the dialog
+    await click('从此节点继续')                                                // 按钮还在，可以重试
+    await confirmResume()
     await waitFor(() => expect(resume).toHaveBeenCalledTimes(2))
     expect(resume.mock.calls[1][2]).toBe(resume.mock.calls[0][2])
   })
@@ -458,11 +522,28 @@ describe('RunDetail · rerun agent', () => {
     await click('Agent：部分成功')
     expect(screen.getAllByRole('button', { name: '重新运行 Agent' })).toHaveLength(1)     // 只有 can_rerun 的行
     await click('重新运行 Agent')
+    await confirmRerun()
     expect(rerun).toHaveBeenCalledWith({
       ticker: 'NVDA', signal_date: '2026-10-29', mode: 'propose', request_id: expect.stringMatching(/^[0-9a-f-]{36}$/), origin: 'run_detail',
     })
     expect(await screen.findByText('已重置尝试次数，并已重新运行')).toBeInTheDocument()
     await waitFor(() => expect(api.getRunDetail).toHaveBeenCalledTimes(2))     // 重新读取详情
+  })
+
+  it('rerun agent needs confirm: the row button only opens the dialog, Cancel posts nothing', async () => {
+    const rerun = vi.spyOn(api, 'rerunAgent').mockResolvedValue({ reset_id: 7, run_id: 'run-new', replayed: false })
+    vi.mocked(api.getRunDetail).mockResolvedValue(agentRun())
+    render(RunDetail, { runId: RID })
+    await click('Agent：部分成功')
+    await click('重新运行 Agent')
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveAccessibleName('重新运行 Agent')
+    expect(dialog).toHaveTextContent('NVDA')
+    expect(rerun).not.toHaveBeenCalled()
+    await fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(rerun).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: '重新运行 Agent' })).toBeInTheDocument()
   })
 
   it('shows the 409 not_needed text and keeps the same request_id on retry', async () => {
@@ -473,8 +554,10 @@ describe('RunDetail · rerun agent', () => {
     render(RunDetail, { runId: RID })
     await click('Agent：部分成功')
     await click('重新运行 Agent')
+    await confirmRerun()
     expect(await screen.findByText(/数据库未就绪/)).toBeInTheDocument()
     await click('重新运行 Agent')
+    await confirmRerun()
     expect(await screen.findByText('这个单元不需要重跑')).toBeInTheDocument()
     expect(rerun.mock.calls[1][0].request_id).toBe(rerun.mock.calls[0][0].request_id)
   })
@@ -485,8 +568,9 @@ describe('RunDetail · rerun agent', () => {
     render(RunDetail, { runId: RID })
     await click('Agent：部分成功')
     await click('重新运行 Agent')
+    await confirmRerun()
     expect(await screen.findByText('已重置尝试次数，同一交易日的续跑或手动运行时执行')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '重新运行 Agent' })).toBeNull()
+    await waitFor(() => expect(screen.queryByRole('button', { name: '重新运行 Agent' })).toBeNull())     // the dialog unmounts on the next tick
   })
 
   it('a 409 without the not_needed code shows what the backend said', async () => {
@@ -495,6 +579,7 @@ describe('RunDetail · rerun agent', () => {
     render(RunDetail, { runId: RID })
     await click('Agent：部分成功')
     await click('重新运行 Agent')
+    await confirmRerun()
     expect(await screen.findByText('这个单元不需要重跑（后端原文）')).toBeInTheDocument()
   })
 

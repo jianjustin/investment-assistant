@@ -159,6 +159,36 @@ describe('Knowledge card', () => {
   })
 })
 
+describe('Knowledge body and tabs', () => {
+  it('body html still rendered in .knowledge-body', async () => {
+    const { container } = render(Knowledge, { sub: 'plan.stop' })
+    await screen.findByRole('heading', { name: '止损' })
+    const body = container.querySelector('.knowledge-body')!
+    expect(body.querySelector('h2')).toHaveTextContent('是什么')
+    expect(body.querySelector('a[href="#knowledge/indicator.atr14"]')).toHaveTextContent('ATR')
+    expect(container.querySelector('style')).toBeNull()          // typography lives in styles/knowledge-body.css
+    cleanup()
+    const principlesView = render(Knowledge, { sub: 'principles' })
+    await screen.findByRole('heading', { name: '系统每天怎么跑' })
+    const bodies = principlesView.container.querySelectorAll('.knowledge-body')
+    expect(bodies).toHaveLength(3)
+    expect(bodies[0]).toHaveTextContent('出研究候选。')
+  })
+
+  it('concept, principles and mine are route tabs (links, aria-current)', async () => {
+    const view = render(Knowledge, {})
+    await screen.findByRole('link', { name: '止损' })
+    const tabs = () => within(screen.getByRole('navigation', { name: '知识' }))
+    expect(tabs().getAllByRole('link').map(a => [a.textContent!.trim(), a.getAttribute('href')])).toEqual([
+      ['概念', '#knowledge'], ['原理', '#knowledge/principles'], ['我的知识', '#knowledge/mine']])
+    expect(tabs().getByRole('link', { name: '概念' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByRole('tablist')).toBeNull()
+    await view.rerender({ sub: 'principles' })
+    expect(tabs().getByRole('link', { name: '原理' })).toHaveAttribute('aria-current', 'page')
+    expect(tabs().getByRole('link', { name: '概念' })).not.toHaveAttribute('aria-current')
+  })
+})
+
 describe('Knowledge principles', () => {
   it('principles render sections with 当天这一步 box for stage sections', async () => {
     render(Knowledge, { sub: 'principles' })

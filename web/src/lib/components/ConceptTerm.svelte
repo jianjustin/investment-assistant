@@ -5,6 +5,8 @@
 
 <script lang="ts">
   import { onDestroy, type Snippet } from 'svelte'
+  import Icon from '$lib/ui/domain/Icon.svelte'
+  import * as Popover from '$lib/ui/popover/index'
   import { conceptIndex, type ConceptSummary } from '../knowledge'
 
   // <ConceptTerm id="plan.stop">止损</ConceptTerm>; without content it shows the card's title.
@@ -34,8 +36,8 @@
   })
 
   const closer = () => { open = false }
-  function toggle() {
-    if (open) {
+  function setOpen(next: boolean) {
+    if (!next) {
       open = false
       if (closeOpenTerm === closer) closeOpenTerm = null
       return
@@ -50,7 +52,7 @@
   const hasButton = $derived(phase === 'failed' || (phase === 'ready' && entry !== null))
 </script>
 
-<svelte:window onkeydown={e => { if (open && e.key === 'Escape') { open = false; if (closeOpenTerm === closer) closeOpenTerm = null } }} />
+<svelte:window onkeydown={e => { if (open && e.key === 'Escape') setOpen(false) }} />
 
 <span class="concept-term">
   {#if children}
@@ -59,10 +61,12 @@
     <span class="border-b border-dotted border-muted-foreground">{entry.title}</span>
   {:else if phase !== 'loading'}
     <span>{id}</span>
-  {/if}{#if hasButton}<button type="button" class="ml-0.5 text-xs text-muted-foreground hover:text-primary"
-          aria-label={`概念：${entry?.title ?? id}`} aria-expanded={open} onclick={toggle}>ⓘ</button>{/if}
-  {#if open && hasButton}
-    <span role="note" class="block my-1 p-2 border border-border rounded-sm bg-card text-xs text-foreground font-normal space-y-1 max-w-prose">
+  {/if}{#if hasButton}<Popover.Root bind:open={() => open, setOpen}>
+    <Popover.Trigger class="ml-0.5 inline-flex align-middle text-muted-foreground hover:text-primary"
+                     aria-label={`概念：${entry?.title ?? id}`}>
+      <Icon name="info" />
+    </Popover.Trigger>
+    <Popover.Content class="w-auto max-w-prose gap-1 p-2 text-xs font-normal" role="note">
       {#if entry}
         <span class="block font-medium">{entry.title}</span>
         <span class="block">{entry.summary}</span>
@@ -71,6 +75,6 @@
       {:else}
         <span class="block">概念卡暂不可用：{failure}</span>
       {/if}
-    </span>
-  {/if}
+    </Popover.Content>
+  </Popover.Root>{/if}
 </span>

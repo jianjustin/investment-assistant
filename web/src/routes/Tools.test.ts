@@ -125,6 +125,26 @@ describe('Tools 任务中心', () => {
     expect(spy).toHaveBeenCalledWith('sec_backfill', { from: '2026-06-01', to: '2026-06-30' })
   })
 
+  it('fetch-date dialog keeps titles', async () => {
+    vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({ jobs: [MANUAL_ONLY_BACKFILL], degraded: false })
+    vi.spyOn(api, 'runJob').mockResolvedValue({ run_id: 'r1', status: 'pending' })
+    render(Tools, { props: { sub: 'tasks' } })
+    await fireEvent.click(await screen.findByRole('button', { name: '按日期运行' }))
+    const dialog = await screen.findByRole('dialog')
+    // title, description and button texts are the old modal's, now in a Dialog rendered in a portal
+    expect(dialog).toHaveAccessibleName('sec_backfill · 按日期运行')
+    expect(dialog).toHaveTextContent('按日期回补观察名单的 SEC 申报，与每日工作流的 SEC 监控同一套扫描、归档与去重。')
+    for (const name of ['昨日（T-1）', '指定单日', '日期范围', '取消', '确认']) {
+      expect(within(dialog).getByRole('button', { name })).toBeTruthy()
+    }
+    expect(within(dialog).getByRole('button', { name: '昨日（T-1）' })).toHaveAttribute('aria-pressed', 'true')
+    await fireEvent.click(within(dialog).getByRole('button', { name: '指定单日' }))
+    expect(within(dialog).getByLabelText('日期')).toBeTruthy()
+    await fireEvent.keyDown(document.activeElement ?? dialog, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(api.runJob).not.toHaveBeenCalled()
+  })
+
   it('dated run modal rejects ranges over 92 days', async () => {
     vi.spyOn(api, 'getScheduledJobs').mockResolvedValue({
       jobs: [MANUAL_ONLY_BACKFILL],

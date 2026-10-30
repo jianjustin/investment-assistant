@@ -1,7 +1,17 @@
 <script lang="ts">
+  import { Button } from '$lib/ui/button/index'
+  import * as Card from '$lib/ui/card/index'
+  import DataTable from '$lib/ui/data-table/DataTable.svelte'
+  import type { Column } from '$lib/ui/data-table/types'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import Icon from '$lib/ui/domain/Icon.svelte'
+  import Section from '$lib/ui/domain/Section.svelte'
+  import StatusPill from '$lib/ui/domain/StatusPill.svelte'
+  import Field from '$lib/ui/field/Field.svelte'
+  import { Input } from '$lib/ui/input/index'
+  import TabNav from '$lib/ui/tab-nav/TabNav.svelte'
+  import { notify as toast } from '$lib/ui/toast'
   import * as api from '../lib/api'
-  import Skeleton from '../lib/components/Skeleton.svelte'
-  import StatusPill from '../lib/components/StatusPill.svelte'
   import Watchlist from '../lib/components/Watchlist.svelte'
   import AgentConnection from '../lib/components/AgentConnection.svelte'
 
@@ -22,7 +32,9 @@
     email: { from_addr: '', to_addr: '' },
   })
   let webhookInput = $state<Record<string, string>>({ earnings: '', signals: '' })
-  let testResult = $state<Record<string, string>>({})
+  // result of a "验证" / "发送测试邮件" call: the pill says 成功 / 失败, `detail` is the reason of a failure
+  let testResult = $state<Record<string, { ok: boolean; detail: string }>>({})
+  let saving = $state(false)
 
   // jobs
   let jobs = $state<any[]>([])
@@ -59,15 +71,26 @@
   async function verify(ch: string) {
     const url = webhookInput[ch]?.trim() || undefined
     const r = await api.testNotifyChannel({ channel: ch, url })
-    testResult = { ...testResult, [ch]: r.ok ? '✅ 成功' : `❌ ${(r as any).error ?? '失败'}` }
+    testResult = { ...testResult, [ch]: { ok: !!r.ok, detail: r.ok ? '' : String((r as any).error ?? '失败') } }
   }
 
   async function verifyEmail() {
     const r = await api.testNotifyChannel({ channel: 'email', email: notify.email })
-    testResult = { ...testResult, email: r.ok ? '✅ 成功' : `❌ ${(r as any).error ?? '失败'}` }
+    testResult = { ...testResult, email: { ok: !!r.ok, detail: r.ok ? '' : String((r as any).error ?? '失败') } }
   }
 
   async function saveNotify() {
+    if (saving) return
+    saving = true
+    try {
+      await persistNotify()
+      toast.success('已保存')
+    } finally {
+      saving = false
+    }
+  }
+
+  async function persistNotify() {
     const webhooks: Record<string, string> = {}
     for (const ch of ['earnings', 'signals']) {
       if (webhookInput[ch]?.trim()) webhooks[ch] = webhookInput[ch]
@@ -96,48 +119,100 @@
   }
 
   $effect(() => { sub; load() })
+
+  const SETTINGS_TABS = [
+    { id: 'system', label: '系统' }, { id: 'watchlist', label: '关注列表' }, { id: 'discord', label: '推送配置' },
+    { id: 'jobs', label: '定时任务' }, { id: 'env', label: '环境变量' },
+  ]
+  const tabs = $derived(SETTINGS_TABS.map(t => ({ href: `#settings/${t.id}`, label: t.label, current: sub === t.id || (t.id === 'env' && !SETTINGS_TABS.some(x => x.id === sub)) })))
+
+  type Op = { i: number; type?: string; run_id?: string; status?: string }
+  const opRows = $derived<Op[]>(ops.slice(0, 20).map((o, i) => ({ ...o, i })))
+  const opColumns: Column<Op>[] = [
+    { key: 'type', header: '操作' }, { key: 'run_id', header: '运行', value: o => o.run_id?.slice(0, 12) ?? '无' },
+    { key: 'status', header: '状态', cell: opStatus },
+  ]
+  const jobColumns: Column<any>[] = [
+    { key: 'name', header: '任务' }, { key: 'time', header: '时间', cell: jobTime }, { key: 'enabled', header: '启用', cell: jobEnabled },
+  ]
+  type EnvRow = { key: string; set: boolean }
+  const envColumns: Column<EnvRow>[] = [
+    { key: 'key', header: '变量', cell: envKey }, { key: 'set', header: '状态', cell: envState },
+  ]
+  const envRows = $derived(Object.entries(env).map(([key, set]) => ({ key, set })))
 </script>
 
+{#snippet opStatus(op: Op)}<StatusPill domain="system" value={op.status ?? 'unknown'} />{/snippet}
+{#snippet jobTime(j: any)}
+  {#if j.manual_only}
+    <!-- 只能手动运行的任务不在 scheduled_jobs 里：没有时间，也没有启用开关 -->
+    <span class="text-xs text-muted-foreground">只手动运行，不参与定时调度</span>
+  {:else}
+    <span class="inline-flex items-center gap-2">
+      <Input value={j.time_local} aria-label={`${j.name} 运行时间`} class="w-24"
+             onchange={(e) => saveTime(j.name, (e.target as HTMLInputElement).value)} />
+      <span class="text-xs text-muted-foreground">{j.timezone === 'Asia/Shanghai' ? '北京' : j.timezone}</span>
+    </span>
+  {/if}
+{/snippet}
+{#snippet jobEnabled(j: any)}
+  {#if j.manual_only}
+    <span class="text-xs text-muted-foreground">不适用</span>
+  {:else}
+    <input type="checkbox" checked={j.enabled} aria-label={`${j.name} 启用`}
+           onchange={(e) => toggleJob(j.name, (e.target as HTMLInputElement).checked)} />
+  {/if}
+{/snippet}
+{#snippet envKey(row: EnvRow)}<span class="font-mono text-xs">{row.key}</span>{/snippet}
+{#snippet envState(row: EnvRow)}
+  {#if row.set}<span class="inline-flex items-center gap-1 text-success"><Icon name="check" />已设置</span>
+  {:else}<span class="text-muted-foreground">未设置</span>{/if}
+{/snippet}
+
+{#snippet testBadge(result: { ok: boolean; detail: string })}
+  <span class="inline-flex items-center gap-2 text-xs">
+    <StatusPill domain="run" value={result.ok ? 'success' : 'failed'} text={result.ok ? '成功' : '失败'} />
+    {#if !result.ok && result.detail && result.detail !== '失败'}<span class="text-muted-foreground">{result.detail}</span>{/if}
+  </span>
+{/snippet}
+
+<div class="grid gap-4">
+<TabNav label="设置" items={tabs} />
 {#if loading}
-  <Skeleton rows={4} />
+  <DataBlock state="loading" skeleton="table" />
 {:else if sub === 'system'}
-  <div>
-    <h2 class="text-lg font-semibold mb-4">系统</h2>
-    {#if status}
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-        {#each Object.entries(status as any) as [k, v]}
-          {#if typeof v === 'object' && v !== null && 'status' in v}
-            <div class="bg-card rounded-sm p-3 shadow-1">
-              <div class="text-xs text-muted-foreground mb-1">{k}</div>
-              <StatusPill status={(v as any).status ?? 'unknown'} />
-            </div>
-          {/if}
-        {/each}
-      </div>
-    {/if}
-    {#if ops.length > 0}
-      <div class="bg-card rounded-lg shadow-1 overflow-hidden">
-        <div class="px-4 py-2 border-b border-border text-sm font-medium">最近操作</div>
-        <ul class="divide-y divide-border text-sm">
-          {#each ops.slice(0, 20) as op}
-            <li class="flex justify-between px-4 py-2">
-              <span class="text-muted-foreground">{(op as any).type} — {(op as any).run_id?.slice(0, 12) ?? '—'}</span>
-              <StatusPill status={(op as any).status ?? 'unknown'} />
-            </li>
+  <div class="grid gap-4">
+    <Section title="系统" level={2}>
+      {#if status}
+        <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+          {#each Object.entries(status as any) as [k, v]}
+            {#if typeof v === 'object' && v !== null && 'status' in v}
+              <Card.Root size="sm">
+                <Card.Content class="grid gap-1">
+                  <div class="text-xs text-muted-foreground">{k}</div>
+                  <div><StatusPill domain="system" value={(v as any).status ?? 'unknown'} /></div>
+                </Card.Content>
+              </Card.Root>
+            {/if}
           {/each}
-        </ul>
-      </div>
-    {/if}
+        </div>
+      {/if}
+      {#if ops.length > 0}
+        <Section title="最近操作" level={3}>
+          <DataTable columns={opColumns} rows={opRows} rowKey={o => o.i} ariaLabel="最近操作" />
+        </Section>
+      {/if}
+    </Section>
     <!-- v2.8 §8.9：Agent 连接区块放在「系统」之后 -->
-    <div class="mt-8">
+    <div class="mt-4">
       <AgentConnection />
     </div>
   </div>
 {:else if sub === 'watchlist'}
   <Watchlist />
 {:else if sub === 'discord'}
-  <div class="space-y-4 max-w-lg">
-    <h2 class="text-lg font-semibold">通知</h2>
+  <div class="grid max-w-lg gap-4">
+    <h2 class="text-lg font-medium">通知</h2>
     <div class="flex gap-4 text-sm">
       <label class="flex items-center gap-1">
         <input type="radio" bind:group={notify.channel} value="discord" /> Discord
@@ -147,21 +222,21 @@
       </label>
     </div>
     {#if notify.channel === 'email'}
-      <div class="space-y-2">
-        <div class="text-sm font-medium">发件地址（Gmail）</div>
-        <input bind:value={notify.email.from_addr} placeholder="you@gmail.com"
-               class="border border-border rounded-sm px-2 py-1 text-sm bg-card w-full" />
-        <div class="text-sm font-medium">收件地址</div>
-        <input bind:value={notify.email.to_addr} placeholder="you@outlook.com"
-               class="border border-border rounded-sm px-2 py-1 text-sm bg-card w-full" />
-        <div class="text-xs {env.SMTP_PASSWORD ? 'text-green-600' : 'text-red-500'}">
-          SMTP_PASSWORD {env.SMTP_PASSWORD ? '✅ 已配置' : '未配置——需以环境变量注入 Gmail 应用专用密码'}
+      <div class="grid gap-3">
+        <Field label="发件地址（Gmail）" id="notify-email-from">
+          {#snippet children({ id })}<Input {id} bind:value={notify.email.from_addr} placeholder="you@gmail.com" />{/snippet}
+        </Field>
+        <Field label="收件地址" id="notify-email-to">
+          {#snippet children({ id })}<Input {id} bind:value={notify.email.to_addr} placeholder="you@outlook.com" />{/snippet}
+        </Field>
+        <div class="flex items-center gap-1 text-xs {env.SMTP_PASSWORD ? 'text-success' : 'text-destructive'}">
+          {#if env.SMTP_PASSWORD}<Icon name="check" />{:else}<Icon name="x" />{/if}
+          <span>SMTP_PASSWORD {env.SMTP_PASSWORD ? '已配置' : '未配置——需以环境变量注入 Gmail 应用专用密码'}</span>
         </div>
-        <button class="text-primary text-xs whitespace-nowrap px-2 py-1 border border-primary/30 rounded-sm"
-                onclick={verifyEmail}>发送测试邮件</button>
-        {#if testResult.email}
-          <div class="text-xs text-muted-foreground">{testResult.email}</div>
-        {/if}
+        <div class="flex items-center gap-3">
+          <Button size="sm" onclick={verifyEmail}>发送测试邮件</Button>
+          {#if testResult.email}{@render testBadge(testResult.email)}{/if}
+        </div>
       </div>
     {:else}
       <label class="flex items-center gap-2 text-sm">
@@ -169,92 +244,33 @@
         启用 Discord 推送
       </label>
       {#each ['earnings', 'signals'] as ch}
-        <div class="space-y-1">
-          <div class="text-sm font-medium">
-            {ch}
-            {#if notify.webhooks?.[ch]?.configured}
-              <span class="text-green-600 text-xs ml-1">（已配置）</span>
-            {:else}
-              <span class="text-muted-foreground text-xs ml-1">（未配置）</span>
-            {/if}
+        <div class="grid gap-1">
+          <div class="flex items-end gap-2">
+            <div class="min-w-0 flex-1">
+              <Field label={ch} id={`notify-webhook-${ch}`} hint={notify.webhooks?.[ch]?.configured ? '已配置' : '未配置'}>
+                {#snippet children({ id, describedby })}
+                  <Input {id} type="password" bind:value={webhookInput[ch]} aria-describedby={describedby} placeholder="留空则不修改" />
+                {/snippet}
+              </Field>
+            </div>
+            <Button size="sm" onclick={() => verify(ch)}>验证 {ch}</Button>
           </div>
-          <div class="flex gap-2">
-            <input
-              type="password"
-              bind:value={webhookInput[ch]}
-              placeholder="留空则不修改"
-              class="border border-border rounded-sm px-2 py-1 text-sm bg-card flex-1"
-            />
-            <button
-              class="text-primary text-xs whitespace-nowrap px-2 py-1 border border-primary/30 rounded-sm"
-              onclick={() => verify(ch)}
-            >验证 {ch}</button>
-          </div>
-          {#if testResult[ch]}
-            <div class="text-xs text-muted-foreground">{testResult[ch]}</div>
-          {/if}
+          {#if testResult[ch]}{@render testBadge(testResult[ch])}{/if}
         </div>
       {/each}
     {/if}
     <div class="pt-2">
-      <button class="px-3 py-1.5 rounded-sm bg-primary/10 text-primary text-sm" onclick={saveNotify}>保存</button>
+      <Button variant="primary" busy={saving} onclick={saveNotify}>保存</Button>
     </div>
     <p class="text-xs text-muted-foreground">webhook 明文不回显；留空字段不会覆盖已存值。SMTP 密码只能通过环境变量配置。</p>
   </div>
 {:else if sub === 'jobs'}
-  <div>
-    <h2 class="text-lg font-semibold mb-4">定时任务</h2>
-    <div class="bg-card rounded-lg shadow-1 overflow-hidden">
-      <table class="w-full text-sm">
-        <thead>
-          <tr class="text-muted-foreground text-left border-b border-border">
-            <th class="px-4 py-2">任务</th>
-            <th class="px-4 py-2">时间</th>
-            <th class="px-4 py-2">启用</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each jobs as j}
-            <tr class="border-t border-border">
-              <td class="px-4 py-2">{j.name}</td>
-              {#if j.manual_only}
-                <!-- 只能手动运行的任务不在 scheduled_jobs 里：没有时间，也没有启用开关 -->
-                <td class="px-4 py-2 text-xs text-muted-foreground" colspan="2">只手动运行，不参与定时调度</td>
-              {:else}
-                <td class="px-4 py-2">
-                  <input
-                    value={j.time_local}
-                    class="border border-border rounded-sm px-2 py-1 w-24 bg-background text-sm"
-                    onchange={(e) => saveTime(j.name, (e.target as HTMLInputElement).value)}
-                  />
-                  <span class="text-xs text-muted-foreground ml-2">{j.timezone === 'Asia/Shanghai' ? '北京' : j.timezone}</span>
-                </td>
-                <td class="px-4 py-2">
-                  <input
-                    type="checkbox"
-                    checked={j.enabled}
-                    onchange={(e) => toggleJob(j.name, (e.target as HTMLInputElement).checked)}
-                  />
-                </td>
-              {/if}
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  </div>
+  <Section title="定时任务" level={2}>
+    <DataTable columns={jobColumns} rows={jobs} rowKey={j => j.name} ariaLabel="定时任务" />
+  </Section>
 {:else}
-  <div>
-    <h2 class="text-lg font-semibold mb-4">环境变量</h2>
-    <div class="bg-card rounded-lg shadow-1 overflow-hidden">
-      <ul class="divide-y divide-border text-sm">
-        {#each Object.entries(env) as [k, v]}
-          <li class="flex justify-between items-center px-4 py-2">
-            <span class="font-mono text-xs">{k}</span>
-            <span class={v ? 'text-green-600' : 'text-muted-foreground'}>{v ? '✅ 已设置' : '— 未设置'}</span>
-          </li>
-        {/each}
-      </ul>
-    </div>
-  </div>
+  <Section title="环境变量" level={2}>
+    <DataTable columns={envColumns} rows={envRows} rowKey={r => r.key} ariaLabel="环境变量" />
+  </Section>
 {/if}
+</div>

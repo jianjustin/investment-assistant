@@ -6,6 +6,8 @@ import { WorkbenchError } from '../workbench'
 import { resetConceptIndex } from '../knowledge'
 import { itemView, perf, version } from '../growth-fixtures'
 
+const confirmArchive = async () =>
+  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '归档' }))
 const archived = () => itemView({ item: { ...itemView().item, status: 'archived' },
   status_history: [{ status: 'archived', reason: '过时了', created_at: '2026-10-25T10:00:00Z' }] })
 
@@ -110,6 +112,7 @@ describe('KnowledgeItem', () => {
     await fireEvent.click(await screen.findByRole('button', { name: '归档' }))
     await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '  过时了  ' } })
     await fireEvent.click(screen.getByRole('button', { name: '确认归档' }))
+    await confirmArchive()
     await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
     expect(post.mock.calls[0][0]).toBe(3)
     expect(post.mock.calls[0][1]).toMatchObject({ status: 'archived', reason: '过时了' })
@@ -129,12 +132,34 @@ describe('KnowledgeItem', () => {
     expect(post.mock.calls[1][1]).toMatchObject({ status: 'active', reason: '又有用了' })
   })
 
+  it('archive needs confirm', async () => {
+    const post = vi.spyOn(api, 'postKnowledgeStatus').mockResolvedValue({ status: 'created' } as any)
+    render(KnowledgeItem, { id: 3 })
+    await fireEvent.click(await screen.findByRole('button', { name: '归档' }))
+    await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '过时了' } })
+    await fireEvent.click(screen.getByRole('button', { name: '确认归档' }))
+    // the dialog names the action; nothing is posted until it is confirmed
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveAccessibleName('归档这条知识')
+    expect(post).not.toHaveBeenCalled()
+    await fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(post).not.toHaveBeenCalled()
+    expect((screen.getByLabelText('理由') as HTMLInputElement).value).toBe('过时了')       // the reason is kept
+    await fireEvent.click(screen.getByRole('button', { name: '确认归档' }))
+    await confirmArchive()
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    expect(post.mock.calls[0][1]).toMatchObject({ status: 'archived', reason: '过时了' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
   it('shows a status conflict in Chinese and keeps the reason', async () => {
     vi.spyOn(api, 'postKnowledgeStatus').mockRejectedValue(new WorkbenchError('status_unchanged', 409))
     render(KnowledgeItem, { id: 3 })
     await fireEvent.click(await screen.findByRole('button', { name: '归档' }))
     await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '过时了' } })
     await fireEvent.click(screen.getByRole('button', { name: '确认归档' }))
+    await confirmArchive()
     expect(await screen.findByRole('alert')).toHaveTextContent('状态没有变化')
     expect((screen.getByLabelText('理由') as HTMLInputElement).value).toBe('过时了')
   })

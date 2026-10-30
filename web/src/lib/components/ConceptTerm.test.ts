@@ -41,7 +41,7 @@ describe('ConceptTerm', () => {
     expect(screen.getByRole('link', { name: '看完整卡' })).toHaveAttribute('href', '#knowledge/plan.stop')
     expect(screen.getByText('止损价')).toBeInTheDocument()
     await fireEvent.click(button)
-    expect(screen.queryByText('参考价减 2 倍 ATR14，四舍五入到分。')).toBeNull()
+    await waitFor(() => expect(screen.queryByText('参考价减 2 倍 ATR14，四舍五入到分。')).toBeNull())
   })
 
   it('Esc collapses', async () => {
@@ -50,7 +50,7 @@ describe('ConceptTerm', () => {
     await fireEvent.click(button)
     expect(screen.getByRole('link', { name: '看完整卡' })).toBeInTheDocument()
     await fireEvent.keyDown(button, { key: 'Escape' })
-    expect(screen.queryByRole('link', { name: '看完整卡' })).toBeNull()
+    await waitFor(() => expect(screen.queryByRole('link', { name: '看完整卡' })).toBeNull())      // the popover unmounts on the next tick
     expect(button).toHaveAttribute('aria-expanded', 'false')
   })
 
@@ -63,8 +63,31 @@ describe('ConceptTerm', () => {
     expect(screen.getByText('参考价减 2 倍 ATR14，四舍五入到分。')).toBeInTheDocument()
     await fireEvent.click(target)
     expect(screen.getByText('参考价加 4 倍 ATR14。')).toBeInTheDocument()
-    expect(screen.queryByText('参考价减 2 倍 ATR14，四舍五入到分。')).toBeNull()
+    await waitFor(() => expect(screen.queryByText('参考价减 2 倍 ATR14，四舍五入到分。')).toBeNull())
     expect(stop).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('popover opens, Esc closes, only one open', async () => {
+    const first = render(ConceptTerm, { id: 'plan.stop' })
+    render(ConceptTerm, { id: 'plan.target1' })
+    const stop = await screen.findByRole('button', { name: '概念：止损' })
+    const target = await screen.findByRole('button', { name: '概念：第一目标' })
+    // the glyph is an icon, not the ⓘ character
+    expect(stop.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
+    expect(stop.textContent!.trim()).toBe('')
+    await fireEvent.click(stop)
+    const popovers = () => [...document.querySelectorAll('[data-slot="popover-content"]')]
+    expect(popovers()).toHaveLength(1)
+    expect(popovers()[0]).toHaveTextContent('参考价减 2 倍 ATR14，四舍五入到分。')
+    expect(first.container.contains(popovers()[0])).toBe(false)             // rendered in a portal
+    await fireEvent.keyDown(document.activeElement ?? stop, { key: 'Escape' })
+    await waitFor(() => expect(popovers()).toHaveLength(0))
+    await fireEvent.click(stop)
+    await fireEvent.click(target)
+    await waitFor(() => expect(popovers()).toHaveLength(1))
+    expect(popovers()[0]).toHaveTextContent('参考价加 4 倍 ATR14。')
+    expect(stop).toHaveAttribute('aria-expanded', 'false')
+    expect(target).toHaveAttribute('aria-expanded', 'true')
   })
 
   it('index failure shows 概念卡暂不可用', async () => {

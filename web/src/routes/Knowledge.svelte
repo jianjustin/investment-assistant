@@ -1,6 +1,15 @@
 <script lang="ts">
   import { untrack } from 'svelte'
+  import { Alert, AlertDescription, AlertTitle } from '$lib/ui/alert/index'
+  import { Button } from '$lib/ui/button/index'
+  import * as Card from '$lib/ui/card/index'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import Icon from '$lib/ui/domain/Icon.svelte'
+  import PageHeader from '$lib/ui/domain/PageHeader.svelte'
+  import { Input } from '$lib/ui/input/index'
+  import TabNav from '$lib/ui/tab-nav/TabNav.svelte'
   import * as api from '../lib/api'
+  import '../styles/knowledge-body.css'
   import CodeText from '../lib/components/CodeText.svelte'
   import ConceptTerm from '../lib/components/ConceptTerm.svelte'
   import KnowledgeForm from '../lib/components/KnowledgeForm.svelte'
@@ -146,104 +155,112 @@
   })).filter(g => g.rows.length > 0))
 </script>
 
-<section class="space-y-4 min-w-0">
+<section class="grid min-w-0 gap-4">
   {#snippet failureBlock()}
     {#if failure}
       {#if failure.status === 503}
-        <div role="alert" class="text-sm space-y-1">
-          <p class="font-medium text-red-600">概念卡加载失败</p>
-          <ul class="list-disc ml-5 text-xs">
-            {#each failure.problems.slice(0, 10) as problem}<li>{problem}</li>{/each}
-          </ul>
-        </div>
+        <Alert variant="danger">
+          <Icon name="circle-x" />
+          <AlertTitle>概念卡加载失败</AlertTitle>
+          <AlertDescription>
+            <ul class="ml-5 list-disc text-xs">
+              {#each failure.problems.slice(0, 10) as problem}<li>{problem}</li>{/each}
+            </ul>
+          </AlertDescription>
+        </Alert>
       {:else}
-        <p role="alert" class="text-sm text-red-600">加载失败：{failure.message}</p>
+        <DataBlock state="error" message={`加载失败：${failure.message}`} />
       {/if}
     {/if}
   {/snippet}
 
+  <TabNav label="知识" items={[
+    { href: '#knowledge', label: '概念', current: mode === 'browse' || mode === 'card' },
+    { href: '#knowledge/principles', label: '原理', current: mode === 'principles' },
+    { href: '#knowledge/mine', label: '我的知识', current: mode === 'mine' },
+  ]} />
+
   {#if mode === 'browse'}
-    <header>
-      <h1 class="text-lg font-semibold">概念</h1>
-      <p class="text-xs text-muted-foreground">概念卡随代码版本更新，<code>{index?.knowledge_version ?? 'knowledge-1'}</code>；所有规则与 Agent 都未经验证</p>
-      <p class="text-xs text-muted-foreground">你自己的经验在 <a class="text-primary underline" href="#knowledge/mine">我的知识</a></p>
-    </header>
+    <PageHeader title="概念" level={1}>
+      {#snippet meta()}
+        <span>概念卡随代码版本更新，<code>{index?.knowledge_version ?? 'knowledge-1'}</code>；所有规则与 Agent 都未经验证</span>
+      {/snippet}
+    </PageHeader>
     {#if failure}
       {@render failureBlock()}
     {:else if loading && !index}
-      <p class="text-sm text-muted-foreground">加载中…</p>
+      <DataBlock state="loading" skeleton="block" />
     {:else if index}
       {#if index.concepts.length === 0}
-        <p class="text-sm text-muted-foreground">还没有概念卡</p>
+        <DataBlock state="empty" message="还没有概念卡" />
       {:else}
-        <input type="search" aria-label="过滤" placeholder="按 id、标题或摘要过滤"
-               class="text-sm border border-border rounded-sm px-2 py-1 bg-background w-full max-w-sm" bind:value={filter} />
+        <Input type="search" aria-label="过滤" placeholder="按 id、标题或摘要过滤" class="max-w-sm" bind:value={filter} />
         {#each groups as g (g.id)}
-          <section aria-label={GROUP_TEXT[g.id] ?? g.title} class="space-y-1">
-            <h2 class="font-semibold"><CodeText text={g.title} /> · {g.rows.length} 张</h2>
-            <ul class="space-y-1 text-sm">
+          <section aria-label={GROUP_TEXT[g.id] ?? g.title} class="grid gap-1">
+            <h2 class="text-base font-medium"><CodeText text={g.title} /> · {g.rows.length} 张</h2>
+            <ul class="grid gap-1 text-sm">
               {#each g.rows as c (c.id)}
-                <li class="border border-border rounded-sm p-2 bg-card">
+                <li class="rounded-md border border-border bg-card p-2">
                   <a class="font-medium text-primary underline" href={`#knowledge/${c.id}`}>{c.title}</a>
                   <code class="text-xs text-muted-foreground">{c.id}</code>
-                  {#each c.applies_to as version}<span class="text-xs px-1 rounded-sm bg-muted">{version}</span>{/each}
+                  {#each c.applies_to as version}<span class="rounded-sm bg-muted px-1 text-xs">{version}</span>{/each}
                   <p class="text-xs text-muted-foreground">{c.summary}</p>
                 </li>
               {/each}
             </ul>
           </section>
         {:else}
-          <p class="text-sm text-muted-foreground">没有匹配的概念卡</p>
+          <DataBlock state="empty" message="没有匹配的概念卡" />
         {/each}
       {/if}
     {/if}
 
   {:else if mode === 'card'}
-    <p><a class="text-xs text-primary underline" href="#knowledge">返回概念列表</a></p>
+    <p><Button variant="link" size="sm" href="#knowledge" class="text-xs">返回概念列表</Button></p>
     {#if failure?.status === 404}
-      <p class="text-sm">没有这张概念卡：{cardId(sub ?? '')}</p>
+      <DataBlock state="empty" message={`没有这张概念卡：${cardId(sub ?? '')}`} />
     {:else if failure}
       {@render failureBlock()}
     {:else if loading && !card}
-      <p class="text-sm text-muted-foreground">加载中…</p>
+      <DataBlock state="loading" skeleton="block" />
     {:else if card}
-      {#if card.stale}<p class="text-sm text-amber-700">{card.stale.note}</p>{/if}
-      <header class="space-y-1">
-        <h1 class="text-lg font-semibold">{card.title}</h1>
-        <p class="text-xs text-muted-foreground flex flex-wrap items-center gap-2">
-          <span><CodeText text={GROUP_TEXT[card.group] ?? card.group} /></span>
-          <code>{card.ref}</code>
-          {#each card.applies_to as version}<span class="px-1 rounded-sm bg-muted">{version}</span>{/each}
-        </p>
-        <p class="text-sm">{card.summary}</p>
-      </header>
-      <div class="knowledge-body text-sm space-y-2">{@html card.html}</div>
+      {@const c = card}
+      {#if c.stale}<Alert variant="warn"><Icon name="triangle-alert" /><AlertDescription>{c.stale.note}</AlertDescription></Alert>{/if}
+      <PageHeader title={c.title} level={1}>
+        {#snippet meta()}
+          <span><CodeText text={GROUP_TEXT[c.group] ?? c.group} /></span>
+          <code>{c.ref}</code>
+          {#each c.applies_to as version}<span class="rounded-sm bg-muted px-1">{version}</span>{/each}
+        {/snippet}
+      </PageHeader>
+      <p class="text-sm">{card.summary}</p>
+      <div class="knowledge-body grid gap-2 text-sm">{@html card.html}</div>
       {#if card.related_cards.length}
-        <section aria-label="相关" class="space-y-1">
-          <h2 class="font-semibold text-sm">相关</h2>
+        <section aria-label="相关" class="grid gap-1">
+          <h2 class="text-sm font-medium">相关</h2>
           <ul class="flex flex-wrap gap-2 text-sm">
             {#each card.related_cards as r (r.id)}<li><a class="text-primary underline" href={`#knowledge/${r.id}`}>{r.title}</a></li>{/each}
           </ul>
         </section>
       {/if}
       {#if card.backlinks.length}
-        <section aria-label="被这些卡提到" class="space-y-1">
-          <h2 class="font-semibold text-sm">被这些卡提到</h2>
+        <section aria-label="被这些卡提到" class="grid gap-1">
+          <h2 class="text-sm font-medium">被这些卡提到</h2>
           <ul class="flex flex-wrap gap-2 text-sm">
             {#each card.backlinks as r (r.id)}<li><a class="text-primary underline" href={`#knowledge/${r.id}`}>{r.title}</a></li>{/each}
           </ul>
         </section>
       {/if}
-      <section aria-label="挂在这张卡上的我的知识" class="space-y-1">
-        <h2 class="font-semibold text-sm">挂在这张卡上的我的知识</h2>
+      <section aria-label="挂在这张卡上的我的知识" class="grid gap-1">
+        <h2 class="text-sm font-medium">挂在这张卡上的我的知识</h2>
         {#if attached.error}
-          <p class="text-xs text-muted-foreground">{attached.error}</p>
+          <DataBlock state="error" message={attached.error} />
         {:else if attached.items === null}
-          <p class="text-xs text-muted-foreground">加载中…</p>
+          <DataBlock state="loading" skeleton="row" />
         {:else if attached.items.length === 0}
-          <p class="text-xs text-muted-foreground">还没有挂在这张卡上的经验</p>
+          <DataBlock state="empty" message="还没有挂在这张卡上的经验" />
         {:else}
-          <ul class="text-sm space-y-0.5">
+          <ul class="grid gap-0.5 text-sm">
             {#each attached.items as e (e.id)}
               <li><a class="text-primary underline" href={`#knowledge/mine/${e.id}`}>{e.title}</a>
                 <span class="text-xs text-muted-foreground"> · 第 {e.current_version} 版 · {e.scope}</span></li>
@@ -255,32 +272,34 @@
 
   {:else if mode === 'mine'}
     {#if minePage.page === 'list'}
-      <header class="space-y-1">
-        <h1 class="text-lg font-semibold">我的知识</h1>
-        <p class="text-xs text-muted-foreground">你审定过的经验：判断，不是事实。Agent 只能读到截止时间之前写入的版本；
-          <ConceptTerm id={ATTACH.myKnowledge.item}>说明</ConceptTerm>
-          · <a class="text-primary underline" href="#knowledge">返回概念</a></p>
-      </header>
+      <PageHeader title="我的知识" level={1}>
+        {#snippet meta()}
+          <span>你审定过的经验：判断，不是事实。Agent 只能读到截止时间之前写入的版本；
+            <ConceptTerm id={ATTACH.myKnowledge.item}>说明</ConceptTerm></span>
+        {/snippet}
+      </PageHeader>
       <KnowledgeList />
     {:else if minePage.page === 'new'}
-      <p><a class="text-xs text-primary underline" href="#knowledge/mine">返回我的知识</a></p>
-      <h1 class="text-lg font-semibold">写一条经验</h1>
-      <div class="border border-border rounded-sm p-3">
-        <KnowledgeForm initial={{ tickers: prefillTicker() }} onSubmit={createEntry} />
-      </div>
+      <p><Button variant="link" size="sm" href="#knowledge/mine" class="text-xs">返回我的知识</Button></p>
+      <PageHeader title="写一条经验" level={1} />
+      <Card.Root size="sm">
+        <Card.Content>
+          <KnowledgeForm initial={{ tickers: prefillTicker() }} onSubmit={createEntry} />
+        </Card.Content>
+      </Card.Root>
     {:else if minePage.page === 'drafts'}
-      <p><a class="text-xs text-primary underline" href="#knowledge/mine">返回我的知识</a></p>
-      <h1 class="text-lg font-semibold">待审定的草稿</h1>
+      <p><Button variant="link" size="sm" href="#knowledge/mine" class="text-xs">返回我的知识</Button></p>
+      <PageHeader title="待审定的草稿" level={1} />
       {#if draftsError}
-        <p role="alert" class="text-sm text-red-600">{draftsError}</p>
+        <DataBlock state="error" message={draftsError} />
       {:else if drafts === null}
-        <p class="text-sm text-muted-foreground">加载中…</p>
+        <DataBlock state="loading" skeleton="block" />
       {:else if drafts.length === 0}
-        <p class="text-sm text-muted-foreground">没有待审定的草稿</p>
+        <DataBlock state="empty" message="没有待审定的草稿" />
       {:else}
-        <ul class="space-y-3">
+        <ul class="grid gap-3">
           {#each drafts as d (d.id)}
-            <li class="border border-border rounded-sm p-3 text-sm space-y-1">
+            <li class="grid gap-1 rounded-md border border-border bg-card p-3 text-sm">
               <p class="font-medium">{d.title}</p>
               <p class="whitespace-pre-wrap">{d.body}</p>
               <p class="text-xs"><span class="text-muted-foreground">适用范围</span> {d.scope}</p>
@@ -293,15 +312,13 @@
                   <a class="text-primary underline" href={`#review/cards/${d.card_id}`}>到复盘卡审定</a></p>
               {:else}
                 {@const stale = staleDraftText(d)}
-                {#if stale}<p class="text-xs text-amber-700">{stale}</p>{/if}
+                {#if stale}<p class="text-xs text-warn">{stale}</p>{/if}
                 <div class="flex gap-2">
-                  <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted disabled:opacity-50"
-                          disabled={!!stale} title={stale ?? undefined}
-                          onclick={() => adopting[d.id] = true}>采纳</button>
-                  <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted"
-                          onclick={() => dismiss(d)}>不采纳</button>
+                  <Button size="sm" disabled={!!stale} title={stale ?? undefined}
+                          onclick={() => adopting[d.id] = true}>采纳</Button>
+                  <Button size="sm" onclick={() => dismiss(d)}>不采纳</Button>
                 </div>
-                {#if dismissError[d.id]}<p role="alert" class="text-xs text-red-600">{dismissError[d.id]}</p>{/if}
+                {#if dismissError[d.id]}<Alert variant="danger"><Icon name="circle-x" /><AlertDescription>{dismissError[d.id]}</AlertDescription></Alert>{/if}
                 {#if adopting[d.id] && !stale}
                   <div class="border-t border-border pt-2">
                     <KnowledgeForm initial={d} requireCounter submitLabel="确认采纳" requestKey={`draft:${d.id}`}
@@ -314,30 +331,31 @@
         </ul>
       {/if}
     {:else}
-      <p><a class="text-xs text-primary underline" href="#knowledge/mine">返回我的知识</a></p>
+      <p><Button variant="link" size="sm" href="#knowledge/mine" class="text-xs">返回我的知识</Button></p>
       {#key sub}<KnowledgeItem id={minePage.id} version={minePage.version} />{/key}
     {/if}
 
   {:else}
-    <header class="flex flex-wrap items-center gap-3">
-      <h1 class="text-lg font-semibold">{principles?.title ?? '原理'}</h1>
-      <input type="date" aria-label="日期" class="text-xs border border-border rounded-sm px-1 py-0.5 bg-background"
-             value={date} onchange={e => date = (e.currentTarget as HTMLInputElement).value} />
-      <span class="text-xs text-muted-foreground">{date ? '' : '默认最近已收盘交易日'}</span>
-    </header>
+    <PageHeader title={principles?.title ?? '原理'} level={1}>
+      {#snippet meta()}<span>{date ? '' : '默认最近已收盘交易日'}</span>{/snippet}
+      {#snippet actions()}
+        <Input type="date" aria-label="日期" class="w-40 text-xs" value={date}
+               onchange={e => date = (e.currentTarget as HTMLInputElement).value} />
+      {/snippet}
+    </PageHeader>
     {#if failure?.status === 404}
-      <p class="text-sm text-muted-foreground">还没有原理页</p>
+      <DataBlock state="empty" message="还没有原理页" />
     {:else if failure}
       {@render failureBlock()}
     {:else if loading && !principles}
-      <p class="text-sm text-muted-foreground">加载中…</p>
+      <DataBlock state="loading" skeleton="block" />
     {:else if principles}
       {#each principles.sections as section, i (i)}
-        <section aria-label={section.heading} class="space-y-2">
-          <h2 class="font-semibold">{section.heading}</h2>
-          <div class="knowledge-body text-sm space-y-2">{@html section.html}</div>
+        <section aria-label={section.heading} class="grid gap-2">
+          <h2 class="text-base font-medium">{section.heading}</h2>
+          <div class="knowledge-body grid gap-2 text-sm">{@html section.html}</div>
           {#if section.stage}
-            <div data-testid="stage-box" class="border border-border rounded-sm p-2 bg-card space-y-1">
+            <div data-testid="stage-box" class="grid gap-1 rounded-md border border-border bg-card p-2">
               <RunOverview session={date || undefined} compact onlyStage={section.stage} />
               <a class="text-xs text-primary underline" href="#today">在『今日』看完整运行一览</a>
             </div>
@@ -347,14 +365,3 @@
     {/if}
   {/if}
 </section>
-
-<style>
-  .knowledge-body :global(h2) { font-weight: 600; margin-top: 0.75rem; }
-  .knowledge-body :global(p), .knowledge-body :global(ul), .knowledge-body :global(ol) { margin: 0.25rem 0; }
-  .knowledge-body :global(ul) { list-style: disc; margin-left: 1.25rem; }
-  .knowledge-body :global(ol) { list-style: decimal; margin-left: 1.25rem; }
-  .knowledge-body :global(a) { color: var(--primary); text-decoration: underline; }
-  .knowledge-body :global(code) { padding: 0 0.2rem; border-radius: 0.2rem; background: var(--muted); }
-  .knowledge-body :global(table) { border-collapse: collapse; font-size: 0.75rem; }
-  .knowledge-body :global(th), .knowledge-body :global(td) { border: 1px solid var(--border); padding: 0.2rem 0.5rem; }
-</style>

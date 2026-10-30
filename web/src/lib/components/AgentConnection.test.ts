@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import AgentConnection from './AgentConnection.svelte'
 import * as api from '../api'
 import { fmtBeijing } from '../format'
@@ -16,6 +16,19 @@ beforeEach(() => {
   vi.spyOn(api, 'getAgentModels').mockResolvedValue(models)
 })
 afterEach(() => { vi.useRealTimers(); cleanup(); vi.restoreAllMocks() })
+
+const confirmDisconnect = async () =>
+  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '断开' }))
+/** The model select is a Bits Select: the trigger opens a listbox rendered in a portal. */
+const openModels = async (trigger: HTMLElement) => {
+  await fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+  return screen.findAllByRole('option')
+}
+/** Bits selects on pointerup (so a press-drag-release works), not on click. */
+const pick = async (option: HTMLElement) => {
+  await fireEvent.pointerDown(option)
+  await fireEvent.pointerUp(option)
+}
 
 describe('AgentConnection', () => {
   it('five states (spec §8.9, verbatim)', async () => {
@@ -123,6 +136,7 @@ describe('AgentConnection', () => {
     render(AgentConnection)
     get.mockResolvedValue(view({ status: 'disconnected', email_masked: null, model: null, model_display_name: null }))
     await fireEvent.click(await screen.findByRole('button', { name: '断开' }))
+    await confirmDisconnect()
     expect(await screen.findByText('已断开 ChatGPT')).toBeInTheDocument()
     expect(await screen.findByText('未连接 ChatGPT')).toBeInTheDocument()
     cleanup()
@@ -132,28 +146,72 @@ describe('AgentConnection', () => {
     render(AgentConnection)
     get.mockResolvedValue(view({ status: 'disconnected', email_masked: null, model: null, model_display_name: null }))
     await fireEvent.click(await screen.findByRole('button', { name: '断开' }))
+    await confirmDisconnect()
     expect(await screen.findByText('本机凭据已删除，但远端断开未确认，请到 ChatGPT 设置里断开这个应用')).toBeInTheDocument()
+  })
+
+  it('disconnect needs confirm', async () => {
+    const get = vi.spyOn(api, 'getAgentConnection').mockResolvedValue(view())
+    const disconnect = vi.spyOn(api, 'disconnectAgent').mockResolvedValue({ revoked: true })
+    render(AgentConnection)
+    const button = await screen.findByRole('button', { name: '断开' })
+    await fireEvent.click(button)
+    // the button only opens the dialog: nothing is sent, and the dialog names the action
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveAccessibleName('断开 ChatGPT')
+    expect(disconnect).not.toHaveBeenCalled()
+    await fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(disconnect).not.toHaveBeenCalled()
+    // Esc cancels too
+    await fireEvent.click(screen.getByRole('button', { name: '断开' }))
+    await screen.findByRole('dialog')
+    await fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(disconnect).not.toHaveBeenCalled()
+    // confirm: one request
+    get.mockResolvedValue(view({ status: 'disconnected', email_masked: null, model: null, model_display_name: null }))
+    await fireEvent.click(screen.getByRole('button', { name: '断开' }))
+    await confirmDisconnect()
+    await waitFor(() => expect(disconnect).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText('未连接 ChatGPT')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('pending shows the 登录中 pill and the waited seconds', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    vi.setSystemTime(new Date('2026-10-29T03:30:00Z'))
+    vi.spyOn(api, 'getAgentConnection').mockResolvedValue(view({ status: 'pending', pending: { expires_at: '2026-10-29T03:40:00Z' } }))
+    render(AgentConnection)
+    await act(() => vi.advanceTimersByTimeAsync(0))
+    const pill = screen.getByText('登录中').closest('[data-domain]')!
+    expect(pill).toHaveAttribute('data-domain', 'connection')
+    expect(pill).toHaveAttribute('data-tone', 'running')
+    expect(screen.getByText('已等待 0 秒')).toBeInTheDocument()
+    await act(() => vi.advanceTimersByTimeAsync(6000))
+    expect(screen.getByText('已等待 6 秒')).toBeInTheDocument()
   })
 
   it('model select and 已不在可用清单里', async () => {
     const get = vi.spyOn(api, 'getAgentConnection').mockResolvedValue(view())
     const set = vi.spyOn(api, 'setAgentModel').mockResolvedValue({ model: 'gpt-y', model_display_name: 'GPT Y' })
     render(AgentConnection)
-    const select = (await screen.findByLabelText('模型')) as HTMLSelectElement
-    await waitFor(() => expect(select.options).toHaveLength(2))
-    expect([...select.options].map(o => o.textContent)).toEqual(['GPT X', 'GPT Y'])
-    expect(select.value).toBe('gpt-x')
-    await fireEvent.change(select, { target: { value: 'gpt-y' } })
+    const select = await screen.findByLabelText('模型')
+    await waitFor(() => expect(select).toHaveTextContent('GPT X'))
+    const options = await openModels(select)
+    expect(options.map(o => o.textContent!.trim())).toEqual(['GPT X', 'GPT Y'])
+    expect(options[0]).toHaveAttribute('aria-selected', 'true')
+    await pick(options[1])
     expect(set).toHaveBeenCalledWith('gpt-y', expect.stringMatching(/^[0-9a-f-]{36}$/))
     expect(await screen.findByText('已保存，下一次运行生效')).toBeInTheDocument()
     cleanup()
 
     get.mockResolvedValue(view({ model: 'gpt-old', model_display_name: 'GPT Old' }))
     render(AgentConnection)
-    const stale = (await screen.findByLabelText('模型')) as HTMLSelectElement
-    await waitFor(() => expect(stale.options.length).toBeGreaterThan(1))
-    expect([...stale.options].map(o => o.textContent)).toContain('gpt-old（已不在可用清单里）')
-    expect(stale.value).toBe('gpt-old')
+    const stale = await screen.findByLabelText('模型')
+    await waitFor(() => expect(stale).toHaveTextContent('gpt-old（已不在可用清单里）'))
+    const staleOptions = await openModels(stale)
+    expect(staleOptions.map(o => o.textContent!.trim())).toContain('gpt-old（已不在可用清单里）')
     expect(screen.getByText('当前所选模型已不在可用清单里，请重新选择')).toBeInTheDocument()
   })
 
@@ -162,12 +220,12 @@ describe('AgentConnection', () => {
     const set = vi.spyOn(api, 'setAgentModel').mockRejectedValueOnce(new Error('HTTP 502'))
       .mockResolvedValue({ model: 'gpt-y', model_display_name: 'GPT Y' })
     render(AgentConnection)
-    const select = (await screen.findByLabelText('模型')) as HTMLSelectElement
-    await waitFor(() => expect(select.options).toHaveLength(2))
-    await fireEvent.change(select, { target: { value: 'gpt-y' } })
+    const select = await screen.findByLabelText('模型')
+    await waitFor(() => expect(select).toHaveTextContent('GPT X'))
+    await pick((await openModels(select))[1])
     expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 502')
-    expect(select.value).toBe('gpt-x')
-    await fireEvent.change(select, { target: { value: 'gpt-y' } })
+    expect(select).toHaveTextContent('GPT X')                              // the select shows the model that is still in force
+    await pick((await openModels(select))[1])
     await waitFor(() => expect(set).toHaveBeenCalledTimes(2))
     expect(set.mock.calls[1][1]).toBe(set.mock.calls[0][1])
   })

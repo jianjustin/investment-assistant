@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import Data from './Data.svelte'
 import * as api from '../lib/api'
 import { resetConceptIndex } from '../lib/knowledge'
@@ -301,7 +301,7 @@ describe('Data 拉取结果', () => {
     await fireEvent.click(bars.getByRole('button', { name: '拉取' }))
     expect(await bars.findByText('9 / 10')).toBeTruthy()
     expect(api.getDataFamilies).toHaveBeenCalledTimes(2)
-    expect(bars.getByText('采集记录写入失败：permission denied for table data_fetch_runs')).toHaveClass('text-red-600')
+    expect(bars.getByText('采集记录写入失败：permission denied for table data_fetch_runs')).toHaveClass('text-destructive')
     expect(bars.getByRole('button', { name: '拉取' })).toBeEnabled()
   })
 
@@ -309,7 +309,7 @@ describe('Data 拉取结果', () => {
     vi.mocked(api.pollRun).mockResolvedValue({ run_id: 'r1', status: 'error', error: '采集服务不可达' })
     render(Data)
     await fireEvent.click(await screen.findByRole('button', { name: '重新加载' }))
-    expect(await screen.findByText('采集服务不可达')).toHaveClass('text-red-600')
+    expect(await screen.findByText('采集服务不可达')).toHaveClass('text-destructive')
     expect(api.getDataFamilies).toHaveBeenCalledTimes(2)
     await waitFor(() => expect(screen.getByRole('button', { name: '重新加载' })).toBeEnabled())
   })
@@ -390,6 +390,31 @@ describe('Data 详情', () => {
     expect(coverage.getByText('NVDA')).toBeTruthy()
     expect(api.getDataFamily).toHaveBeenCalledTimes(calls)
     expect(api.browseData).toHaveBeenCalledWith('bars', { ticker: 'MU' })
+  })
+
+  it('fetch status pill text', async () => {
+    vi.mocked(api.getDataFamily).mockResolvedValue(detail({
+      runs: [run({ id: 31, status: 'success' }), run({ id: 32, status: 'partial' }), run({ id: 33, status: 'failed' }),
+             run({ id: 34, status: 'skipped', failures: [], detail: { reason: 'FRED_API_KEY 未配置' } })],
+    }))
+    render(Data, { sub: 'bars' })
+    const runs = within(await screen.findByRole('table', { name: '最近拉取' }))
+    // the status column is a fetch-domain pill: the text is shown with its tone, never colour alone
+    const tones = ['success', 'partial', 'failed', 'skipped'].map(status => {
+      const pill = runs.getByText(status).closest('[data-domain]')!
+      expect(pill).toHaveAttribute('data-domain', 'fetch')
+      expect(pill).toHaveAttribute('data-status', status)
+      return pill.getAttribute('data-tone')
+    })
+    expect(tones).toEqual(['success', 'warn', 'danger', 'neutral'])
+    // and the same pill sits on the overview cards
+    cleanup()
+    vi.mocked(api.getDataFamilies).mockResolvedValue(overview(six({
+      news: { last_run: { status: 'partial', trigger: 'manual_batch', scope: 'family', ticker: null, job: 'workbench', reason: null,
+                          finished_at: '2026-10-22T08:00:00+00:00', ok_count: 3, target_count: 5, failures: [] } } })))
+    render(Data)
+    const main = within(await screen.findByRole('article', { name: '资讯' })).getByLabelText('最近全族拉取')
+    expect(main.querySelector('[data-domain="fetch"]')).toHaveAttribute('data-tone', 'warn')
   })
 
   it('unknown sub falls back to overview', async () => {
@@ -500,8 +525,10 @@ describe('Data 详情', () => {
     vi.mocked(api.getDataFamily).mockResolvedValue(detail({ runs: [], rows: [] }))
     render(Data, { sub: 'bars' })
     expect(await screen.findByText('迁移 024 未执行')).toBeTruthy()
-    expect(screen.getByRole('table', { name: '最近拉取' })).toHaveTextContent('无记录')
-    expect(screen.getByRole('table', { name: '逐目标覆盖' })).toHaveTextContent('无目标')
+    // an empty table is a DataBlock with the reason, not a table with an empty body
+    expect(screen.getByRole('region', { name: '最近 20 次拉取' })).toHaveTextContent('无记录')
+    expect(screen.getByRole('region', { name: '逐目标覆盖' })).toHaveTextContent('无目标')
+    expect(screen.queryByRole('table', { name: '最近拉取' })).toBeNull()
   })
 
   it('family names, ATR columns and FRED series carry ConceptTerm', async () => {

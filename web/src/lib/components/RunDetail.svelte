@@ -1,5 +1,14 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
+  import { Alert, AlertDescription } from '$lib/ui/alert/index'
+  import { Button } from '$lib/ui/button/index'
+  import * as Card from '$lib/ui/card/index'
+  import ConfirmDialog from '$lib/ui/confirm-dialog/ConfirmDialog.svelte'
+  import CutoffTime from '$lib/ui/domain/CutoffTime.svelte'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import Icon from '$lib/ui/domain/Icon.svelte'
+  import Section from '$lib/ui/domain/Section.svelte'
+  import StatusPill from '$lib/ui/domain/StatusPill.svelte'
   import AgentReasoning from './AgentReasoning.svelte'
   import FetchTable from './FetchTable.svelte'
   import NodeGraph from './NodeGraph.svelte'
@@ -43,12 +52,17 @@
   let rerunDone = $state<Record<string, boolean>>({})
   const rerunIds: Record<string, string> = {}
   let reasoningOpen = $state<Record<string, boolean>>({})
+  let rerunTarget = $state<any>(null)         // the unit the confirm dialog is about
+  let rerunOpen = $state(false)
+  // how long the page has been waiting for a running run (shown beside the 运行中 pill)
+  let pollSince = $state<number | null>(null)
+  let pollNow = $state(Date.now())
 
   let destroyed = false
   let timer: ReturnType<typeof setTimeout> | null = null
   let generation = 0
 
-  function stopPolling() { if (timer) clearTimeout(timer); timer = null }
+  function stopPolling() { if (timer) clearTimeout(timer); timer = null; pollSince = null }
 
   function describe(e: unknown): string {
     if (e instanceof api.ApiError) {
@@ -97,6 +111,8 @@
     stopPolling()
     const token = generation
     const started = Date.now()
+    pollSince = started
+    pollNow = started
     const baseline = from.executions?.length ?? 0
     let seen = sawRunning
     let misses = 0
@@ -106,6 +122,7 @@
       try {
         const next = await api.getRunDetail(runId)
         if (destroyed || token !== generation) return
+        pollNow = Date.now()
         apply(next)
         error = ''
         if (next.status === 'running') seen = true
@@ -113,10 +130,11 @@
         // saw a new execution, or three reads in a row said it is not running.
         else if (seen || (next.executions?.length ?? 0) > baseline || ++misses >= 3) {
           resumeNotice = seen || (next.executions?.length ?? 0) > baseline ? '' : '未看到续跑开始，请稍后刷新'
+          pollSince = null
           return
         }
       } catch { /* a missed read is retried on the next tick */ }
-      if (Date.now() - started >= RESUME_POLL_MAX_MS) { resumeNotice = RESUME_STILL_RUNNING_TEXT; return }
+      if (Date.now() - started >= RESUME_POLL_MAX_MS) { resumeNotice = RESUME_STILL_RUNNING_TEXT; pollSince = null; return }
       timer = setTimeout(tick, RESUME_POLL_MS)
     }
     timer = setTimeout(tick, RESUME_POLL_MS)
@@ -151,14 +169,13 @@
       const accepted = await api.resumeDaily(detail.run_id, resumeNode.id, resumeRequestId)
       if (destroyed) return
       resumeRequestId = null
-      confirming = false
       resumeNotice = `已提交，第 ${accepted.attempt} 次执行，页面每 5 秒刷新一次`
       startPolling(detail, false)
     } catch (e) {
       if (destroyed) return
       resumeError = resumeFailText(e)
-      if (e instanceof api.ApiError && e.status === 409) { confirming = false; resumeRequestId = null; void load(generation) }
-    } finally { resumeBusy = false }
+      if (e instanceof api.ApiError && e.status === 409) { resumeRequestId = null; void load(generation) }
+    } finally { resumeBusy = false; confirming = false }       // the dialog hides the page: show the outcome there
   }
 
   // ---- rerun agent ----
@@ -187,13 +204,16 @@
     } catch (e) {
       if (destroyed) return
       rerunText[key] = rerunFailText(e)
-    } finally { rerunBusy[key] = false }
+    } finally { rerunBusy[key] = false; rerunOpen = false }
   }
+  const rerunConsequence = (item: any) =>
+    `重置 ${item.ticker}（${item.signal_date}，${MODE_TEXT[item.mode] ?? item.mode}）的尝试次数，并重新运行这个单元的 Agent。`
 
   // ---- display helpers ----
   const selectedNode = $derived(detail?.nodes.find(n => n.id === selected) ?? null)
   const statusText = (s: string) => NODE_STATUS_TEXT[s] ?? RUN_STATUS_TEXT[s] ?? s
-  const count = (v: number | null | undefined) => v == null ? '—' : String(v)
+  const count = (v: number | null | undefined) => v == null ? '未记录' : String(v)
+  const waitedSeconds = $derived(pollSince === null ? null : Math.max(0, Math.floor((pollNow - pollSince) / 1000)))
   const canAct = $derived(detail?.kind === 'daily')
   function select(id: string) { selected = id; touched = true }
   function retryNote(node: RunNode): string | null {
@@ -203,25 +223,26 @@
   }
 </script>
 
-<section aria-label="运行详情" class="space-y-4 text-sm">
+<section aria-label="运行详情" class="grid gap-4 text-sm">
   <header class="flex flex-wrap items-center gap-3">
-    <a href="#tools/runs" class="text-primary underline">返回运行记录</a>
+    <Button variant="link" size="sm" href="#tools/runs">返回运行记录</Button>
     <h1 class="font-mono text-xs text-muted-foreground">{runId}</h1>
   </header>
 
   {#if error}
-    <p role="alert" class="text-destructive">{error}</p>
+    <DataBlock state="error" message={error} />
   {:else if !detail}
-    <p class="text-xs text-muted-foreground">加载中…</p>
+    <DataBlock state="loading" skeleton="block" />
   {:else}
-    <div class="space-y-1">
+    <div class="grid gap-1">
       {#if detail.headline}<p class="text-base font-medium" data-testid="headline">{detail.headline}</p>{/if}
-      <p class="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground" data-testid="meta">
+      <p class="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-xs text-muted-foreground" data-testid="meta">
         <span>任务 {detail.task}</span>
-        <span>状态 {statusText(detail.status)}</span>
+        <span class="inline-flex items-center gap-1.5">状态 <StatusPill domain="run" value={detail.status} />
+          {#if waitedSeconds !== null && detail.status === 'running'}<span>已等待 {waitedSeconds} 秒</span>{/if}</span>
         {#if detail.trigger}<span>触发 {TRIGGER_TEXT[detail.trigger] ?? detail.trigger}</span>{/if}
         {#if detail.session}<span>session {detail.session}</span>{/if}
-        {#if detail.cutoff_at}<span>截止 {fmtBeijing(detail.cutoff_at)}</span>{/if}
+        {#if detail.cutoff_at}<CutoffTime at={detail.cutoff_at} />{/if}
         {#if detail.graph_version || detail.stages_version}
           <span>{[detail.graph_version, detail.stages_version].filter(Boolean).join(' / ')}</span>
         {/if}
@@ -229,36 +250,39 @@
     </div>
 
     {#if detail.executions.length > 1}
-      <section aria-label="执行记录" class="space-y-1">
-        <h2 class="font-medium">执行记录</h2>
-        <ol class="space-y-0.5 text-xs">
+      <Section title="执行记录" level={2}>
+        <ol class="grid gap-0.5 text-xs">
           {#each detail.executions as ex (ex.report_id)}
-            <li>
+            <li class="flex flex-wrap items-center gap-x-1.5">
               第 {ex.attempt} 次 · {fmtBeijing(ex.started_at)} · {TRIGGER_TEXT[ex.trigger_source] ?? ex.trigger_source}
-              · {statusText(ex.status)}{ex.resume_node ? ` · 从「${detail.nodes.find(n => n.id === ex.resume_node)?.title ?? ex.resume_node}」续跑` : ''}
+              · <StatusPill domain="run" value={ex.status} />{ex.resume_node ? ` · 从「${detail.nodes.find(n => n.id === ex.resume_node)?.title ?? ex.resume_node}」续跑` : ''}
             </li>
           {/each}
         </ol>
-      </section>
+      </Section>
     {/if}
 
     {#if detail.kind === 'other' || detail.nodes.length === 0}
-      <p class="text-muted-foreground">这类运行没有节点证据</p>
+      <DataBlock state="empty" message="这类运行没有节点证据" />
     {:else}
       <NodeGraph nodes={detail.nodes} {selected} onselect={select} />
-      {#if canAct && detail.status === 'failed' && detail.resume && !detail.resume.allowed && detail.resume.reason}
-        <p class="text-xs text-muted-foreground">{resumeErrorText(detail.resume.reason, { next: nodeTitle(detail.resume.node), day: nyDay(detail.resume.deadline_at) }) ?? detail.resume.reason}</p>
+      {#if resumeError}
+        <Alert variant="danger"><Icon name="circle-x" /><AlertDescription>{resumeError}</AlertDescription></Alert>
+      {:else if canAct && detail.status === 'failed' && detail.resume && !detail.resume.allowed && detail.resume.reason}
+        <Alert variant="warn">
+          <Icon name="triangle-alert" />
+          <AlertDescription>{resumeErrorText(detail.resume.reason, { next: nodeTitle(detail.resume.node), day: nyDay(detail.resume.deadline_at) }) ?? detail.resume.reason}</AlertDescription>
+        </Alert>
       {/if}
-      {#if resumeNotice}<p class="text-xs text-muted-foreground" role="status">{resumeNotice}</p>{/if}
-      {#if resumeError}<p role="alert" class="text-xs text-destructive">{resumeError}</p>{/if}
+      {#if resumeNotice}<Alert variant="info"><Icon name="info" /><AlertDescription>{resumeNotice}</AlertDescription></Alert>{/if}
 
       {#if selectedNode}
         {@const node = selectedNode}
-        <section aria-label={`${node.title} 详情`} class="space-y-4 rounded-sm border border-border bg-card p-3">
-          <h2 class="font-semibold">{node.title}</h2>
+        <Card.Root size="sm" role="region" aria-label={`${node.title} 详情`}>
+          <Card.Content class="grid gap-4">
+          <h2 class="text-base font-medium">{node.title}</h2>
 
-          <div class="space-y-1">
-            <h3 class="font-medium">做了什么</h3>
+          <Section title="做了什么" level={3}>
             {#if node.did?.sentence}<p>{node.did.sentence}</p>{/if}
             <p class="text-xs text-muted-foreground">
               状态 {statusText(node.status)}{node.reason_text || node.reason ? `：${node.reason_text ?? node.reason}` : ''}
@@ -287,34 +311,23 @@
             {/each}
 
             {#if canAct && node.actions?.resume && detail.resume?.allowed && resumeNode?.id === node.id}
-              {#if confirming}
-                <div role="group" aria-label="确认续跑" class="space-y-2 rounded-sm border border-border bg-muted p-2">
-                  <p>{resumeText}</p>
-                  <div class="flex gap-2">
-                    <button type="button" class="rounded-sm bg-primary px-3 py-1 text-white disabled:opacity-50"
-                            disabled={resumeBusy} onclick={doResume}>确认继续</button>
-                    <button type="button" class="rounded-sm border border-border px-3 py-1 disabled:opacity-50"
-                            disabled={resumeBusy} onclick={() => confirming = false}>取消</button>
-                  </div>
-                </div>
-              {:else}
-                <button type="button" class="rounded-sm border border-primary/40 px-3 py-1 text-primary"
-                        onclick={() => { confirming = true; resumeError = '' }}>从此节点继续</button>
-              {/if}
+              <div>
+                <Button variant="primary" size="sm" onclick={() => { confirming = true; resumeError = '' }}>从此节点继续</Button>
+              </div>
+              <ConfirmDialog bind:open={confirming} title="从此节点继续" consequence={resumeText} actionLabel="从此节点继续"
+                             busy={resumeBusy} onConfirm={doResume} />
             {/if}
-          </div>
+          </Section>
 
           {#if node.fetch?.families?.length}
-            <div class="space-y-1">
-              <h3 class="font-medium">拉取详情</h3>
+            <Section title="拉取详情" level={3}>
               <FetchTable families={node.fetch.families} />
-            </div>
+            </Section>
           {/if}
 
           {#if node.results}
             {@const results = node.results}
-            <div class="space-y-1">
-              <h3 class="font-medium">结果详情</h3>
+            <Section title="结果详情" level={3}>
               {#if results.kind === 'collect' && !results.items?.length}
                 <p class="text-xs text-muted-foreground">拉取详情已列全</p>
               {:else if !results.items?.length}
@@ -331,7 +344,7 @@
                           · {item.form} · {item.filing_date} · {item.accession} · {item.notified ? '已通知' : '未通知'}</span>
                       {:else if results.kind === 'screen'}
                         <span><a class="text-primary underline" href={`#instrument/${encodeURIComponent(item.ticker)}`}>{item.ticker}</a>
-                          · 排名 {count(item.rank)} · {item.group ?? '—'}{item.selected ? ' · 入选' : ''}{item.new_member ? ' · 新成员' : ''}</span>
+                          · 排名 {count(item.rank)} · {item.group ?? '无分组'}{item.selected ? ' · 入选' : ''}{item.new_member ? ' · 新成员' : ''}</span>
                       {:else if results.kind === 'regime'}
                         <span>{REGIME_LABELS[item.label] ?? item.label} · {item.regime_id}</span>
                       {:else if results.kind === 'signals'}
@@ -350,12 +363,11 @@
                           <span class="text-muted-foreground">第 {count(item.attempt)} 次 · 输入 {count(item.input_tokens)} · 产出 {count(item.output_tokens)} token{item.model ? ` · ${item.model}` : ''}</span>
                           {#if item.plan_id}<a class="text-primary underline" href={`#plan/${item.plan_id}`}>计划</a>{/if}
                           {#if item.run_id}
-                            <button type="button" class="text-primary underline" aria-expanded={!!reasoningOpen[item.run_id]}
-                                    onclick={() => reasoningOpen[item.run_id] = !reasoningOpen[item.run_id]}>看推理过程</button>
+                            <Button variant="link" size="sm" class="text-[length:inherit]" aria-expanded={!!reasoningOpen[item.run_id]}
+                                    onclick={() => reasoningOpen[item.run_id] = !reasoningOpen[item.run_id]}>看推理过程</Button>
                           {/if}
                           {#if canAct && item.can_rerun && !rerunDone[key]}
-                            <button type="button" class="rounded-sm border border-primary/40 px-2 py-0.5 text-primary disabled:opacity-50"
-                                    disabled={rerunBusy[key]} onclick={() => rerun(item)}>重新运行 Agent</button>
+                            <Button size="sm" busy={rerunBusy[key]} onclick={() => { rerunTarget = item; rerunOpen = true }}>重新运行 Agent</Button>
                           {/if}
                           {#if rerunText[key]}<span class="text-muted-foreground">{rerunText[key]}</span>{/if}
                         </span>
@@ -382,9 +394,10 @@
                   {/each}
                 </ul>
               {/if}
-            </div>
+            </Section>
           {/if}
-        </section>
+          </Card.Content>
+        </Card.Root>
       {:else}
         <p class="text-xs text-muted-foreground">点上面的格子，查看这个节点做了什么</p>
       {/if}
@@ -392,7 +405,11 @@
 
     <details class="text-xs">
       <summary class="cursor-pointer text-primary">原始摘要</summary>
-      <pre class="mt-1 max-h-96 overflow-auto rounded-sm bg-muted p-2">{JSON.stringify(detail.raw_summary, null, 2)}</pre>
+      <pre class="mt-1 max-h-96 overflow-auto rounded-md bg-muted p-2">{JSON.stringify(detail.raw_summary, null, 2)}</pre>
     </details>
   {/if}
+
+  <ConfirmDialog bind:open={rerunOpen} title="重新运行 Agent" consequence={rerunTarget ? rerunConsequence(rerunTarget) : ''}
+                 actionLabel="重新运行 Agent" busy={rerunTarget ? !!rerunBusy[unitKey(rerunTarget)] : false}
+                 onConfirm={() => rerun(rerunTarget)} />
 </section>

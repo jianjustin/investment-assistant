@@ -1,5 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { Button } from '$lib/ui/button/index'
+  import DataTable from '$lib/ui/data-table/DataTable.svelte'
+  import type { Column } from '$lib/ui/data-table/types'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import { Input } from '$lib/ui/input/index'
   import * as api from '../api'
   import { fmtTime } from '../format'
 
@@ -23,43 +28,34 @@
   }
 
   onMount(loadFilings)
+
+  const SELECT = 'h-8 rounded-md border border-input bg-card px-2 text-sm text-foreground'
+  const columns: Column<any>[] = [
+    { key: 'ticker', header: '标的', cell: tickerCell }, { key: 'form', header: '类型' },
+    { key: 'filing_date', header: '财报日期' }, { key: 'downloaded_at', header: '下载时间', value: f => fmtTime(f.downloaded_at) },
+    { key: 'file', header: '文件', cell: fileCell },
+  ]
 </script>
 
-<div class="space-y-3">
+{#snippet tickerCell(f: any)}<span class="font-medium">{f.ticker}</span>{/snippet}
+{#snippet fileCell(f: any)}<Button variant="link" size="sm" class="text-xs" href={api.filingDownloadUrl(f.id)} download>下载 htm</Button>{/snippet}
+
+<div class="grid gap-3">
   <div class="flex flex-wrap items-center gap-2">
-    <select aria-label="按标的筛选" bind:value={fTicker} onchange={loadFilings} class="text-sm border border-border rounded-sm px-2 py-1 bg-card">
+    <select aria-label="按标的筛选" bind:value={fTicker} onchange={loadFilings} class={SELECT}>
       <option value="">全部标的</option>
       {#each filingTickers as t}<option value={t}>{t}</option>{/each}
     </select>
-    <select aria-label="按类型筛选" bind:value={fForm} onchange={loadFilings} class="text-sm border border-border rounded-sm px-2 py-1 bg-card">
+    <select aria-label="按类型筛选" bind:value={fForm} onchange={loadFilings} class={SELECT}>
       <option value="">全部类型</option><option value="10-Q">10-Q</option><option value="10-K">10-K</option>
     </select>
-    <input aria-label="开始日期" type="date" bind:value={fFrom} onchange={loadFilings} class="text-sm border border-border rounded-sm px-2 py-1 bg-card" />
+    <Input aria-label="开始日期" type="date" bind:value={fFrom} onchange={loadFilings} class="w-40" />
     <span class="text-xs text-muted-foreground">至</span>
-    <input aria-label="结束日期" type="date" bind:value={fTo} onchange={loadFilings} class="text-sm border border-border rounded-sm px-2 py-1 bg-card" />
+    <Input aria-label="结束日期" type="date" bind:value={fTo} onchange={loadFilings} class="w-40" />
   </div>
-  <div class="bg-card rounded-lg shadow-1 overflow-hidden">
-    <table class="w-full text-sm">
-      <thead>
-        <tr class="text-muted-foreground text-left">
-          <th class="px-3 py-2">标的</th><th>类型</th><th>财报日期</th><th>下载时间</th><th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each filings as f}
-          <tr class="border-t border-border">
-            <td class="px-3 py-2 font-medium">{f.ticker}</td>
-            <td>{f.form}</td>
-            <td>{f.filing_date}</td>
-            <td>{fmtTime(f.downloaded_at)}</td>
-            <td class="text-right pr-3">
-              <a class="text-primary text-xs" href={api.filingDownloadUrl(f.id)} download>下载 htm</a>
-            </td>
-          </tr>
-        {:else}
-          <tr><td colspan="5" class="px-3 py-4 text-muted-foreground text-sm">暂无财报记录（可在「工具 · 任务中心」对 filings 按日期回补）</td></tr>
-        {/each}
-      </tbody>
-    </table>
-  </div>
+  {#if filings.length}
+    <DataTable {columns} rows={filings} rowKey={f => f.id} ariaLabel="SEC 文件" />
+  {:else}
+    <DataBlock state="empty" message="暂无财报记录（可在「工具 · 任务中心」对 filings 按日期回补）" />
+  {/if}
 </div>

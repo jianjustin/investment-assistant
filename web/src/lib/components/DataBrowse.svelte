@@ -1,4 +1,10 @@
 <script lang="ts">
+  import { Button } from '$lib/ui/button/index'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import Section from '$lib/ui/domain/Section.svelte'
+  import Field from '$lib/ui/field/Field.svelte'
+  import { Input } from '$lib/ui/input/index'
+  import * as Table from '$lib/ui/table/index'
   import * as api from '../api'
   import { fmtBeijing, fmtPct } from '../format'
   import { extraEvidence, fetchTarget, noteText, type BrowseResult, type FamilyCard } from '../data-families'
@@ -25,6 +31,7 @@
   let fetchNote = $state('')
   let fetchOrigin = $state<{ family: FamilyCard['id']; ticker: string } | null>(null)
   let generation = 0
+  const SELECT = 'h-8 rounded-md border border-input bg-card px-2 text-sm text-foreground'
   let byTicker = $derived(family.id !== 'fred' && family.id !== 'universe')
   let showFetchResult = $derived(fetchOrigin?.family === family.id && fetchOrigin?.ticker === ticker)
 
@@ -140,59 +147,69 @@
 </script>
 
 {#snippet rawTable(label: string, values: Row[], fields: Column[])}
-  <div class="overflow-x-auto border border-border rounded-sm bg-card">
-    <table aria-label={label} class="w-full text-sm text-left whitespace-nowrap">
-      <thead><tr class="text-muted-foreground">
-        {#each fields as column}<th class="px-3 py-2">{#if column.concept}<ConceptTerm id={column.concept}>{column.label}</ConceptTerm>{:else}{column.label}{/if}</th>{/each}
-      </tr></thead>
-      <tbody>
+  {#if values.length === 0}
+    <DataBlock state="empty" message="无记录" />
+  {:else}
+    <Table.Root aria-label={label} containerClass="max-lg:overflow-x-auto lg:overflow-visible">
+      <Table.Header>
+        <Table.Row class="hover:bg-transparent">
+          {#each fields as column}
+            <Table.Head>{#if column.concept}<ConceptTerm id={column.concept}>{column.label}</ConceptTerm>{:else}{column.label}{/if}</Table.Head>
+          {/each}
+        </Table.Row>
+      </Table.Header>
+      <Table.Body>
         {#each values as row}
-          <tr class="border-t border-border">
+          <Table.Row>
             {#each fields as column}
-              <td class="px-3 py-2">
+              <Table.Cell class="whitespace-nowrap">
                 {#if column.link && row[column.link]}
                   <a href={String(row[column.link])} target="_blank" rel="noopener noreferrer" class="text-primary underline whitespace-normal wrap-break-word">{text(row[column.key])}</a>
                 {:else}{(column.format ?? text)(row[column.key])}{/if}
-              </td>
+              </Table.Cell>
             {/each}
-          </tr>
-        {:else}<tr><td colspan={fields.length} class="px-3 py-3 text-muted-foreground">无记录</td></tr>{/each}
-      </tbody>
-    </table>
-  </div>
+          </Table.Row>
+        {/each}
+      </Table.Body>
+    </Table.Root>
+  {/if}
 {/snippet}
 
-<section aria-label="原始数据浏览" class="space-y-3 min-w-0">
-  <h2 class="font-semibold">原始数据浏览</h2>
+<Section title="原始数据浏览" level={2}>
   {#if evidence}<p class="text-xs text-muted-foreground"><CodeText text={evidence} /></p>{/if}
   {#if byTicker}
-    <form onsubmit={selectTicker} class="flex flex-wrap items-center gap-2">
-      <label class="text-sm" for="browse-ticker">标的</label>
-      <input id="browse-ticker" list="browse-targets" bind:value={draft} disabled={busy}
-             class="text-sm border border-border rounded-sm px-2 py-1 bg-card" placeholder="选择或输入标的" />
+    <form onsubmit={selectTicker} class="flex flex-wrap items-end gap-2">
+      <Field label="标的" id="browse-ticker">
+        {#snippet children({ id })}
+          <Input {id} list="browse-targets" bind:value={draft} disabled={busy} class="w-48" placeholder="选择或输入标的" />
+        {/snippet}
+      </Field>
       <datalist id="browse-targets">{#each targets as target}<option value={target}></option>{/each}</datalist>
-      <button type="submit" disabled={busy} class="text-xs px-2 py-1 rounded-sm border border-border">浏览</button>
+      <Button type="submit" size="sm" disabled={busy}>浏览</Button>
       {#if family.per_ticker}
-        <button type="button" disabled={busy || !draft.trim()} onclick={fetchOne}
-                class="text-xs px-2 py-1 rounded-sm bg-primary text-white disabled:opacity-50">{busy ? '采集中…' : '只拉这一只'}</button>
+        <Button size="sm" {busy} busyText="采集中…" disabled={!draft.trim()} onclick={fetchOne}>只拉这一只</Button>
       {/if}
     </form>
   {:else if family.id === 'fred'}
-    <label class="text-sm">FRED 序列
-      <select bind:value={series} class="text-sm border border-border rounded-sm px-2 py-1 bg-card">
-        <option value="BAMLH0A0HYM2">BAMLH0A0HYM2</option><option value="T10Y2Y">T10Y2Y</option>
-      </select>
-    </label>
-    <ConceptTerm id={series === 'T10Y2Y' ? ATTACH.data.T10Y2Y : ATTACH.data.BAMLH0A0HYM2} />
+    <div class="flex flex-wrap items-end gap-2">
+      <Field label="FRED 序列" id="browse-series">
+        {#snippet children({ id })}
+          <select {id} bind:value={series} class={SELECT}>
+            <option value="BAMLH0A0HYM2">BAMLH0A0HYM2</option><option value="T10Y2Y">T10Y2Y</option>
+          </select>
+        {/snippet}
+      </Field>
+      <ConceptTerm id={series === 'T10Y2Y' ? ATTACH.data.T10Y2Y : ATTACH.data.BAMLH0A0HYM2} />
+    </div>
   {/if}
   {#if showFetchResult}
-    {#if fetchError}<p class="text-xs text-red-600">{fetchError}</p>{/if}
+    {#if fetchError}<p class="text-xs text-destructive">{fetchError}</p>{/if}
     {#if fetchNote}<p class="text-xs text-muted-foreground">{fetchNote}</p>{/if}
   {/if}
   {#if error}
-    <p role="alert" class="text-sm text-red-600">{error}</p>
+    <DataBlock state="error" message={error} />
   {:else if loading}
-    <p class="text-sm text-muted-foreground">加载中…</p>
+    <DataBlock state="loading" skeleton="table" />
   {:else if result}
     {#each result.notes ?? [] as note}<p class="text-xs text-warn">{noteText(note)}</p>{/each}
     {#if result.current_error}<p class="text-xs text-warn">{result.current_error}</p>{/if}
@@ -203,14 +220,14 @@
     {/if}
     {#if family.id === 'universe' && result.meta}
       <p class="text-xs text-muted-foreground"><ConceptTerm id={ATTACH.data.universeMeta} /></p>
-      <dl class="text-sm grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 wrap-break-word">
+      <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm wrap-break-word">
         {#each ['name', 'as_of', 'source', 'note'] as field}
           <dt class="text-muted-foreground">{field}</dt><dd class="min-w-0">{text(result.meta[field])}</dd>
         {/each}
       </dl>
     {/if}
     {#if !result.has_data}
-      <p class="text-sm text-muted-foreground">无数据，可点拉取</p>
+      <DataBlock state="empty" message="无数据，可点拉取" />
     {:else if family.id === 'sec_filings'}
       <h3 class="text-sm font-medium">filings</h3>
       {@render rawTable('filings', result.filings ?? [], columns.sec_filings)}
@@ -220,6 +237,6 @@
       {@render rawTable(tableNames[family.id], rows, columns[family.id])}
     {/if}
   {:else if byTicker}
-    <p class="text-sm text-muted-foreground">请选择或输入标的</p>
+    <DataBlock state="empty" message="请选择或输入标的" />
   {/if}
-</section>
+</Section>

@@ -243,7 +243,7 @@ describe('DataBrowse 单只拉取结果', () => {
     mount('bars')
     await screen.findByText('2026-10-22')
     await fireEvent.click(screen.getByRole('button', { name: '只拉这一只' }))
-    expect(await screen.findByText('该族正在采集')).toHaveClass('text-red-600')
+    expect(await screen.findByText('该族正在采集')).toHaveClass('text-destructive')
     expect(screen.getByRole('button', { name: '只拉这一只' })).toBeEnabled()
   })
 
@@ -258,7 +258,7 @@ describe('DataBrowse 单只拉取结果', () => {
     mount('bars')
     await screen.findByText('2026-10-22')
     await fireEvent.click(screen.getByRole('button', { name: '只拉这一只' }))
-    expect(await screen.findByText(message, { exact: false })).toHaveClass('text-red-600')
+    expect(await screen.findByText(message, { exact: false })).toHaveClass('text-destructive')
     if (run.result?.status === 'partial') expect(screen.getByText(/MU：源超时/)).toBeTruthy()
     if (run.result?.status === 'failed') expect(screen.getByText(/\*：连接失败/)).toBeTruthy()
     await waitFor(() => expect(api.browseData).toHaveBeenCalledTimes(2))

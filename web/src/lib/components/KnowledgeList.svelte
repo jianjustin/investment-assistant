@@ -1,9 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { Button } from '$lib/ui/button/index'
+  import DataTable from '$lib/ui/data-table/DataTable.svelte'
+  import type { Column } from '$lib/ui/data-table/types'
+  import CutoffTime from '$lib/ui/domain/CutoffTime.svelte'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import StatusPill from '$lib/ui/domain/StatusPill.svelte'
+  import VersionChip from '$lib/ui/domain/VersionChip.svelte'
+  import Field from '$lib/ui/field/Field.svelte'
+  import { Input } from '$lib/ui/input/index'
   import ConceptTerm from './ConceptTerm.svelte'
   import * as api from '../api'
-  import { fmtBeijing } from '../format'
-  import { conceptId, growthError, KNOWLEDGE_STATUS_TEXT, normalizeTicker } from '../growth'
+    import { conceptId, growthError, normalizeTicker } from '../growth'
   import type { KnowledgeEntry } from '../growth'
 
   // 「我的知识」列表（spec §5.5）：标题、挂靠、当前版本、状态、写入与最近修改时间、被引用次数、表现样本数；
@@ -15,6 +23,13 @@
   let error = $state('')
   let openDrafts = $state<number | null>(null)
   let generation = 0
+  const uid = $props.id()
+  const SELECT = 'h-8 rounded-md border border-input bg-card px-2 text-sm text-foreground'
+  const columns: Column<KnowledgeEntry>[] = [
+    { key: 'title', header: '标题', cell: titleCell }, { key: 'attach', header: '挂靠', cell: attachCell },
+    { key: 'version', header: '版本 · 状态', cell: versionCell }, { key: 'times', header: '时间', cell: timesCell },
+    { key: 'usage', header: '被引用 · 样本', cell: usageCell },
+  ]
 
   async function load() {
     const token = ++generation
@@ -39,49 +54,61 @@
   })
 </script>
 
-<div class="space-y-3">
+<div class="grid gap-3">
   <div class="flex flex-wrap items-end gap-3 text-sm">
-    <label class="flex flex-col text-xs">状态
-      <select aria-label="状态" class="border border-border rounded-sm px-2 py-1 bg-background text-sm" bind:value={status} onchange={load}>
-        <option value="active">有效</option><option value="archived">已归档</option><option value="all">全部</option>
-      </select>
-    </label>
-    <label class="flex flex-col text-xs">标的
-      <input aria-label="标的" class="border border-border rounded-sm px-2 py-1 bg-background text-sm w-28" value={ticker}
-             onchange={e => { ticker = normalizeTicker((e.currentTarget as HTMLInputElement).value); void load() }} />
-    </label>
-    <label class="flex flex-col text-xs">概念
-      <input aria-label="概念" class="border border-border rounded-sm px-2 py-1 bg-background text-sm w-44" value={concept}
-             onchange={e => { concept = conceptId((e.currentTarget as HTMLInputElement).value.trim()); void load() }} />
-    </label>
-    <a class="px-3 py-1 rounded-sm bg-primary text-white" href="#knowledge/mine/new">写一条</a>
-    <a class="text-primary underline" href="#knowledge/mine/drafts">{openDrafts ? `草稿（${openDrafts}）` : '草稿'}</a>
+    <Field label="状态" id={`${uid}-status`}>
+      {#snippet children({ id })}
+        <select {id} class={SELECT} bind:value={status} onchange={load}>
+          <option value="active">有效</option><option value="archived">已归档</option><option value="all">全部</option>
+        </select>
+      {/snippet}
+    </Field>
+    <Field label="标的" id={`${uid}-ticker`}>
+      {#snippet children({ id })}
+        <Input {id} class="w-28" value={ticker}
+               onchange={e => { ticker = normalizeTicker((e.currentTarget as HTMLInputElement).value); void load() }} />
+      {/snippet}
+    </Field>
+    <Field label="概念" id={`${uid}-concept`}>
+      {#snippet children({ id })}
+        <Input {id} class="w-44" value={concept}
+               onchange={e => { concept = conceptId((e.currentTarget as HTMLInputElement).value.trim()); void load() }} />
+      {/snippet}
+    </Field>
+    <Button variant="primary" href="#knowledge/mine/new">写一条</Button>
+    <Button variant="link" href="#knowledge/mine/drafts">{openDrafts ? `草稿（${openDrafts}）` : '草稿'}</Button>
   </div>
 
   {#if error}
-    <p role="alert" class="text-sm text-red-600">{error}</p>
+    <DataBlock state="error" message={error} />
   {:else if items === null}
-    <p class="text-sm text-muted-foreground">加载中…</p>
+    <DataBlock state="loading" skeleton="table" />
   {:else if items.length === 0}
-    <p class="text-sm text-muted-foreground">还没有我的知识</p>
+    <DataBlock state="empty" message="还没有我的知识" />
   {:else}
-    <table class="text-sm w-full">
-      <thead><tr class="text-left text-xs text-muted-foreground"><th>标题</th><th>挂靠</th><th>版本 · 状态</th><th>时间</th><th>被引用 · 样本</th></tr></thead>
-      <tbody>
-        {#each items as e (e.id)}
-          <tr class="align-top border-t border-border {e.status === 'archived' ? 'text-muted-foreground' : ''}">
-            <td><a class="text-primary underline" href={`#knowledge/mine/${e.id}`}>{e.title}</a>
-              <p class="text-xs">{e.scope}</p></td>
-            <td class="text-xs">
-              {#each e.concepts as c (c)}<span class="mr-1"><ConceptTerm id={conceptId(c)} /></span>{/each}
-              {#each e.tickers as t (t)}<a class="mr-1 text-primary underline" href={`#instrument/${t}`}>{t}</a>{/each}
-            </td>
-            <td class="text-xs">第 {e.current_version} 版 · {KNOWLEDGE_STATUS_TEXT[e.status] ?? e.status}</td>
-            <td class="text-xs">写入 {fmtBeijing(e.written_at)}<br />最近修改 {fmtBeijing(e.updated_at)}</td>
-            <td class="text-xs">被引用 {e.citation_count} 次<br />表现样本 {e.sample_count}</td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
+    <DataTable {columns} rows={items} rowKey={e => e.id} ariaLabel="我的知识" muted={e => e.status === 'archived'} cards="narrow" />
   {/if}
 </div>
+
+{#snippet titleCell(e: KnowledgeEntry)}
+  <a class="text-primary underline" href={`#knowledge/mine/${e.id}`}>{e.title}</a>
+  <p class="text-xs">{e.scope}</p>
+{/snippet}
+{#snippet attachCell(e: KnowledgeEntry)}
+  <span class="text-xs">
+    {#each e.concepts as c (c)}<span class="mr-1"><ConceptTerm id={conceptId(c)} /></span>{/each}
+    {#each e.tickers as t (t)}<a class="mr-1 text-primary underline" href={`#instrument/${t}`}>{t}</a>{/each}
+  </span>
+{/snippet}
+{#snippet versionCell(e: KnowledgeEntry)}
+  <span class="inline-flex flex-wrap items-center gap-1.5 text-xs">
+    <VersionChip version={e.current_version} ref={`know:${e.id}@${e.current_version}`} />
+    <StatusPill domain="knowledge" value={e.status} />
+  </span>
+{/snippet}
+{#snippet timesCell(e: KnowledgeEntry)}
+  <span class="grid text-xs"><CutoffTime at={e.written_at} label="写入" /><CutoffTime at={e.updated_at} label="最近修改" /></span>
+{/snippet}
+{#snippet usageCell(e: KnowledgeEntry)}
+  <span class="grid text-xs"><span>被引用 {e.citation_count} 次</span><span>表现样本 {e.sample_count}</span></span>
+{/snippet}

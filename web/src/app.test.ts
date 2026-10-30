@@ -99,8 +99,14 @@ describe('app routing', () => {
   it('the 我的知识 child is current under #knowledge/mine/…', async () => {
     location.hash = '#knowledge/mine/3@2'
     const { getByRole } = render(App)
-    expect(getByRole('link', { name: '我的知识' }).className).toMatch(/text-primary/)
-    expect(getByRole('link', { name: '概念' }).className).not.toMatch(/font-medium/)
+    // the page has its own 知识 route tabs with the same names: look at the side nav
+    const side = within(getByRole('navigation', { name: '主导航' }))
+    expect(side.getByRole('link', { name: '我的知识' }).className).toMatch(/text-primary/)
+    expect(side.getByRole('link', { name: '概念' }).className).not.toMatch(/font-medium/)
+    // …and the tabs say the same thing with aria-current
+    const tabs = within(getByRole('navigation', { name: '知识' }))
+    expect(tabs.getByRole('link', { name: '我的知识' })).toHaveAttribute('aria-current', 'page')
+    expect(tabs.getByRole('link', { name: '概念' })).not.toHaveAttribute('aria-current')
   })
 
   it('#discuss/5 renders the discussion page rather than falling back to today', async () => {
@@ -122,8 +128,9 @@ describe('app routing', () => {
     location.hash = '#knowledge'
     const { getByRole } = render(App)
     expect(getByRole('button', { name: /知识/ })).toBeInTheDocument()
-    expect(getByRole('link', { name: '概念' })).toHaveAttribute('href', '#knowledge')
-    expect(getByRole('link', { name: '原理' })).toHaveAttribute('href', '#knowledge/principles')
+    const side = within(getByRole('navigation', { name: '主导航' }))
+    expect(side.getByRole('link', { name: '概念' })).toHaveAttribute('href', '#knowledge')
+    expect(side.getByRole('link', { name: '原理' })).toHaveAttribute('href', '#knowledge/principles')
     // 知识 sits right after 数据 in the primary menu
     const names = [...document.querySelectorAll('nav [data-nav-item]')].map(n => n.textContent!.trim())
     expect(names.indexOf(names.find(n => n.includes('知识'))!)).toBe(names.indexOf(names.find(n => n.includes('数据'))!) + 1)

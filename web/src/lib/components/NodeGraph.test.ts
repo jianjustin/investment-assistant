@@ -53,12 +53,65 @@ describe('NodeGraph', () => {
     for (const [title, text] of expected) {
       const button = screen.getByRole('button', { name: `${title}：${text}` })
       expect(button).toHaveTextContent(text)                          // 状态文字可见
-      expect(button.querySelector('[aria-hidden="true"]')?.textContent).toBeTruthy()  // 另有图标
+      const glyph = button.querySelector('[aria-hidden="true"]')!                // 另有图标：success / failed 是 svg，其余是文字符号
+      expect(glyph.querySelector('svg') ?? glyph.textContent).toBeTruthy()
     }
     // 颜色取主题变量，不写死色值
     expect(screen.getByRole('button', { name: '信号：失败' }).className).toContain('border-destructive')
     expect(screen.getByRole('button', { name: 'Agent：未开始' }).className).toContain('border-dashed')
-    expect(screen.getByRole('button', { name: '每日复查：运行中' }).className).toContain('node-running')
+    expect(screen.getByRole('button', { name: '每日复查：运行中' }).className).toContain('animate-running')
+  })
+
+  it('status colors are token classes', () => {
+    render(NodeGraph, {
+      nodes: nodes(['collect', 'screen', 'regime', 'signals', 'plan', 'agent'], {
+        collect: { status: 'success' }, screen: { status: 'degraded' }, regime: { status: 'failed' },
+        signals: { status: 'skipped' }, plan: { status: 'running' }, agent: { status: 'pending' },
+      }),
+      selected: null, onselect: () => {},
+    })
+    // the cell colour is the tone of the node-status vocabulary (success / warn / destructive / neutral / running)
+    const cls = (name: string) => screen.getByRole('button', { name }).className
+    expect(cls('数据采集：成功')).toMatch(/border-success\b.*text-success\b/)
+    expect(cls('筛选：降级')).toMatch(/border-warn\b.*text-warn\b/)
+    expect(cls('市场环境：失败')).toMatch(/border-destructive\b.*text-destructive\b/)
+    expect(cls('信号：跳过')).toContain('border-border')
+    expect(cls('规则计划：运行中')).toMatch(/border-running\b.*animate-running\b/)
+    for (const name of ['数据采集：成功', '筛选：降级', '市场环境：失败', '信号：跳过', '规则计划：运行中', 'Agent：未开始']) {
+      expect(cls(name)).not.toMatch(/\b(?:red|green|amber|yellow|orange|blue|purple|violet|gray|slate|zinc|emerald|sky)-\d{2,3}\b/)
+      expect(cls(name)).not.toContain('node-running')
+      expect(screen.getByRole('button', { name }).getAttribute('style')).toBeNull()      // no inline colour
+    }
+    // the blinking is the shared utility; there is no component <style> any more
+    expect(document.querySelector('style')).toBeNull()
+  })
+
+  it('no emoji glyphs', () => {
+    const { container } = render(NodeGraph, {
+      nodes: nodes(['collect', 'screen', 'regime', 'signals', 'plan', 'agent', 'review'], {
+        collect: { status: 'success' }, screen: { status: 'degraded' }, regime: { status: 'partial' },
+        signals: { status: 'failed' }, plan: { status: 'skipped' }, agent: { status: 'pending' }, review: { status: 'running' },
+      }),
+      selected: null, onselect: () => {},
+    })
+    expect(container.textContent).not.toMatch(/[\u2713\u2715\u2714\u2716\u2705\u274C\uFE0F]|[\u{1F000}-\u{1FAFF}]/u)
+    // success / failed are icons (svg), the other glyphs are plain text symbols
+    const success = screen.getByRole('button', { name: '数据采集：成功' })
+    const failed = screen.getByRole('button', { name: '信号：失败' })
+    expect(success.querySelector('svg')).not.toBeNull()
+    expect(failed.querySelector('svg')).not.toBeNull()
+    expect(screen.getByRole('button', { name: '筛选：降级' }).querySelector('[aria-hidden="true"]')!.textContent!.trim()).toBe('▲')
+    expect(screen.getByRole('button', { name: 'Agent：未开始' }).querySelector('[aria-hidden="true"]')!.textContent!.trim()).toBe('○')
+  })
+
+  it('narrow breakpoint is 767px (useNarrow)', () => {
+    const queries: string[] = []
+    vi.stubGlobal('matchMedia', (query: string) => {
+      queries.push(query)
+      return { matches: false, media: query, addEventListener() {}, removeEventListener() {} }
+    })
+    render(NodeGraph, { nodes: nodes(STAGES_4), selected: null, onselect: () => {} })
+    expect(queries).toEqual(['(max-width: 767px)'])
   })
 
   it('attempt badge ×2', () => {

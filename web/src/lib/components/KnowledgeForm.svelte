@@ -4,6 +4,12 @@
 
 <script lang="ts">
   import { untrack } from 'svelte'
+  import { Alert, AlertDescription } from '$lib/ui/alert/index'
+  import { Button } from '$lib/ui/button/index'
+  import Icon from '$lib/ui/domain/Icon.svelte'
+  import Field from '$lib/ui/field/Field.svelte'
+  import { Input } from '$lib/ui/input/index'
+  import { Textarea } from '$lib/ui/textarea/index'
   import { conceptIndex } from '../knowledge'
   import {
     conceptId, growthError, idempotentRequests, isTickerLike, knowledgeProblem, normalizeTicker,
@@ -24,6 +30,7 @@
 
   const seed = untrack(() => initial ?? {})
   const listId = `concept-options-${++formSeq}`
+  const uid = $props.id()
   let title = $state(seed.title ?? '')
   let body = $state(seed.body ?? '')
   let scope = $state(seed.scope ?? '')
@@ -90,49 +97,55 @@
   }
 </script>
 
-<div class="space-y-2 text-sm">
-  <label class="flex flex-col">标题
-    <input aria-label="标题" class="border border-border rounded-sm px-2 py-1 bg-background" bind:value={title} />
-  </label>
-  <label class="flex flex-col">正文
-    <textarea aria-label="正文" rows="4" class="border border-border rounded-sm px-2 py-1 bg-background" bind:value={body}></textarea>
-  </label>
-  <label class="flex flex-col">适用范围
-    <textarea aria-label="适用范围" rows="2" class="border border-border rounded-sm px-2 py-1 bg-background" bind:value={scope}></textarea>
-  </label>
-  <label class="flex flex-col">反例{requireCounter ? '（必填）' : '（可空）'}
-    <textarea aria-label="反例" rows="2" class="border border-border rounded-sm px-2 py-1 bg-background" bind:value={counter}></textarea>
-  </label>
+<div class="grid gap-3 text-sm">
+  <Field label="标题" id={`${uid}-title`} required>
+    {#snippet children({ id, describedby, invalid })}
+      <Input {id} aria-describedby={describedby} aria-invalid={invalid} bind:value={title} />
+    {/snippet}
+  </Field>
+  <Field label="正文" id={`${uid}-body`} required>
+    {#snippet children({ id, describedby, invalid })}
+      <Textarea {id} rows={4} aria-describedby={describedby} aria-invalid={invalid} bind:value={body} />
+    {/snippet}
+  </Field>
+  <Field label="适用范围" id={`${uid}-scope`} required>
+    {#snippet children({ id, describedby, invalid })}
+      <Textarea {id} rows={2} aria-describedby={describedby} aria-invalid={invalid} bind:value={scope} />
+    {/snippet}
+  </Field>
+  <Field label="反例" id={`${uid}-counter`} required={requireCounter} hint={requireCounter ? '必填' : '可空'}>
+    {#snippet children({ id, describedby, invalid })}
+      <Textarea {id} rows={2} aria-describedby={describedby} aria-invalid={invalid} bind:value={counter} />
+    {/snippet}
+  </Field>
 
-  <div class="space-y-1">
+  <div class="grid gap-2">
     <p class="text-xs text-muted-foreground">这条经验挂在哪些概念或标的上（合计 1–10 项）</p>
-    <div class="flex flex-wrap items-center gap-1">
-      <input aria-label="概念" list={listId} placeholder="概念 id（可从提示里选）"
-             class="border border-border rounded-sm px-2 py-1 bg-background text-xs" bind:value={conceptInput}
-             onkeydown={onEnter(addConcept)} />
+    <div class="flex flex-wrap items-center gap-2">
+      <Input aria-label="概念" list={listId} placeholder="概念 id（可从提示里选）" class="w-56 text-xs"
+             bind:value={conceptInput} onkeydown={onEnter(addConcept)} />
       <datalist id={listId}>{#each known as id (id)}<option value={id}></option>{/each}</datalist>
-      <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted" onclick={addConcept}>添加概念</button>
-      <input aria-label="标的" placeholder="标的，如 NVDA" class="border border-border rounded-sm px-2 py-1 bg-background text-xs"
+      <Button size="sm" onclick={addConcept}>添加概念</Button>
+      <Input aria-label="标的" placeholder="标的，如 NVDA" class="w-40 text-xs"
              bind:value={tickerInput} onkeydown={onEnter(addTicker)} />
-      <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted" onclick={addTicker}>添加标的</button>
+      <Button size="sm" onclick={addTicker}>添加标的</Button>
     </div>
     <ul class="flex flex-wrap gap-1 text-xs">
       {#each concepts as id (id)}
-        <li class="px-1.5 py-0.5 rounded-sm bg-muted"><code>{id}</code>
-          <button type="button" aria-label={`移除概念 ${id}`} class="text-muted-foreground hover:text-red-600"
-                  onclick={() => concepts = concepts.filter(c => c !== id)}>×</button></li>
+        <li class="inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 py-0.5"><code>{id}</code>
+          <Button variant="ghost" size="icon" class="size-5" aria-label={`移除概念 ${id}`}
+                  onclick={() => concepts = concepts.filter(c => c !== id)}><Icon name="x" /></Button></li>
       {/each}
       {#each tickers as t (t)}
-        <li class="px-1.5 py-0.5 rounded-sm bg-muted">{t}
-          <button type="button" aria-label={`移除标的 ${t}`} class="text-muted-foreground hover:text-red-600"
-                  onclick={() => tickers = tickers.filter(x => x !== t)}>×</button></li>
+        <li class="inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 py-0.5">{t}
+          <Button variant="ghost" size="icon" class="size-5" aria-label={`移除标的 ${t}`}
+                  onclick={() => tickers = tickers.filter(x => x !== t)}><Icon name="x" /></Button></li>
       {/each}
     </ul>
   </div>
 
-  {#if error}<p role="alert" class="text-xs text-red-600">{error}</p>{/if}
+  {#if error}<Alert variant="danger"><Icon name="circle-x" /><AlertDescription>{error}</AlertDescription></Alert>{/if}
   {#if !hideSubmit}
-    <button type="button" class="px-3 py-1 rounded-sm bg-primary text-white disabled:opacity-50" disabled={busy}
-            onclick={submit}>{submitLabel}</button>
+    <div><Button variant="primary" {busy} onclick={submit}>{submitLabel}</Button></div>
   {/if}
 </div>
