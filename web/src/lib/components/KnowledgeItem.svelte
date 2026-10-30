@@ -98,7 +98,7 @@
     if (statusBusy) return
     const next: 'active' | 'archived' = archived ? 'active' : 'archived'
     const payload = { status: next, reason: reason.trim() }
-    if ([...payload.reason].length > 300) { statusError = '理由最多 300 字'; return }
+    if ([...payload.reason].length > 300) { statusError = '理由最多 300 字'; archiveOpen = false; return }
     statusBusy = true
     statusError = ''
     try {
@@ -116,6 +116,7 @@
 
   /** Archiving goes through the confirm dialog; restoring is the way back and needs no extra step. */
   function submitStatus() {
+    if ([...reason.trim()].length > 300) { statusError = '理由最多 300 字'; return }       // before the dialog, so it never opens for an invalid reason
     if (archived) void changeStatus()
     else archiveOpen = true
   }

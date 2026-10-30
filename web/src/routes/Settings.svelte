@@ -184,7 +184,7 @@
   <div class="grid gap-4">
     <Section title="系统" level={2}>
       {#if status}
-        <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
           {#each Object.entries(status as any) as [k, v]}
             {#if typeof v === 'object' && v !== null && 'status' in v}
               <Card.Root size="sm">

@@ -153,6 +153,20 @@ describe('KnowledgeItem', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 
+  it('a reason over 300 characters is refused before the archive dialog opens', async () => {
+    const post = vi.spyOn(api, 'postKnowledgeStatus').mockResolvedValue({ status: 'created' } as any)
+    render(KnowledgeItem, { id: 3 })
+    await fireEvent.click(await screen.findByRole('button', { name: '归档' }))
+    await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '长'.repeat(301) } })
+    await fireEvent.click(screen.getByRole('button', { name: '确认归档' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('理由最多 300 字')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(post).not.toHaveBeenCalled()
+    await fireEvent.input(screen.getByLabelText('理由'), { target: { value: '短' } })       // fixing the reason works at once
+    await fireEvent.click(screen.getByRole('button', { name: '确认归档' }))
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+  })
+
   it('shows a status conflict in Chinese and keeps the reason', async () => {
     vi.spyOn(api, 'postKnowledgeStatus').mockRejectedValue(new WorkbenchError('status_unchanged', 409))
     render(KnowledgeItem, { id: 3 })

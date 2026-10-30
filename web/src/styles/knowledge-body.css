@@ -8,6 +8,6 @@
 .knowledge-body ol { list-style: decimal; margin-left: 1.25rem; }
 .knowledge-body a { color: var(--primary); text-decoration: underline; }
 .knowledge-body code { padding: 0 0.2rem; border-radius: var(--radius); background: var(--muted); }
-.knowledge-body table { border-collapse: collapse; font-size: 12px; }
+.knowledge-body table { border-collapse: collapse; font-size: var(--text-xs); }
 .knowledge-body th,
 .knowledge-body td { border: 1px solid var(--border); padding: 0.2rem 0.5rem; }

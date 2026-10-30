@@ -11,7 +11,7 @@
   import { Input } from '$lib/ui/input/index'
   import ConceptTerm from './ConceptTerm.svelte'
   import * as api from '../api'
-    import { conceptId, growthError, normalizeTicker } from '../growth'
+  import { conceptId, growthError, normalizeTicker } from '../growth'
   import type { KnowledgeEntry } from '../growth'
 
   // 「我的知识」列表（spec §5.5）：标题、挂靠、当前版本、状态、写入与最近修改时间、被引用次数、表现样本数；

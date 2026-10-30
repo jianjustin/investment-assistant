@@ -150,7 +150,7 @@
   {#if values.length === 0}
     <DataBlock state="empty" message="无记录" />
   {:else}
-    <Table.Root aria-label={label} containerClass="max-lg:overflow-x-auto lg:overflow-visible">
+    <Table.Root aria-label={label}>
       <Table.Header>
         <Table.Row class="hover:bg-transparent">
           {#each fields as column}

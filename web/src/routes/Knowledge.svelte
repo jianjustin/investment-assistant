@@ -234,7 +234,7 @@
         {/snippet}
       </PageHeader>
       <p class="text-sm">{card.summary}</p>
-      <div class="knowledge-body grid gap-2 text-sm">{@html card.html}</div>
+      <div class="knowledge-body text-sm space-y-2">{@html card.html}</div>
       {#if card.related_cards.length}
         <section aria-label="相关" class="grid gap-1">
           <h2 class="text-sm font-medium">相关</h2>
@@ -353,7 +353,7 @@
       {#each principles.sections as section, i (i)}
         <section aria-label={section.heading} class="grid gap-2">
           <h2 class="text-base font-medium">{section.heading}</h2>
-          <div class="knowledge-body grid gap-2 text-sm">{@html section.html}</div>
+          <div class="knowledge-body text-sm space-y-2">{@html section.html}</div>
           {#if section.stage}
             <div data-testid="stage-box" class="grid gap-1 rounded-md border border-border bg-card p-2">
               <RunOverview session={date || undefined} compact onlyStage={section.stage} />

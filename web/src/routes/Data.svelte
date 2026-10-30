@@ -13,7 +13,7 @@
   import { fmtBeijing } from '../lib/format'
   import DataFamilyCard from '../lib/components/DataFamilyCard.svelte'
   import DataBrowse from '../lib/components/DataBrowse.svelte'
-    import ConceptTerm from '../lib/components/ConceptTerm.svelte'
+  import ConceptTerm from '../lib/components/ConceptTerm.svelte'
   import { ATTACH } from '../lib/knowledge'
 
   let { sub }: { sub?: string } = $props()
