@@ -203,4 +203,15 @@ Unix socket 路径太长时启动会失败，所以用 `-k ''` 关掉 socket、�
 
 回滚：`pg_restore --clean -d "$INVESTMENT_ASSISTANT_DATABASE_URL" <上面的 dump>`，再重启到 v2.7 代码（回滚会丢掉 028 之后的所有写入，包括令牌）。执行记录写进 `docs/roadmap/v2.8-acceptance.md` 的「迁移 028 执行记录」一节。
 
-**测试库**：`tests/conftest.WORKBENCH_MIGRATIONS` 停在 027；v2.8 的 SQL 测试在 `tests/_daily_db.py` 里自己在一次性 schema 上叠 028。
+#### 执行记录（2026-10-30，手动 psql 执行）
+
+| 步骤 | 结果 |
+| --- | --- |
+| 1. 确认状态 | 09:36 +0800：`review_cards` 在（027 已执行），`agent_connections` 不存在；当天三个旧任务都已结束（`workbench` 06:30–06:47、`workbench_review` 08:00、`filings` 09:30–09:30:51，均 `success`），没有运行中的任务；服务进程 pid 16874（v2.7 代码）；`public` 表数 50，`job_reports` 77 行，`stage_runs` 48 行 |
+| 2. 全库备份 | `.local/us-workbench/backups/investment_assistant-before-028-20261030-093702.dump`（6,793,707 字节，sha256 `09fde910f1e2c6853b2b49e8fb2490987a8d9d944db05365dae6f32c4a83f6f3`）；`pg_restore --list` 可读，50 张表与线上一致 |
+| 3. 执行 | 09:37:12 +0800，`psql --single-transaction -v ON_ERROR_STOP=1 -f migrations/028_daily_workflow.sql`，退出码 0（12 个 `ALTER TABLE`、1 个 `DO` 块、3 个 `CREATE TABLE`、3 个 `CREATE INDEX`、`INSERT 0 1`、`DELETE 3`）；四条 `NOTICE` 是首次执行时 `DROP CONSTRAINT IF EXISTS` 找不到具名约束，属预期 |
+| 4. 核对 | `scheduled_jobs` 只剩 `daily`：`11:30`、`2-6`、`Asia/Shanghai`、`enabled = true`（沿用原 `workbench` 行）、`next_run_at = 2026-10-30 11:30 +08`；`stage_runs` 有 `stage_runs_attempt_check`、`stage_runs_job_check`（`workbench`、`daily`）、`stage_runs_stage_check`（十个阶段）、`stage_runs_run_stage_attempt_key`，旧唯一键 `(run_id, stage)` 已删，48 行旧行全部 `attempt = 1`；`agent_connections`、`agent_connection_events`、`agent_attempt_resets` 各 0 行，`idx_job_reports_run_id` 在；`repository.daily_ready` 为真；`public` 表数 50 → 53，`job_reports`、`stage_runs` 行数不变 |
+| 5. `.env` 与 plist | `.env` 删 `ZHIPU_API_KEY`（文件里本无 `WORKBENCH_AGENT_BASE_URL`、`WORKBENCH_AGENT_MODEL`），加 `WORKBENCH_AGENT_PROVIDER=chatgpt`；改前的 `.env` 另存于 `.local/us-workbench/backups/`（权限 600，含密钥，不入库）。LaunchAgent plist 的 `EnvironmentVariables` 只有代理变量与 `PATH`，没有这三个键，plist 未改 |
+| 6. 重启服务 | 09:37:41 +0800 `launchctl kickstart -k`，新进程 pid 22589 启动于 09:38:11（v2.8 代码，`main@2e0bff2`）；`web/dist` 按 `main@2e0bff2` 重新构建（09:38）；`/api/health`：数据库、调度线程（轮询运行中）、Filings、SEC、Yahoo、Discord、FRED 均 up，3 项 `systemctl` 检查在 macOS 上为 down（与本版无关）；`/api/jobs/scheduled` 只有 `daily`（下次 2026-10-30 11:30 +08）与只手动的 `sec_backfill`；`/api/settings/agent-connection` 为 `disconnected`、`provider_setting = chatgpt`；`/api/workbench/today`、`/api/status`、`/api/jobs/reports?task=daily`、`/api/data/families` 均 200 |
+
+**测试库**：`tests/conftest.WORKBENCH_MIGRATIONS` 已含 028（v2.8 收尾时加入），`tests/_daily_db.py` 的 `daily_db` 直接用这个 schema。
