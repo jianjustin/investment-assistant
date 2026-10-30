@@ -15,9 +15,9 @@
 
 | 文档 | 功能 |
 | --- | --- |
-| [daily-plan.md](features/daily-plan.md) | 每日工作流（十个节点、检查点与续跑、运行详情页）、规则 v1、交易计划、持仓止损、每日推送 |
-| [agent-track.md](features/agent-track.md) | Agent 轨道：ChatGPT 订阅模型层与连接、工具层、提议与反方、引用校验、预算、解读 |
-| [review.md](features/review.md) | 影子跟踪、纪律、三方对比、周/月复盘、资金与月度收益、复盘推送 |
+| [daily-plan.md](features/daily-plan.md) | 每日工作流（十个节点、检查点与续跑、运行详情页）、规则 v1、交易计划（`plan-2` 的执行字段）、「今日」计划表与成交关联计划（v2.9）、持仓止损、每日推送 |
+| [agent-track.md](features/agent-track.md) | Agent 轨道：ChatGPT 订阅模型层与连接、工具层、提议与反方、引用校验、预算、解读；一只股票一条活跃链、再次触发、退出期与持仓状态（v2.9） |
+| [review.md](features/review.md) | 影子跟踪、纪律、三方对比、周/月复盘（`review-8` / `monthly-4` 的执行口径）、资金与月度收益、复盘推送 |
 | [pool-and-context.md](features/pool-and-context.md) | 观察池分层、每日筛选（纳指 100 `screen-1`、成员轮换、报告与只读回放）、市场环境（广度、区制、行业、FRED）、上线前检查 |
 | [data-menu.md](features/data-menu.md) | 「数据」菜单：数据族覆盖与最新时点、拉取记录、单族手动拉取、原始值浏览 |
 | [knowledge.md](features/knowledge.md) | 知识层：版本化的概念卡与原理页——卡的格式与校验、引用形式、加载与缓存、`/api/knowledge/*` 接口、`knowledge check` / `show` 命令 |
@@ -38,7 +38,7 @@
 
 | 位置 | 内容 |
 | --- | --- |
-| [roadmap/roadmap.md](roadmap/roadmap.md) | 唯一的路线文档：最终目标与成功标准、原则与边界、版本总览、当前路线 v2.5–v2.12（v2.8 于 2026-10-28 重定义为每日工作流，2026-10-29 发布 `v2.8.0`；v2.9 可执行的计划与 v2.10 设计标准与界面重构于 2026-10-30 插入）、远期方向、backlog、DoD 与状态用语、决策记录；同目录 `v2.x-acceptance.md` 是各版验收证据 |
+| [roadmap/roadmap.md](roadmap/roadmap.md) | 唯一的路线文档：最终目标与成功标准、原则与边界、版本总览、当前路线 v2.5–v2.12（v2.8 于 2026-10-28 重定义为每日工作流，2026-10-29 发布 `v2.8.0`；v2.9 可执行的计划于 2026-10-30 插入并发布 `v2.9.0`——[spec](specs/2026-10-30-v2.9-executable-plans-design.md)、[plan](plans/2026-10-30-v2.9-executable-plans.md)；v2.10 设计标准与界面重构于同日插入）、远期方向、backlog、DoD 与状态用语、决策记录；同目录 `v2.x-acceptance.md` 是各版验收证据 |
 | [roadmap/v2.8-runtime-feasibility.md](roadmap/v2.8-runtime-feasibility.md) | 本地 CLI 运行时可行性报告（2026-10-28）：`claude-code`、`codex`、`pi` 在无人值守、禁用自带工具、接本地 MCP、token 用量、批处理时限五项上的实测。**同日被 roadmap 决策 #63 取代**（v2.8 不再做运行时切换），保留为历史依据 |
 | [specs/](specs/) | 各阶段的设计 spec |
 | [plans/](plans/) | 各阶段的实施 plan |

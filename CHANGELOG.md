@@ -2,6 +2,152 @@
 
 版本号与 roadmap 版本对应，见 [roadmap](docs/roadmap/roadmap.md)。
 
+## v2.9.0 — 2026-10-30
+
+可执行的计划（[spec](docs/specs/2026-10-30-v2.9-executable-plans-design.md)、[实施 plan](docs/plans/2026-10-30-v2.9-executable-plans.md)）：一只股票同一时间只有一条活跃的计划链，同一标的再次触发不再开第二份互不相关的计划，而是作为 `retrigger` 信号并入这条链、在入场期直接出修订版（可续期）；计划写成可以照着执行的指令——入场类型、开盘落在区间内 / 跳空高开 / 跳空低开各做什么、本计划何时作废、最长持有；「今日」改成入场期 / 持仓中 / 已结束三组的计划表，「标的」页新增计划历史表；取消「采纳 / 否决 / 降级」按钮，采纳由成交关联的计划推出；持仓每个交易日有一行持仓状态（距止损、距 T1、已持有与剩余天数、指令与维持理由），持满最长持有仍没到成本 + 1R 就给退出指令（时间止损），止损触及或失效条件成立进入退出期；新计划与影子口径 `plan-2` / `plan-shadow-2` 与旧 `plan-1` / `plan-shadow-1` 并列、不混算。**有迁移 029**（`trades.plan_id`、`trade_plans` 加两列并替换价位约束、三张新表、`plan_reviews` 约束放宽）。规则 v1、`screen-1`、`regime-2`、`stages-4`、`daily-1`（节点、顺序、行数不变）、`agent-brief-1`、`agent-discuss-1`、模型层一字未动；`agent-2` 的提议、反方、解读提示词逐字不变（逐个比对过大写字符串常量的 sha256，只有 `RETRO_AGENT_VERSION` 与 `REVIEW_VERSION` 两个版本号翻转）。状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`——**迁移 029 尚未在真实库执行、服务尚未以 v2.9 代码重启、手动验收未做**（见「待你核查后确认」）。实现偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。
+
+### 新增
+
+- **一只股票一条活跃链**（`timeline-2`，`timeline.py`、`plan_review.py`、`service.stage_rules` 的 `plan` 段）：链状态九种（新增 `exiting` 退出期与 `superseded` 的新判定），两个常量 `REVIEWABLE_STATES = (entry, holding)`（复查对象、重新复查）与 `ACTIVE_STATES = (entry, holding, exiting)`（唯一性、再次触发）。`plan` 段在 `chain-open:<标的>` 事务锁下判活跃链，已有活跃链时把这次触发写成 `chain_retriggers` 一行（与规则基线同一事务），不再另开链；`agent` 节点写首版前在同一把锁下二次核对，手动「重新运行 Agent」遇活跃链返回 409 `active_chain`（「`<标的>` 已有进行中的计划链（MM-DD 第 n 版），这次触发已并入」）；已并入的链当天已结束时允许为该单元开新链。同一 session 重跑幂等。
+- **再次触发 `retrigger`**：入场期直接走修订（不经单阶段复查），修订可以续期（入场期上限取最近一次触发起 `CHAIN_ENTRY_SESSIONS = 10` 个交易日）；`valid_until` 当天再次触发续期而不是判过期；续期没有模型变化时版本只带宿主 diff（`valid_until`、`entry_cap`）。持仓期与退出期的并入只作为信号和证据，不改价位。
+- **执行指令 `entry-1`**（`entry_rules.py`）：入场类型三种（区间限价 `zone_limit`、突破买入 `breakout_stop`、次日开盘 `next_open`）× 开盘三种情形（区间内、高开、低开），逐字文案 `TEXT` 与「本计划何时作废」`void_when`；影子用同一张表（`simulate_entry`），页面写「作废」时影子也不成交。
+- **`plan-2` / `agent-3`**：规则基线 `plan-2` 的价位公式与 `plan-1` 逐字相同，多 `entry_type = zone_limit` 与 `max_hold_sessions = 10`；`agent-3` 提议 / 修订多出入场类型（三选一）、最长持有（5–20）、「上一条链」证据块（首版，只含截止时间之前的复查 / 成交 / 日线）与「再次触发」证据块；校验新增 `invalid_entry_type`、`invalid_max_hold`、`stop_lowered`、`stop_above_close`，持仓期修订的价位校验改为 `stop < target1`、止损只能上移且低于最新收盘、入场区间照抄上一版。新增 Agent 原因文案四条（`invalid_entry_type`、`invalid_max_hold`、`stop_lowered`、`stop_above_close`，前后端逐字对齐）及 `active_chain`。
+- **成交关联计划与执行状态 `execution-1`**（`execution.py`、`ledger.py`）：`POST /api/workbench/trades` 的 `plan_id`（只能关联成交那一刻的链头：比它旧 → 409 `plan_stale`「成交时这条链已是第 n 版，请关联第 n 版」，成交之后才生成 → 409 `plan_after_fill`）或 `own_plan`（自定计划与成交同一事务写成 `plan-2` / `own`），不选就是「无计划」；`decision_id` 被拒（400 `decision_link_retired`：「v2.9 起成交不再关联决定，请改为关联计划」）。执行状态四种（已采纳 / 有效期外成交 / 等待成交 / 未执行）加链级「已执行」与计划外成交；`GET /api/workbench/trades/linkable-plans` 给出可关联的计划与默认项。
+- **持仓状态 `holding_status`**：`review` 节点在复查之后为每个持仓标的每个复查交易日写一行（有链、规则基线 / 自定、无计划、退出期的持仓都有；复查成功、跳过、出错、Agent 不可用都照写；同一 session 先写的为准）：数量、成本、已持有天数、剩余天数、距止损、距 T1、止损模式（`initial` / `trailing`）、指令（继续持有 / 卖一半 / 退出 / 无计划）与维持理由。止损触及、时间止损（持满最长持有且从未收盘到成本 + 1R，T1 之后不再适用）、失效条件成立 → 进入退出期，退出期的链不再复查、只写持仓状态。`agent-review-2` 提示词多出持仓状态块；`condition-2` 新增 `held_sessions_reached`（3–30，宿主为旧链注入 `max_hold` 条件）。
+- **「今日」计划表与「标的」计划历史**：`GET /api/workbench/plan-table`（入场期 / 持仓中 / 已结束三组、其他触发；可选交易日，按那个纽约日结束时的记录读）、`GET /api/workbench/holding-status`、`GET /api/workbench/instruments/{ticker}/plan-history`；持仓当天没有 `holding_status` 行时现算并标 `stale`，持仓不会从「今日」消失；命令行 `python -m investment_assistant.workbench.plan_table show --session D`（`plan_views.py`）。迁移 029 未执行时这些接口返回 503「迁移 029 未执行」。
+- **备注 `plan_notes`**：`GET|POST /api/workbench/plan-notes`，作用于一条链或一份计划，1–1000 字，只追加（更正与撤回是新的一行指向旧行），只给你自己看，**不进任何 Agent 提示词**（复查、提议、复盘起草、讨论四条路径都核对过）。
+- **新口径**：`tracks-2`（实际轨取成交关联的版本，`version_basis = fill`，新增 `merged` 并入其他链 / `voided` 开盘作废）、`discipline-2`（有效期外的关联买入是计划外，不再用旧决定判定）、`retro-2`（复盘卡对象改为有关联成交或有备注的链 / 单元，事实键 `execution`、`holding`，起草多「你的执行」）、`review-8`（`by_execution`、`unplanned_trades`、`units.executed / not_executed`、`plans` 并列 `plans_v1` / `plans_counterfactual` / `shadow_versions`）、`monthly-4`、`agent-retro-2`；`plan-shadow-2`（开盘作废、时间止损第 n 天收盘判定第 n+1 天开盘退出）与 `plan-shadow-1` 同一份新计划并列算（反事实），旧计划只算 `plan-shadow-1`。
+- **迁移 029**：见下节。
+- **推送**（`notify/templates.py`、`digest.py`）：「新计划」每个入场期链或规则基线三行（入场类型 L–U · 止损 · T1 · 股数 · 有效至；开盘一行；最长持有一行），再次触发写「第 n−1 → n 版」，持仓状态一行（退出行前加「⚠」，维持也推），退出指令单独一条；推送里不再有「未决定单元」。
+- **检查与命令行**：`plan_review check` 新增三项——同一标的不得有两条活跃链、并入记录必须有对应处理、每个持仓每天有一行持仓状态；`plan_review chain` 输出 `timeline-2` 的链视图（含并入记录、持仓状态、每版执行状态）。
+- **概念卡共 105 张**（新增 `plan.entry_type`、`plan.open_scenarios`、`plan.max_hold`、`agent.retrigger`、`system.active_chain`、`review.holding_status`、`review.execution_status`；`plan.validity`、`plan.own`、`review.chain_state`、`review.version_basis`、`review.control_group`、`review.plan_shadow`、`review.retro_card`、`system.decision`、`system.versions`、`agent.signals`、`agent.invalidation`、`agent.review_when`、`agent.reject_reasons`（33 个原因码）等随改），原理页 15 节（新增「从计划到成交」，相关各节随改）。
+- **前端**：`PlanTable`、`PlanRowDetail`、`PlanNotes`、`PlanHistoryTable` 四个组件；「今日」只剩筛选 / 市场环境 / 计划表，没有任何决定按钮；成交录入的「关联计划」下拉；计划页版本链多入场类型 / 最长持有 / 执行状态、并入的单元、退出期与持仓状态历史；复盘卡「你的执行与纪律」；详见 [architecture](docs/architecture.md)。
+- **新增版本号**：`timeline-2`、`condition-2`、`plan-2`、`plan-shadow-2`、`agent-3`、`agent-review-2`、`agent-retro-2`、`entry-1`、`execution-1`、`discipline-2`、`tracks-2`、`retro-2`、`review-8`、`monthly-4`（`knowledge.KNOWN_VERSIONS` 另加 `discipline-1`，旧快照与旧卡能引用它）。
+
+### 变更
+
+- **决定退役**：`POST /api/workbench/decisions` 返回 410 `decisions_retired`（「v2.9 起不再记录决定，采纳由成交推导；可在计划上写备注」）；`ledger.record_decision` 删除，`repository.insert_decision` 改名为模块私有的 `_insert_decision_for_tests`，生产代码对 `signal_decisions` 只有 `SELECT`（`tests/test_no_decision_writes.py` 静态守护）；`signal_decisions` 表、旧行、读取接口保留只读，旧决定在旧口径里照旧生效（`closed_by_decision`、`retro-1` 卡、`review-7` 及更早的快照、`tracks-1`）。
+- **「今日」**：`GET /today` 的 `units` 与 `extended_units` 恒为空列表并带 `retired: true`，持仓、链、市场、筛选照旧；单元卡数据只剩推送与旧测试用的 `service.unit_cards`。
+- **持仓止损 / T1** 取链的最新版（持仓期修订上移的止损随之生效），1R 的风险取第一笔买入关联的那一版的止损；没有链的持仓取成交关联的计划，再无才取旧决定的计划。
+- **`get_position` 与持仓事实受截止时间约束**：成交一律用 `list_trades(cutoff=now)` 读（`executed_at` 与 `recorded_at` 都不晚于截止时间，截止之后的作废遮掉），持仓状态块、`holding_status` 的数量 / 成本 / 天数 / 1R 都来自这一份。
+- **`daily` 的 029 闸门**：迁移 029 未执行时 `daily` 拒绝运行（`job_reports` 记一行 `error / migration_029_missing`，失败通知一次），续跑（`resume`）同样在 HTTP 预检里直接返回 503，不做半新半旧的降级。
+- **复盘卡** `retro-2`：对象由 `repository.retro_subject_keys` 给出；缺迁移 029 的库上 `retro_cards` 命令行退出码 2 并提示 `migration_029_missing`。
+- **`GET /api/workbench/review/shadow`（对照组）** 改为 `review-8`：自 `since` 以来的全部单元，没有决定字段，`id = "<ticker>:<signal_date>"`。
+- **推理视图**：首版提议的运行多一步「同标的上一条链」（摘要读自 `agent_runs.output.input_digest.previous_chain`）。
+- **运维文档**：`docs/operations/migrations-and-backup.md` 加 029 一行与一节，并把 v2.8 遗留的一行里的旧模型层密钥变量字面名改为「旧模型层的密钥变量」（修复 v2.8 提交留下的 `tests/test_no_zhipu_residue.py` 失败，白名单未动）。
+
+### 版本号
+
+- 新增：`timeline-2`、`condition-2`、`plan-2`、`plan-shadow-2`、`agent-3`、`agent-review-2`、`agent-retro-2`、`entry-1`、`execution-1`、`discipline-2`、`tracks-2`、`retro-2`、`review-8`、`monthly-4`。
+- 不变：`stages-4`、`daily-1`、`fetch-1`、`siwc-1`、`agent-brief-1`、`agent-discuss-1`、`derivation-1`、`screen-1`、`regime-2`、`context-2`、`backcheck-2`、知识三件。
+- 历史保留（旧行、旧快照、旧卡继续引用，不重算）：`timeline-1`、`condition-1`、`plan-1`、`plan-shadow-1`、`agent-2`、`agent-review-1`、`agent-retro-1`、`discipline-1`、`tracks-1`、`retro-1`、`review-7` 及更早、`monthly-3`。
+
+### 迁移 029
+
+`migrations/029_executable_plans.sql`（DDL 按 spec §8 与 §21，可重跑，不改任何旧行；三张新表不进 `WORKBENCH_TABLES`）：
+
+- `trades` 加可空 `plan_id`（指向 `trade_plans`），`trades_link_one_check`（`plan_id` 与 `decision_id` 不并存），部分索引 `idx_trades_plan`。
+- `trade_plans` 加 `entry_type`（`zone_limit` / `breakout_stop` / `next_open`）与 `max_hold_sessions`（3–30），两列同有同无（`trade_plans_entry_type_check`、`trade_plans_max_hold_check`、`trade_plans_exec_fields_check`）；价位约束 `trade_plans_levels_check` 替换 017 的 `stop < entry_low`：持仓期 `agent` 行（`inputs.chain_mode = 'holding'`）允许 `stop ≥ entry_low`，其余行照旧拒绝（R3）。
+- 新表 `chain_retriggers`（只追加；`UNIQUE (ticker, unit_signal_date)`，`created_at` 用 `clock_timestamp()`）、`holding_status`（只追加；`UNIQUE (ticker, session)`，`stop_mode IN ('initial', 'trailing')`，指令与退出原因互推）、`plan_notes`（只追加；`request_id` 唯一，目标互斥，正文 1–1000 字，`retract` 需要 `supersedes_id`）。
+- `plan_reviews` 的 `decided_by` 约束放宽为 `decided_by = 'host' OR review_agent_run_id IS NOT NULL OR revision_agent_run_id IS NOT NULL`（`plan_reviews_agent_run_check`），让入场期 `retrigger` 直接修订的复查行成立。
+- 执行顺序：先备份、再执行 029、再重启（D36）；029 未执行时 `daily` 拒绝运行，读接口 503，其余读写成交 / 计划的入口直接报错（见下）。
+
+### 实现偏差与已知限制
+
+下面逐条记录实现相对 spec 的偏差，以及各 Task 审查中接受而没有修的限制（Task 编号对应 plan；spec 与 plan 正文不改）。
+
+**迁移与仓储（Task 1）**
+
+- **R3 的价位 CHECK 用 `COALESCE`**：spec §21.1 R3 ③ 逐字写法里 `inputs->>'chain_mode' = 'holding'` 在 `inputs` 没有该键时为 NULL，CHECK 视 NULL 为通过，漏写 `chain_mode` 的 `agent` 行就能把止损放到入场价之上；迁移用 `COALESCE(inputs->>'chain_mode', '') = 'holding'`，其余相同，对旧行无影响（旧行全部满足 `stop < entry_low`）。因此持仓期修订行**必须**写 `inputs.chain_mode = 'holding'`（`timeline.build_version_plan` 已写）。
+- **`_PLAN_COLUMNS` / `_TRADE_COLUMNS` 含 029 的列**：没有 029 的库上，任何读计划（`plan_by_id`、`rule_plan`、`insert_plan` 的 `RETURNING`……）或读成交的入口都会抛 `UndefinedColumn`（500），只有显式闸门的入口（`daily` 的运行 / 续跑、`plan-table`、`plan-history`、`holding-status`、`plan-notes`、`linkable-plans`、带 `plan_id` / `own_plan` 的成交）给 503 `migration_029_missing`，`retro_cards` 命令行退出码 2。这符合 D36（先迁移、后重启，不做半新半旧的降级）；必须先执行 029 再重启。
+- **`list_trades(cutoff)` 遮掉截止之后的作废**：截止时间之后才作废的成交在截止时刻仍算有效（`voided_at` / `void_reason` 显示为空）。这超出 brief 的两个时间过滤，但属于截止时间泄漏同一类；代价是读「过去某一刻」时看不到之后才作废的事实，`timeline-2` 一律按这一口径（`timeline-1` 与 `tracks-1` 仍是「任何作废都丢掉」）。
+- **`insert_plan` 写执行字段**：`entry_type`、`max_hold_sessions` 随 `_PLAN_COLUMNS` 读写；`store_plan` 判定「同一份」时也比较这两列（旧行两边都是空），所以同一 session 重跑算出不同执行字段是冲突，而不是静默丢弃。
+- `chain_retriggers` / `holding_status` 的 `ON CONFLICT DO NOTHING` 重放不比较内容，第一行为准（语义即「同一 session 重跑不重复写」），调用方须以返回行为准；`insert_plan_note` 仓储层懒加载 `ledger.Conflict`（分层上仓储依赖用例层，未理顺）。
+- 约束命名：`plan_reviews_agent_run_check`、`trade_plans_levels_check` 等是实现取的名字；两处旧约束按定义用 `DO` 块查找后删除（与 020 同法）。
+
+**纯函数层（Task 2）**
+
+- 版本常量先留旧值、`*_V2` 并存，随各自的接线在 Task 3 / 4 翻转（`PLAN_VERSION`、`TIMELINE_VERSION` 在 Task 3，`SHADOW_VERSION`、`TRACKS_VERSION`、`RETRO_VERSION`、`RETRO_AGENT_VERSION` 在 Task 4）；终态全部为终值，由 `tests/test_v29_version_constants.py` 守护。旧函数保留并与新函数并列（`chain_state` / `chain_state_v2`、`evaluate` / `evaluate_v2`、`actual_track_v2`、`reference_plan_v2`、`build_facts_v2`、`summarize_v2`……），旧调用方行为不变。
+- `timeline-2` 的判定函数是新函数 `chain_state_v2(chain, *, session, now, facts)`，不是旧函数的参数；`SIGNAL_KINDS` 仍是 `timeline-1` 的七项，`SIGNAL_KINDS_V2` 多第八项 `retrigger`；`CHAIN_STATES` 是九种（旧 `chain_state` 不会返回新增的两种）。
+- `plan_check.check_plan` 缺省 `schema='agent-2'`（`agent-3` 须显式传入），`CHANGE_FIELDS` 是新的九个、`CHANGE_FIELDS_AGENT2` 是旧的七个；`TRACK_STATUS_TEXT`、`retro.BASIS_TEXT`、`DECISION_TEXT` 不变，新状态在 `TRACK_STATUS_TEXT_V2`、`BASIS_TEXT_V2`。
+- 条件登记表分两个视图：`CONDITIONS_ALL`（十二种，校验 / 判定用）与 `CONDITIONS`（`condition-1` 的十一种视图，`agent-2` 提示词从它渲染），避免 `held_sessions_reached` 进入 `agent-2` 的提示词（R8 / D16）；`agent-3` 的表由 `CONDITIONS_ALL` 生成，该条件不能出现在失效条件栏。
+- 规格只给了示例的文案由实现补定：`next_open` 的作废文案（`首个有效日开盘不在 L–U 内`）、持仓期止损一行（`持仓后：收盘前触及止损 S（T1 之后为移动止损）`）、`OPEN_CASE_TEXT`、`ENTRY_TYPE_TEXT`；计划表有效期 `MM-DD`；「上一条链」证据块里模型写的文字只出现在带前缀的行上（不跟在宿主行后面）。
+- `reached_1r` 在第一笔买入到 S 之间的日线有缺口且此前没有收盘到过 1R 时记为未知（缺口可能藏着 1R）；`actual_track_v2` 在单元有效期内没有成交时为 `pending`（R 为空），之后为 `not_executed`（0R）。
+- **`next_open` 的第一个有效日没有日线时**，影子返回 `pending`，过了有效期变 `expired`，**不会判作废**（保守处理，页面上不会因缺日线出现「作废」）。
+- 时间止损的 1R 以第一笔关联买入所关联版本为准，分次买入时以加权成本计，与影子（单笔成交）不完全一致；`execution.status` 的 `pending` 只在链仍处于入场期时给，持仓期修订版没有关联成交不再显示「入场期，未成交」。
+
+**编排（Task 3）**
+
+- **D1** `agent_runs` 没有 `input_digest` 列（029 不加），「同标的上一条链」证据块的文本与 sha256 存在首版提议运行的 `agent_runs.output.input_digest.previous_chain`；推理视图从这里读，修订运行不显示。
+- **D2** `chain_retriggers.created_at` 取本次运行的截止时间（不是数据库时钟）：批处理的 `plan` 段晚于截止时间 T0 才写，用数据库时钟则本次批处理自己的复查窗口 `(since_at, T0]` 永远看不到它。副作用见下条。
+- **窄竞态（Task 3 M1，未修）**：批处理在 T0 开始，T0 之后、`plan` 段写入之前用户对同一条入场期链点了「重新复查」（截止时间 t_r > T0），批处理随后写入的并入行 `created_at = T0` 落在窗口 `(t_r, …]` 之外，这次再次触发不会出现在复查里、不会续期，被并入的单元也没有自己的链；`plan_review check` 的并入核对会报出，推送里看不到。
+- **D3** 判定「操作性」链状态（复查 / 并入 / 开链）时，复查行按存储原样读（不按 `created_at` 截断），否则 `plan` 段并入的链在复查节点看来已作废；需要回答「过去某刻知道什么」的读者（上一条链证据块）用 `point_in_time=True`。提示词里的 `last_review` 与 `since_window` 仍是 v2.5 起按存储读的老口径。
+- **D9 / M5** `plan_review check` 用墙钟判链状态，记录按存储读；持仓状态的核对截止时间取该次运行冻结的 `cutoff_at`（复查行或并入行），没有再回退到阶段开始时刻。
+- **D5** `chain_status(..., now=None)` 仍走 `timeline-1`，所有 Task 3 / 4 接线过的调用方都传了 `now`；未接线的读视图在 Task 4 切换。
+- **D6** `coverage.covered` 含并入单元（`units = covered + len(missing)` 照旧成立），并入数在 `coverage.merged`，列表在 `merged_units`。
+- **D7** 手动「重新运行 Agent」：所并入的链已结束的、从未提议过的并入单元（或二次核对留下 `skipped / active_chain` 的单元）允许重跑（R17）。
+- **D8** 规格未写死的文案由实现补定：`agent-3` / `agent-review-2` 提示词、「再次触发」与「持仓状态」证据块、运行一览的新计数句、`check` 的各行、推送里「今日再次触发的规则基线」一行、`rules-1` 简报与 `_why_text` 的措辞。
+- **D9** 退出期链的 `detail.signals` 只带再次触发 / 止损 / T1，不读 8-K 与区制；无链持仓的退出指令沿用昨天的状态行；退出期的链不再复查。
+- 持仓的 `plan_stop` 现在按 `trades.plan_id` / 链最新版触发，所以这类持仓触及止损的那天除了持仓状态还会产生一个卖出单元（要调用一次解读模型）。
+- `service.push` 自己组「新计划」段（`_push_units`），不再从 `today()` 的单元取；规则基线单独成项时也输出三行（链与版本写「规则基线」）。
+- 概念卡 `system.active_chain` 的措辞：`superseded` 只会出现在 v2.9 之前的重复旧链上，上线后新链只在无活跃链时才开。
+
+**API 与复盘口径（Task 4，含修复轮更新）**
+
+- **D1** `today` 保留 `holdings` / `chains` / `market` / `screen` / `timeline_ready`，只有 `units` 与 `extended_units` 退役；单元卡构建器作为 `service.unit_cards(now)` 保留（推送与旧测试用）。
+- **D2** `retro-2` 对象：只有关联了有效买入或有备注的链 / 单元才出卡，旧的被否决且无备注的单元不再出卡（spec §19 Q6）；未成交单元的结束判定仍用 `plan-shadow-1` 回放（`stop` / `target` / `expired` 保持原义），`plan-shadow-2` 的 `voided` / `time_stop` 不单独结束一张卡；卡的事实里 `shadow` 取主口径（有执行字段的计划为 `plan-shadow-2`）。
+- **D3（修复后）** `review-8` / `monthly-4` 的 `plans` 是完整列表：`plan-shadow-2` 的计划用原键，旧影子口径的计划另起一行并在键里写口径（如「规则（旧计划 · plan-shadow-1）」），另有 `plans_v1`、`plans_counterfactual`、`shadow_versions`；`by_pool` 只算 `plan-shadow-2` 的计划、`by_pool_v1` 算其余，统计从不跨口径混算；`by_execution` 多一组 `unplanned`（只数当周计划外买入，没有信号可回放）；`execution[]` 的行带 `unit` 而不是 `decision_id`；自定计划的 `delay_hours` 为空；一笔成交只归给一个单元（链所在单元优先），按 `trade_id` 去重；没有成交的非买入单元记 `not_applicable`，不进已执行 / 未执行，但仍进 `by_rule` 与对照组。`review-7` 及更早的快照不重算。
+- **D4** 对照组 `GET /review/shadow` 为 `review-8`（见变更）。
+- **D5** `NotReady('migration_029_missing')` 是 `service.Unavailable` 的子类，503 体为 `{"error": "migration_029_missing"}`。
+- **D6** 路由补上页面要拆分的句子：409 `active_chain`（日期与版本号取自 `AgentConflict`）、409 `chain_exiting`「这条链已发出退出指令，不再复查」、400 `decision_link_retired`、409 `plan_stale` / `plan_after_fill`。
+- **D7** `tracks-2`：已采纳的旧决定但没有成交的单元，实际轨的 `plan_kind` / `plan_id` 为空（`tracks-1` 显示决定的计划）。
+- **D8（修复后成立）** `plan_table(session=过去的某天)` 按那个纽约日结束时的记录读，含链、版本、复查、并入与成交；`chain_end` 历史行记在结束日 23:59 纽约；已平仓的无链持仓不进「已结束」组；无链持仓若计划是规则基线 / 自定则出现在持仓组。
+- **D9** `service.shadow_outcomes(plan, bars, spy, splits)` 是唯一跑 `simulate_both` 并给结果贴口径标签的地方；链视图、影子页、周 / 月快照、复盘事实、讨论工具都用它。
+- **D10** 没有正文的撤回备注存为「（撤回）」（列要求 1–1000 字）。
+- 自定计划的最长持有后端限定 3–30（中文提示「最长持有须为 3–30 个交易日」），前端只校验正整数。
+- **M7 未修**：`POST /trades` 直接带 `plan_id` 仍可以关联一条退出期链的链头（`linkable-plans` 不列出，API 不拒）；概念卡写的是「退出期的链不再提供关联」。
+- `GET /instruments/{ticker}` 仍返回旧 `decisions` 行（只读）；标的页 `focus` 里退出期链的模式显示为「-」；推理视图的「上一条链」步骤只出现在首版提议的运行上。
+- 过去某天的计划表按纽约日读，但链 / 版本 / 复查的截断依赖各行的 `created_at`；测试用 `UPDATE … SET created_at` 在一次性库里改时间，生产代码里没有任何 `UPDATE`。
+
+**前端（Task 5）**
+
+- **M9 备注没有更正 / 撤回的页面入口**（接口支持，D25）；备注区只提供添加。
+- **M10 计划历史 / 版本链里入场类型、最长持有、执行状态三项并入同一行**（`PlanTimeline` 沿用原有 ` · ` 行布局），不是 spec §10.2 的三个独立列。
+- **M11 页面自行取定的文案**（后端已逐字复制）：400 `decision_link_retired`「v2.9 起成交不再关联决定，请改为关联计划」；`tracks-2` 的 `merged`「并入其他链」；`version_basis = fill`「成交时关联的版本」；周度 `by_execution.unplanned`「计划外成交」。410 的两处写法（D24 与 §6.4）取 §6.4 的 API 体：`decisions_retired: v2.9 起不再记录决定，采纳由成交推导；可在计划上写备注`。
+- 随决定表单一起删除：`postDecision`、`decisionPayload`、`finalAction`、`Basis`、`ReviewView`、`timeline.staleVersion` / `staleText`、`agent_plan_stale` 的错误分支；`Decision`、`CHOICE_LABELS` 与影子页的「决定」列保留（旧决定只读）。「今日」不再读 `/today` 的单元 / 持仓 / 链 / 扩展池单元（扩展池是计划表的开关），导航守卫（决定草稿）一并删除。
+- 行展开里规则基线是一行 `plan-2` 摘要加「展开推导」，不是完整的 `RuleBaseline` 块；版式开关只交换顺序。周度页的对照组页签按 `review-8` 读全部单元；`ReviewCardList` 表头为「你的执行 / 决定」；成交页签不再加载 `/review/shadow`。
+- 复盘卡：`FIRST_VERSION_CALCS` 在 Task 4 之后补 `review-8`、`monthly-4`，**另补 `review-7`**（该常量的注释写「review-6 起」，review-7（v2.7）快照此前被漏掉，同属首版口径）。
+
+**发布审查之后（Task 6）**
+
+- 发布前全量审查的 I1–I3、M1–M5、M7、M8 已修（成交日在最后一个有效日仍能关联当日的链头；`retro-2` 卡的 `holding` / `legacy_decision` 事实键前后端对齐，并有静态守护；v2.9 自定计划（`plan-2` / `own`）注册推导；续跑 029 闸门前移到 HTTP 预检；`delay_hours` 为空显示「自定计划，不计延迟」；`retro-2` 卡标「执行回顾」；运维文档对「029 未执行」的说法；备注更正 / 撤回的措辞；`plan_table` 单个标的失败时不留部分行；R5 续期日没有新版时状态写明「本计划已到截止日，明日不可执行」）。
+- `ledger.own_plan_signal_date` 的第一级不再接受「仅靠再次触发才能续期的已过期链」（I1 的配套：成交日在 `valid_until` 次日时，该链不再当作成交时刻的活跃链）。
+- **已冻结的 `retro-2` 卡**如果是修复之前生成的，其 `legacy_decision` 里没有 `text`（冻结的事实不重算），前端会显示「旧决定：」后只接理由；因为 v2.9 在真实库里还没有运行过，生产上不存在这样的卡。
+- 无链持仓与同标的新入场链并存时，`holding_status` 按标的一行（全部未平批次）、`chain_buys` 按链，两边股数可能不同；分次买入使加权成本上移后，`reached_1r` 可能由真变假，时间止损重新生效（R19）。
+
+**spec §16 沿用的已知限制**
+
+- 开盘三种情形是收盘后写好的条件指令，系统不看盘前、盘中价格，你仍要自己挂单。
+- 已并入的链当天被宿主作废时，这次触发不会补开新链，要等下一次触发。
+- 没有 Agent 链的持仓（成交只关联规则基线，或在 Agent 不可用时成交）不参与复查，只有宿主持仓状态；之后同标的再触发会开一条入场期的新链，与持仓并存。
+- 旧 `agent-2` 版本没有执行字段，按默认值显示；旧 `plan-1` 计划不补 `plan-2`。
+- 备注不进 Agent；想让 Agent 参考要另写「我的补充」。
+
+### 待你核查后确认
+
+下列都是需要你逐项授权才能做的真实环境步骤（plan 的 Task 7），**一项都没有执行**：
+
+- **只读核查真实库**：写一个只读脚本，上线前列出两类持仓——①持有已超过 10 个交易日、且从未收盘到成本 + 1R 的持仓（旧 `agent-2` 链按 `MAX_HOLD_DEFAULT = 10` 注入时间止损，无链持仓也按 10 个交易日看护，所以**第一次 v2.9 `daily` 就会给这类持仓 `exit / time_stop` 的退出指令，推送里带「⚠」**）；②止损会改按链最新版取的持仓（旧计划止损 vs 链最新版止损，只可能上移）。另列同标的两条以上入场期链（将判 `superseded`）与有旧决定但链仍在入场期的单元。结果写进 `docs/roadmap/v2.9-acceptance.md`。
+- **`pg_dump` 全库备份 → 在真实库执行迁移 029 → 重启服务**到 v2.9 代码（029 必须先于重启；重启前核对 `web/dist` 是 Task 6 之后构建的）；不改 `.env`、不改 LaunchAgent plist。
+- **手动运行一次 `daily`**（手动运行不推送）核对 spec §14.2 第 1 条（十行、`plan_review check` 通过、计划表三组、没有决定按钮），再逐条做手动验收第 2–6 条；第 7 条（时间止损）与连续交易日的定时验收进入积累。
+- 在 v2.8 验收记录里注一笔「v2.9 于 <日期> 上线」、更新 roadmap 状态、打 tag `v2.9.0`、推送 `origin`，各自单独授权。
+- 验收记录 `docs/roadmap/v2.9-acceptance.md` 在真实验收开始时新建；不宣称用户验收已过。
+
+### 验收
+
+- 测试（发布提交的最终树上重跑）：离线 pytest 2488 passed / 976 skipped；一次性库 pytest 3464 passed；前端 `npm test` 730 passed（53 个文件），`npm run build` 通过；`knowledge check` 通过（105 张卡、原理页 15 节）；`tests/test_docs_links.py` 通过。
+- **验收未开始**：迁移 029、备份、重启、手动验收、tag 与推送都需要你逐项授权，均未执行（计划的 Task 7）；退出条件按 spec §14（手动 `daily` 十行且 `check` 通过、计划表三组、成交关联计划得到「已采纳」、再次触发不开第二条链、持仓每天一行持仓状态、时间止损在影子与页面上一致，以及连续交易日的定时观察）逐条待积累。
+
 ## v2.8.0 — 2026-10-29
 
 每日工作流（[spec](docs/specs/2026-10-29-v2.8-daily-workflow-design.md)、[实施 plan](docs/plans/2026-10-29-v2.8-daily-workflow.md)）：三个定时任务（`filings`、`workbench`、`workbench_review`）合成一个任务 `daily`，北京 11:30（周二至周六）跑一次，十个节点串成一张 LangGraph 图；每个节点把检查点写进库，失败的运行能从失败节点续跑而不重跑已完成的部分；外部请求统一套紧超时与有限重试；新增运行详情页（节点状态图、逐目标拉取明细、结果明细）；Agent 改走你自己的 ChatGPT 订阅（Sign in with ChatGPT），删除智谱。**有迁移 028**（一张表加列改约束、三张新表、调度行合并），规则 v1、`screen-1`、`regime-2`、`plan-1`、`agent-2` 的结构与校验、四张子图的提示词与判定一字未动。状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`——**迁移 028 尚未在真实库执行、服务尚未以 v2.8 代码重启、尚未登录 ChatGPT；你的核查脚本 `scripts/siwc_precheck.py` 尚未运行，模型层按 spec §8.7 先走路径 A，其请求形状全部未对真实 ChatGPT 端点验证**（见「待你核查后确认」）。保留偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。
