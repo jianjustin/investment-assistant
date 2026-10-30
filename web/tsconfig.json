@@ -13,7 +13,9 @@
     "moduleResolution": "Bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "noEmit": true
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": { "$lib": ["src/lib"], "$lib/*": ["src/lib/*"] }
   },
   "include": ["src", "vitest-setup.ts"]
 }

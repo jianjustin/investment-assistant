@@ -4,29 +4,100 @@
 
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
+/* Colors resolve at runtime from tokens.css, so the same utility follows the light/dark switch. */
 @theme inline {
   --color-background: var(--background);
   --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
   --color-muted: var(--muted);
   --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
   --color-foreground: var(--foreground);
   --color-muted-foreground: var(--muted-foreground);
   --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
   --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
   --color-warn: var(--warn);
+  --color-warn-foreground: var(--warn-foreground);
   --color-destructive: var(--destructive);
-
-  --shadow-1: var(--shadow-1);
-  --shadow-2: var(--shadow-2);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-running: var(--running);
+  --color-running-foreground: var(--running-foreground);
+  --color-neutral: var(--neutral);
+  --color-neutral-foreground: var(--neutral-foreground);
+  --color-up: var(--up);
+  --color-down: var(--down);
+  --color-chart-rule: var(--chart-rule);
+  --color-chart-own: var(--chart-own);
+  --color-chart-agent: var(--chart-agent);
+  --color-chart-fill: var(--chart-fill);
+  --color-chart-grid: var(--chart-grid);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
 }
 
-/* v3 compatibility base layer: v4 defaults border-color to currentcolor and placeholder to a translucent currentcolor. */
+@theme {
+  --font-sans: Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 13px;
+  --text-sm--line-height: 18px;
+  --text-base: 14px;
+  --text-base--line-height: 20px;
+  --text-lg: 16px;
+  --text-lg--line-height: 24px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+
+  /* One radius for everything; rounded-full is unchanged. */
+  --radius-xs: var(--radius);
+  --radius-sm: var(--radius);
+  --radius-md: var(--radius);
+  --radius-lg: var(--radius);
+  --radius-xl: var(--radius);
+  --radius-2xl: var(--radius);
+  --radius-3xl: var(--radius);
+  --radius-4xl: var(--radius);
+
+  --default-transition-duration: 150ms;
+
+  /* Running state: the border blinks, not the whole cell. */
+  --animate-running: running-border 1.2s ease-in-out infinite;
+  @keyframes running-border {
+    50% { border-color: transparent; }
+  }
+}
+
+@utility shadow-1 {
+  box-shadow: var(--shadow-1);
+}
+
+@utility shadow-2 {
+  box-shadow: var(--shadow-2);
+}
+
+/* Token-based base defaults: v4 would otherwise default borders to currentcolor and placeholders to translucent currentcolor. */
 @layer base {
   *,
   ::before,
   ::after,
   ::backdrop {
     border-color: var(--border);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
 
   button:not(:disabled),
@@ -38,10 +109,20 @@
   textarea::placeholder {
     color: var(--muted-foreground);
   }
+
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-variant-numeric: tabular-nums;
+  }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Inter, ui-sans-serif, system-ui;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
 }

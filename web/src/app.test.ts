@@ -128,4 +128,11 @@ describe('app routing', () => {
     const names = [...document.querySelectorAll('nav > div > a, nav > div > button')].map(n => n.textContent!.trim())
     expect(names.indexOf(names.find(n => n.includes('知识'))!)).toBe(names.indexOf(names.find(n => n.includes('数据'))!) + 1)
   })
+
+  it('#_ui renders the gallery in dev', async () => {
+    expect(import.meta.env.DEV).toBe(true)
+    location.hash = '#_ui'
+    const { findByText } = render(App)
+    expect(await findByText('开发模式组件画廊（不进生产包）')).toBeInTheDocument()
+  })
 })

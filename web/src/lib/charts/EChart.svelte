@@ -1,23 +1,35 @@
 <script lang="ts">
   import * as echarts from 'echarts'
   import { onMount, onDestroy } from 'svelte'
+  import { onThemeChange } from '../theme'
+  import { readChartTheme, echartsTheme } from './theme'
 
   let { option }: { option: echarts.EChartsOption } = $props()
   let el: HTMLDivElement
   let chart: echarts.ECharts | undefined
   let ro: ResizeObserver | undefined
+  let stopTheme: (() => void) | undefined
+
+  function create() {
+    chart = echarts.init(el, echartsTheme(readChartTheme()))
+    chart.setOption(option)
+  }
 
   onMount(() => {
-    const theme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : undefined
-    chart = echarts.init(el, theme)
-    chart.setOption(option)
+    create()
     ro = new ResizeObserver(() => chart?.resize())
     ro.observe(el)
+    // ECharts bakes colours in at init: a new theme needs a new instance.
+    stopTheme = onThemeChange(() => {
+      chart?.dispose()
+      create()
+    })
   })
 
   $effect(() => { chart?.setOption(option) })
 
   onDestroy(() => {
+    stopTheme?.()
     ro?.disconnect()
     chart?.dispose()
   })

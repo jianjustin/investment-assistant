@@ -1,15 +1,51 @@
+/* Design tokens v1. Hex only: lightweight-charts and ECharts cannot parse oklch or var() chains.
+   Light and dark define the same set; every status color passes WCAG AA as text on --card in both. */
 :root {
-  --background: #f6f8fa; --card: #ffffff; --muted: #f0f3f6;
-  --border: #d9e2ec; --foreground: #111827; --muted-foreground: #6b7280;
-  --primary: #0f766e; --success: #16a34a; --warn: #b45309; --destructive: #dc2626;
-  --up: #16a34a; --down: #dc2626;
+  color-scheme: light;
+  --radius: 6px;
+
+  /* surfaces */
+  --background: #f6f8fa; --card: #ffffff; --card-foreground: #111827;
+  --popover: #ffffff; --popover-foreground: #111827;
+  --muted: #f0f3f6; --border: #d9e2ec; --input: #c4cfdb; --ring: #0f766e;
+  /* text */
+  --foreground: #111827; --muted-foreground: #6b7280;
+  /* accent */
+  --primary: #0f766e; --primary-foreground: #ffffff;
+  /* status */
+  --success: #15803d; --success-foreground: #ffffff;
+  --warn: #b45309; --warn-foreground: #ffffff;
+  --destructive: #dc2626; --destructive-foreground: #ffffff;
+  --info: #1d4ed8; --info-foreground: #ffffff;
+  --running: #6d28d9; --running-foreground: #ffffff;
+  --neutral: #475569; --neutral-foreground: #ffffff;
+  /* price direction: green up, red down */
+  --up: #15803d; --down: #dc2626;
+  /* charts */
+  --chart-rule: #2563eb; --chart-own: #b45309; --chart-agent: #7c3aed;
+  --chart-fill: #64748b2e; --chart-grid: #e5eaf0;
+  --chart-1: #0f766e; --chart-2: #2563eb; --chart-3: #b45309; --chart-4: #7c3aed; --chart-5: #be185d;
+  /* elevation */
   --shadow-1: 0 1px 2px rgba(15,23,42,.06); --shadow-2: 0 14px 35px rgba(15,23,42,.08);
 }
 [data-theme='dark'] {
-  --background: #0b0f14; --card: #121822; --muted: #1a2330;
-  --border: #243040; --foreground: #e5e9f0; --muted-foreground: #94a3b8;
-  --primary: #2dd4bf; --success: #22c55e; --warn: #f59e0b; --destructive: #f87171;
+  color-scheme: dark;
+
+  --background: #0b0f14; --card: #121822; --card-foreground: #e5e9f0;
+  --popover: #161d29; --popover-foreground: #e5e9f0;
+  --muted: #1a2330; --border: #243040; --input: #34425a; --ring: #2dd4bf;
+  --foreground: #e5e9f0; --muted-foreground: #94a3b8;
+  --primary: #2dd4bf; --primary-foreground: #042f2e;
+  --success: #22c55e; --success-foreground: #052e16;
+  --warn: #f59e0b; --warn-foreground: #1c1002;
+  --destructive: #f87171; --destructive-foreground: #2a0a0a;
+  --info: #60a5fa; --info-foreground: #0a1a33;
+  --running: #a78bfa; --running-foreground: #1e1136;
+  --neutral: #94a3b8; --neutral-foreground: #0b0f14;
   --up: #22c55e; --down: #f87171;
+  --chart-rule: #60a5fa; --chart-own: #f59e0b; --chart-agent: #a78bfa;
+  --chart-fill: #94a3b838; --chart-grid: #1f2a38;
+  --chart-1: #2dd4bf; --chart-2: #60a5fa; --chart-3: #f59e0b; --chart-4: #a78bfa; --chart-5: #f472b6;
   --shadow-1: 0 1px 2px rgba(0,0,0,.4); --shadow-2: 0 14px 35px rgba(0,0,0,.5);
 }
 .tabular { font-variant-numeric: tabular-nums; }
