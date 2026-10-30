@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PATTERN = re.compile(r'zhipu|bigmodel|ZHIPU_API_KEY|glm-5', re.IGNORECASE)
 THIS_FILE = 'tests/test_no_zhipu_residue.py'
+SELF_NAME = 'test_no_zhipu_residue'     # frozen docs may name this guard; the name alone is not residue
 # Frozen design documents of this release (dated 2026-10-29, but written about the removal itself).
 RELEASE_DOCS = ('docs/specs/2026-10-29-v2.8-daily-workflow-design.md', 'docs/plans/2026-10-29-v2.8-daily-workflow.md')
 DATED = re.compile(r'^docs/(?:specs|plans)/(\d{4}-\d{2}-\d{2})-')
@@ -42,6 +43,10 @@ def _text(path: Path) -> str | None:
     return data.decode('utf-8', errors='replace')
 
 
+def _residue(line: str) -> bool:
+    return bool(PATTERN.search(line.replace(SELF_NAME, '')))
+
+
 def test_no_zhipu_residue():
     hits: list[str] = []
     for name in _tracked():
@@ -51,7 +56,7 @@ def test_no_zhipu_residue():
         if text is None:
             continue
         for number, line in enumerate(text.splitlines(), 1):
-            if PATTERN.search(line):
+            if _residue(line):
                 hits.append(f'{name}:{number}: {line.strip()[:120]}')
     assert not hits, 'Zhipu residue outside the spec §9 allow-list:\n' + '\n'.join(hits)
 
@@ -72,3 +77,8 @@ def test_allow_list_is_exactly_the_spec_list():
 def test_pattern_is_case_insensitive():
     for sample in ('Zhipu', 'ZHIPU_API_KEY', 'open.BigModel.cn', 'GLM-5.3'):
         assert PATTERN.search(sample), sample
+
+
+def test_guard_file_name_is_not_residue():
+    assert not _residue('`tests/test_no_zhipu_residue.py` guards the removal')
+    assert _residue('tests/test_no_zhipu_residue.py still calls the Zhipu API')

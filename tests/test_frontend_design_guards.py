@@ -2,17 +2,8 @@
 
 Offline: reads source files and backend constants, no database, no network, no build.
 
-Eight guards plus a baseline check. Five of them count violations per file (raw palette classes, colour literals,
-emoji, `<style>` blocks, native `<button>`); the existing violations live in per-task baseline shards under
-`tests/frontend_design_baseline/` (`task5.json` … `task8.json`). Rules (only-decrease):
-
-* a file's actual count for a check must be <= the sum of its recorded counts over all shards;
-* a file that is in no shard must have count 0;
-* a shard entry whose actual count is already 0 is stale and must be deleted;
-* `lib/ui/**`, `styles/**`, `app.svelte`, `charts/EChart.svelte`, `UiGallery.svelte` and `lib/*.ts` are never in a shard.
-
-Each migration Task deletes its own shard; Task 8 deletes the directory (the tests then see no shard at all)."""
-import json
+Eight blocking guards plus self-checks. Every guard is fully blocking: there is no baseline and no per-file allowance
+(the v2.10 migration shards were retired in Task 8; `test_baseline_retired` keeps the directory from coming back)."""
 import re
 from pathlib import Path
 
@@ -23,11 +14,9 @@ from investment_assistant.workbench import agent, execution, retro, timeline
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / 'web' / 'src'
-BASELINE_DIR = Path(__file__).resolve().parent / 'frontend_design_baseline'
+BASELINE_DIR = Path(__file__).resolve().parent / 'frontend_design_baseline'  # retired: must not exist
 MIGRATIONS = ROOT / 'migrations'
 STATUS_TS = SRC / 'lib' / 'ui' / 'domain' / 'status.ts'
-
-COUNTED_CHECKS = ('raw_palette', 'hex_rgb', 'emoji', 'style_block', 'native_button')
 
 # --------------------------------------------------------------------------------------------------------------- patterns
 
@@ -59,11 +48,6 @@ STYLE_EXEMPT = ('lib/charts/', 'routes/UiGallery.svelte')          # prefix / ex
 DIALOG_EXEMPT = ('lib/navigation-guard.ts',)                       # Q1: synchronous unsaved-edit confirm
 BUTTON_SCOPES = ('routes/', 'lib/components/', 'lib/charts/')      # `lib/ui/**` is where the real <button> lives
 HTML_ALLOWED = {'routes/Knowledge.svelte': 2}                      # Q2: concept card body + principle section body
-
-# Never in a baseline shard (they must be clean from the start).
-FORBIDDEN_IN_SHARD = ('lib/ui/', 'styles/')
-FORBIDDEN_IN_SHARD_EXACT = ('app.svelte', 'lib/charts/EChart.svelte', 'routes/UiGallery.svelte')
-
 
 # ---------------------------------------------------------------------------------------------------------------- counting
 
@@ -148,72 +132,42 @@ def counts_by_file(check: str) -> dict[str, int]:
     return result
 
 
-# ---------------------------------------------------------------------------------------------------------------- baseline
-
-def load_shards() -> dict[str, dict]:
-    if not BASELINE_DIR.is_dir():
-        return {}
-    shards = {}
-    for path in sorted(BASELINE_DIR.glob('*.json')):
-        data = json.loads(path.read_text(encoding='utf-8'))
-        assert set(data) == {'owner', 'checks'}, f'{path.name}: keys must be owner, checks'
-        assert set(data['checks']) <= set(COUNTED_CHECKS), f'{path.name}: unknown check names'
-        shards[path.name] = data
-    return shards
-
-
-def recorded_budget(shards: dict[str, dict], check: str) -> dict[str, int]:
-    budget: dict[str, int] = {}
-    for data in shards.values():
-        for file, n in data['checks'].get(check, {}).items():
-            budget[file] = budget.get(file, 0) + n
-    return budget
-
-
-def _forbidden_in_shard(file: str) -> bool:
-    if file in FORBIDDEN_IN_SHARD_EXACT or file.startswith(FORBIDDEN_IN_SHARD):
-        return True
-    # lib/*.ts (directly under lib/) are pure modules and must be clean
-    return file.startswith('lib/') and '/' not in file[len('lib/'):]
-
+# ---------------------------------------------------------------------------------------------------------------- helpers
 
 def _hits(violations: list[str], title: str, hint: str = ''):
     assert not violations, f'{title}{hint}:\n  ' + '\n  '.join(violations)
 
 
-def assert_within_baseline(check: str, hint: str):
-    shards = load_shards()
-    budget = recorded_budget(shards, check)
-    over = [f'{file}: {n} (baseline {budget.get(file, 0)})'
-            for file, n in sorted(counts_by_file(check).items()) if n > budget.get(file, 0)]
-    _hits(over, f'{check}: more violations than the baseline allows', hint)
+def assert_clean(check: str, hint: str):
+    found = [f'{file}: {n}' for file, n in sorted(counts_by_file(check).items())]
+    _hits(found, f'{check}: violations found', hint)
 
 
 # ------------------------------------------------------------------------------------------------------------------ tests
 
 def test_no_raw_palette_classes():
     """Tailwind palette colours (`text-red-600`) and `text/bg/border-white|black` are banned; use semantic tokens."""
-    assert_within_baseline('raw_palette', ' — use semantic token classes (text-up / text-down / bg-muted …)')
+    assert_clean('raw_palette', ' — use semantic token classes (text-up / text-down / bg-muted …)')
 
 
 def test_no_hex_or_rgb_literals():
     """Colours come from `tokens.css` (and the chart theme reading it), never inline literals."""
-    assert_within_baseline('hex_rgb', ' — use token classes or `var(--token)` (charts: lib/charts/theme.ts)')
+    assert_clean('hex_rgb', ' — use token classes or `var(--token)` (charts: lib/charts/theme.ts)')
 
 
 def test_no_emoji():
     """Emoji and pictographs are banned; icons come from `Icon` (lucide). Arrows, ① and ▲ ● are typography."""
-    assert_within_baseline('emoji', ' — use <Icon> or plain text')
+    assert_clean('emoji', ' — use <Icon> or plain text')
 
 
 def test_no_style_blocks():
     """No component `<style>` blocks (charts and the gallery excepted)."""
-    assert_within_baseline('style_block', ' — use Tailwind classes or styles/*.css')
+    assert_clean('style_block', ' — use Tailwind classes or styles/*.css')
 
 
 def test_no_native_buttons():
     """Pages and components use `Button`; only `lib/ui/**` writes `<button>`."""
-    assert_within_baseline('native_button', ' — use <Button> from $lib/ui')
+    assert_clean('native_button', ' — use <Button> from $lib/ui')
 
 
 def test_no_native_dialogs():
@@ -238,21 +192,9 @@ def test_html_only_in_knowledge():
     assert found == HTML_ALLOWED, f'{{@html}} locations changed: {found}, expected {HTML_ALLOWED}'
 
 
-def test_baseline_entries_are_live():
-    """Every shard entry still has violations (else it is stale: delete it) and no shard names a protected file."""
-    shards = load_shards()
-    problems = []
-    for name, data in shards.items():
-        for check, files in data['checks'].items():
-            actual = counts_by_file(check)
-            for file, recorded in sorted(files.items()):
-                if _forbidden_in_shard(file):
-                    problems.append(f'{name}: {check}: {file} must never be in a shard (it has to be clean)')
-                if not isinstance(recorded, int) or recorded < 1:
-                    problems.append(f'{name}: {check}: {file} has a non-positive count {recorded!r}')
-                elif actual.get(file, 0) == 0:
-                    problems.append(f'{name}: {check}: {file} is already clean — stale entry, delete it')
-    _hits(problems, 'baseline problems')
+def test_baseline_retired():
+    """The v2.10 baseline shards are gone for good: every guard is fully blocking."""
+    assert not BASELINE_DIR.exists(), f'{BASELINE_DIR} must not exist (guards have no allowance)'
 
 
 # Backend vocabulary: the status.ts TONES table must know every status the back end can emit.
@@ -355,11 +297,6 @@ def test_guard_patterns_bite_and_ignore_false_positives():
     assert count_native_dialog('function confirm() { go() } onclick={confirm} dialog.confirm("x"); x.confirm(1); confirm()') == 0
 
 
-def test_baseline_shards_are_well_formed():
-    for name, data in load_shards().items():
-        assert name == f"{data['owner'].lower().replace(' ', '')}.json", f'{name}: owner {data["owner"]!r} mismatch'
-
-
 def test_sql_check_extraction_follows_later_alter_constraint():
     """The vocabulary comes from the LAST definition of a CHECK, including `ALTER TABLE … ADD CONSTRAINT` in later migrations."""
     create = """CREATE TABLE IF NOT EXISTS runs (
@@ -392,13 +329,3 @@ def test_scan_is_not_vacuous():
                   'lib/navigation-guard.ts', 'lib/api.ts', 'lib/charts/CandleChart.svelte', 'app.svelte'):
         assert known in scanned, f'{known} is not scanned'
     assert not any(name.endswith('.test.ts') or name.endswith('-fixtures.ts') for name in scanned)
-
-
-def test_each_baseline_entry_lives_in_one_shard():
-    owners: dict[tuple[str, str], list[str]] = {}
-    for name, data in load_shards().items():
-        for check, files in data['checks'].items():
-            for file in files:
-                owners.setdefault((check, file), []).append(name)
-    dup = [f'{check}: {file} in {names}' for (check, file), names in sorted(owners.items()) if len(names) > 1]
-    _hits(dup, 'entries recorded in more than one shard')

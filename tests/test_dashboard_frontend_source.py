@@ -35,9 +35,9 @@ def test_svelte_components_exist():
     expected = [
         "web/src/lib/components/AppShell.svelte",
         "web/src/lib/components/SideNav.svelte",
-        "web/src/lib/components/Skeleton.svelte",
-        "web/src/lib/components/Drawer.svelte",
-        "web/src/lib/components/StatusPill.svelte",
+        "web/src/lib/ui/domain/StatusPill.svelte",
+        "web/src/lib/ui/sheet/",
+        "web/src/lib/ui/skeleton/",
     ]
     for f in expected:
         assert Path(f).exists(), f
