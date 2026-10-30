@@ -19,9 +19,12 @@
     page?: boolean
     children?: Snippet
   } = $props()
+
+  // `page` fills the content area and centres the message; ready / degraded render the page content itself, full width.
+  const centered = $derived(page && state !== 'ready' && state !== 'degraded')
 </script>
 
-<div class={cn('grid gap-2', page && 'min-h-[50vh] content-center justify-items-center')} data-slot="data-block" data-state={state}>
+<div class={cn('grid gap-2', centered && 'min-h-[50vh] content-center justify-items-center')} data-slot="data-block" data-state={state}>
   {#if state === 'loading'}
     <div class="grid w-full gap-2" role="status" aria-busy="true" aria-label="加载中">
       {#if skeleton === 'row'}
@@ -38,7 +41,7 @@
   {:else if state === 'not_computed'}
     <p class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">{#if message}<span>{message}</span>{/if}<StatusPill domain="block" value="not_computed" /></p>
   {:else if state === 'degraded'}
-    <Alert variant="warn"><Icon name="triangle-alert" /><AlertDescription>{message ?? '部分数据不全'}</AlertDescription></Alert>
+    <Alert variant="warn" class="w-full"><Icon name="triangle-alert" /><AlertDescription>{message ?? '部分数据不全'}</AlertDescription></Alert>
     {@render children?.()}
   {:else if state === 'error'}
     <Alert variant="danger" class="w-full"><Icon name="circle-x" /><AlertDescription>{message ?? '加载失败'}</AlertDescription></Alert>

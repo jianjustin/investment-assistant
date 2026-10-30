@@ -528,6 +528,12 @@
       {/each}
     </div>
     <p class="text-xs text-muted-foreground">重试已点 {retries} 次。</p>
+    <div class="grid gap-1 text-xs text-muted-foreground">
+      page · error（撑满内容区居中；ready / degraded 的 page 不居中、满宽）
+      <div class="rounded-md border border-border bg-card p-3">
+        <DataBlock state="error" page message="整页取不到：服务暂时不可用" onRetry={() => (retries += 1)} />
+      </div>
+    </div>
     <div class="grid gap-3 sm:grid-cols-2">
       <div class="grid gap-1 text-xs text-muted-foreground">loading · row<DataBlock state="loading" skeleton="row" /></div>
       <div class="grid gap-1 text-xs text-muted-foreground">loading · table<DataBlock state="loading" skeleton="table" /></div>

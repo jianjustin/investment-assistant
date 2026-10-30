@@ -80,11 +80,28 @@ describe('DataBlock', () => {
     expect(container.querySelector('[data-slot="skeleton"]')).toBeNull()
   })
 
-  it('page fills the content area', () => {
-    const { container } = render(DataBlock, { state: 'error', message: '整页取不到', page: true })
-    expect(container.firstElementChild!.className).toContain('min-h-')
-    cleanup()
+  it('page fills the content area for loading, empty, not_computed and error', () => {
+    for (const state of ['loading', 'empty', 'not_computed', 'error'] as const) {
+      const { container, unmount } = render(DataBlock, { state, message: '整页取不到', page: true })
+      const cls = container.firstElementChild!.className
+      expect(cls, state).toContain('min-h-')
+      expect(cls, state).toContain('content-center')
+      unmount()
+    }
     const plain = render(DataBlock, { state: 'error', message: '块取不到' })
     expect(plain.container.firstElementChild!.className).not.toContain('min-h-')
+  })
+
+  it('page with ready or degraded content is not centred or shrunk', () => {
+    for (const state of ['ready', 'degraded'] as const) {
+      const { container, unmount } = render(DataBlock, { state, message: '部分不全', page: true, children: content })
+      const cls = container.firstElementChild!.className
+      expect(cls, state).not.toContain('min-h-')
+      expect(cls, state).not.toContain('content-center')
+      expect(cls, state).not.toContain('justify-items-center')
+      unmount()
+    }
+    render(DataBlock, { state: 'degraded', message: '部分不全', page: true, children: content })
+    expect(screen.getByRole('alert').className).toContain('w-full')
   })
 })

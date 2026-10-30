@@ -15,9 +15,9 @@
 </script>
 
 {#if kind === 'fact' && onFact}
-  <Button variant="link" size="sm" class="font-normal" onclick={() => onFact?.(ref.slice('fact:'.length))}>{ref}</Button>
+  <Button variant="link" size="sm" class="select-text text-[length:inherit] font-normal" onclick={() => onFact?.(ref.slice('fact:'.length))}>{ref}</Button>
 {:else if kind === 'call' && onCall}
-  <Button variant="link" size="sm" class="font-normal" aria-expanded={expanded} onclick={() => onCall?.(ref)}>{ref}</Button>
+  <Button variant="link" size="sm" class="select-text text-[length:inherit] font-normal" aria-expanded={expanded} onclick={() => onCall?.(ref)}>{ref}</Button>
 {:else if kind === 'know'}
   <a class="text-primary underline" href={knowHref(ref)}>{ref}</a>
 {:else if kind === 'concept'}

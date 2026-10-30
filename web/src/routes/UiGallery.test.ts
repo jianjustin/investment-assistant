@@ -60,6 +60,7 @@ describe('UiGallery', () => {
     const errorBlock = container.querySelector('[data-slot="data-block"][data-state="error"]') as HTMLElement
     fireEvent.click(within(errorBlock).getByRole('button', { name: '重试' }))
     expect(screen.getByText('重试已点 1 次。')).toBeInTheDocument()
+    expect(container.querySelector('[data-slot="data-block"][data-state="error"][class*="min-h-"]')).not.toBeNull()   // the page example
     // domain primitives
     expect(screen.getAllByText('第 3 版').length).toBeGreaterThan(0)
     expect(container.textContent).toContain('入场 95.10–97.30 · 止损 91.40 · T1 104.70 · 建议 120 股')

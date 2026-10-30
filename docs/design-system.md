@@ -116,6 +116,8 @@
 
 与 spec §4.4 表的差异（D16）：表里写的 `green` / `yellow` / `red`、`done`、`gate_hold` 等在后端没有对应枚举（数据族卡显示的是拉取记录状态，即 `fetch` 域），不进词汇表；旧 `StatusPill` 的这几个键无调用方。
 
+`chain.invalidated`（已作废）在表里是 `neutral`，不是 spec 表里「作废 → danger」的字面读法：它是链的终态（`ENDED_STATES`），整行本来就置灰（`muted`），属于「已结束」一类，与 `expired`、`position_closed` 同列；`danger` 留给真正的异常（失败、出错、校验未通过、需要重新登录）。
+
 ### 维护 `status.ts`
 
 1. **后端多了一个状态值**：先在 `TONES` 对应域里加一行键（**每个域保持单行** `domain: { key: 'tone', … },`，键可裸写或用单引号，不用展开运算符——Python 守护按行解析），再在 `LABELS` 里补中文，然后才在页面里用。已有中文表的域（`node`、`run`、`retro`、`push`、`chain`、`card`、`knowledge`、`instruction`）的中文**引用现有常量**（`NODE_STATUS_TEXT`、`RUN_STATUS_TEXT`、`RETRO_STATUS_TEXT`、`RETRO_PUSH_TEXT`、`CHAIN_STATE_TEXT`、`CARD_STATUS_TEXT`、`KNOWLEDGE_STATUS_TEXT`、`INSTRUCTION_TEXT`），常量缺键时去补常量及其跨语言测试，不在 `status.ts` 里另抄文字。
@@ -136,7 +138,7 @@
 | `degraded` | 内容照常显示 + 顶部 `Alert`（warn） | 写**哪部分不全**与原因：「Yahoo 空结果，日线用上一交易日」「概念卡暂不可用：<原因>」 |
 | `error` | `Alert`（danger）+ 重试按钮（若可重试） | 原因来自接口 `{"error": "<代码>"}` 的中文映射（沿用各 `*_TEXT` 表），不显示原始英文码与堆栈 |
 
-另有 `ready`：只渲染内容。页面级错误（整页取不到）用同一组件撑满内容区（`page`）；块级错误只占该块。**禁止**用空白、`—`、`null`、`undefined` 表达以上任一态。`MetricValue`、`CutoffTime`、`SampleSize`、`PlanLevels` 缺值时自带「没算」徽标或文字，不透传 `fmtBeijing` / `fmtNum` 返回的「—」。
+另有 `ready`：只渲染内容。页面级错误（整页取不到）用同一组件撑满内容区（`page`，只对 `loading` / `empty` / `not_computed` / `error` 生效并居中；`ready` / `degraded` 照常满宽渲染内容）；块级错误只占该块。**调用方必须给 `empty` / `not_computed` 传 `message`**（写为什么空、缺什么）；组件内的默认文案（`empty` 「暂无数据」、`degraded` 「部分数据不全」、`error` 「加载失败」）只是兜底，页面上出现兜底文案就是漏写。**禁止**用空白、`—`、`null`、`undefined` 表达以上任一态。`MetricValue`、`CutoffTime`、`SampleSize`、`PlanLevels` 缺值时自带「没算」徽标或文字，不透传 `fmtBeijing` / `fmtNum` 返回的「—」。
 
 ## 6. 组件清单
 
@@ -177,7 +179,7 @@
 | `SampleSize` | `{ n: number \| null; min?: number }`（默认 5） | `n = {n}`；`n < min`（含 0）加 `block.insufficient`；`null` 显示 `block.not_computed`（没算） |
 | `CalcVersion` | `{ version: string; concept?: string }` | `口径 ` + 等宽代码样式的版本号；有 `concept` 时链接到 `#knowledge/<concept>` |
 | `MetricValue` | `{ value: number \| null \| undefined; unit?: string; digits?: number; signed?: boolean; percent?: boolean; tone?: 'updown' \| 'none' }`（`digits` 默认 2，`tone` 默认 `none`） | 等宽数字（`tabular-nums`），单位前加半角空格（`12 股`），`percent` 的值是小数（0.032 → `3.2%`，与 `fmtPct` 一致，无空格），`signed` 给正数加 `+`；`updown` 时正 `text-up`、负 `text-down`、零不着色；`-0.00` 归一成 `0.00`；`null` / `undefined` / `NaN` 显示 `block.not_computed` |
-| `PlanLevels` | `{ low: number \| null; high: number \| null; stop: number \| null; target1: number \| null; shares?: number \| null }` | 一行标准写法 `入场 95.10–97.30 · 止损 91.40 · T1 104.70`，有股数时加 ` · 建议 120 股`（价格两位小数，区间用 U+2013）；缺的价位写「没算」，四个都缺时是一个 `block.not_computed` 徽标。格式取自现有 `PlanHistoryTable` / `PlanTimeline` / `RuleBaseline` / `PlanRowDetail` 的写法，`PlanLevels.test.ts` 钉住 `PlanTable` 价位单元格与历史表的现状输出 |
+| `PlanLevels` | `{ low: number \| null; high: number \| null; stop: number \| null; target1: number \| null; shares?: number \| null }` | 一行标准写法 `入场 95.10–97.30 · 止损 91.40 · T1 104.70`，有股数时加 ` · 建议 120 股`（价格两位小数，区间用 U+2013）；props 是数字，而接口里的价位是字符串（`"95.10"`）：**调用方用 `Number()` 转换**再传（接口不变；无法转成数字的值按缺失处理）。缺的价位写「没算」，四个都缺时是一个 `block.not_computed` 徽标。格式取自现有 `PlanHistoryTable` / `PlanTimeline` / `RuleBaseline` / `PlanRowDetail` 的写法，`PlanLevels.test.ts` 钉住 `PlanTable` 价位单元格与历史表的现状输出 |
 | `RefLink` | `{ ref: string; onFact?: (key) => void; onCall?: (ref) => void; expanded?: boolean }` | `RefList` 单项的渲染：`fact:` 有 `onFact` 时是调用回调的链接式按钮，否则纯文字；`call:` 有 `onCall`（调用方能展开）时是 `aria-expanded` 按钮，否则纯文字；`know:` 链到 `knowHref`；`concept:` 用 `ConceptTerm` 就地展开；其余（`user:` 等）纯文字。列表外壳与展开的工具调用区域仍归调用方（`RefList`） |
 | `SourceBadge` | `{ source: string; fallback?: boolean }` | 数据来源名（等宽）；`fallback` 时加淡警告底与文字「备源」。为 v2.11 预留，本版只定义并进画廊，不接页面 |
 | `DataBlock` | `{ state; message?; skeleton?: 'row' \| 'block' \| 'table'; onRetry?; retryLabel?: string; page?: boolean; children? }` | 第 5 节五态包装；`degraded` 先 `Alert` 再渲染 `children`，`error` 有 `onRetry` 时加一个按钮（默认「重试」），`page` 撑满内容区（`min-h-[50vh]`） |
@@ -190,6 +192,7 @@
 ### 6.3 已知取舍
 
 - **`DataTable` 在 ≥ 1024px 不在容器内滚动。** 表格容器用 `max-lg:overflow-x-auto lg:overflow-visible`：只有这样粘性表头才能贴着视口顶部（容器一旦 `overflow` 非 `visible`，`sticky` 就只在容器内生效）。代价是 1024–1280px 之间列特别多的宽表会撑出页面而不是在容器内滚动；< 1024px 容器照常横向滚动。列多的页面请精简列（`hideInCards`）或 `sticky={false}` 并自行包一层滚动容器（`sticky={false}` 本身不会在 ≥ 1024px 添加滚动）。
+- **`RefLink` 依赖 `lib/components/ConceptTerm.svelte`**（`ui/` 反向依赖了 `components/`）。Task 7 会把 `ConceptTerm` 迁到 `Popover`，之后它可以搬进 `ui/domain/`，`RefLink` 的 import 随之改路径。`RefLink` 的动作类引用（`fact:` / `call:`）是 `Button variant="link"`，用 `text-[length:inherit]` 继承所在文字的字号并允许选中文字；导航类（`know:` / `concept:`）是 `<a href>` 或 `ConceptTerm`。
 - **`StatusPill` 的文字不着状态色**，原因见第 2 节要点：淡底上的同色文字在浅色主题下对比度不足 AA。
 - **`CutoffTime` 的相对时间用原生 `title`**，不用 `Tooltip`（不依赖 Provider，任何地方可用）。`VersionChip` 的 `ref` 同理。
 

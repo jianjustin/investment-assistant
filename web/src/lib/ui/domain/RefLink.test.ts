@@ -57,4 +57,13 @@ describe('RefLink', () => {
     expect(screen.queryByRole('link')).toBeNull()
     expect(screen.queryByRole('button')).toBeNull()
   })
+
+  it('action refs inherit the font size and stay selectable', () => {
+    render(RefLink, { ref: 'fact:plans', onFact: vi.fn() })
+    const cls = screen.getByRole('button', { name: 'fact:plans' }).className
+    expect(cls).toContain('text-[length:inherit]')
+    expect(cls).toContain('select-text')
+    expect(cls).not.toContain('text-sm')
+    expect(cls).not.toContain('select-none')
+  })
 })
