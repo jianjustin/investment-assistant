@@ -99,7 +99,7 @@
 
 | 域 | 来源（后端） | 键 → 语气 |
 | --- | --- | --- |
-| `node` | `stage_runs.status` + 页面推导的 `pending` / `running` | `success` 成功；`partial`、`degraded` 警告；`failed` 危险；`skipped`、`pending` 中性；`running` 运行中 |
+| `node` | `stage_runs.status` + 页面推导的 `pending` / `running` | `success` 成功；`partial`、`degraded` 警告；`failed` 危险；`skipped`、`pending` 中性；`running` 运行中；运行一览的 `missing`（缺证据）警告、`not_recorded`（未记录）中性，文字照抄 `run_overview.py` 的 `STATUS_TEXT` |
 | `run` | `job_reports.status`（`success` / `degraded` / `error`）+ `node` 的全部值 | 同 `node`，另 `error` 危险 |
 | `chain` | `timeline.CHAIN_STATES` | `entry` 信息；`holding` 成功；`exiting` 警告；已结束类 `legacy`、`invalidated`、`closed_by_decision`、`position_closed`、`superseded`、`expired` 全部中性 |
 | `fetch` | `data_fetch_runs.status` | `success` 成功；`partial` 警告；`failed`、`error` 危险；`skipped` 中性；`running` 运行中 |
@@ -110,8 +110,9 @@
 | `push` | `RETRO_PUSH_TEXT`（其余「未发送」原因原样显示） | `sent` 成功；`manual_run`、`not_sent` 中性 |
 | `execution` | `execution.STATUSES` ∪ `CHAIN_STATUSES` ∪ `retro.EXECUTION_STATUSES` | `adopted`、`executed` 成功；`pending` 信息；`unplanned`（计划外成交）警告；`out_of_validity`、`not_executed` 中性 |
 | `knowledge` | `knowledge_status.status` | `active` 成功；`archived` 中性 |
-| `instruction` | `timeline.INSTRUCTION_TEXT` | `hold` 中性；`sell_half`、`exit` 警告（有动作要做）；`no_plan` 信息 |
+| `instruction` | `timeline.INSTRUCTION_TEXT` | `hold` 中性；`sell_half` 警告（有动作要做）；`exit` 危险（最醒目，旧界面就是红色加粗）；`no_plan` 信息 |
 | `system` | `services/health.py` 的检查状态（`up` / `degraded` / `down` / `unknown`） | `up` 成功；`degraded` 警告；`down` 危险；`unknown` 中性 |
+| `consistency` | `derivation.CONSISTENCY_TEXT`（计划推导核对） | `consistent` 成功；`mismatch` 危险；`incomplete` 警告 |
 | `block` | 数据块状态（`DataBlock`、`MetricValue`、`SampleSize`、`CutoffTime`） | `not_computed` 没算、`insufficient` 样本不足，都是警告 |
 
 与 spec §4.4 表的差异（D16）：表里写的 `green` / `yellow` / `red`、`done`、`gate_hold` 等在后端没有对应枚举（数据族卡显示的是拉取记录状态，即 `fetch` 域），不进词汇表；旧 `StatusPill` 的这几个键无调用方。
@@ -123,8 +124,9 @@
 1. **后端多了一个状态值**：先在 `TONES` 对应域里加一行键（**每个域保持单行** `domain: { key: 'tone', … },`，键可裸写或用单引号，不用展开运算符——Python 守护按行解析），再在 `LABELS` 里补中文，然后才在页面里用。已有中文表的域（`node`、`run`、`retro`、`push`、`chain`、`card`、`knowledge`、`instruction`）的中文**引用现有常量**（`NODE_STATUS_TEXT`、`RUN_STATUS_TEXT`、`RETRO_STATUS_TEXT`、`RETRO_PUSH_TEXT`、`CHAIN_STATE_TEXT`、`CARD_STATUS_TEXT`、`KNOWLEDGE_STATUS_TEXT`、`INSTRUCTION_TEXT`），常量缺键时去补常量及其跨语言测试，不在 `status.ts` 里另抄文字。
 2. **新域**：加进 `StatusDomain` 联合、`TONES`、`LABELS` 三处；`status.test.ts` 会检查每个键都有中文、已有常量按引用复用。
 3. **带占位符的文案**（`EXECUTION_TEXT.adopted` 是「已采纳（{date} 成交 {quantity} 股）」）：`StatusPill` 的 `text` 传填好的句子（`rowExecutionText` / `executionText`），语气仍取自表。
-4. `execution` 域是「复用但不是同一个对象」的例外：`EXECUTION_TEXT` 没有 `unplanned`（周复盘 `by_execution` 的键，文案「计划外成交」由 `executionText` 单独给出），所以 `LABELS.execution = { ...EXECUTION_TEXT, unplanned: '计划外成交' }`。
-5. 开发模式未知键会抛 `unknown status: <域>.<键>`，这是有意的：新状态必须先进表。生产环境不抛，显示原键 + 中性灰。
+4. `node` 域同理：`NODE_STATUS_TEXT`（`runs.ts`，不改）没有运行一览才有的 `missing` / `not_recorded`，所以 `LABELS.node = { ...NODE_STATUS_TEXT, missing: '缺证据', not_recorded: '未记录' }`，`status.test.ts` 检查它包含 `NODE_STATUS_TEXT` 的每一项。
+5. `execution` 域是「复用但不是同一个对象」的例外：`EXECUTION_TEXT` 没有 `unplanned`（周复盘 `by_execution` 的键，文案「计划外成交」由 `executionText` 单独给出），所以 `LABELS.execution = { ...EXECUTION_TEXT, unplanned: '计划外成交' }`。
+6. 开发模式未知键会抛 `unknown status: <域>.<键>`，这是有意的：新状态必须先进表。生产环境不抛，显示原键 + 中性灰。
 
 ## 5. 数据块五态
 
@@ -152,7 +154,7 @@
 | --- | --- | --- |
 | `Button` | `ui/button/`：`variant`：`primary` / `outline`（默认）/ `ghost` / `link` / `destructive`；`size`：`sm`（28px，表格内）/ `md`（32px，默认）/ `icon`（28px 方形：主题切换、关闭、侧栏折叠）；`busy`（禁用 + `aria-busy` + 转圈）、`busyText`（忙时替换文案）；传 `href` 渲染成 `<a>` | 一个页头或一段至多一个 `primary`；导航用 `<a href>`，动作类的下划线按钮用 `variant="link"`；`link` 的 `sm` / `md` 都是 `h-auto px-0`，可内嵌在文字里 |
 | `Badge` | `ui/badge/`：无 `variant`，只有中性底；传 `href` 渲染成 `<a>` | 不直接用；由 `StatusPill` 加语气 |
-| `DataTable`（`Table`） | `ui/data-table/`：`columns: Column<T>[]`（`key`、`header`、`align: 'left' \| 'num' \| 'center'`、`title` 表头提示、`cell` 自定义单元格 snippet、`value` 纯文本取值、`cardLabel`、`hideInCards`）；`rows` 或 `groups: RowGroup<T>[]`（`key`、`label`、`rows`、`muted`、`collapsible`、`open` 初始状态、`onToggle`）；`rowKey`；`caption`；`headerGroups`（分组表头）；`expandable` snippet + `bind:expanded`；`muted(row)`；`cards: 'never' \| 'narrow'`；`pageSize`（默认 50，「显示更多」）；`sticky`（默认 true）。底层 `ui/table/` 的 `Table.Root` 有 `containerClass` | 数字列 `align: 'num'`；状态列用 `StatusPill`；已结束 / 作废 / 被取代的行置灰（`muted`），不删不隐藏；展开按钮可用 `Enter`，名称恒为「展开详情」、状态在 `aria-expanded`；空表接 `DataBlock` |
+| `DataTable`（`Table`） | `ui/data-table/`：`columns: Column<T>[]`（`key`、`header`、`align: 'left' \| 'num' \| 'center'`、`title` 表头提示、`cell` 自定义单元格 snippet、`value` 纯文本取值、`cardLabel`、`hideInCards`）；`rows` 或 `groups: RowGroup<T>[]`（`key`、`label`、`rows`、`muted`、`collapsible`、`open` 初始状态、`onToggle`）；`rowKey`；`caption`；`headerGroups`（分组表头）；`expandable` snippet + `bind:expanded`；`muted(row)`；`cards: 'never' \| 'narrow'`；`ariaLabel`（给 `<table>` 和卡片列表一个可访问名称，不出现可见 caption）；`expandLabel(row, open)`（行展开按钮的可访问名称，默认「展开详情」，例如 `展开 MU` / `收起 MU`）；`pageSize`（默认 50，「显示更多」）；`sticky`（默认 true）。底层 `ui/table/` 的 `Table.Root` 有 `containerClass` | 数字列 `align: 'num'`；状态列用 `StatusPill`；已结束 / 作废 / 被取代的行置灰（`muted`），不删不隐藏；展开按钮可用 `Enter`，名称恒为「展开详情」、状态在 `aria-expanded`；空表接 `DataBlock` |
 | `ConfirmDialog`（`Dialog`） | `ui/confirm-dialog/ConfirmDialog.svelte`：`bind:open`、`title`、`consequence`（后果一句话）、`actionLabel`（动作名，不写「确定」）、`destructive`、`busy`、`onConfirm`、`onCancel` | 不可逆动作必经；**确认后不自动关**，调用方做完事再 `open = false`；`busy` 时 `Esc` / 遮罩 / 取消都不响应；初始焦点在「取消」，关闭后焦点回到打开前的元素；底层 `ui/dialog/` 内容渲染在 Portal |
 | `Sheet` | `ui/sheet/`：`SheetContent` 的 `side`、`width: 'sm' \| 'lg'`（24rem / 40rem，窄屏全宽，默认 `sm`） | 右侧抽屉 |
 | `Tabs` | `ui/tabs/`（Bits `Tabs`） | 只用于**不改地址**的页内页签（运行详情三块等）；方向键 / `Home` / `End` 由 Bits 负责 |
@@ -161,7 +163,7 @@
 | `Input` / `Textarea` / `Select` / `Label` | `ui/input/`、`ui/textarea/`、`ui/select/`、`ui/label/`；`Select.Trigger` 的 `size`：`sm` / `md` | 放进 `Field` 使用 |
 | `Tooltip` | `ui/tooltip/`；`Tooltip.Provider` 在 `app.svelte` 全局提供，默认延迟 300ms | 侧栏折叠时的图标标签；表头缩写说明 |
 | `Popover` | `ui/popover/` | `ConceptTerm` 的就地展开（同一页同时只开一个、`Esc` 收起的规则沿用） |
-| `Collapsible` | `ui/collapsible/` | 规则基线折叠、已结束组、「看推理过程」 |
+| `Collapsible` | `ui/collapsible/` | 规则基线折叠、已结束组、「看推理过程」、侧栏子菜单。**用法**：`CollapsibleContent` 外面再包 `{#if open}` 时加 `forceMount`（让 `{#if}` 当开关）；Bits 的内容在 jsdom 里挂载即展开时会一直 `hidden`（SideNav 复现，最小例子复现不了，见 `collapsible.test.ts`）。关闭态的内容留在 DOM 里带 `hidden` |
 | `Alert` | `ui/alert/`：`variant`：`info`（默认，`role="status"`）/ `warn` / `danger`（`role="alert"`）；`role` 可覆盖；配 `AlertTitle`、`AlertDescription`、`AlertAction` | 取代各处 `role="alert"` 的 `<p>` |
 | `Skeleton` | `ui/skeleton/`：一个 `animate-pulse` 的块，用 `class` 定尺寸；行 / 块 / 表三种预设在 `DataBlock` 里 | |
 | `Toast` | `ui/toast.ts`：`notify.success(msg)` / `notify.info(msg)`（3 秒自动消失）、`notify.error(msg)`（不自动消失，带「关闭」按钮）；`Toaster` 在 `app.svelte` 挂载（`ui/sonner/`，主题读 `lib/theme.ts`） | 操作结果；没有 `matchMedia` 时 `Toaster` 不渲染，页面测试里改为断言对 `notify` 的调用 |
@@ -179,7 +181,7 @@
 | `SampleSize` | `{ n: number \| null; min?: number }`（默认 5） | `n = {n}`；`n < min`（含 0）加 `block.insufficient`；`null` 显示 `block.not_computed`（没算） |
 | `CalcVersion` | `{ version: string; concept?: string }` | `口径 ` + 等宽代码样式的版本号；有 `concept` 时链接到 `#knowledge/<concept>` |
 | `MetricValue` | `{ value: number \| null \| undefined; unit?: string; digits?: number; signed?: boolean; percent?: boolean; tone?: 'updown' \| 'none' }`（`digits` 默认 2，`tone` 默认 `none`） | 等宽数字（`tabular-nums`），单位前加半角空格（`12 股`），`percent` 的值是小数（0.032 → `3.2%`，与 `fmtPct` 一致，无空格），`signed` 给正数加 `+`；`updown` 时正 `text-up`、负 `text-down`、零不着色；`-0.00` 归一成 `0.00`；`null` / `undefined` / `NaN` 显示 `block.not_computed` |
-| `PlanLevels` | `{ low: number \| null; high: number \| null; stop: number \| null; target1: number \| null; shares?: number \| null }` | 一行标准写法 `入场 95.10–97.30 · 止损 91.40 · T1 104.70`，有股数时加 ` · 建议 120 股`（价格两位小数，区间用 U+2013）；props 是数字，而接口里的价位是字符串（`"95.10"`）：**调用方用 `Number()` 转换**再传（接口不变；无法转成数字的值按缺失处理）。缺的价位写「没算」，四个都缺时是一个 `block.not_computed` 徽标。格式取自现有 `PlanHistoryTable` / `PlanTimeline` / `RuleBaseline` / `PlanRowDetail` 的写法，`PlanLevels.test.ts` 钉住 `PlanTable` 价位单元格与历史表的现状输出 |
+| `PlanLevels` | `{ low: number \| null; high: number \| null; stop: number \| null; target1: number \| null; shares?: number \| null; lead?: string; sharesLabel?: string }` | 一行标准写法 `入场 95.10–97.30 · 止损 91.40 · T1 104.70`，有股数时加 ` · 建议 120 股`；`lead`（默认「入场」）换掉区间前的词，`sharesLabel`（默认「建议」，空字符串则只写 `120 股`）换掉股数前的词——`PlanTable` 窄屏价位行传入场类型文字和空 `sharesLabel`，保持旧写法 `区间限价 95.10–97.30 · 止损 91.40 · T1 104.70 · 120 股`（价格两位小数，区间用 U+2013）；props 是数字，而接口里的价位是字符串（`"95.10"`）：**调用方用 `Number()` 转换**再传（接口不变；无法转成数字的值按缺失处理）。缺的价位写「没算」，四个都缺时是一个 `block.not_computed` 徽标。格式取自现有 `PlanHistoryTable` / `PlanTimeline` / `RuleBaseline` / `PlanRowDetail` 的写法，`PlanLevels.test.ts` 钉住的是数字格式（两位小数、U+2013、缺值写「没算」）和 `lead` / `sharesLabel` 的默认值 |
 | `RefLink` | `{ ref: string; onFact?: (key) => void; onCall?: (ref) => void; expanded?: boolean }` | `RefList` 单项的渲染：`fact:` 有 `onFact` 时是调用回调的链接式按钮，否则纯文字；`call:` 有 `onCall`（调用方能展开）时是 `aria-expanded` 按钮，否则纯文字；`know:` 链到 `knowHref`；`concept:` 用 `ConceptTerm` 就地展开；其余（`user:` 等）纯文字。列表外壳与展开的工具调用区域仍归调用方（`RefList`） |
 | `SourceBadge` | `{ source: string; fallback?: boolean }` | 数据来源名（等宽）；`fallback` 时加淡警告底与文字「备源」。为 v2.11 预留，本版只定义并进画廊，不接页面 |
 | `DataBlock` | `{ state; message?; skeleton?: 'row' \| 'block' \| 'table'; onRetry?; retryLabel?: string; page?: boolean; children? }` | 第 5 节五态包装；`degraded` 先 `Alert` 再渲染 `children`，`error` 有 `onRetry` 时加一个按钮（默认「重试」），`page` 撑满内容区（`min-h-[50vh]`） |

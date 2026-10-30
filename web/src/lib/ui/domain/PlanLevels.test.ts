@@ -22,6 +22,20 @@ describe('PlanLevels', () => {
     expect(text(container)).toBe('入场 95.10–97.30 · 止损 91.40 · T1 104.70 · 建议 120 股')
   })
 
+  it('lead replaces the word before the entry range', () => {
+    const { container } = render(PlanLevels, { low: 95.1, high: 97.3, stop: 91.4, target1: 104.7, lead: '区间限价' })
+    expect(text(container)).toBe('区间限价 95.10–97.30 · 止损 91.40 · T1 104.70')
+  })
+
+  it('sharesLabel replaces 建议, and an empty one prints just the shares', () => {
+    const base = { low: 95.1, high: 97.3, stop: 91.4, target1: 104.7, shares: 120 }
+    const a = render(PlanLevels, { ...base, sharesLabel: '约' })
+    expect(text(a.container)).toBe('入场 95.10–97.30 · 止损 91.40 · T1 104.70 · 约 120 股')
+    cleanup()
+    const b = render(PlanLevels, { ...base, lead: '区间限价', sharesLabel: '' })
+    expect(text(b.container)).toBe('区间限价 95.10–97.30 · 止损 91.40 · T1 104.70 · 120 股')
+  })
+
   it('shares null or absent adds nothing', () => {
     const { container } = render(PlanLevels, { low: 1, high: 2, stop: 0.5, target1: 3, shares: null })
     expect(text(container)).toBe('入场 1.00–2.00 · 止损 0.50 · T1 3.00')

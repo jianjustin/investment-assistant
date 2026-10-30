@@ -5,6 +5,7 @@ import { NODE_STATUS_TEXT, RETRO_PUSH_TEXT, RETRO_STATUS_TEXT, RUN_STATUS_TEXT }
 import { CHAIN_STATE_TEXT } from '$lib/timeline'
 import { CARD_STATUS_TEXT, KNOWLEDGE_STATUS_TEXT } from '$lib/growth'
 import { EXECUTION_TEXT, INSTRUCTION_TEXT } from '$lib/workbench'
+import { CONSISTENCY_TEXT } from '$lib/derivation'
 
 afterEach(() => vi.unstubAllEnvs())
 
@@ -21,14 +22,14 @@ describe('status vocabulary', () => {
 
   it('every domain of the type is in TONES and LABELS', () => {
     expect(domains.sort()).toEqual([
-      'agent', 'block', 'card', 'chain', 'connection', 'execution', 'fetch', 'instruction',
+      'agent', 'block', 'card', 'chain', 'connection', 'consistency', 'execution', 'fetch', 'instruction',
       'knowledge', 'node', 'push', 'retro', 'run', 'system',
     ])
     expect(Object.keys(LABELS).sort()).toEqual(domains)
   })
 
   it('labels reuse the existing constants', () => {
-    expect(LABELS.node).toBe(NODE_STATUS_TEXT)
+    // node is a copy plus missing / not_recorded (below), like execution
     expect(LABELS.run).toBe(RUN_STATUS_TEXT)
     expect(LABELS.retro).toBe(RETRO_STATUS_TEXT)
     expect(LABELS.push).toBe(RETRO_PUSH_TEXT)
@@ -36,12 +37,29 @@ describe('status vocabulary', () => {
     expect(LABELS.card).toBe(CARD_STATUS_TEXT)
     expect(LABELS.knowledge).toBe(KNOWLEDGE_STATUS_TEXT)
     expect(LABELS.instruction).toBe(INSTRUCTION_TEXT)
+    expect(LABELS.consistency).toBe(CONSISTENCY_TEXT)
   })
 
   it('execution reuses the EXECUTION_TEXT entries and adds the one it lacks', () => {
     // EXECUTION_TEXT has no `unplanned` (the weekly by_execution key), so the domain is a copy plus that key.
     for (const [key, text] of Object.entries(EXECUTION_TEXT)) expect(LABELS.execution[key]).toBe(text)
     expect(LABELS.execution.unplanned).toBe('计划外成交')
+  })
+
+  it('node reuses every NODE_STATUS_TEXT entry and adds the run overview wording the backend sends', () => {
+    // NODE_STATUS_TEXT (runs.ts) has no missing / not_recorded; they come from run_overview.py STATUS_TEXT, verbatim.
+    for (const [key, text] of Object.entries(NODE_STATUS_TEXT)) expect(LABELS.node[key]).toBe(text)
+    expect(LABELS.node.missing).toBe('缺证据')
+    expect(LABELS.node.not_recorded).toBe('未记录')
+    expect(TONES.node.missing).toBe('warn')
+    expect(TONES.node.not_recorded).toBe('neutral')
+  })
+
+  it('exit is the most salient instruction (danger); the consistency domain follows CONSISTENCY_TEXT', () => {
+    expect(TONES.instruction.exit).toBe('danger')
+    expect(TONES.instruction.sell_half).toBe('warn')
+    expect(TONES.consistency).toEqual({ consistent: 'success', mismatch: 'danger', incomplete: 'warn' })
+    expect(Object.keys(CONSISTENCY_TEXT).sort()).toEqual(Object.keys(TONES.consistency).sort())
   })
 
   it('unknown key throws in dev', () => {

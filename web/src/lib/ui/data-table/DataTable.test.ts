@@ -20,6 +20,32 @@ const rowKey = (r: Row) => r.id
 beforeEach(() => { vi.stubGlobal('matchMedia', undefined) })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
+describe('DataTable names', () => {
+  it('ariaLabel names the table without a visible caption', () => {
+    render(DataTable<Row>, { columns, rows, rowKey, ariaLabel: '入场期计划' })
+    expect(screen.getByRole('table', { name: '入场期计划' })).toBeInTheDocument()
+    expect(document.querySelector('caption')).toBeNull()
+  })
+
+  it('ariaLabel names the card list too', () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: true, media: q, addEventListener: () => {}, removeEventListener: () => {} }))
+    render(DataTable<Row>, { columns, rows, rowKey, cards: 'narrow', ariaLabel: '入场期计划' })
+    expect(screen.getByRole('list', { name: '入场期计划' })).toBeInTheDocument()
+  })
+
+  it('expandLabel names each row button by its state; the default stays 展开详情', async () => {
+    const expandable = createRawSnippet((row: () => Row) => ({ render: () => `<span>详情 ${row().name}</span>` }))
+    const expandLabel = (row: Row, open: boolean) => `${open ? '收起' : '展开'} ${row.name}`
+    render(DataTable<Row>, { columns, rows, rowKey, expandable, expandLabel })
+    await fireEvent.click(screen.getByRole('button', { name: '展开 MSFT' }))
+    expect(screen.getByRole('button', { name: '收起 MSFT' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: '展开 AAPL' })).toHaveAttribute('aria-expanded', 'false')
+    cleanup()
+    render(DataTable<Row>, { columns, rows, rowKey, expandable })
+    expect(screen.getAllByRole('button', { name: '展开详情' })).toHaveLength(3)
+  })
+})
+
 describe('DataTable', () => {
   it('renders a semantic table with header and body rows', () => {
     render(DataTable<Row>, { columns, rows, rowKey, caption: '计划' })

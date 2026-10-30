@@ -13,6 +13,8 @@
     groups,
     rowKey,
     caption,
+    ariaLabel,
+    expandLabel,
     headerGroups,
     expandable,
     expanded = $bindable(new Set<string | number>()),
@@ -26,6 +28,10 @@
     groups?: RowGroup<T>[]
     rowKey: (row: T) => string | number
     caption?: string
+    /** Accessible name of the table (and of the card list) without a visible caption. */
+    ariaLabel?: string
+    /** Accessible name of a row's expand button; default 「展开详情」 (state stays in aria-expanded). */
+    expandLabel?: (row: T, open: boolean) => string
     headerGroups?: HeaderGroup[]
     expandable?: Snippet<[T]>
     expanded?: Set<string | number>
@@ -116,7 +122,7 @@
     variant="ghost"
     size="icon"
     class={cn('size-6', extraClass)}
-    aria-label="展开详情"
+    aria-label={expandLabel ? expandLabel(row, expanded.has(rowKey(row))) : '展开详情'}
     aria-expanded={expanded.has(rowKey(row))}
     aria-controls={detailId(row)}
     onclick={() => toggleRow(row)}
@@ -151,7 +157,7 @@
           <div class={section.muted ? 'text-muted-foreground' : ''}>{@render groupLabel(section, open)}</div>
         {/if}
         {#if open}
-          <ul role="list" class="grid gap-2">
+          <ul role="list" aria-label={ariaLabel} class="grid gap-2">
             {#each shown as row (rowKey(row))}
               <li
                 class={cn(
@@ -184,7 +190,7 @@
     {/each}
   </div>
 {:else}
-  <Table.Root containerClass="max-lg:overflow-x-auto lg:overflow-visible">
+  <Table.Root aria-label={ariaLabel} containerClass="max-lg:overflow-x-auto lg:overflow-visible">
     {#if caption}<Table.Caption class="caption-top">{caption}</Table.Caption>{/if}
     <Table.Header>
       {#if headerGroups}

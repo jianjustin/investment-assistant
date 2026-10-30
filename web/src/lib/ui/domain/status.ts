@@ -1,6 +1,7 @@
 import { NODE_STATUS_TEXT, RETRO_PUSH_TEXT, RETRO_STATUS_TEXT, RUN_STATUS_TEXT } from '$lib/runs'
 import { CHAIN_STATE_TEXT } from '$lib/timeline'
 import { CARD_STATUS_TEXT, KNOWLEDGE_STATUS_TEXT } from '$lib/growth'
+import { CONSISTENCY_TEXT } from '$lib/derivation'
 import { EXECUTION_TEXT, INSTRUCTION_TEXT } from '$lib/workbench'
 
 // The one status vocabulary of the site (spec 4.4): { domain, key } -> { Chinese label, tone }.
@@ -10,12 +11,12 @@ import { EXECUTION_TEXT, INSTRUCTION_TEXT } from '$lib/workbench'
 export type Tone = 'success' | 'warn' | 'danger' | 'info' | 'running' | 'neutral'
 export type StatusDomain =
   | 'node' | 'run' | 'chain' | 'fetch' | 'agent' | 'connection' | 'card' | 'retro' | 'push'
-  | 'execution' | 'knowledge' | 'instruction' | 'system' | 'block'
+  | 'execution' | 'knowledge' | 'instruction' | 'system' | 'block' | 'consistency'
 
 // Keep every domain on ONE line, without spreads: tests/test_frontend_design_guards.py reads this block by lines.
 export const TONES = {
-  // stage_runs.status (+ pending / running derived by the page)
-  node: { success: 'success', partial: 'warn', degraded: 'warn', failed: 'danger', skipped: 'neutral', pending: 'neutral', running: 'running' },
+  // stage_runs.status (+ pending / running derived by the page) and the run overview's missing / not_recorded stage lines
+  node: { success: 'success', partial: 'warn', degraded: 'warn', failed: 'danger', skipped: 'neutral', pending: 'neutral', running: 'running', missing: 'warn', not_recorded: 'neutral' },
   // job_reports.status (success / degraded / error) plus the node values
   run: { success: 'success', partial: 'warn', degraded: 'warn', failed: 'danger', skipped: 'neutral', pending: 'neutral', running: 'running', error: 'danger' },
   // timeline.CHAIN_STATES: only entry / holding / exiting are live; every ended state is neutral
@@ -37,18 +38,22 @@ export const TONES = {
   // knowledge_status.status
   knowledge: { active: 'success', archived: 'neutral' },
   // timeline.INSTRUCTION_TEXT
-  instruction: { hold: 'neutral', sell_half: 'warn', exit: 'warn', no_plan: 'info' },
+  instruction: { hold: 'neutral', sell_half: 'warn', exit: 'danger', no_plan: 'info' },
   // services/health.py check status (up / degraded / down / unknown)
   system: { up: 'success', degraded: 'warn', down: 'danger', unknown: 'neutral' },
   // DataBlock / MetricValue / SampleSize / CutoffTime
   block: { not_computed: 'warn', insufficient: 'warn' },
+  // derivation.CONSISTENCY_TEXT (plan derivation check)
+  consistency: { consistent: 'success', mismatch: 'danger', incomplete: 'warn' },
 } as const satisfies Record<StatusDomain, Record<string, Tone>>
 
 // Existing Chinese tables are referenced, not copied. `execution` is the one exception: EXECUTION_TEXT has no
 // `unplanned` (the weekly by_execution key, worded in workbench.ts `executionText`), so the domain is a copy plus it.
+// `node` is the same kind of exception: NODE_STATUS_TEXT has no `missing` / `not_recorded` (the run overview's stage lines, wording
+// verbatim from workbench/run_overview.py STATUS_TEXT), so the domain is a copy plus them.
 // EXECUTION_TEXT.adopted keeps its `{date}` / `{quantity}` placeholders: pass the filled sentence as StatusPill `text`.
 export const LABELS: Record<StatusDomain, Record<string, string>> = {
-  node: NODE_STATUS_TEXT,
+  node: { ...NODE_STATUS_TEXT, missing: '缺证据', not_recorded: '未记录' },
   run: RUN_STATUS_TEXT,
   chain: CHAIN_STATE_TEXT,
   fetch: { success: '成功', partial: '部分成功', failed: '失败', skipped: '跳过', running: '运行中', error: '失败' },
@@ -64,6 +69,7 @@ export const LABELS: Record<StatusDomain, Record<string, string>> = {
   instruction: INSTRUCTION_TEXT,
   system: { up: '正常', degraded: '降级', down: '不可用', unknown: '未知' },
   block: { not_computed: '没算', insufficient: '样本不足' },
+  consistency: CONSISTENCY_TEXT,
 }
 
 export type StatusInfo = { label: string; tone: Tone; known: boolean }
