@@ -323,15 +323,18 @@ def trade_by_id(conn, trade_id):
 def _trades_where(conn, clause: str | None, params: list[Any], cutoff: datetime | None) -> list[dict[str, Any]]:
     clauses = [clause] if clause else []
     params = list(params)
+    columns, head = _TRADE_COLUMNS, []
     if cutoff is not None:
         clauses.append('recorded_at <= %s AND executed_at <= %s')
         params.extend([cutoff, cutoff])
+        # a void made after the cutoff is not known yet (compared in SQL, so a naive cutoff behaves like the rest)
+        columns = _TRADE_COLUMNS.replace(
+            'voided_at, void_reason',
+            'CASE WHEN voided_at <= %s THEN voided_at END AS voided_at, '
+            'CASE WHEN voided_at <= %s THEN void_reason END AS void_reason')
+        head = [cutoff, cutoff]
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
-    rows = _all(conn, f'SELECT {_TRADE_COLUMNS} FROM trades{where} ORDER BY executed_at, id', params)
-    if cutoff is not None:                     # a void made after the cutoff is not known yet
-        rows = [{**row, 'voided_at': None, 'void_reason': None} if row['voided_at'] and row['voided_at'] > cutoff
-                else row for row in rows]
-    return rows
+    return _all(conn, f'SELECT {columns} FROM trades{where} ORDER BY executed_at, id', head + params)
 
 
 def list_trades(conn, ticker: str | None = None, *, cutoff: datetime | None = None) -> list[dict[str, Any]]:
@@ -425,7 +428,9 @@ def store_plan(conn, plan: dict[str, Any]) -> dict[str, Any]:
             same = (existing['status'] == plan['status']
                     and all(Decimal(existing[k]) == plan[k]
                             for k in ('ref_price', 'atr', 'entry_low', 'entry_high', 'stop', 'target1'))
-                    and _plan_json(existing['sizing']) == _plan_json(plan['sizing']))
+                    and _plan_json(existing['sizing']) == _plan_json(plan['sizing'])
+                    and existing['entry_type'] == plan.get('entry_type')
+                    and existing['max_hold_sessions'] == plan.get('max_hold_sessions'))
             if same:
                 return {'status': 'existing', 'record': existing}
             return {'status': 'conflict', 'record': existing}
@@ -470,7 +475,7 @@ def rule_plan(conn, ticker: str, signal_date: date, plan_version: str | None = N
     version_clause = '' if plan_version is None else 'AND plan_version = %s '
     params = (ticker.upper(), signal_date) + (() if plan_version is None else (plan_version,))
     return _one(conn, f'SELECT {_PLAN_COLUMNS} FROM trade_plans WHERE ticker = %s AND signal_date = %s '
-                      f"AND kind = 'rule' {version_clause}ORDER BY created_at DESC, id DESC LIMIT 1", params)
+                      f"AND kind = 'rule' {version_clause}ORDER BY created_at DESC, plan_version DESC, id DESC LIMIT 1", params)
 
 
 def plan_by_id(conn, plan_id) -> dict[str, Any] | None:

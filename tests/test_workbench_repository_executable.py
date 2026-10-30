@@ -397,6 +397,7 @@ def test_insert_plan_writes_execution_fields(workbench_db):
 def test_rule_plan_default_latest_version(workbench_db):
     conn = workbench_db
     v1 = repository.insert_plan(conn, _plan_rec(plan_version='plan-1'))
+    conn.execute('UPDATE trade_plans SET created_at = %s WHERE id = %s', (T0 - timedelta(hours=1), v1['id']))
     assert repository.rule_plan(conn, 'NVDA', CHAIN)['id'] == v1['id']                 # only plan-1 exists
     v2 = repository.insert_plan(conn, _plan_rec(plan_version='plan-2', entry_type='zone_limit', max_hold_sessions=10))
     assert repository.rule_plan(conn, 'NVDA', CHAIN)['id'] == v2['id']                 # default: the newest of any
@@ -408,6 +409,36 @@ def test_rule_plan_default_latest_version(workbench_db):
     repository.insert_plan(conn, _plan_rec(kind='agent', plan_version='agent-3', entry_type='zone_limit',
                                            max_hold_sessions=10))
     assert repository.rule_plan(conn, 'NVDA', CHAIN)['id'] == v2['id']
+
+
+def test_rule_plan_tie_on_created_at_prefers_newer_version(workbench_db):
+    conn = workbench_db                                       # one transaction: both rows get the same now()
+    for _ in range(5):
+        repository.insert_plan(conn, _plan_rec(plan_version='plan-1', signal_date=date(2026, 10, 19)))
+        v2 = repository.insert_plan(conn, _plan_rec(plan_version='plan-2', signal_date=date(2026, 10, 19),
+                                                    entry_type='zone_limit', max_hold_sessions=10))
+        assert repository.rule_plan(conn, 'NVDA', date(2026, 10, 19))['id'] == v2['id']
+        conn.execute("DELETE FROM trade_plans WHERE ticker = 'NVDA' AND signal_date = %s", (date(2026, 10, 19),))
+
+
+def test_store_plan_compares_execution_fields(workbench_db):
+    conn = workbench_db
+    rec = _plan_rec(plan_version='plan-2', entry_type='zone_limit', max_hold_sessions=10)
+    assert repository.store_plan(conn, rec)['status'] == 'inserted'
+    assert repository.store_plan(conn, dict(rec))['status'] == 'existing'
+    assert repository.store_plan(conn, {**rec, 'entry_type': 'next_open'})['status'] == 'conflict'
+    assert repository.store_plan(conn, {**rec, 'max_hold_sessions': 12})['status'] == 'conflict'
+    old = _plan_rec(plan_version='plan-1', signal_date=date(2026, 10, 20))          # old rows: both None
+    assert repository.store_plan(conn, old)['status'] == 'inserted'
+    assert repository.store_plan(conn, dict(old))['status'] == 'existing'
+
+
+def test_list_trades_cutoff_accepts_naive_datetime(workbench_db):
+    conn = workbench_db
+    trade = _trade(conn)
+    repository.mark_trade_voided(conn, trade['id'], 'typo', voided_at=T0 + timedelta(days=1))
+    naive = (T0 + timedelta(hours=1)).replace(tzinfo=None)
+    assert repository.list_trades(conn, 'NVDA', cutoff=naive)[0]['voided_at'] is None
 
 
 def test_store_plan_still_keys_on_plan_version(workbench_db):
