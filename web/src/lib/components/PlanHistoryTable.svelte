@@ -10,8 +10,8 @@
   import * as wb from '../workbench'
 
   // 「标的」页计划历史（spec §10.3）：日期 · 链与版本 · 入场 / 止损 / T1 · 变化点（宿主 diff）· 变化原因 · 结束方式。
-  // 每条链开头一行 chain_open（灰底，写「为什么又开」），结尾一行 chain_end；链与链之间留一道分隔；
-  // 并入的单元（retrigger）是链内一行。两个开关是请求参数：切换时回调 onToggle，由页面重新请求。
+  // 每条链开头一行 chain_open（写「为什么又开」），结尾一行 chain_end；一条链一组（组头就是链与链之间的分隔，
+  // 已结束的链整组置灰）；并入的单元（retrigger）是链内一行。两个开关是请求参数：切换时回调 onToggle，由页面重新请求。
   let { rows, chains = [], ticker = '', includeReviews = false, includeBaselines = false, onToggle }: {
     rows: wb.HistoryRow[]; chains?: wb.HistoryChain[]; ticker?: string
     includeReviews?: boolean; includeBaselines?: boolean
@@ -39,8 +39,6 @@
   const chainText = (r: wb.HistoryRow) => r.chain_signal_date
     ? `${ticker ? `${ticker}·` : ''}${md(r.chain_signal_date)}${r.version_no != null ? ` 第 ${r.version_no} 版` : ''}`
     : '—'
-  const levelsText = (r: wb.HistoryRow) => r.levels
-    ? `入场 ${r.levels.entry_low}–${r.levels.entry_high} · 止损 ${r.levels.stop} · T1 ${r.levels.target1}` : ''
   const diffItems = (r: wb.HistoryRow) => (r.diff ?? []).map(d =>
     `${tl.CHANGE_FIELD_TEXT[d.field] ?? d.field} ${tl.diffValueText(d.field, d.before)} → ${tl.diffValueText(d.field, d.after)}`)
   const changeTexts = (r: wb.HistoryRow) => (r.changes ?? []).map(c => (typeof c === 'string' ? c : c.text)).filter(Boolean)

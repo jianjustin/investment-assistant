@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte'
+  import { untrack } from 'svelte'
   import { fmtPct } from '../lib/format'
   import * as wb from '../lib/workbench'
   import * as api from '../lib/api'
@@ -77,9 +77,8 @@
   let linkableSeq = 0
   let formError = $state('')
   let recording = $state(false)
-  let voiding = $state<string | null>(null)
   let voidReason = $state('')
-  // 作废：理由在行内填，「确认作废」打开 ConfirmDialog，对话框里再确认才发请求
+  // 作废：点「作废」打开 ConfirmDialog，理由在对话框里填，填了才能点「确认作废」
   let voidAsk = $state<{ kind: 'trade' | 'flow'; id: string; what: string } | null>(null)
   let voidOpen = $state(false)
   let voidBusy = $state(false)
@@ -269,6 +268,7 @@
 
   function askVoid(kind: 'trade' | 'flow', id: string, what: string) {
     voidAsk = { kind, id, what }
+    voidReason = ''
     voidOpen = true
   }
 
@@ -279,14 +279,10 @@
     try {
       if (ask.kind === 'trade') {
         await wb.voidTrade(ask.id, voidReason.trim())
-        voiding = null
-        voidReason = ''
         notify.success('已作废这笔成交')
         await load('trades')
       } else {
-        await wb.voidFlow(ask.id, flowVoidReason.trim())
-        voidingFlow = null
-        flowVoidReason = ''
+        await wb.voidFlow(ask.id, voidReason.trim())
         notify.success('已作废这笔出入金')
         account = await wb.getAccount()
       }
@@ -338,8 +334,6 @@
   const flowForm = () => ({ flow_date: '', amount: '', note: '', requestId: wb.newRequestId() })
   let flow = $state(flowForm())
   let accountError = $state('')
-  let voidingFlow = $state<string | null>(null)
-  let flowVoidReason = $state('')
 
   async function recordSnapshot(e: Event) {
     e.preventDefault()
@@ -372,11 +366,10 @@
   const windowText = (w: wb.Window | undefined) =>
     !w || w.status === 'immature' ? '未成熟' : w.excess !== undefined ? wb.pct(w.excess) : `走势 ${wb.pct(w.move)}`
 
-  onMount(() => () => { voiding = null })
 
   // ---- tabs ----
   const tabItems = $derived(TABS.map(([id, label]) => ({
-    href: `#review/${id}`, label, current: tab === id, ...(id === 'cards' && toReview > 0 ? { badge: toReview } : {}),
+    href: `#review/${id}`, label, current: tab === id, ...(id === 'cards' && toReview > 0 ? { badge: toReview, badgeLabel: `待审定 ${toReview} 张` } : {}),
   })))
   // review-8 counts executed / not executed units, older snapshots decided / undecided; no `units` = not computed
   const weeklyN = (r: wb.WeeklyReview): number | null => {
@@ -569,15 +562,9 @@
             {wb.dateTime(t.executed_at)} {t.ticker} {t.side === 'buy' ? '买入' : '卖出'} {t.quantity} @ {t.price}（费 {t.fee}）
             <span data-testid="trade-plan" class="text-xs text-muted-foreground">· 关联计划：{#if t.plan_id}<a class="text-primary underline" href={`#plan/${t.plan_id}`}>{t.plan_label ?? t.plan_id}</a>{:else if t.decision_id}旧决定{:else if t.side === 'buy'}无计划（计划外）{:else}—{/if}</span>
             {#if t.voided_at}<span class="no-underline">（已作废：{t.void_reason}）</span>
-            {:else if voiding === t.id}
-              <span class="inline-flex flex-wrap items-center gap-1 align-middle">
-                <Input aria-label="作废理由" class="h-7 w-48 text-xs" bind:value={voidReason} />
-                <Button size="sm" variant="destructive" disabled={!voidReason.trim()}
-                        onclick={() => askVoid('trade', t.id, `${t.ticker} ${t.side === 'buy' ? '买入' : '卖出'} ${t.quantity} @ ${t.price}`)}>确认作废</Button>
-                <Button size="sm" onclick={() => { voiding = null; voidReason = '' }}>取消</Button>
-              </span>
             {:else}
-              <Button variant="ghost" size="sm" class="h-6 px-2 text-xs text-muted-foreground" onclick={() => { voiding = t.id; voidReason = '' }}>作废</Button>
+              <Button variant="ghost" size="sm" class="h-6 px-2 text-xs text-muted-foreground"
+                      onclick={() => askVoid('trade', t.id, `${t.ticker} ${t.side === 'buy' ? '买入' : '卖出'} ${t.quantity} @ ${t.price}`)}>作废</Button>
             {/if}
           </li>
         {:else}<li class="text-muted-foreground">暂无成交</li>{/each}
@@ -856,15 +843,9 @@
             <li class={f.voided_at ? 'text-muted-foreground line-through' : ''}>
               {f.flow_date} · {f.amount > 0 ? '入金' : '出金'} {Math.abs(f.amount)}{f.note ? `（${f.note}）` : ''}
               {#if f.voided_at}<span>（已作废：{f.void_reason}）</span>
-              {:else if voidingFlow === f.id}
-                <span class="inline-flex flex-wrap items-center gap-1 align-middle">
-                  <Input aria-label="作废理由" class="h-7 w-48 text-xs" bind:value={flowVoidReason} />
-                  <Button size="sm" variant="destructive" disabled={!flowVoidReason.trim()}
-                          onclick={() => askVoid('flow', f.id, `${f.flow_date} ${f.amount > 0 ? '入金' : '出金'} ${Math.abs(f.amount)}`)}>确认作废</Button>
-                  <Button size="sm" onclick={() => { voidingFlow = null; flowVoidReason = '' }}>取消</Button>
-                </span>
               {:else}
-                <Button variant="ghost" size="sm" class="h-6 px-2 text-xs text-muted-foreground" onclick={() => { voidingFlow = f.id; flowVoidReason = '' }}>作废</Button>
+                <Button variant="ghost" size="sm" class="h-6 px-2 text-xs text-muted-foreground"
+                        onclick={() => askVoid('flow', f.id, `${f.flow_date} ${f.amount > 0 ? '入金' : '出金'} ${Math.abs(f.amount)}`)}>作废</Button>
               {/if}
             </li>
           {:else}<li class="text-muted-foreground">暂无出入金</li>{/each}
@@ -896,8 +877,12 @@
 
   <ConfirmDialog bind:open={voidOpen} destructive busy={voidBusy}
                  title={voidAsk?.kind === 'flow' ? '作废这笔出入金？' : '作废这笔成交？'}
-                 consequence={`${voidAsk?.what ?? ''}：理由「${(voidAsk?.kind === 'flow' ? flowVoidReason : voidReason).trim()}」。作废后这条记录不再计入，原记录仍保留可查（划线显示）。`}
-                 actionLabel="确认作废" onConfirm={runVoid} />
+                 consequence={`${voidAsk?.what ?? ''}。作废后这条记录不再计入，原记录仍保留可查（划线显示）；理由必填。`}
+                 confirmDisabled={!voidReason.trim()} actionLabel="确认作废" onConfirm={runVoid}>
+    <Field label="作废理由" id={`${uid}-void-reason`}>
+      {#snippet children({ id, describedby })}<Input {id} aria-describedby={describedby} bind:value={voidReason} />{/snippet}
+    </Field>
+  </ConfirmDialog>
 
   <Sheet.Root open={callDrawer.open} onOpenChange={open => { if (!open) closeCalls() }}>
     <Sheet.Content side="right" width="sm">

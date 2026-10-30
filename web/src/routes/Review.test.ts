@@ -51,7 +51,6 @@ it('voids a trade only with a reason', async () => {
   expect(screen.getByRole('button', { name: '确认作废' })).toBeDisabled()
   await fireEvent.input(screen.getByLabelText('作废理由'), { target: { value: '价格录错' } })
   await fireEvent.click(screen.getByRole('button', { name: '确认作废' }))
-  await fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '确认作废' }))     // v2.10: through ConfirmDialog
   await waitFor(() => expect(calls.some(c => c.url === '/api/workbench/trades/t1/void')).toBe(true))
 })
 
@@ -150,7 +149,6 @@ describe('monthly and account tabs', () => {
     await fireEvent.click(screen.getByRole('button', { name: '作废' }))
     await fireEvent.input(screen.getByLabelText('作废理由'), { target: { value: '录错' } })
     await fireEvent.click(screen.getByRole('button', { name: '确认作废' }))
-    await fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '确认作废' }))     // v2.10: through ConfirmDialog
     await waitFor(() => {
       const voided = calls.find(c => c.url.includes('/account/flows/f1/void'))
       expect(voided).toBeTruthy()
@@ -492,8 +490,8 @@ describe('growth loop', () => {
     const tabs = screen.getAllByRole('link').filter(a => a.getAttribute('href')!.startsWith('#review/'))
     expect(tabs.slice(0, 3).map(a => a.getAttribute('href'))).toEqual(['#review/trades', '#review/cards', '#review/shadow'])
     expect(tabs[1]).toHaveTextContent('复盘卡')
-    // the badge shows the to_review count on the cards tab (a TabNav badge, part of the link's name)
-    await waitFor(() => expect(tabs[1]).toHaveTextContent(/^复盘卡\s*2$/))
+    // the badge shows the to_review count on every tab
+    expect(await screen.findByLabelText('待审定 2 张')).toHaveTextContent('2')
   })
 
   it('no badge without anything to review, and none when the cards cannot be read', async () => {
@@ -502,7 +500,7 @@ describe('growth loop', () => {
       : json({})
     render(Review, { sub: 'shadow' })
     await waitFor(() => expect((fetch as any).mock.calls.some((c: any[]) => String(c[0]).startsWith('/api/workbench/review-cards'))).toBe(true))
-    expect(screen.getByRole('link', { name: /^复盘卡/ })).toHaveTextContent(/^复盘卡$/)
+    expect(screen.queryByLabelText(/待审定/)).toBeNull()
   })
 
   it('the cards tab lists the cards', async () => {
@@ -887,27 +885,31 @@ describe('primitive layer', () => {
     expect(links.filter(a => a.getAttribute('aria-current') === 'page').map(a => a.textContent!.trim())).toEqual(['对照组'])
     expect(screen.queryByRole('tablist')).toBeNull()
     expect(screen.queryByRole('tab')).toBeNull()
-    await waitFor(() => expect(within(nav).getByRole('link', { name: /^复盘卡/ })).toHaveTextContent(/^复盘卡\s*2$/))
+    expect(await within(nav).findByLabelText('待审定 2 张')).toHaveTextContent('2')
   })
 
   it('void trade needs confirm', async () => {
     render(Review, { sub: 'trades' })
     await screen.findByText(/101.5/)
     await fireEvent.click(screen.getByRole('button', { name: '作废' }))
-    await fireEvent.input(screen.getByLabelText('作废理由'), { target: { value: '价格录错' } })
-    await fireEvent.click(screen.getByRole('button', { name: '确认作废' }))
-    // the reason alone sends nothing: the confirm dialog names the trade and the reason
+    // one dialog: it names the trade, holds the reason field and starts on the safe choice
     const dialog = await screen.findByRole('dialog')
     expect(dialog).toHaveAccessibleName('作废这笔成交？')
     expect(dialog).toHaveTextContent('NVDA')
-    expect(dialog).toHaveTextContent('价格录错')
+    expect(within(dialog).getByLabelText('作废理由')).toBeInTheDocument()
+    await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: '取消' })))
+    expect(within(dialog).getByRole('button', { name: '确认作废' })).toBeDisabled()       // no reason yet
     expect(calls.some(c => c.url.includes('/void'))).toBe(false)
+    // cancelling sends nothing
     await fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(calls.some(c => c.url.includes('/void'))).toBe(false)
-    // confirming sends the reason and the dialog closes
-    await fireEvent.click(screen.getByRole('button', { name: '确认作废' }))
-    await fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '确认作废' }))
+    // confirming with a reason sends it and closes the dialog
+    await fireEvent.click(screen.getByRole('button', { name: '作废' }))
+    const again = await screen.findByRole('dialog')
+    expect((within(again).getByLabelText('作废理由') as HTMLInputElement).value).toBe('')      // the reason does not leak between openings
+    await fireEvent.input(within(again).getByLabelText('作废理由'), { target: { value: '价格录错' } })
+    await fireEvent.click(within(again).getByRole('button', { name: '确认作废' }))
     await waitFor(() => expect(calls.some(c => c.url === '/api/workbench/trades/t1/void')).toBe(true))
     const voided = calls.find(c => c.url === '/api/workbench/trades/t1/void')!
     expect(JSON.parse(String(voided.init!.body))).toEqual({ reason: '价格录错' })

@@ -24,7 +24,7 @@
 
   // Segments by plan source; a voided plan (status other than ok) is drawn in the fill colour whatever its source.
   function segmentColor(seg: Segment): string {
-    if (seg.status && seg.status !== 'ok') return theme.fill
+    if (seg.status && seg.status !== 'ok') return theme.fill   // #rrggbbaa is fine for line strokes: the alpha is honoured
     return seg.kind === 'rule' || seg.kind === 'own' || seg.kind === 'agent' ? roleColor(theme, seg.kind) : theme.mutedForeground
   }
 
