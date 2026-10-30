@@ -2,6 +2,118 @@
 
 版本号与 roadmap 版本对应，见 [roadmap](docs/roadmap/roadmap.md)。
 
+## v2.10.0 — 2026-10-31
+
+设计标准与界面重构（[spec](docs/specs/2026-10-30-v2.10-design-system-and-ui-refactor-design.md)、[实施 plan](docs/plans/2026-10-30-v2.10-design-system-and-ui-refactor.md)）：前端九个版本逐页堆出来，同一状态各处各一种颜色与写法；本版写下一份设计标准（[docs/design-system.md](docs/design-system.md)，活文档），并把全部路由和组件迁到统一的原语层。**纯前端重构：不加功能、不改接口、不改口径、不改地址**（`lib/router.ts` 与 `web/src/lib/*.ts` 除 `theme.ts` 外一字未动；与后端逐字对齐的文案常量由原有跨语言测试照旧守护）。状态：`engineering_done`、`user_acceptance_pending`——**无迁移、无 `.env` 变化；`web/dist` 未重建、服务未重启、未打 tag、未推送**，页面目检与真实数据核对留给 Task 9（逐项授权）。
+
+### 交付
+
+- **Tailwind v4 CSS-first**：`@tailwindcss/vite` 取代 `tailwind.config.ts` 与 PostCSS（两个配置文件删除）；令牌值在 `web/src/styles/tokens.css`（浅 / 深两套，一律十六进制，两种图表库的颜色解析不认 oklch），`styles/app.css` 用 `@theme inline` 映射成类名。令牌采用 shadcn 命名但不采用其默认取值：次要文字 `text-muted-foreground`、次级表面 `bg-muted`、强调 `primary`；旧 `text-muted` / `accent` 与 shadcn 同名异义，Task 1 一次性改名、不留别名（`test_no_legacy_token_names`）。首次打开跟随系统深浅色，状态色在两套里各调一次且满足 AA（`tokens.test.ts` 逐条断言）。字号仅 `text-xs` … `text-xl` 五档，圆角一个值。
+- **通用层** `web/src/lib/ui/<组件>/`：shadcn-svelte 1.7.2 经 CLI 复制的 18 个组件（底层 Bits UI 2.20.2），加 `DataTable`（≥ 1024px 粘性表头、数字列右对齐、已结束行置灰、窄屏 `cards="narrow"` 行转卡、「显示更多」）、`ConfirmDialog`（后果一句话、动作名按钮、焦点在取消）、`Field`、`TabNav`（路由级页签 = 链接 + `aria-current`）、`notify`（`svelte-sonner` 的 toast，主题读本项目 `lib/theme.ts`，失败 toast 不自动消失）、`useNarrow()`（`max-width: 767px`）。
+- **领域层** `web/src/lib/ui/domain/`：`status.ts` 一张状态词汇表（`TONES` 领域 → 键 → 语气、`LABELS` 中文，已有中文常量按引用复用）与 `StatusPill`（未知键开发模式抛错）；`DataBlock`（加载 / 无数据 / 没算 / 降级 / 失败五态）、`MetricValue`、`CutoffTime`、`SampleSize`、`CalcVersion`、`VersionChip`、`PlanLevels`、`RefLink`、`SourceBadge`（为 v2.11 预留）、`PageHeader`、`Section`、`Icon`（`@lucide/svelte`，显式映射表 `icons.ts`）。缺值写「没算」或状态文字，不再用「—」或空白表达状态。
+- **页面迁移**：应用壳、今日、计划与讨论（Task 5）；标的与复盘、K 线（Task 6）；知识、数据、工具、设置（Task 7）全部只组合 `lib/ui/` 原语；emoji 全删，导航与按钮图标走 `Icon`；不可逆动作（续跑、重新运行 Agent、作废成交 / 流水、断开连接、归档、撤回补充）经 `ConfirmDialog`；操作成功改 toast；窄屏（< 768px）的「今日」计划表、计划页、运行详情行转卡；多栏卡片网格按 ≥ 1024 两栏或四栏、768–1023 两栏、< 768 单栏。
+- **图表主题** `lib/charts/theme.ts`（`readChartTheme()` 从 CSS 变量解析十六进制）与 `EChart.svelte`；`CandleChart` 的涨跌、标记、价位线、作废计划全部取令牌，主题切换时重建；图表色 `--chart-rule` / `--chart-own` / `--chart-agent` 三种来源色与 `--chart-1…5` 序列色相互拉开。
+- **组件画廊** `#_ui`：只在开发模式由 `app.svelte` 动态导入，不进 `lib/router.ts` 的路由联合，生产包整体剔除（Task 8 退出条件核对过，见下）。
+- **静态守护** `tests/test_frontend_design_guards.py`（Task 4 起阻断）：原色类名、十六进制 / `rgb()` 字面量、emoji、`<style>` 块、裸 `<button>`、`{@html}` 恰好两处、原生 `confirm` / `alert` / `prompt`（`navigation-guard.ts` 永久豁免）、状态词汇覆盖后端枚举；存量靠分片基线容纳，各迁移波删自己那片，Task 8 删整个目录并加 `test_baseline_retired`。
+- **删除**：`lib/components/Modal.svelte`、`Drawer.svelte`、`Skeleton.svelte`、旧 `StatusPill.svelte`（`tests/test_dashboard_frontend_source.py` 改查 `lib/ui/domain/StatusPill.svelte`、`lib/ui/sheet/`、`lib/ui/skeleton/`）、`tailwind.config.ts`、`postcss.config.js`、`tests/frontend_design_baseline/`。
+- **文档**：[design-system.md](docs/design-system.md) 首版（Task 3）与收尾补齐；`docs/architecture.md` §5 加 v2.10 一段；`docs/README.md` 列入设计标准与 spec / plan 链接；roadmap 状态。
+- **提交**（`git log --oneline 4ae2339..HEAD`，自下而上）：`62286fb` docs（plan 去重，另一会话的文档提交）、`3932e4f` Tailwind v4 与令牌类名改名、`f44b00b` 令牌 v1 与通用层、`960d1d1` Task 2 审查修复、`ab6c93a` 领域层与状态词汇、`281df14` 守护与分片基线、`eea7be8` Task 3 审查修复、`251d615` 壳 / 今日 / 计划 / 讨论、`68a6340` 第一波原语缺口、`04eee7e` Task 5 审查修复、`2991f96` 标的与复盘、`0ef74fe` 知识 / 数据 / 工具 / 设置、`813258a` Task 7 审查修复、`92da2c7` 第二波原语缺口、`d0448d0` Task 6 审查修复、`51216a1` 退役旧组件 / lucide / 基线、`da76090` 全量 code review 修复波。
+
+### 依赖与版本
+
+- 新增（精确版本，不带 `^`）：`tailwindcss` 4.3.3、`@tailwindcss/vite` 4.3.3（devDependencies）；`bits-ui` 2.20.2、`@internationalized/date` 3.12.4、`@lucide/svelte` 1.65.0、`svelte-sonner` 1.2.2、`tailwind-variants` 3.3.1（不用 4.0.0，超出 registry 范围）、`cn` 0.3.3（dependencies）。`@tailwindcss/upgrade` 与 `shadcn-svelte` CLI 只用 `npx` 一次性运行，不进 `package.json`。
+- 删除：`tailwindcss@3`、`postcss`、`autoprefixer`、`lucide`。不装 `tw-animate-css`、`mode-watcher`、`clsx`、`tailwind-merge`。其余依赖不升级（Vite 6、Vitest 4、ECharts 5、lightweight-charts 4 等的新主版本不在本版范围）。
+- 版本号：`web/package.json` 与 `web/package-lock.json` 的根包 `2.10.0`。口径、提示词、模型层版本一律不变；**无迁移，`.env` 与 LaunchAgent plist 不变**。
+
+### 与 spec 的差异（plan 2026-10-30 仓库核对，D1–D18；spec 不改）
+
+- **D1** spec §2.1 的规模（`web/src` 12 844 行、9 个路由文件、40 个组件、12 个 `lib/*.ts`）：v2.9 合入后实际 22 464 行（含测试）、`routes/` 8 个页面文件加 `#discuss/<id>` 由 `Discussion.svelte` 承担 = 9 个路由、`lib/components/` 44 个组件、18 个 `lib/*.ts` 非测试模块。
+- **D2** spec §2.2 的计数：原色类共 122 处、30 个文件；`<table>` 30 处、18 个文件；`<button>` 133 个、其中带 `underline` 37 个；守护按全部 Tailwind 色名加 `white` / `black` 检查（比 spec 的 11 个色名宽）。
+- **D3** `{@html}`「只允许一处」→ 现有两处（概念卡正文、原理分节正文），都在 `Knowledge.svelte`，守护按「恰好两处」（Q2）。
+- **D4** 「不得出现 `window.confirm`」→ `lib/navigation-guard.ts` 的「研究编辑未保存，离开？」依赖同步返回值，列为永久豁免、行为不变（Q1）。
+- **D5** 「期望文本一字不改」→ `Settings.test.ts` 的 `'✅ 成功'` 改为 `'成功'`（去 emoji，Q3），是唯一例外（实现期另有一处，见下）。
+- **D6** `Knowledge` 的 `<style>` 不是直接删除，而是搬到 `styles/knowledge-body.css`（只用令牌变量），负责 `{@html}` 内容排版。
+- **D7** `tailwind.config.ts` / `postcss.config.js` 在 Task 1 就删（codemod 已迁入 CSS）；令牌改名不留旧名别名（同名异义）。
+- **D8** `sonner` 改读本项目 `theme.ts`，不装 `mode-watcher`、`tw-animate-css`。
+- **D9** `@lucide/svelte` 锁 1.65.0（registry 声明 `^0.561.0`，1.0 无破坏性改动，`icons/<name>` 子路径不变）。
+- **D10** 只采用 shadcn 令牌命名、不采用其 oklch 取值；不引入 `--secondary`、`--accent`、`--sidebar-*`。
+- **D11** 画廊 `#_ui` 不进 `lib/router.ts` 的 `Zone` 联合（`tests/test_dashboard_frontend_source.py` 逐字钉住），在 `app.svelte` 按 `import.meta.env.DEV && hash === '#_ui'` 动态导入。
+- **D12** 路由级页签（复盘、知识、工具、设置的子页）按「导航用 `<a href>`」做成 `TabNav`；Bits `Tabs` 只留给不改地址的页内页签（本版除画廊外没有页面使用，运行详情三块保持纵排 `Section`）。
+- **D13** `PlanTable`、`NodeGraph` 的 900px 统一为 `useNarrow`（< 768px），相关测试的查询串随之改。
+- **D14** `Button` 尺寸加 `icon`（28px 方形）。
+- **D15** 守护从 Task 4 起就是阻断（分片基线只减不增），不是 spec 写的「波 0 只报告、波 4 转阻断」。
+- **D16** 数据族「三色」在代码里不存在，族卡显示的是 `data_fetch_runs` 的 `success / partial / failed / skipped`，词汇表用 `fetch` 域；旧 `StatusPill` 的 `green / yellow / red` 键无调用方，不进新表。
+- **D17** 时间标注「北京时间」→ `fmtBeijing` 输出后缀是「北京」，`lib/format.ts` 不改，`CutoffTime` 原样使用。
+- **D18** 每波验收截图（`docs/roadmap/v2.10-acceptance/`）→ 开发服务器没有后端数据（真实服务有 HTTP Basic 认证，Claude 不代输密码），各波只截画廊，页面截图集中在 Task 9。
+
+### 实现偏差与已知限制
+
+下面是实现期相对 plan 的偏差，以及审查中接受而没有修的限制。
+
+**流程与构建**
+
+- 构建一律输出到 scratch 目录（`.superpowers/…/build-dist`），**`web/dist` 未重建**：真实服务每次请求从 `web/dist` 读盘，原地构建等于上线半成品。**Task 9 重启服务前必须先 `cd web && npm run build`**。
+- 一次性库全量 pytest 在 Task 8 跑了一次做回归（plan / spec §8.1 原写「无 SQL 改动，不跑」）。
+- `tests/test_no_zhipu_residue.py` 因冻结的 v2.10 plan 文档提到该测试自身的文件名而失败（`4ae2339` 引入，早于实现）；收紧为忽略对守护自身文件名的引用，白名单未扩。
+
+**Task 1 样式引擎**
+
+- codemod 把非类名的单词 `shadow` 误改成 `shadow-sm`（`growth.ts` 的 `FACT_KEYS`、Review / SideNav / ReviewCard 的 id 与键、测试名），已全部还原；多行 class 里的 `rounded` 漏改，手工改为 `rounded-sm`。
+- v4 固有差异未补偿：`hover:` 只在可悬停设备生效；`space-y-*` 改为给非末项加下边距；占位符颜色改为 `--muted-foreground`；`package-lock` 里传递依赖 `postcss` 等小版本随锁文件重算上移（直接依赖无升级）。
+
+**Task 2 通用层**
+
+- shadcn-svelte CLI 需临时取消 `HTTP(S)_PROXY` 才能拉 registry；18 个组件全部经 CLI。`@lucide/svelte@1.65.0` 的 `loader-2` 只剩无类型别名，`sonner` 改用 `loader-circle`；registry 组件用的 `data-open` / `data-active` 变体 Bits UI 2.20.2 不输出，统一改写为 `data-[state=…]` / `data-[orientation=…]`。
+- `svelte-sonner` 无条件调用 `matchMedia`，jsdom 下 `Toaster` 不渲染（测试局部桩，页面测试断言对 `notify` 的调用）；`vitest.config.ts` 加 `css.include` 以便 `?raw` 读 CSS；新增 `web/src/vite-env.d.ts`。
+- 接口相对 plan 的增减：`Badge` 无 `variant`；`Alert` 变体 `info | warn | danger`，`info` 默认 `role="status"`；`SheetContent` 加 `width`；`Table.Root` 加 `containerClass`；`candleOptions` 返回 `{ chart, series }`；`DataTable` 加 `expandLabel`、`ariaLabel`；`TabNav` 项加 `badgeLabel`；`ConfirmDialog` 加 `children`（表单体，如作废理由）、`confirmDisabled`，打开时焦点落在「取消」，`busy` 时 `Esc` / 遮罩 / 取消都不响应。
+- `DataTable` ≥ 1024px 为粘性表头用 `lg:overflow-visible`，宽表在 1024–1280px 可能撑出页面横向滚动；放在 `Card` 里的 `DataTable` 在修复波里另加 `lg:in-data-[slot=card]:overflow-x-auto`（`Card` 的 `overflow-hidden` 本来就让粘性表头失效），卡片里的宽表在任何宽度都在卡片内滚动、不被裁掉。
+- `Collapsible` 在挂载即展开的特定用法下内容保持 `hidden`（侧栏工具组复现），侧栏用 `forceMount` + `{#if}` 绕过，规则写进 design-system.md。
+
+**Task 3 领域层**
+
+- `chain.invalidated` 语气为 neutral（`ENDED_STATES` 终态、行置灰），spec §4.4 danger 里的「作废」留给作废成交类异常。`LABELS` 复用现有常量，两处例外是副本加键：`execution`（`EXECUTION_TEXT` 无 `unplanned`）、`node`（加 `missing` 缺证据 / `not_recorded` 未记录，文案取自 `workbench/run_overview.py`）；另新增 `consistency` 域；`instruction.exit` 为 danger（保留旧版红色醒目）；`agent.pass` 文案为「不建议买入」（修复波对齐）。
+- `RefLink` props 为 `{ref, onFact?, onCall?, expanded?}`，依赖 `lib/components/ConceptTerm`（分层倒置，本版接受）。`StatusPill` 文字用 `text-foreground`，语气由圆点、边框、淡底表达（着色文字在浅色主题达不到 AA）。`PlanLevels` 加 `lead` / `sharesLabel`，计划表逐字保留原「区间限价 95.10–97.30 · 止损 … · 120 股」写法。
+
+**Task 4 守护**
+
+- 正则收紧两处：`<button(?![\w-])`（不把 `<button-group>` 算原生按钮）、`\{@html\s+\S`（注释里的 `{@html}` 不计数）。审查加强：SQL 词汇取最后一次 `CREATE` / `ALTER … ADD CONSTRAINT` 的定义；原生弹层另抓带字符串参数的裸 `confirm('…')`、`window?.`、`globalThis.`；原色类另抓方向边框、`ring-offset`、`shadow`、`accent`、`caret`、`placeholder` 与 `fill/stroke/ring/from/via/to/outline/divide/decoration-(white|black)`；扫描非空断言；每个（检查, 文件）至多一个分片。分片计数大于实际值时不报错（plan「≤ 记录值」规则），只拦超额与过期条目。
+- 守护仍能绕过的写法：`confirm(变量)`、CSS 命名色（`text-[red]`、`style="color:red"`）、`<svelte:element this="button">`。
+
+**迁移波（Task 5–7）与修复波**
+
+- 「今日」接口无截止时间、计划页接口无版本号与截止时间，故两处未用 `CutoffTime` / `VersionChip`（只加 `CalcVersion`）；`AgentPlanCard`、`KnowledgeRefs` 因测试钉住文本未换 `VersionChip` / `PlanLevels`。
+- 期望文本变化（§8.1 例外，除 D5 的 Q3 外）：运行详情确认按钮 `'确认继续'` → `'从此节点继续'`（spec §4.7 要求确认按钮写动作名）。设置页测试夹具 `status: 'green'` → `'up'`（`green` 不是后端会产生的值，新 `StatusPill` 在开发模式遇未知键抛错）。另有两处纯选择器改动：`Today.test.ts`、`workbench-scenarios.test.ts` 的 `getByText(/站上 MA50 30.0%/)` 改为 `/站上 MA50/` 加 `toHaveTextContent`（`MetricValue` 是子 `<span>`）。
+- 结构性变化导致的测试改写（期望片段不变）：版本链、「其他触发」、窄屏计划卡从整行文本变为表格单元格逐片断言（单元格间的「 · 」不再出现）；成功提示改为 toast，测试断言 `notify` 调用；作废成交 / 流水改为一个确认框（理由输入在框内）。
+- 未被测试钉住、用户可见的文案变化：多处「—」改为状态文字（未记录 / 无 / 从未运行 / 未指定 / 无分组 / 无记录 / 未提供 / 无详情 / 不适用 / 未成交 / 未出结果 / 未设置 / 未填写 / 未知标的 / 无信号日 / 无失败）；工具运行记录与设置页状态从英文码改为中文标签；知识页头「你自己的经验在 我的知识」「· 返回概念」两句由页签取代；webhook「（已配置）」改为字段说明「已配置」；新增「没有已注册的任务」「已保存」（toast）与各确认框后果句；`FetchDateModal` 首个模式按钮由「默认」改为「昨日（T-1）」（既有 bug：`MODES` 只取初值）；周 / 月复盘卡「生成于」改用 `fmtBeijing`（加「北京」，时间值从 UTC 截取改为北京时间）；对照组「待入场」由合并三列改为三列各写一次；PlanTimeline 新显示「有效」「无差异」、旧版本行「最新第 n 版」链接；「其他触发」空值显示「无标签 / 无规则 / 无简报」；计划历史表分组组头新增可见文本「MU·10-21（5）」「无链（1）」（`DataTable` 组头固定带「（行数）」）。
+- 「重新运行 Agent」（运行详情、计划页）与「从此节点继续」新增确认步骤（spec §4.7）；运行详情续跑失败后确认框关闭、原因显示在页面上，重试需重新点按钮（旧版失败后框留着可直接重试）。
+- 「复盘」实为 8 个页签（brief 写 5 个）；`FinancialSeries`（转置矩阵）与 `DataBrowse` 原始值表用 `Table.*` 而非 `DataTable`；`VolumeBars` 非放量柱用 `fill-muted-foreground/40`；候选标记用规则色、成交标记用涨跌色；`PlanHistoryTable` 的 `chain_open` 灰底改由分组承担；`RuleBaseline` 当前无调用方，照迁不删。
+- 窄屏导航抽屉 `side="top"`（spec「顶部抽屉」原文）；原生 `<select>`（13 个文件共 20 处，测试以 `change` 事件驱动）与原生 `<details>`（21 处，原始数据折叠）保留，各自写类串、未经 `Select` / `Collapsible`。
+- 全量 code review 后的修复波（`da76090`）：工具运行记录行用唯一 key（`run_id|started_at`，同一 `run_id` 的续跑记录都显示）；`DataTable` 卡片模式分组列表以组名为 `aria-label`；`Review` 四个提交按钮加 `busy` 与重入保护；复盘的工具调用抽屉与 `FetchDateModal` 关闭后焦点回到打开前的元素；讨论页 `CutoffTime` 空值不渲染；「今日」的 `pctText` 换为 `MetricValue percent`（输出相同）。上述「—」改状态文字（I1）的是未被测试钉住的那批（见上）。
+- **仍保留的「—」**（被现有测试钉住、按 §8.1 不改）：`PlanTimeline` 的「执行 —」「影子 —」、标的关键数据 `rs60` 空值、复盘上线前检查列、`ReviewCard` 轨道行、`RunOverview`「输入 — · 产出 —」、`DataBrowse` 原始值单元格、数据页 FRED 任务「下次 —」、`Fundamentals` / `FinancialSeries` 自由现金流、复盘「关联计划：—」与「n=0 · 均 — · 中 — · 正 —」。页面层另有约 76 处直接调用对 `null` 返回「—」的 `lib` 格式化函数（`fmtBeijing`、`wb.pct`、`fmtPct`、`wb.dateTime`、`signedPct`、`rText`），多数字段非空，未逐一迁移。
+- `TabNav` 角标的 `aria-label` 在无角色 `<span>` 上（为保持旧测试 `getByLabelText('待审定 N 张')`），非 Chrome 读屏不一定读出；`FetchDateModal` 主按钮仍为「确认」（被现有测试钉住，§8.1 保留，是 §4.7「写动作名」的例外）。
+
+**已知限制**
+
+- spec §10 三条：知识卡 `{@html}` 内容只能套容器令牌；ECharts 工具提示浮层单独映射；lightweight-charts 切主题重建实例。
+- **数据页拉取状态仍显示英文码**（`success` / `partial` / `failed` / `skipped`）：旧界面即英文且被 5 处现有断言钉住，按 §8.1 保留；是否作为 Q3 类例外改为中文，待你决定。
+- 系统深色且未手动选过主题的用户，首屏先闪浅色再切换（`applyTheme()` 在 `onMount`，`index.html` 冻结不能加内联脚本）。
+- 键盘走查测试在 jsdom 里以 `focus()` + `click` 近似（无 user-event）；焦点回退两处测试守护行为但不证明没有修复就会失败（jsdom / Bits 可能自行恢复焦点）。页面未接真实数据目检（开发服务器无后端），留给 Task 9。
+- `job_reports.status` 列无 CHECK 约束：工具运行记录遇 `run` 域以外的值时开发模式抛错、生产显示中性灰加原键，Task 9 在真实数据上看一眼。
+- Agent 连接「已等待 N 秒」从页面挂载起算，刷新归零。
+- 不加 `NODE_OPTIONS=--no-experimental-webstorage` 时，本机 Node 26 下 `theme.test.ts` 等依赖 `localStorage` 的测试会因 Node 自带 webstorage 报错（环境问题，与本版无关）。
+
+### 测试计数
+
+- 前端：vitest 85 个文件 / 999 个测试通过；`svelte-check` 949 个文件 0 错误 0 警告；`npm run build` 通过（输出到 scratch 目录，**`web/dist` 未重建**）。
+- 离线 pytest：2503 passed / 976 skipped；一次性库 pytest：3479 passed（本版无 SQL 改动，按 plan 本可跳过，作为回归跑了一次）。
+- 退出条件（spec §8.3）核对：页面里无原色类、无 `<style>` 块（除允许列表）、无 `text-2xl` 以上字号、无 `from 'lucide'`；`git diff v2.9.0 --stat -- 'web/src/lib/*.ts'` 只有 `theme.ts`；现有测试删掉的 `expect` 文本只有 Q3 一处；`UiGallery` / `组件画廊` 不在生产构建产物里。
+
+### 未做的事
+
+- **没有迁移、没有 `.env` 变化**；**`web/dist` 未重建、服务未重启、未打 tag `v2.10.0`、未推送 `origin`**——都要你逐项授权（Task 9）。
+- 页面目检与验收截图（浅 / 深色）、在真实数据上看工具运行记录的状态值、`Tabs` 原语暂无页面使用、数据页拉取状态的中文化、`ConceptTerm` 搬进 `ui/domain/`、原生 `<select>` / `<details>` 迁到原语，都留待之后。
+- 验收记录 `docs/roadmap/v2.10-acceptance.md` 在真实验收开始时新建；不宣称用户验收已过。
+
 ## v2.9.0 — 2026-10-30
 
 可执行的计划（[spec](docs/specs/2026-10-30-v2.9-executable-plans-design.md)、[实施 plan](docs/plans/2026-10-30-v2.9-executable-plans.md)）：一只股票同一时间只有一条活跃的计划链，同一标的再次触发不再开第二份互不相关的计划，而是作为 `retrigger` 信号并入这条链、在入场期直接出修订版（可续期）；计划写成可以照着执行的指令——入场类型、开盘落在区间内 / 跳空高开 / 跳空低开各做什么、本计划何时作废、最长持有；「今日」改成入场期 / 持仓中 / 已结束三组的计划表，「标的」页新增计划历史表；取消「采纳 / 否决 / 降级」按钮，采纳由成交关联的计划推出；持仓每个交易日有一行持仓状态（距止损、距 T1、已持有与剩余天数、指令与维持理由），持满最长持有仍没到成本 + 1R 就给退出指令（时间止损），止损触及或失效条件成立进入退出期；新计划与影子口径 `plan-2` / `plan-shadow-2` 与旧 `plan-1` / `plan-shadow-1` 并列、不混算。**有迁移 029**（`trades.plan_id`、`trade_plans` 加两列并替换价位约束、三张新表、`plan_reviews` 约束放宽）。规则 v1、`screen-1`、`regime-2`、`stages-4`、`daily-1`（节点、顺序、行数不变）、`agent-brief-1`、`agent-discuss-1`、模型层一字未动；`agent-2` 的提议、反方、解读提示词逐字不变（逐个比对过大写字符串常量的 sha256，只有 `RETRO_AGENT_VERSION` 与 `REVIEW_VERSION` 两个版本号翻转）。状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`——**迁移 029 尚未在真实库执行、服务尚未以 v2.9 代码重启、手动验收未做**（见「待你核查后确认」）。实现偏差与已知限制见下文与 [roadmap](docs/roadmap/roadmap.md)。

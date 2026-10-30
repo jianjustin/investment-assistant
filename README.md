@@ -4,7 +4,9 @@
 
 不接券商，不自动下单。所有规则都**未经验证**（Phase 0 Gate HOLD），系统输出的价位和仓位只是你所设规则的算术结果，不构成投资建议。
 
-当前版本：**v2.9.0**（2026-10-30），见 [CHANGELOG](CHANGELOG.md)。
+当前版本：**v2.10.0**（2026-10-31），见 [CHANGELOG](CHANGELOG.md)。
+
+v2.10 状态：`engineering_done`、`user_acceptance_pending`（代码已合入 `main`，无迁移、无 `.env` 变化；前端界面重构，功能、接口、口径与地址不变；`web/dist` 尚未重建、服务尚未以 v2.10 代码重启、未打 tag、未推送；真实服务上的页面目检与验收见 [CHANGELOG](CHANGELOG.md)）。设计标准见 [docs/design-system.md](docs/design-system.md)。
 
 v2.9 状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`（代码已合入 `main`；迁移 029 尚未在真实库执行，服务尚未以 v2.9 代码重启，手动验收未做；上线当天对持仓的两类影响——时间止损的退出指令与止损口径变化——需先用只读脚本核对）。实现偏差与已知限制见 [CHANGELOG](CHANGELOG.md)。
 

@@ -4,7 +4,7 @@
 
 **看效果**：`cd web && npm run dev`，打开 `#_ui`（组件画廊，只在开发模式存在，不进生产包）。画廊里有令牌、通用层全部组件、状态词汇、领域原语、数据块五态、图标，浅 / 深色可切换；改组件先在画廊里看一遍。
 
-**守护**：`tests/test_frontend_design_guards.py` 静态检查 `web/src`：页面里不得有原色类名（`red-600`、`white` 等）、十六进制 / `rgb()` 字面量、emoji、`<style>` 块、裸 `<button>`、新增 `{@html}`、原生 `confirm` / `alert` / `prompt`；状态词汇表必须覆盖后端能产生的每个状态值。违反即测试失败。
+**守护**：`tests/test_frontend_design_guards.py` 静态检查 `web/src`：页面里不得有原色类名（`red-600`、`white` 等）、十六进制 / `rgb()` 字面量、emoji、`<style>` 块、裸 `<button>`、新增 `{@html}`、原生 `confirm` / `alert` / `prompt`；状态词汇表必须覆盖后端能产生的每个状态值。违反即测试失败。守护是正则检查，仍能绕过的写法：`confirm(变量)`、CSS 命名色（`text-[red]`、`style="color:red"`）、`<svelte:element this="button">`——审查时要看，不能只靠测试。
 
 ---
 
@@ -142,6 +142,8 @@
 
 另有 `ready`：只渲染内容。页面级错误（整页取不到）用同一组件撑满内容区（`page`，只对 `loading` / `empty` / `not_computed` / `error` 生效并居中；`ready` / `degraded` 照常满宽渲染内容）；块级错误只占该块。**调用方必须给 `empty` / `not_computed` 传 `message`**（写为什么空、缺什么）；组件内的默认文案（`empty` 「暂无数据」、`degraded` 「部分数据不全」、`error` 「加载失败」）只是兜底，页面上出现兜底文案就是漏写。**禁止**用空白、`—`、`null`、`undefined` 表达以上任一态。`MetricValue`、`CutoffTime`、`SampleSize`、`PlanLevels` 缺值时自带「没算」徽标或文字，不透传 `fmtBeijing` / `fmtNum` 返回的「—」。
 
+**存量例外**：被现有测试钉住期望文本、按 spec §8.1 保留「—」的位置（运行一览「输入 — · 产出 —」、数据页 FRED 任务「下次 —」、`PlanTimeline` 的「执行 —」「影子 —」、复盘「关联计划：—」与「n=0 · 均 — · 中 — · 正 —」、自由现金流、`DataBrowse` 原始值单元格等），以及页面层约 76 处直接调用 `fmtBeijing` / `wb.pct` / `fmtPct` / `wb.dateTime` / `signedPct` / `rText` 的地方（字段多数非空，未逐一迁移）。**新代码不得照抄**：缺值一律走 `DataBlock` / `MetricValue` / `CutoffTime` 或写状态文字（「未记录」「无」「未提供」「无分组」……）。
+
 ## 6. 组件清单
 
 通用层在 `web/src/lib/ui/<组件>/`（shadcn-svelte 1.7.2 复制来的，样式已按第 2 节改写；Bits UI 2.20.2），领域层在 `web/src/lib/ui/domain/`（自写）。页面**只组合这两层的原语**，不自己拼样式。
@@ -157,10 +159,10 @@
 | `DataTable`（`Table`） | `ui/data-table/`：`columns: Column<T>[]`（`key`、`header`、`align: 'left' \| 'num' \| 'center'`、`title` 表头提示、`cell` 自定义单元格 snippet、`value` 纯文本取值、`cardLabel`、`hideInCards`）；`rows` 或 `groups: RowGroup<T>[]`（`key`、`label`、`rows`、`muted`、`collapsible`、`open` 初始状态、`onToggle`）；`rowKey`；`caption`；`headerGroups`（分组表头）；`expandable` snippet + `bind:expanded`；`muted(row)`；`cards: 'never' \| 'narrow'`；`ariaLabel`（给 `<table>` 和卡片列表一个可访问名称，不出现可见 caption）；`expandLabel(row, open)`（行展开按钮的可访问名称，默认「展开详情」，例如 `展开 MU` / `收起 MU`）；`pageSize`（默认 50，「显示更多」）；`sticky`（默认 true）。底层 `ui/table/` 的 `Table.Root` 有 `containerClass` | 数字列 `align: 'num'`；状态列用 `StatusPill`；已结束 / 作废 / 被取代的行置灰（`muted`），不删不隐藏；展开按钮可用 `Enter`，名称恒为「展开详情」、状态在 `aria-expanded`；空表接 `DataBlock` |
 | `ConfirmDialog`（`Dialog`） | `ui/confirm-dialog/ConfirmDialog.svelte`：`bind:open`、`title`、`consequence`（后果一句话）、`actionLabel`（动作名，不写「确定」）、`destructive`、`busy`、`onConfirm`、`onCancel`、`confirmDisabled`（只禁用动作按钮，如必填项还没填）、`children`（可选的表单体，渲染在说明与按钮之间，如作废理由） | 不可逆动作必经；**确认后不自动关**，调用方做完事再 `open = false`；`busy` 时 `Esc` / 遮罩 / 取消都不响应；初始焦点在「取消」（`onOpenAutoFocus` 显式落到取消按钮，有表单体时也一样；`busy` 时两个按钮都禁用，交给 Bits 默认处理），关闭后焦点回到打开前的元素；底层 `ui/dialog/` 内容渲染在 Portal |
 | `Sheet` | `ui/sheet/`：`SheetContent` 的 `side`、`width: 'sm' \| 'lg'`（24rem / 40rem，窄屏全宽，默认 `sm`） | 右侧抽屉 |
-| `Tabs` | `ui/tabs/`（Bits `Tabs`） | 只用于**不改地址**的页内页签（运行详情三块等）；方向键 / `Home` / `End` 由 Bits 负责 |
-| `TabNav` | `ui/tab-nav/TabNav.svelte`：`label`、`items: { href, label, current, badge?, badgeLabel? }[]`；`badgeLabel` 写成角标的 `aria-label` 与 `title`（如「待审定 2 张」），没给就保持原样 | 路由级页签（「复盘」「知识」「工具」「设置」的子页）是**导航**：链接 + `aria-current="page"`，不是 `tablist`（D12） |
+| `Tabs` | `ui/tabs/`（Bits `Tabs`） | 只用于**不改地址**的页内页签；方向键 / `Home` / `End` 由 Bits 负责。本版除画廊外没有页面使用它（运行详情三块仍是纵排 `Section`），保留为备用原语 |
+| `TabNav` | `ui/tab-nav/TabNav.svelte`：`label`、`items: { href, label, current, badge?, badgeLabel? }[]`；`badgeLabel` 写成角标的 `aria-label` 与 `title`（如「待审定 2 张」），没给就保持原样 | 路由级页签（「复盘」「知识」「工具」「设置」的子页）是**导航**：链接 + `aria-current="page"`，不是 `tablist`（D12）。已知取舍：角标的 `aria-label` 挂在无角色的 `<span>` 上（为保持旧测试 `getByLabelText('待审定 N 张')`），非 Chrome 的读屏器不一定读出，所以角标的数字旁仍应有可见文字 |
 | `Field` | `ui/field/Field.svelte`：`label`、`id`、`hint`、`error`、`required`；children 得到 `{ id, describedby, invalid }` | 标签在上，说明与错误在下（错误 `role="alert"`，输入框 `aria-describedby`）；必填 `*` 画在标签旁、不在 `<label>` 内；数字字段 `inputmode="decimal"` 右对齐 |
-| `Input` / `Textarea` / `Select` / `Label` | `ui/input/`、`ui/textarea/`、`ui/select/`、`ui/label/`；`Select.Trigger` 的 `size`：`sm` / `md` | 放进 `Field` 使用 |
+| `Input` / `Textarea` / `Select` / `Label` | `ui/input/`、`ui/textarea/`、`ui/select/`、`ui/label/`；`Select.Trigger` 的 `size`：`sm` / `md` | 放进 `Field` 使用。**原生 `<select>` 与 `<details>` 是允许的写法**：现有测试以 `change` 事件驱动 `<select>`（本版 13 个文件共 20 处，各自写类串），原始数据折叠用原生 `<details>`（21 处，未经 `Collapsible`）；新页面优先用 `Select` / `Collapsible`，改动这些旧处时顺手迁移，不为迁移单独改 |
 | `Tooltip` | `ui/tooltip/`；`Tooltip.Provider` 在 `app.svelte` 全局提供，默认延迟 300ms | 侧栏折叠时的图标标签；表头缩写说明 |
 | `Popover` | `ui/popover/` | `ConceptTerm` 的就地展开（同一页同时只开一个、`Esc` 收起的规则沿用） |
 | `Collapsible` | `ui/collapsible/` | 规则基线折叠、已结束组、「看推理过程」、侧栏子菜单。**用法**：`CollapsibleContent` 外面再包 `{#if open}` 时加 `forceMount`（让 `{#if}` 当开关）；Bits 的内容在 jsdom 里挂载即展开时会一直 `hidden`（SideNav 复现，最小例子复现不了，见 `collapsible.test.ts`）。关闭态的内容留在 DOM 里带 `hidden` |
@@ -194,17 +196,17 @@
 ### 6.3 已知取舍
 
 - **`DataTable` 在 ≥ 1024px 不在容器内滚动。** 表格容器用 `max-lg:overflow-x-auto lg:overflow-visible`：只有这样粘性表头才能贴着视口顶部（容器一旦 `overflow` 非 `visible`，`sticky` 就只在容器内生效）。代价是 1024–1280px 之间列特别多的宽表会撑出页面而不是在容器内滚动；< 1024px 容器照常横向滚动。列多的页面请精简列（`hideInCards`）或 `sticky={false}` 并自行包一层滚动容器（`sticky={false}` 本身不会在 ≥ 1024px 添加滚动）。放在 `Card` 里的 `DataTable` 例外：`Card` 自带 `overflow-hidden`（圆角裁切），粘性表头在卡片内本来就贴不到视口，所以容器多一条 `lg:in-data-[slot=card]:overflow-x-auto`，卡片里的宽表在任何宽度都在卡片内横向滚动，不被裁掉。
-- **`RefLink` 依赖 `lib/components/ConceptTerm.svelte`**（`ui/` 反向依赖了 `components/`）。Task 7 会把 `ConceptTerm` 迁到 `Popover`，之后它可以搬进 `ui/domain/`，`RefLink` 的 import 随之改路径。`RefLink` 的动作类引用（`fact:` / `call:`）是 `Button variant="link"`，用 `text-[length:inherit]` 继承所在文字的字号并允许选中文字；导航类（`know:` / `concept:`）是 `<a href>` 或 `ConceptTerm`。
+- **`RefLink` 依赖 `lib/components/ConceptTerm.svelte`**（`ui/` 反向依赖了 `components/`，分层倒置，本版接受）。`ConceptTerm` 已迁到 `Popover`，但仍留在 `lib/components/`；日后搬进 `ui/domain/` 时 `RefLink` 的 import 随之改路径。`RefLink` 的动作类引用（`fact:` / `call:`）是 `Button variant="link"`，用 `text-[length:inherit]` 继承所在文字的字号并允许选中文字；导航类（`know:` / `concept:`）是 `<a href>` 或 `ConceptTerm`。
 - **`StatusPill` 的文字不着状态色**，原因见第 2 节要点：淡底上的同色文字在浅色主题下对比度不足 AA。
 - **`CutoffTime` 的相对时间用原生 `title`**，不用 `Tooltip`（不依赖 Provider，任何地方可用）。`VersionChip` 的 `ref` 同理。
 
 ## 7. 交互规范
 
 - **动作**：一个页头或一段至多一个 `primary` 按钮；不可逆动作（续跑、重新运行 Agent、作废成交、断开连接、归档知识、撤回补充）必须经 `ConfirmDialog`，确认按钮写动作名不写「确定」。不使用原生 `confirm` / `alert` / `prompt`（唯一豁免：`lib/navigation-guard.ts` 的未保存编辑离开确认，它依赖同步返回值，行为不变）。
-- **提交与幂等**（沿用 `request_id` 规则）：提交中按钮 `busy`、表单只读；失败保留草稿与 `request_id` 并在表单内 `Alert` 显示原因；成功后 `notify.success`。
+- **提交与幂等**（沿用 `request_id` 规则）：提交中按钮 `busy`（并在处理函数里加重入保护，进行中再点不重复提交）、表单只读；失败保留草稿与 `request_id` 并在表单内 `Alert` 显示原因；成功后 `notify.success`。
 - **轮询**（重新复查、讨论回答、登录、续跑）：进行中显示 `running` 徽标与已等待时间；超时文案沿用各自的 `*_PENDING_TEXT`，不自动无限重试。
 - **链接与按钮**：导航用 `<a href="#…">`（可中键打开、可复制），动作用 `<button>`（即 `Button`）；二者视觉不同（链接下划线，按钮无下划线）。
-- **键盘**：所有可交互元素 `focus-visible` 显示 `--ring` 焦点圈；`Esc` 关闭最上层浮层；表格行展开可用 `Enter`；侧栏可 `Tab` 遍历。
+- **键盘**：所有可交互元素 `focus-visible` 显示 `--ring` 焦点圈；`Esc` 关闭最上层浮层；表格行展开可用 `Enter`；侧栏可 `Tab` 遍历。由页面自己打开的 `Sheet` / 对话框（不是 `Dialog.Trigger`）在打开时记下 `document.activeElement`，并在 `onCloseAutoFocus` 里把焦点还给它（复盘的工具调用抽屉、`FetchDateModal`）；`ConfirmDialog` 自带初始焦点（取消）与关闭后回到打开前元素。
 - **表单**：标签在上；错误在字段下且 `aria-describedby`；数字字段 `inputmode="decimal"`、右对齐；日期时间字段注明时区。
 - **表格**：数字列右对齐等宽；文本列左对齐；状态列用 `StatusPill`；表头可带工具提示；超过 50 行的表分页或「显示更多」（接口已有 `total`）；已结束 / 作废 / 被取代的行置灰（`muted`），不删不隐藏。
 - **深浅色**：切换即时生效（图表重绘），所有颜色经令牌；`lib/theme.ts` 的 `getTheme()` / `toggleTheme()` / `onThemeChange()`。
