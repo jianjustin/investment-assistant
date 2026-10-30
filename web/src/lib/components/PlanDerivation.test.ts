@@ -66,12 +66,6 @@ const derivation = (over: Partial<Derivation> = {}): Derivation => ({
   ...over,
 })
 
-// The step table has no caption of its own (the <summary> 逐项计算 names it); the TR detail table may sit inside the same <details>.
-const stepsTable = async () => {
-  const summary = await screen.findByText('逐项计算')
-  return within(summary.closest('details')!).getAllByRole('table').at(-1)!
-}
-
 describe('PlanDerivation', () => {
   afterEach(() => vi.restoreAllMocks())
   beforeEach(() => resetConceptIndex())
@@ -111,7 +105,7 @@ describe('PlanDerivation', () => {
              result: '166', stored: '166' }),
     ] }))
     render(PlanDerivation, { planId: 'p1' })
-    const table = await stepsTable()
+    const table = await screen.findByRole('table', { name: '逐项计算' })
     expect(table).toHaveTextContent('ref_price − 0.5 × atr，四舍五入到分')
     expect(table).toHaveTextContent('ref_price=110.750000')
     expect(table).toHaveTextContent('ENTRY_ATR=0.5')
@@ -132,7 +126,7 @@ describe('PlanDerivation', () => {
       ],
     }))
     const own = render(PlanDerivation, { planId: 'o1' })
-    const ownTable = await stepsTable()
+    const ownTable = await screen.findByRole('table', { name: '逐项计算' })
     expect(within(ownTable).getByText('入场下沿（你的输入）')).toBeInTheDocument()
     expect(within(ownTable).getByText('资金（冻结值）')).toBeInTheDocument()
     own.unmount()
@@ -145,7 +139,7 @@ describe('PlanDerivation', () => {
                      result: '96.00', stored: '96.00', source: 'agent_output', refs: ['call:1'] })],
     }))
     render(PlanDerivation, { planId: 'a1' })
-    const agentTable = await stepsTable()
+    const agentTable = await screen.findByRole('table', { name: '逐项计算' })
     expect(within(agentTable).getByText('止损（Agent 引用 call:1）')).toBeInTheDocument()
   })
 
@@ -208,7 +202,7 @@ describe('PlanDerivation', () => {
              substitutions: {}, result: '111.87', stored: '111.870' }),
     ] }))
     render(PlanDerivation, { planId: 'p1' })
-    const table = await stepsTable()
+    const table = await screen.findByRole('table', { name: '逐项计算' })
     expect(within(table).getAllByText('2.234567')).toHaveLength(2)   // 6 位小数原样
     expect(within(table).getByText('111.870')).toBeInTheDocument()   // 尾随 0 保留，不取整成 111.87
     expect(screen.getByText(/110\.750000/)).toBeInTheDocument()      // 冻结的参考价同样原样
@@ -229,7 +223,7 @@ describe('PlanDerivation', () => {
         { id: '1', price_date: '2026-10-21', open: '109', high: '111', low: '108.9', close: '110.1', revision: '0' }] },
     }))
     render(PlanDerivation, { planId: 'p1' })
-    await stepsTable()
+    await screen.findByRole('table', { name: '逐项计算' })
     expect(await termIds()).toEqual(new Set(wanted))
     // the original row labels are still readable
     expect(screen.getByText('入场下沿（公式）')).toBeInTheDocument()

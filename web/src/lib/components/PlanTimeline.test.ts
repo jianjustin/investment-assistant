@@ -88,8 +88,8 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 // The version chain is a DataTable now: one <tr> per version (the old <ol aria-label="版本"> lines became cells).
 const versionRows = async () => {
-  const tables = await screen.findAllByRole('table')
-  return [...tables[0].querySelectorAll('tbody > tr')] as HTMLElement[]
+  const table = await screen.findByRole('table', { name: '版本' })
+  return [...table.querySelectorAll('tbody > tr')] as HTMLElement[]
 }
 
 describe('PlanTimeline', () => {
@@ -109,7 +109,7 @@ describe('PlanTimeline', () => {
     expect(rows[1]).toHaveTextContent('最新')
     expect(rows[1]).toHaveTextContent('差异：止损 95.00 → 96.00')
     // 点开即该版的 Agent 计划卡
-    await fireEvent.click(within(rows[0]).getByRole('button', { name: '展开详情' }))
+    await fireEvent.click(screen.getByRole('button', { name: '第 0 版' }))
     expect(await screen.findByText(/^Agent 计划 · 第 0 版/)).toBeInTheDocument()
   })
 
@@ -266,7 +266,7 @@ describe('PlanTimeline', () => {
       knowledge_refs: [{ ref: 'know:3@1', title: '回踩别追', fields: ['thesis'], current_version: 2 }] }] }))
     render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
     const rows = await versionRows()
-    await fireEvent.click(within(rows[1]).getByRole('button', { name: '展开详情' }))
+    await fireEvent.click(screen.getByRole('button', { name: '第 1 版' }))
     const refs = await screen.findByRole('region', { name: '引用的知识' })
     expect(within(refs).getByRole('link', { name: 'know:3@1' })).toHaveAttribute('href', '#knowledge/mine/3@1')
     expect(refs).toHaveTextContent('当前已是第 2 版')
@@ -341,7 +341,7 @@ describe('PlanTimeline', () => {
       h({}), h({ session: '2026-10-28', held_sessions: 3, instruction: 'sell_half', t1_reached: true, to_t1_pct: null, stop_mode: 'trailing', reached_1r: true }),
       h({ session: '2026-10-29', instruction: 'exit', exit_reason: 'time_stop', reason: '时间止损' })] }))
     render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
-    const table = within(await screen.findByRole('region', { name: '持仓状态' })).getByRole('table')
+    const table = await screen.findByRole('table', { name: '持仓状态' })
     const rows = table.querySelectorAll('tbody tr')
     expect(rows).toHaveLength(3)
     expect(rows[0]).toHaveTextContent('2026-10-27')
@@ -356,13 +356,13 @@ describe('PlanTimeline', () => {
     expect(rows[1]).toHaveTextContent('已到 1R，时间止损解除')
     expect(rows[1]).toHaveTextContent('到 T1：卖出一半，余下按移动止损')
     expect(rows[2]).toHaveTextContent('次一交易日开盘卖出（时间止损）')
-    expect(rows[2].querySelector('[data-domain="instruction"][data-status="exit"]')).toHaveAttribute('data-tone', 'warn')
+    expect(rows[2].querySelector('[data-domain="instruction"][data-status="exit"]')).toHaveAttribute('data-tone', 'danger')
   })
 
   it('has no holding status section while the chain is in its entry period', async () => {
     render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
     await versionRows()
-    expect(screen.queryByRole('region', { name: '持仓状态' })).toBeNull()
+    expect(screen.queryByRole('table', { name: '持仓状态' })).toBeNull()
   })
 
   it('reads a gap-voided plan-shadow-2 version as 开盘作废, not the raw code', async () => {

@@ -45,7 +45,9 @@ describe('PlanRowDetail', () => {
   it('sheet closes on Esc: a tool call opens in a side sheet and Escape dismisses it', async () => {
     mount()
     const card = await screen.findByRole('region', { name: 'Agent 计划' })
-    await fireEvent.click(within(card).getAllByRole('button', { name: 'call:1' })[0])
+    const opener = within(card).getAllByRole('button', { name: 'call:1' })[0]
+    opener.focus()
+    await fireEvent.click(opener)
     const sheet = await screen.findByRole('dialog')
     expect(sheet).toHaveAccessibleName('工具调用 call:1')
     expect(sheet).toHaveTextContent('get_price_bars')
@@ -54,6 +56,7 @@ describe('PlanRowDetail', () => {
     await waitFor(() => expect(sheet.contains(document.activeElement)).toBe(true))
     await fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(opener))     // focus goes back to the call button
   })
 
   it('a call that is not in the run says so inside the sheet', async () => {

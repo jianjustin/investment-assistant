@@ -77,11 +77,11 @@ describe('RunOverview', () => {
     expect(screen.queryByRole('link', { name: '运行详情' })).toBeNull()
   })
 
-  it('each stage status is a node StatusPill with the backend wording; missing / not_recorded borrow a tone', async () => {
+  it('each stage status is a node StatusPill with the backend wording; missing / not_recorded are vocabulary keys', async () => {
     vi.mocked(api.getRunOverview).mockResolvedValue(overview({ stages: IDS.map(id =>
       id === 'collect' ? line(id, { status: 'partial', status_text: '部分失败' })
       : id === 'review' ? line(id, { status: 'not_recorded', status_text: '未记录' })
-      : id === 'agent' ? line(id, { status: 'missing', status_text: '缺失' }) : line(id)) }))
+      : id === 'agent' ? line(id, { status: 'missing', status_text: '缺证据' }) : line(id)) }))
     render(RunOverview, {})
     const rows = await screen.findAllByRole('listitem')
     const pill = (row: HTMLElement) => row.querySelector('[data-domain="node"]')!
@@ -90,8 +90,8 @@ describe('RunOverview', () => {
     expect(pill(rows[1])).toHaveAttribute('data-tone', 'success')
     expect(pill(rows[6])).toHaveAttribute('data-tone', 'neutral')
     expect(pill(rows[6])).toHaveTextContent('未记录')
-    expect(pill(rows[5])).toHaveAttribute('data-tone', 'danger')
-    expect(pill(rows[5])).toHaveTextContent('缺失')
+    expect(pill(rows[5])).toHaveAttribute('data-tone', 'warn')
+    expect(pill(rows[5])).toHaveTextContent('缺证据')
   })
 
   it('a missing table is 没算 with its reason, an empty day is plain empty text (no badge)', async () => {

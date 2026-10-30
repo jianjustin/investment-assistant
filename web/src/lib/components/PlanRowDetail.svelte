@@ -40,6 +40,13 @@
   let callOpen = $state(false)
   let callDrawer = $state<{ seq: number | null; call: wb.AgentToolCall | null }>({ seq: null, call: null })
   let callError = $state('')
+  // The sheet is opened from code, so there is no trigger to give focus back to: remember the call button that opened it.
+  let opener: HTMLElement | null = null
+  function restoreFocus(event: Event) {
+    event.preventDefault()
+    opener?.focus()
+    opener = null
+  }
 
   // How long the recheck has been running (the page hands in when it started); ticks only while it runs.
   let tick = $state(Date.now())
@@ -70,6 +77,8 @@
   async function showCall(ref: string) {
     if (!head) return
     callError = ''
+    const active = document.activeElement
+    opener = active instanceof HTMLElement && active !== document.body ? active : null
     try {
       const detail = await wb.getAgentRun(head.run.id)
       const seq = Number(ref.split(':')[1])
@@ -154,7 +163,7 @@
   <PlanNotes notes={row.notes ?? []} {onNote} />
 
   <Sheet.Root bind:open={callOpen}>
-    <Sheet.Content side="right" width="sm">
+    <Sheet.Content side="right" width="sm" onCloseAutoFocus={restoreFocus}>
       <Sheet.Header>
         <Sheet.Title>工具调用 call:{callDrawer.seq}</Sheet.Title>
         <Sheet.Description class="sr-only">这次 Agent 运行里的一次工具调用</Sheet.Description>

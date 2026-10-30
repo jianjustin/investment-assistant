@@ -199,7 +199,7 @@
   {/if}
 
   {#if view}
-    <div class="grid gap-4 lg:grid-cols-2">
+    <div class="grid gap-4 md:grid-cols-2">
       <Card.Root size="sm" role="region" aria-label="筛选" class="gap-2 px-3 text-sm">
         <div class="flex flex-wrap items-center gap-2">
           <h2 class="text-base font-medium">筛选</h2>

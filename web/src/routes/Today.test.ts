@@ -41,10 +41,6 @@ beforeEach(() => {
 })
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.clearAllMocks() })
 
-// A row opens with the 展开详情 button of its own row (the ticker button toggles it too).
-const expandRow = async (ticker: string) =>
-  within((await screen.findByRole('button', { name: ticker })).closest('tr')!).getByRole('button', { name: '展开详情' })
-
 const tableCalls = () => calls.filter(c => c.url.startsWith('/api/workbench/plan-table')).map(c => c.url)
 
 describe('plan table page', () => {
@@ -212,7 +208,7 @@ describe('row actions', () => {
       return json({ inputs: [] })
     }
     render(Today)
-    await fireEvent.click(await expandRow('MU'))
+    await fireEvent.click(await screen.findByRole('button', { name: '展开 MU' }))
     await fireEvent.click(await screen.findByRole('button', { name: '重新复查' }))
     expect(await screen.findByText('复查完成：维持')).toBeInTheDocument()
     expect(calls.some(c => c.url === '/api/workbench/chains/MU/2026-10-29/recheck' && c.init?.method === 'POST')).toBe(true)
@@ -226,7 +222,7 @@ describe('row actions', () => {
       return json({ inputs: [] })
     }
     render(Today)
-    await fireEvent.click(await expandRow('MU'))
+    await fireEvent.click(await screen.findByRole('button', { name: '展开 MU' }))
     await fireEvent.click(await screen.findByRole('button', { name: '重新复查' }))
     expect(await screen.findByText('不能重新复查：这条链已发出退出指令，不再复查')).toBeInTheDocument()
   })
@@ -237,7 +233,7 @@ describe('row actions', () => {
       : url.startsWith('/api/workbench/chains/') ? json(chainView()) : json({ inputs: [] })
     const poll = vi.spyOn(api, 'pollRun').mockRejectedValue(new Error('run timeout'))
     render(Today)
-    await fireEvent.click(await expandRow('MU'))
+    await fireEvent.click(await screen.findByRole('button', { name: '展开 MU' }))
     await fireEvent.click(await screen.findByRole('button', { name: '重新复查' }))
     expect(await screen.findByText('复查仍在后台进行，稍后刷新查看')).toBeInTheDocument()
     expect(poll).toHaveBeenCalledWith('plan_recheck-1', { timeoutMs: 900_000 })
@@ -251,7 +247,7 @@ describe('row actions', () => {
       return json({ inputs: [] })
     }
     render(Today)
-    await fireEvent.click(await expandRow('MU'))
+    await fireEvent.click(await screen.findByRole('button', { name: '展开 MU' }))
     const notes = await screen.findByRole('region', { name: '备注' })
     await fireEvent.input(within(notes).getByLabelText('备注正文'), { target: { value: '等回踩' } })
     await fireEvent.click(within(notes).getByRole('button', { name: '保存备注' }))
@@ -268,7 +264,7 @@ describe('row actions', () => {
     respondOther = async (url, init) => url === '/api/workbench/plan-notes' && init?.method === 'POST'
       ? json({ status: 'created', record: { id: 9 } }) : json({ inputs: [] })
     render(Today)
-    await fireEvent.click(await expandRow('X01'))
+    await fireEvent.click(await screen.findByRole('button', { name: '展开 X01' }))
     const notes = await screen.findByRole('region', { name: '备注' })
     await fireEvent.input(within(notes).getByLabelText('备注正文'), { target: { value: '规则基线备注' } })
     await fireEvent.click(within(notes).getByRole('button', { name: '保存备注' }))

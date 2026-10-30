@@ -37,6 +37,13 @@
   let callOpen = $state(false)
   let callDrawer = $state<{ seq: number | null; call: wb.AgentToolCall | null }>({ seq: null, call: null })
   let callError = $state('')
+  // The sheet is opened from code, so there is no trigger to give focus back to: remember the call button that opened it.
+  let opener: HTMLElement | null = null
+  function restoreFocus(event: Event) {
+    event.preventDefault()
+    opener?.focus()
+    opener = null
+  }
   let reasoningOpen = $state<Record<string, boolean>>({})
   const T = ATTACH.timeline
 
@@ -86,6 +93,8 @@
 
   async function showCall(v: tl.Version, ref: string) {
     callError = ''
+    const active = document.activeElement
+    opener = active instanceof HTMLElement && active !== document.body ? active : null
     try {
       const detail = await wb.getAgentRun(v.run.id)
       const seq = Number(ref.split(':')[1])
@@ -230,13 +239,15 @@
       <p class="text-xs text-muted-foreground">并入的单元：{chain.retriggers.map(r => `${r.unit_signal_date}（${r.rule_ids.map(wb.ruleLabel).join('、')}）`).join('；')}</p>
     {/if}
 
-    <DataTable columns={versionColumns} rows={chain.versions} rowKey={v => v.plan_id} cards="narrow" bind:expanded {expandable} sticky={false}
+    <DataTable columns={versionColumns} rows={chain.versions} rowKey={v => v.plan_id} cards="narrow" bind:expanded {expandable} sticky={false} ariaLabel="版本"
+               expandLabel={v => `第 ${v.version_no} 版`}
                muted={v => v.plan.status === 'invalid'} />
     {#if callError}<p class="text-xs text-destructive">{callError}</p>{/if}
 
     {#if chain.holding_status?.length}
       <Section level={3} title="持仓状态">
-        <DataTable columns={holdColumns} rows={chain.holding_status} rowKey={(h) => `${h.session}|${chain!.holding_status!.indexOf(h)}`} sticky={false} />
+        <DataTable columns={holdColumns} rows={chain.holding_status} rowKey={(h) => `${h.session}|${chain!.holding_status!.indexOf(h)}`} sticky={false}
+                   cards="narrow" ariaLabel="持仓状态" />
       </Section>
     {/if}
 
@@ -281,7 +292,7 @@
 </Card.Root>
 
 <Sheet.Root bind:open={callOpen}>
-  <Sheet.Content side="right" width="sm">
+  <Sheet.Content side="right" width="sm" onCloseAutoFocus={restoreFocus}>
     <Sheet.Header>
       <Sheet.Title>工具调用 call:{callDrawer.seq}</Sheet.Title>
       <Sheet.Description class="sr-only">这次 Agent 运行里的一次工具调用</Sheet.Description>

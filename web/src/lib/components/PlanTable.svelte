@@ -53,6 +53,7 @@
     setExpanded(next)
   }
   const isOpen = (row: wb.PlanTableRow) => expandedSet.has(row.row_id)
+  const expandLabel = (row: wb.PlanTableRow, open: boolean) => `${open ? '收起' : '展开'} ${row.ticker}`
 
   const T = ATTACH.today
   const CASES: wb.OpenCase[] = ['in_zone', 'gap_up', 'gap_down']
@@ -99,7 +100,7 @@
   // ---- columns ----
   const tickerCol: Column<wb.PlanTableRow> = { key: 'ticker', header: '标的', cell: tickerCell, cardLabel: '标的' }
   const chainCol: Column<wb.PlanTableRow> = { key: 'chain', header: '链与版本', cell: chainBlock }
-  const actionCol: Column<wb.PlanTableRow> = { key: 'action', header: '动作', cell: actionCell, hideInCards: true }
+  const actionCol: Column<wb.PlanTableRow> = { key: 'action', header: '动作', cell: actionCell }
   const rangeCol: Column<wb.PlanTableRow> = { key: 'range', header: '入场类型与区间', cell: rangeCell, hideInCards: true }
   const holdCol = (group: 'entry' | 'holding'): Column<wb.PlanTableRow>[] => [
     { key: 'stop', header: '止损', align: 'num', cell: group === 'holding' ? holdStopCell : stopCell, hideInCards: true },
@@ -117,17 +118,17 @@
     ({ key: 'status', header: '状态', cell: group === 'entry' ? entryStatus : group === 'holding' ? holdingStatusCell : endedStatus })
 
   const entryColumns = $derived<Column<wb.PlanTableRow>[]>(narrow.current
-    ? [tickerCol, chainCol, levelsCol, validCol, ...caseCols, voidCol, statusCol('entry')]
+    ? [tickerCol, actionCol, chainCol, levelsCol, validCol, ...caseCols, voidCol, statusCol('entry')]
     : [tickerCol, chainCol, actionCol, rangeCol, ...holdCol('entry'), sharesCol, validCol, ...caseCols, voidCol, statusCol('entry')])
   const holdingColumns = $derived<Column<wb.PlanTableRow>[]>(narrow.current
-    ? [tickerCol, chainCol, levelsCol, validCol,
+    ? [tickerCol, actionCol, chainCol, levelsCol, validCol,
        { key: 'holding', header: '持仓状态', cell: holdingBlock }, { key: 'instruction', header: '指令', cell: instructionBlock },
        voidCol, statusCol('holding')]
     : [tickerCol, chainCol, actionCol, rangeCol, ...holdCol('holding'), sharesCol, validCol,
        { key: 'holding', header: '持仓状态', cell: holdingBlock }, { key: 'instruction', header: '指令', cell: instructionBlock },
        voidCol, statusCol('holding')])
   const endedColumns = $derived<Column<wb.PlanTableRow>[]>(narrow.current
-    ? [tickerCol, chainCol, levelsCol, statusCol('ended'), { key: 'ended_at', header: '结束日', cell: endedAtCell }]
+    ? [tickerCol, actionCol, chainCol, levelsCol, statusCol('ended'), { key: 'ended_at', header: '结束日', cell: endedAtCell }]
     : [tickerCol, chainCol, rangeCol, ...holdCol('entry'), statusCol('ended'), { key: 'ended_at', header: '结束日', cell: endedAtCell }])
 </script>
 
@@ -230,9 +231,8 @@
 {/snippet}
 {#snippet levelsCell(row: wb.PlanTableRow)}
   {#if row.plan}
-    {#if entryTypeText(row.plan)}<span class="block">{entryTypeText(row.plan)}</span>{/if}
     <PlanLevels low={num(row.plan.entry_low)} high={num(row.plan.entry_high)} stop={num(row.plan.stop)} target1={num(row.plan.target1)}
-                shares={row.plan.shares ?? null} />
+                shares={row.plan.shares ?? null} lead={entryTypeText(row.plan) ?? '入场类型未记录'} sharesLabel="" />
     {#if row.plan.shares == null && row.plan.shares_note}<span class="block text-xs text-muted-foreground">{row.plan.shares_note}</span>{/if}
   {:else}{@render na()}{/if}
 {/snippet}
@@ -253,7 +253,7 @@
     {#if entryRows.length === 0}
       <DataBlock state="empty" message="入场期暂无可执行的计划" />
     {:else}
-      <DataTable columns={entryColumns} rows={entryRows} rowKey={r => r.row_id} cards="narrow" sticky={false}
+      <DataTable columns={entryColumns} rows={entryRows} rowKey={r => r.row_id} cards="narrow" sticky={false} ariaLabel="入场期计划" {expandLabel}
                  bind:expanded={() => expandedSet, setExpanded}>
         {#snippet expandable(row)}{@render detail(row)}{/snippet}
       </DataTable>
@@ -264,7 +264,7 @@
     {#if holdingRows.length === 0}
       <DataBlock state="empty" message="当前无持仓" />
     {:else}
-      <DataTable columns={holdingColumns} rows={holdingRows} rowKey={r => r.row_id} cards="narrow" sticky={false}
+      <DataTable columns={holdingColumns} rows={holdingRows} rowKey={r => r.row_id} cards="narrow" sticky={false} ariaLabel="持仓计划" {expandLabel}
                  bind:expanded={() => expandedSet, setExpanded}>
         {#snippet expandable(row)}{@render detail(row)}{/snippet}
       </DataTable>
@@ -284,7 +284,7 @@
           {#if endedRows.length === 0}
             <DataBlock state="empty" message="最近 5 个交易日内没有结束的计划" />
           {:else}
-            <DataTable columns={endedColumns} rows={endedRows} rowKey={r => r.row_id} cards="narrow" sticky={false}
+            <DataTable columns={endedColumns} rows={endedRows} rowKey={r => r.row_id} cards="narrow" sticky={false} ariaLabel="已结束计划" {expandLabel}
                        muted={() => true} bind:expanded={() => expandedSet, setExpanded}>
               {#snippet expandable(row)}{@render detail(row)}{/snippet}
             </DataTable>

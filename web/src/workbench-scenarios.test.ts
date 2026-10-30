@@ -57,7 +57,7 @@ it('today shows the plan table with the executable plan and no way to decide', a
   history.replaceState(null, '', '#today')
   render(App)
   expect(await screen.findByRole('heading', { name: '入场期（可执行）1' })).toBeInTheDocument()
-  const table = within(screen.getByRole('region', { name: /^入场期/ })).getByRole('table')
+  const table = screen.getByRole('table', { name: '入场期计划' })
   expect(table).toHaveTextContent('SYNTH·09-01 第 0 版')
   expect(table).toHaveTextContent('区间限价 123.20–126.30')
   expect(table).toHaveTextContent('开在 95.10–97.30：开盘买入 120 股')
@@ -103,8 +103,7 @@ it('shows the market context card on today', async () => {
 it('expanding a row shows the baseline and the note box, still without a decision form', async () => {
   history.replaceState(null, '', '#today')
   render(App)
-  const ticker = await screen.findByRole('button', { name: 'SYNTH' })
-  await fireEvent.click(within(ticker.closest('tr')!).getByRole('button', { name: '展开详情' }))
+  await fireEvent.click(await screen.findByRole('button', { name: '展开 SYNTH' }))
   const detail = await screen.findByTestId('row-detail')
   expect(within(detail).getByTestId('rule-baseline')).toHaveTextContent('规则基线 plan-2')
   expect(within(detail).getByRole('region', { name: '备注' })).toBeInTheDocument()

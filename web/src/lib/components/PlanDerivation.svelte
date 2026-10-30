@@ -7,7 +7,7 @@
   import * as api from '../api'
   import ConceptTerm from './ConceptTerm.svelte'
   import { ATTACH, derivationStepConcept, ruleConcept } from '../knowledge'
-  import { CLAUSE_TEXT, CONSISTENCY_TEXT, SOURCE_TEXT } from '../derivation'
+  import { CLAUSE_TEXT, SOURCE_TEXT } from '../derivation'
   import type { Derivation, Step, TriggerClause, TriggerItem, UnitDerivation } from '../derivation'
 
   // 二者给一个：planId 展开完整四段推导，unit 只展开触发段；挂载时请求一次。
@@ -48,8 +48,6 @@
   const trSteps = $derived(steps.filter(s => s.key.startsWith('tr_')))      // TR1..TR14 明细默认折叠
   const mainSteps = $derived(steps.filter(s => !s.key.startsWith('tr_')))
 
-  // 推导核对状态没有自己的状态域：借 node 域的语气（成功 / 失败 / 降级），文字用 CONSISTENCY_TEXT。
-  const CONSISTENCY_TONE: Record<string, string> = { consistent: 'success', mismatch: 'failed', incomplete: 'degraded' }
   const clauseClass = (result: string): string =>
     result === 'violated' ? 'text-destructive' : result === 'not_frozen' ? 'text-warn' : 'text-muted-foreground'
   const sourceLabel = (step: Step): string => {
@@ -98,7 +96,7 @@
   {:else}
     {#if consistency}
       <p class="flex flex-wrap items-center gap-2">
-        <StatusPill domain="node" value={CONSISTENCY_TONE[consistency.status]} text={CONSISTENCY_TEXT[consistency.status]} />
+        <StatusPill domain="consistency" value={consistency.status} />
         <span class="text-xs"><ConceptTerm id={D.consistency}>推导核对</ConceptTerm></span>
         <span class="text-xs text-muted-foreground">{plan?.derivation_version ?? triggerOnly?.derivation_version}</span>
       </p>
@@ -117,7 +115,7 @@
       {#each candidates as c (c.candidate_id)}
         <div class="space-y-0.5">
           <p class="text-xs"><ConceptTerm id={ruleConcept(c.rule_id)}>{c.rule_id}</ConceptTerm> · v{c.rule_version} · {c.action}{c.note ? ` · ${c.note}` : ''}</p>
-          <DataTable columns={clauseColumns} rows={c.clauses} rowKey={(_clause) => c.clauses.indexOf(_clause)} caption={`触发条件 ${c.rule_id}`} sticky={false} />
+          <DataTable columns={clauseColumns} rows={c.clauses} rowKey={(_clause) => c.clauses.indexOf(_clause)} ariaLabel={`触发条件 ${c.rule_id}`} cards="narrow" sticky={false} />
         </div>
       {:else}
         <p class="text-xs text-muted-foreground">无候选</p>
@@ -155,7 +153,7 @@
           <details class="space-y-1">
             <summary class="cursor-pointer text-xs">日线（{plan.inputs.bars.length} 根，{plan.inputs.bars_note}）</summary>
             <p class="text-xs"><ConceptTerm id={D.bars} /></p>
-            <DataTable columns={barColumns} rows={plan.inputs.bars} rowKey={(b) => b.id} caption="输入日线" sticky={false} />
+            <DataTable columns={barColumns} rows={plan.inputs.bars} rowKey={(b) => b.id} ariaLabel="输入日线" cards="narrow" sticky={false} />
           </details>
         {/if}
       </details>
@@ -165,11 +163,11 @@
         {#if trSteps.length}
           <details class="space-y-1">
             <summary class="cursor-pointer text-xs">TR 明细（{trSteps.length} 步）</summary>
-            <DataTable columns={stepColumns} rows={trSteps} rowKey={(r) => r.key} caption="TR 明细" sticky={false} />
+            <DataTable columns={stepColumns} rows={trSteps} rowKey={(r) => r.key} ariaLabel="TR 明细" cards="narrow" sticky={false} />
           </details>
         {/if}
         {#if mainSteps.length}
-          <DataTable columns={stepColumns} rows={mainSteps} rowKey={(r) => r.key} sticky={false} />
+          <DataTable columns={stepColumns} rows={mainSteps} rowKey={(r) => r.key} ariaLabel="逐项计算" cards="narrow" sticky={false} />
         {:else}
           <p class="text-xs text-muted-foreground">无可推导项</p>
         {/if}

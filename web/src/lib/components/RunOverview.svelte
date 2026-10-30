@@ -81,11 +81,6 @@
   const hasDetail = (s: StageLine) => s.skips.length > 0 || s.failures.length > 0 || s.degradations.length > 0
   const runLabel = (r: { trigger_text: string; started_at: string | null }) =>
     `${r.trigger_text} · ${r.started_at ? fmtBeijing(r.started_at).slice(11, 16) + ' 北京' : '时间未知'}`
-  // Stage statuses the vocabulary does not have (missing / not_recorded) borrow the tone of the nearest node status;
-  // the label stays the backend's status_text.
-  const NODE_KEYS = ['success', 'partial', 'degraded', 'failed', 'skipped', 'pending', 'running']
-  const NODE_ALIAS: Record<string, string> = { missing: 'failed', not_recorded: 'skipped' }
-  const nodeKey = (status: string) => NODE_KEYS.includes(status) ? status : (NODE_ALIAS[status] ?? 'skipped')
 </script>
 
 <Card.Root size="sm" role="region" aria-label="运行一览" class="gap-2 px-3 text-sm">
@@ -128,7 +123,7 @@
           <li class="grid gap-0.5">
             <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
               <span class="font-medium"><ConceptTerm id={ATTACH.overview.stages}>{s.title}</ConceptTerm></span>
-              <ConceptTerm id={ATTACH.overview.status}><StatusPill domain="node" value={nodeKey(s.status)} text={s.status_text} /></ConceptTerm>
+              <ConceptTerm id={ATTACH.overview.status}><StatusPill domain="node" value={s.status} text={s.status_text} /></ConceptTerm>
               <span>{s.sentence}</span>
               {#each s.concepts as concept, i (i)}<span class="text-xs"><ConceptTerm id={concept} /></span>{/each}
               <span class="text-xs text-muted-foreground">输入 {count(s.input_count)} · 产出 {count(s.output_count)}</span>
