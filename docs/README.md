@@ -8,6 +8,7 @@
 | --- | --- |
 | [architecture.md](architecture.md) | 运行形态、代码分层、主线数据流、数据表分组、定时任务与前端 |
 | [getting-started.md](getting-started.md) | 安装、配置（`.env` 与配置文件）、建库、启动、测试 |
+| [design-system.md](design-system.md) | 设计标准：原则、令牌（浅 / 深取值）、布局、状态词汇与语气、数据块五态、组件清单与 API、交互、图标与图表、文案；组件画廊在 `npm run dev` → `#_ui` |
 
 ### 功能（features/）
 
@@ -53,6 +54,7 @@
 | spec | 某个阶段为什么这样设计 | 写成后冻结，只增不改；命名 `specs/YYYY-MM-DD-<topic>-design.md` |
 | plan | 某个阶段怎么实施 | 写成后冻结，只增不改；命名 `plans/YYYY-MM-DD-<topic>.md` |
 | features / architecture / operations | 系统现在能做什么、怎么用、怎么验证 | 和代码在同一个提交里更新 |
+| 设计标准（design-system） | 前端用什么令牌、组件、状态词汇和交互规则 | 组件、令牌或交互规则变了，与代码同一个提交更新 `design-system.md` |
 | knowledge（概念卡与原理） | 系统里每个概念是什么意思、系统怎么跑 | 与改口径的代码同一个提交更新；口径变了该卡 `version` 加 1（改措辞、补例子不加）；改卡后需重启服务生效 |
 
 冻结文档只修失效链接，不改正文。`tests/test_docs_links.py` 会检查所有相对链接都指向存在的文件。

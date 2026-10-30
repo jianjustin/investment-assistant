@@ -25,6 +25,22 @@
   import * as Card from '$lib/ui/card/index'
   import { notify } from '$lib/ui/toast'
   import { getTheme, toggleTheme } from '$lib/theme'
+  import { TONES } from '$lib/ui/domain/status'
+  import type { StatusDomain } from '$lib/ui/domain/status'
+  import StatusPill from '$lib/ui/domain/StatusPill.svelte'
+  import VersionChip from '$lib/ui/domain/VersionChip.svelte'
+  import CutoffTime from '$lib/ui/domain/CutoffTime.svelte'
+  import SampleSize from '$lib/ui/domain/SampleSize.svelte'
+  import CalcVersion from '$lib/ui/domain/CalcVersion.svelte'
+  import MetricValue from '$lib/ui/domain/MetricValue.svelte'
+  import PlanLevels from '$lib/ui/domain/PlanLevels.svelte'
+  import RefLink from '$lib/ui/domain/RefLink.svelte'
+  import SourceBadge from '$lib/ui/domain/SourceBadge.svelte'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import PageHeader from '$lib/ui/domain/PageHeader.svelte'
+  import Section from '$lib/ui/domain/Section.svelte'
+  import Icon from '$lib/ui/domain/Icon.svelte'
+  import { ICONS } from '$lib/ui/domain/icons'
 
   // ---- tokens ----
   const surfaces = [
@@ -107,6 +123,15 @@
   ]
   const selectedLabel = $derived(selectItems.find((i) => i.value === selectValue)?.label ?? '请选择')
   let collapsibleOpen = $state(false)
+
+  // ---- domain layer ----
+  const statusDomains = Object.keys(TONES) as StatusDomain[]
+  const statusKeys = (domain: StatusDomain) => Object.entries(TONES[domain] as Record<string, string>)
+  const adoptedText = '已采纳（10-22 成交 20 股）'   // EXECUTION_TEXT.adopted with its placeholders filled in
+  const iconNames = Object.keys(ICONS) as (keyof typeof ICONS)[]
+  let refCalled = $state('')
+  let refExpanded = $state(false)
+  let retries = $state(0)
 </script>
 
 <div class="grid gap-8 pb-16">
@@ -415,6 +440,122 @@
       <Card.Footer class="text-xs text-muted-foreground">截止 2026-10-29 16:00 北京</Card.Footer>
     </Card.Root>
     <div class="flex h-6 items-center gap-3 text-sm">左<Separator orientation="vertical" />中<Separator orientation="vertical" />右</div>
+  </section>
+
+  <section class="grid gap-3" aria-labelledby="g-status">
+    <h2 id="g-status" class="text-lg font-medium">状态词汇</h2>
+    <p class="text-sm text-muted-foreground">StatusPill 只认 status.ts 的表；颜色表达语气，文字始终显示。</p>
+    <div class="grid gap-3 rounded-md border border-border bg-card p-3">
+      {#each statusDomains as domain (domain)}
+        <div class="grid gap-1.5 sm:grid-cols-[7rem_1fr] sm:items-baseline">
+          <code class="font-mono text-xs text-muted-foreground">{domain}</code>
+          <div class="flex flex-wrap gap-1.5">
+            {#each statusKeys(domain) as [key] (key)}
+              <StatusPill {domain} value={key} text={domain === 'execution' && key === 'adopted' ? adoptedText : undefined} title={`${domain}.${key}`} />
+            {/each}
+          </div>
+        </div>
+      {/each}
+    </div>
+  </section>
+
+  <section class="grid gap-3" aria-labelledby="g-domain">
+    <h2 id="g-domain" class="text-lg font-medium">领域原语</h2>
+    <div class="grid gap-3 rounded-md border border-border bg-card p-3 text-sm">
+      <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+        <VersionChip version={3} latest={3} />
+        <VersionChip version={1} latest={3} latestHref="#plan/p3" />
+        <VersionChip version={2} href="#plan/p2" ref="concept:plan.stop@2" />
+      </div>
+      <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+        <CutoffTime at="2026-10-29T22:30:00Z" />
+        <CutoffTime at="2026-10-29T22:30:00Z" label="数据时点" />
+        <CutoffTime at={null} />
+      </div>
+      <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+        <SampleSize n={12} />
+        <SampleSize n={3} />
+        <SampleSize n={null} />
+        <CalcVersion version="review-8" />
+        <CalcVersion version="review-8" concept="retro.calc" />
+      </div>
+      <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+        <MetricValue value={12} unit="股" digits={0} />
+        <MetricValue value={0.0325} percent signed tone="updown" digits={1} />
+        <MetricValue value={-0.032} percent tone="updown" digits={1} />
+        <MetricValue value={187.25} />
+        <MetricValue value={null} />
+      </div>
+      <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+        <PlanLevels low={95.1} high={97.3} stop={91.4} target1={104.7} shares={120} />
+        <PlanLevels low={95.1} high={97.3} stop={null} target1={104.7} />
+        <PlanLevels low={null} high={null} stop={null} target1={null} />
+      </div>
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <RefLink ref="fact:plans" onFact={(key) => (refCalled = `fact:${key}`)} />
+        <RefLink ref="call:2" onCall={() => (refExpanded = !refExpanded)} expanded={refExpanded} />
+        <RefLink ref="know:3@1" />
+        <RefLink ref="concept:plan.stop@1" />
+        <RefLink ref="user:12" />
+        <span class="text-xs text-muted-foreground">{refCalled}{refExpanded ? ' call:2 已展开' : ''}</span>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <SourceBadge source="yahoo" />
+        <SourceBadge source="stooq" fallback />
+      </div>
+    </div>
+  </section>
+
+  <section class="grid gap-3" aria-labelledby="g-datablock">
+    <h2 id="g-datablock" class="text-lg font-medium">数据块五态</h2>
+    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {#each [
+        { state: 'loading', title: 'loading（骨架）' },
+        { state: 'empty', title: 'empty（无信号）', message: '今日无触发' },
+        { state: 'not_computed', title: 'not_computed（没算）', message: '缺资金快照，未计算股数' },
+        { state: 'degraded', title: 'degraded（降级）', message: 'Yahoo 空结果，日线用上一交易日' },
+        { state: 'error', title: 'error（失败）', message: '概念卡暂不可用：网络中断' },
+        { state: 'ready', title: 'ready（内容）' },
+      ] as const as demo (demo.state)}
+        <Card.Root class="gap-2 py-3">
+          <Card.Header class="px-3"><Card.Title class="text-sm">{demo.title}</Card.Title></Card.Header>
+          <Card.Content class="px-3 text-sm">
+            <DataBlock state={demo.state} message={'message' in demo ? demo.message : undefined} onRetry={() => (retries += 1)}>
+              <p>AAPL 入场 187.25，止损 181.40</p>
+            </DataBlock>
+          </Card.Content>
+        </Card.Root>
+      {/each}
+    </div>
+    <p class="text-xs text-muted-foreground">重试已点 {retries} 次。</p>
+    <div class="grid gap-3 sm:grid-cols-2">
+      <div class="grid gap-1 text-xs text-muted-foreground">loading · row<DataBlock state="loading" skeleton="row" /></div>
+      <div class="grid gap-1 text-xs text-muted-foreground">loading · table<DataBlock state="loading" skeleton="table" /></div>
+    </div>
+  </section>
+
+  <section class="grid gap-3" aria-labelledby="g-layout">
+    <h2 id="g-layout" class="text-lg font-medium">页头与分段</h2>
+    <div class="grid gap-4 rounded-md border border-border bg-card p-3">
+      <PageHeader title="AAPL 计划" level={3}>
+        {#snippet meta()}<CalcVersion version="plan-2" /><CutoffTime at="2026-10-29T22:30:00Z" /><VersionChip version={2} latest={2} />{/snippet}
+        {#snippet actions()}<Button size="sm" variant="primary">重新复查</Button><Button size="sm">查看推理</Button>{/snippet}
+      </PageHeader>
+      <Section title="入场条件" level={4} description="按规则基线计算">
+        {#snippet actions()}<a href="#_ui" class="text-xs text-primary underline">更多</a>{/snippet}
+        <PlanLevels low={95.1} high={97.3} stop={91.4} target1={104.7} shares={120} />
+      </Section>
+    </div>
+  </section>
+
+  <section class="grid gap-3" aria-labelledby="g-icons">
+    <h2 id="g-icons" class="text-lg font-medium">图标</h2>
+    <div class="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+      {#each iconNames as name (name)}
+        <div class="flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1.5 text-xs"><Icon {name} /><span class="truncate">{name}</span></div>
+      {/each}
+    </div>
+    <div class="flex items-center gap-3 text-sm"><Icon name="bell" label="通知" /> 16<Icon name="bell" size={20} label="通知（大）" /> 20</div>
   </section>
 
   <section class="grid gap-3" aria-labelledby="g-toast">
