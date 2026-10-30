@@ -152,6 +152,9 @@ def simulate_entry(plan: dict, bars: list[dict]) -> dict:
     rebound to L fills (at L). `next_open` looks at the first valid day only: inside the zone it fills at O,
     any other open voids (`gap_above_zone`, `gap_below_zone`, `gap_below_stop` when O <= S). A plan with no
     fill and no void is `expired` once the last valid day has a bar, else `pending`.
+
+    Known limitation: a `next_open` plan whose first valid day has no bar (a data gap) is neither filled nor
+    voided: it stays `pending` and turns `expired` after the last valid day, never `voided`.
     """
     low, high, stop = _dec(plan['entry_low']), _dec(plan['entry_high']), _dec(plan['stop'])
     kind = entry_type_of(plan)

@@ -111,25 +111,28 @@ def unplanned(trade: dict, *, legacy_plan_id: Any) -> bool:
 
 # ---------------------------------------------------------------- status
 
-def status(version_plan: dict, buys: list[dict], *, session: date, chain_ended: bool) -> str:
+def status(version_plan: dict, buys: list[dict], *, session: date, chain_ended: bool,
+           chain_in_entry: bool = True) -> str:
     """Execution state of one plan version (spec §6.2).
 
     `buys` are the chain's buys; only those linked to this version (`plan_id`) count. A linked fill on a New
     York day inside [valid_from, valid_until] adopts the version; all linked fills outside it are
-    `out_of_validity`. Without a linked fill: `pending` while the session is before valid_until and the chain
-    has not ended, else `not_executed`.
+    `out_of_validity`. Without a linked fill: `pending` only while the session is before valid_until, the chain
+    has not ended and the chain is still in its entry phase (`chain_in_entry`; pass False for a holding or
+    exiting chain, whose revisions are never waiting for a fill), else `not_executed`.
     """
     mine = [b for b in buys if b.get('voided_at') is None and _key(b.get('plan_id')) == _key(version_plan['id'])]
     if mine:
         inside = [b for b in mine if version_plan['valid_from'] <= _session(b['executed_at'])
                   <= version_plan['valid_until']]
         return 'adopted' if inside else 'out_of_validity'
-    if session < version_plan['valid_until'] and not chain_ended:
+    if session < version_plan['valid_until'] and not chain_ended and chain_in_entry:
         return 'pending'
     return 'not_executed'
 
 
-def chain_status(versions: list[dict], buys: list[dict], *, session: date, chain_ended: bool) -> str:
+def chain_status(versions: list[dict], buys: list[dict], *, session: date, chain_ended: bool,
+                 chain_in_entry: bool = True) -> str:
     """Chain-level state (R13): any live linked buy on the chain is `executed` (also when the fill is linked to
     the unit's rule baseline, which keeps a merged unit's chain from reading 「未执行」); otherwise the newest
     version's `pending` / `not_executed`. `versions` are the chain's version plan rows, oldest first."""
@@ -138,7 +141,7 @@ def chain_status(versions: list[dict], buys: list[dict], *, session: date, chain
     if not versions:
         return 'not_executed'
     latest = max(versions, key=lambda v: v.get('version_no', 0))
-    return status(latest, [], session=session, chain_ended=chain_ended)
+    return status(latest, [], session=session, chain_ended=chain_ended, chain_in_entry=chain_in_entry)
 
 
 def status_text(code: str, *, buys: list[dict] | None = None, version_plan: dict | None = None) -> str:

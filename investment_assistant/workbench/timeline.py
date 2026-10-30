@@ -32,7 +32,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from investment_assistant.config import WorkbenchConfig
-from investment_assistant.data.calendar import add_trading_days, trading_days_between
+from investment_assistant.data.calendar import add_trading_days, is_trading_day, trading_days_between
 from investment_assistant.workbench import entry_rules, exits, plan_shadow, plans
 from investment_assistant.workbench.agent import conditions as condition_registry
 from investment_assistant.workbench.agent import plan_check
@@ -281,6 +281,9 @@ def chain_state_v2(chain: dict, *, session: date, now: datetime, facts: dict) ->
         return _state('holding', 'holding', f'链上关联的买入成交还有 {len(lots)} 个未平批次')
     if buy_ids:
         return _state('position_closed', None, f'链上关联的 {len(buy_ids)} 笔买入已全部平仓')
+    if exit_reviews:                 # an exit instruction was given, then every fill was voided: stay terminal
+        return _state('invalidated', None, f"第 {version_no} 版已发出退出指令（{_iso(exit_reviews[0].get('session'))}），"
+                      '链上的成交其后全部作废', {'review_id': exit_reviews[0].get('id')})
 
     retriggers = [r for r in facts.get('retriggers') or [] if _at_or_before(r, now, 'created_at')]
     later = [c['signal_date'] for c in facts.get('later_chains') or []]
@@ -957,10 +960,11 @@ def holding_status(facts: dict, *, session: date) -> dict:
                                      pct=values['to_stop_pct'] if values['to_stop_pct'] is not None else Decimal(0),
                                      held=values['held_sessions'], max_hold=values['max_hold_sessions'] or '—',
                                      t1_reached=values['t1_reached'])
-    if instruction == 'hold' and plan is not None and values['reached_1r'] is None:
+    if instruction == 'hold' and plan is not None and values['reached_1r'] is None and '无法计算 1R' not in reason:
         reason = maintain_reason('agent', reason=reason, note='无法计算 1R')
-    if values['detail'].get('bars_missing') and '缺' not in reason:
-        reason = maintain_reason('agent', reason=reason, note=f'缺 {session.isoformat()} 的日线')
+    missing_note = f'缺 {session.isoformat()} 的日线'
+    if values['detail'].get('bars_missing') and missing_note not in reason:
+        reason = maintain_reason('agent', reason=reason, note=missing_note)
 
     detail = dict(values['detail'])
     if facts.get('signals'):
@@ -1043,42 +1047,75 @@ def _shadow_line(plan_row: dict, facts: dict, session: date) -> str:
     return label + (text if outcome['r'] is None else f"{text}，{_r_text(outcome['r'])}")
 
 
+def _session_at(now: datetime) -> date:
+    """The latest session whose close the cutoff had seen: today's New York date once 16:00 has passed on a
+    trading day, else the trading day before."""
+    local = now.astimezone(NY)
+    day = local.date()
+    if not is_trading_day(day) or local.hour < 16:
+        return add_trading_days(day, -1)
+    return day
+
+
+def _facts_at(item: dict, now: datetime) -> tuple[dict, list[dict]]:
+    """A chain item's state facts and closed segments as the cutoff knew them.
+
+    Segments (closed lots from `positions.build`, `closed_at` = the sale's `executed_at`, optional
+    `sell_recorded_at`) that closed or were recorded after `now` are cut, and the lots they had closed are put
+    back as open (`positions.build` over today's trades has already dropped them from `open_lots`). Buys are cut
+    by `_live_buy_at`. A sale voided before the caller read the trades is invisible here (it is in no segment);
+    the caller should read with `list_trades(conn, ticker, cutoff=now)` (R11) to keep that exact too."""
+    facts = dict(item.get('facts') or {})
+    live = {str(b['id']) for b in facts.get('buys') or [] if _live_buy_at(b, now)}
+    kept, late = [], []
+    for seg in item.get('segments') or []:
+        if str(seg.get('buy_trade_id')) not in live:
+            continue
+        (kept if _at_or_before(seg, now, 'closed_at', 'sell_recorded_at') else late).append(seg)
+    facts['open_lots'] = [*(facts.get('open_lots') or []),
+                          *({'buy_trade_id': seg['buy_trade_id'], 'quantity': seg['quantity']} for seg in late)]
+    return facts, kept
+
+
 def previous_chain_block(facts: dict, *, now: datetime) -> str:
     """The 「同标的上一条链」 evidence block for an agent-3 first version (spec §4.6, D9, R14), at most 2000
-    characters. Pure: everything is cut at `now` here, so a review, fill, bar or correction recorded after the
-    cutoff cannot appear.
+    characters. Pure: everything is cut at `now` here, so a review, fill, sale, bar or correction recorded after
+    the cutoff cannot appear.
 
-    facts: `as_of_session` (the cutoff's latest closed session), `bars` / `spy_bars` / `splits` (shadow inputs),
-    and `chains`: one item per chain of the ticker, `{chain, facts, plans, segments}` where `chain` / `facts` are
-    `chain_state_v2`'s inputs, `plans` the version plan rows (`version_no`, `changes` = the model's change
-    items, `created_at`, ...) and `segments` the closed segments of the chain's buys. Only the most recent
-    chain that had already ended counts (`invalidated`, `closed_by_decision`, `position_closed`, `superseded`,
-    `expired`); none → 「同标的此前没有计划链」.
+    facts: `as_of_session` (the cutoff's latest closed session; it is clamped to the last session `now` had
+    seen, so a later value cannot leak later bars), `bars` / `spy_bars` / `splits` (shadow inputs; bars after
+    that session are dropped), and `chains`: one item per chain of the ticker, `{chain, facts, plans,
+    segments}` where `chain` / `facts` are `chain_state_v2`'s inputs, `plans` the version plan rows
+    (`version_no`, `changes` = the model's change items, `created_at`, ...) and `segments` the closed segments of
+    the chain's buys. Records after `now` are cut: reviews / retriggers by `created_at`, buys by execution /
+    recording / void time, sales (segments) by `closed_at` and `sell_recorded_at`, with the lots a late sale
+    closed counted as still open. Only the most recent chain that had already ended counts (`invalidated`,
+    `closed_by_decision`, `position_closed`, `superseded`, `expired`); none → 「同标的此前没有计划链」.
 
     Host-computed lines come first; every model-written line (a review reason, the version's change text)
     carries `MODEL_PREFIX`, so none can pose as a host line.
     """
-    session = facts['as_of_session']
+    session = min(facts['as_of_session'], _session_at(now))
+    facts = {**facts, 'as_of_session': session}
     candidates = []
     for item in facts.get('chains') or []:
         cut = _cut_chain(item, now)
         if cut is None or cut['chain'].get('legacy'):
             continue
-        state = chain_state_v2(cut['chain'], session=session, now=now, facts=item.get('facts') or {})
+        facts_at, segments_at = _facts_at(item, now)
+        state = chain_state_v2(cut['chain'], session=session, now=now, facts=facts_at)
         if state['state'] in ENDED_STATES:
-            candidates.append((cut['chain']['signal_date'], item, cut, state))
+            candidates.append((cut['chain']['signal_date'], facts_at, segments_at, cut, state))
     if not candidates:
         return f'{PREVIOUS_CHAIN_HEADER}\n{PREVIOUS_CHAIN_NONE}'
-    _, item, cut, state = max(candidates, key=lambda c: c[0])
+    _, facts_at, segments, cut, state = max(candidates, key=lambda c: c[0])
     chain, plan_rows = cut['chain'], cut['plans']
     head_plan = chain['head_plan']
     ticker = chain['ticker']
 
     # the chain's own live record at the cutoff
-    buys = sorted((b for b in item.get('facts', {}).get('buys') or [] if _live_buy_at(b, now)),
+    buys = sorted((b for b in facts_at.get('buys') or [] if _live_buy_at(b, now)),
                   key=lambda b: (b['executed_at'], str(b['id'])))
-    segments = [s for s in item.get('segments') or []
-                if _at_or_before(s, now, 'closed_at') and str(s.get('buy_trade_id')) in {str(b['id']) for b in buys}]
     first_plan = next((p for p in plan_rows if buys and str(p['id']) == str(buys[0].get('plan_id'))), plan_rows[0])
     actual = _actual_r(segments, Decimal(str(first_plan['stop'])))
 
@@ -1122,9 +1159,11 @@ def previous_chain_block(facts: dict, *, now: datetime) -> str:
             lines += _prefixed(f"作废理由：{ended[-1]['reason']}")
     if last is not None and last.get('reason'):
         lines += _prefixed(f"最后一次复查理由：{last['reason']}")
-    changes = next((p.get('changes') for p in reversed(plan_rows) if p.get('changes')), None)
+    changes = plan_rows[-1].get('changes')            # the last version's own change text, never an earlier one
     if changes:
         lines += _prefixed('最后一版的变化说明：' + '；'.join(f"{c.get('field')}：{c.get('text')}" for c in changes))
+    elif len(plan_rows) > 1:
+        lines.append('- 最后一版：续期，无模型变化')
 
     block = '\n'.join(lines)
     if len(block) > PREVIOUS_CHAIN_BLOCK_MAX_CHARS:

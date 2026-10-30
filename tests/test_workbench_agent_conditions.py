@@ -7,7 +7,7 @@ import pytest
 
 from investment_assistant.workbench.agent import conditions
 from investment_assistant.workbench.agent.citations import Rejected
-from investment_assistant.workbench.agent.conditions import (CONDITIONS, CONDITIONS_VERSION, ConditionDef, Facts,
+from investment_assistant.workbench.agent.conditions import (CONDITIONS, CONDITIONS_ALL, CONDITIONS_VERSION, ConditionDef, Facts,
                                                              describe, evaluate, validate)
 
 AS_OF = date(2026, 10, 20)        # version generated on this session (Tuesday)
@@ -48,8 +48,9 @@ CONDITION1_KINDS = {'close_below', 'close_above', 'no_entry_by', 'no_entry_befor
 
 def test_condition1_kinds_unchanged():
     assert conditions.CONDITIONS_V1 == 'condition-1'
-    assert set(CONDITIONS) - CONDITION1_KINDS == {'held_sessions_reached'}
-    assert CONDITION1_KINDS <= set(CONDITIONS)
+    assert set(CONDITIONS) == CONDITION1_KINDS                       # the condition-1 view the agent-2 prompt renders
+    assert set(CONDITIONS_ALL) - CONDITION1_KINDS == {'held_sessions_reached'}
+    assert all(CONDITIONS_ALL[k] is d for k, d in CONDITIONS.items())
     # the eleven old kinds keep their usage columns and templates
     assert CONDITIONS['close_below'].text == '收盘跌破 {price}' and CONDITIONS['earnings_within'].params == ('sessions',)
     old = {k: (d.invalidation, d.review) for k, d in CONDITIONS.items() if k in CONDITION1_KINDS}
@@ -58,14 +59,14 @@ def test_condition1_kinds_unchanged():
 
 def test_registry_matches_spec():
     assert CONDITIONS_VERSION == 'condition-2'
-    assert set(CONDITIONS) == CONDITION1_KINDS | {'held_sessions_reached'}
-    assert all(isinstance(d, ConditionDef) and d.kind == k for k, d in CONDITIONS.items())
-    review_only = {k for k, d in CONDITIONS.items() if d.review and not d.invalidation}
-    invalidation_only = {k for k, d in CONDITIONS.items() if d.invalidation and not d.review}
-    assert CONDITIONS['held_sessions_reached'].invalidation and CONDITIONS['held_sessions_reached'].review
+    assert set(CONDITIONS_ALL) == CONDITION1_KINDS | {'held_sessions_reached'}
+    assert all(isinstance(d, ConditionDef) and d.kind == k for k, d in CONDITIONS_ALL.items())
+    assert CONDITIONS_ALL['held_sessions_reached'].invalidation and CONDITIONS_ALL['held_sessions_reached'].review
+    review_only = {k for k, d in CONDITIONS_ALL.items() if d.review and not d.invalidation}
+    invalidation_only = {k for k, d in CONDITIONS_ALL.items() if d.invalidation and not d.review}
     assert review_only == {'date_reached', 'next_session'}
     assert invalidation_only == {'no_entry_by', 'no_entry_before_earnings'}
-    assert all(d.invalidation or d.review for d in CONDITIONS.values())
+    assert all(d.invalidation or d.review for d in CONDITIONS_ALL.values())
     assert CONDITIONS['rs_below'].params == ('window', 'value')
     assert CONDITIONS['sector_weak'].params == ()
     assert CONDITIONS['next_session'].text == '下一交易日'
@@ -177,7 +178,7 @@ def test_evaluate_covers_every_kind_in_all_states():
     seen: dict[str, set[str]] = {}
     for _, cond, _, expected in CASES:
         seen.setdefault(cond['kind'], set()).add(expected)
-    assert set(seen) == set(CONDITIONS)
+    assert set(seen) == set(CONDITIONS_ALL)
     for kind, states in seen.items():
         assert states == ({'met'} if kind == 'next_session' else {'met', 'not_met', 'unknown'}), kind
 
@@ -357,3 +358,10 @@ def test_max_hold_condition_shape():
     assert cond == {'source': 'max_hold', 'kind': 'held_sessions_reached', 'params': {'sessions': 12}}
     assert describe(cond) == '持有 12 个交易日仍未到 1R'
     assert evaluate(cond, facts(mode='holding', position=_position(12)))[0] == 'met'
+
+
+def test_agent2_prompt_does_not_mention_held_sessions():
+    """R8 guard: the live agent-2 prompt renders the condition-1 view, so the condition-2 kind never shows up."""
+    from investment_assistant.workbench.agent import graph
+    assert 'held_sessions_reached' not in graph.PROPOSE_PROMPT_V2
+    assert graph._conditions_table().count('\n') == len(CONDITION1_KINDS) + 1       # header, rule line, eleven rows

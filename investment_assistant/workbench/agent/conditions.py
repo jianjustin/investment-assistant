@@ -49,7 +49,7 @@ class ConditionDef:
     review: bool
 
 
-CONDITIONS: dict[str, ConditionDef] = {d.kind: d for d in (
+CONDITIONS_ALL: dict[str, ConditionDef] = {d.kind: d for d in (
     ConditionDef('close_below', ('price',), '收盘跌破 {price}', True, True),
     ConditionDef('close_above', ('price',), '收盘突破 {price}', True, True),
     ConditionDef('no_entry_by', ('date',), '{date} 收盘前未进入入场区', True, False),
@@ -63,6 +63,10 @@ CONDITIONS: dict[str, ConditionDef] = {d.kind: d for d in (
     ConditionDef('next_session', (), '下一交易日', False, True),
     ConditionDef('held_sessions_reached', ('sessions',), '持有 {sessions} 个交易日仍未到 1R', True, True),
 )}
+# The condition-1 view (eleven kinds): what the live agent-2 prompt table (`graph._conditions_table`) renders and
+# agent-2 callers see. condition-2's twelfth kind lives only in CONDITIONS_ALL, which validate / evaluate /
+# describe and the agent-3 prompt use; Task 3 builds the agent-3 table from CONDITIONS_ALL.
+CONDITIONS: dict[str, ConditionDef] = {k: d for k, d in CONDITIONS_ALL.items() if k != 'held_sessions_reached'}
 
 
 @dataclass
@@ -174,7 +178,7 @@ def validate(item: dict, *, use: Literal['invalidation', 'review'], last_close: 
         raise ValueError(f'unknown condition use: {use!r}')
     if not isinstance(item, dict):
         raise Rejected(_REASON)
-    definition = CONDITIONS.get(item.get('kind')) if isinstance(item.get('kind'), str) else None
+    definition = CONDITIONS_ALL.get(item.get('kind')) if isinstance(item.get('kind'), str) else None
     if definition is None or not getattr(definition, use):
         raise Rejected(_REASON)
     raw = item.get('params', {})
@@ -213,7 +217,7 @@ def _show(name: str, value: Any) -> str:
 
 def describe(item: dict) -> str:
     """The registry template filled with the item's params (page text, host reasons)."""
-    definition = CONDITIONS.get(item.get('kind'))
+    definition = CONDITIONS_ALL.get(item.get('kind'))
     if definition is None:
         return str(item.get('kind'))
     params = item.get('params') or {}
@@ -411,7 +415,7 @@ def max_hold_condition(sessions: int) -> dict:
 def evaluate(item: dict, facts: Facts) -> tuple[str, str]:
     """('met' | 'not_met' | 'unknown', detail) for one condition at facts.session."""
     kind = item.get('kind') if isinstance(item, dict) else None
-    if kind not in CONDITIONS:
+    if kind not in CONDITIONS_ALL:
         return 'unknown', f'未登记的条件 {kind}'
     params = item.get('params') or {}
     if kind in ('close_below', 'close_above'):

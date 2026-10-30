@@ -46,7 +46,7 @@ INVALIDATION_RANGE = (1, 5)
 REVIEW_WHEN_MAX = 3
 AGENT_MAX_HOLD_RANGE = (5, 20)
 MAX_HOLD_DEFAULT = 10                      # what an agent-2 version without the field is read as
-CHANGE_FIELDS_V2 = ('action', 'entry', 'stop', 'target1', 'thesis', 'invalidation', 'review_when')
+CHANGE_FIELDS_AGENT2 = ('action', 'entry', 'stop', 'target1', 'thesis', 'invalidation', 'review_when')
 CHANGE_FIELDS = ('action', 'entry', 'entry_type', 'stop', 'target1', 'max_hold_sessions', 'thesis',
                  'invalidation', 'review_when')
 HOST_FIELDS = ('valid_until', 'entry_cap')   # host-computed; only in timeline.host_diff, never in `changes`
@@ -299,7 +299,7 @@ def diff(previous: dict, new: dict, *, schema: str = SCHEMA_V2) -> list[dict]:
         'review_when': lambda plan: _conditions(plan, 'review_when'),
     }
     out = []
-    for field in (CHANGE_FIELDS if schema == SCHEMA_V3 else CHANGE_FIELDS_V2):
+    for field in (CHANGE_FIELDS if schema == SCHEMA_V3 else CHANGE_FIELDS_AGENT2):
         before, after = extract[field](previous), extract[field](new)
         if _canon(before) != _canon(after):
             out.append({'field': field, 'before': before, 'after': after})

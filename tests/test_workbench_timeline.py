@@ -1169,39 +1169,81 @@ def test_previous_chain_block_closed_and_invalidated_endings():
 
 
 def test_previous_chain_block_respects_cutoff():
-    """Review Focus 1: a review, fill, bar and change after the cutoff never reach the block."""
+    """Review Focus 1: a review, fill, sale, bar and version after the cutoff never reach the block, whatever the
+    caller passes as as_of_session (here a session five days after the cutoff)."""
     now = _at(_day(8), 20)                                       # A expired on day 3; everything below is later
     late_review = _review2(None, outcome='maintain', session=_day(9), decided_by='agent', reason='太晚的复查')
     late_review['created_at'] = late_review['cutoff_at'] = _at(_day(9), 21)
     early_review = _review2(None, outcome='maintain', session=_day(2), decided_by='host', reason='当时的复查')
-    late_buy = _buy(10)
-    late_buy.update(ticker='MU')
-    late_segment = {'buy_trade_id': late_buy['id'], 'quantity': Decimal(10), 'entry_cost_per_share': Decimal('96'),
-                    'exit_price': Decimal('99'), 'closed_at': _at(_day(11), 15)}
-    item = _prev_item(outcome_rows=[early_review, late_review], buys=[late_buy], segments=[late_segment],
-                      changes=[{'field': 'stop', 'text': '上移止损'}])
+    item = _prev_item(outcome_rows=[early_review, late_review], changes=[{'field': 'stop', 'text': '上移止损'}])
     late_plan_id = uuid.uuid4()                                   # a revision made after the cutoff
     late_plan = {**item['plans'][0], 'id': late_plan_id, 'version_no': 1, 'stop': Decimal('99.99'),
                  'changes': [{'field': 'stop', 'text': '事后的修订'}]}
     item['plans'].append(late_plan)
     item['chain']['versions'].append({'plan_id': late_plan_id, 'ticker': 'MU', 'signal_date': SD, 'version_no': 1,
                                       'as_of_session': _day(9), 'cutoff_at': _at(_day(9), 21)})
-    late_bar = {**_prev_bars()[-1], 'price_date': _day(14), 'close': Decimal(500), 'high': Decimal(501),
-                'low': Decimal(1)}
-    facts = _prev_facts(item, bars=[*_prev_bars(), late_bar])
+    # the plan filled on day 2 inside the zone; a bar on day 10 (after the cutoff) trades through its stop
+    bars = _prev_bars()
+    bars[2] = {**bars[2], 'open': Decimal(96), 'high': Decimal(97), 'low': Decimal(95.5), 'close': Decimal(96)}
+    bars[10] = {**bars[10], 'open': Decimal(90), 'high': Decimal(91), 'low': Decimal(80), 'close': Decimal(85)}
+    facts = _prev_facts(item, bars=bars)                          # as_of_session = day 13 > the cutoff's session
     block = timeline.previous_chain_block(facts, now=now)
-    for forbidden in ('太晚的复查', '事后的修订', '99.99', '已平仓', '500'):
+    for forbidden in ('太晚的复查', '事后的修订', '99.99', '已平仓'):
         assert forbidden not in block, forbidden
+    shadow = next(l for l in block.splitlines() if l.startswith('- 影子'))
+    assert '未平仓' in shadow and '已平仓' not in shadow           # day 10's stop-out is not seen
     assert '当时的复查' in block and '共 1 版' in block and '止损 91.40' in block
-    assert '结束：已过期未执行' in block                          # the fill after the cutoff cannot turn it into a close
-    # moved past those times the same records show up
+    assert '结束：已过期未执行' in block
+    # at a later cutoff the same records show up
     later = timeline.previous_chain_block(facts, now=_at(_day(14), 20))
     assert '太晚的复查' in later and '共 2 版' in later
-    # a fill recorded after the cutoff is invisible even though it was executed before it
+    assert '已平仓' in next(l for l in later.splitlines() if l.startswith('- 影子'))
+
+
+def test_previous_chain_block_ignores_sales_after_the_cutoff():
+    """A buy before the cutoff sold after it: at the cutoff the chain still holds, so it is not a finished chain
+    (and the sale cannot become 「已平仓」 or the actual R); a sale recorded late is the same."""
+    buy = _buy(2)
+    buy.update(ticker='MU', plan_id=None)
+    sale_day = _day(9)
+    segment = {'buy_trade_id': buy['id'], 'quantity': Decimal(10), 'entry_cost_per_share': Decimal('96'),
+               'exit_price': Decimal('91.4'), 'closed_at': _at(sale_day, 15)}
+    item = _prev_item(buys=[buy], segments=[segment], valid_until=_day(5))
+    item['facts']['open_lots'] = []                               # today's positions: the lot is long gone
+    now = _at(_day(8), 20)
+    held = timeline.previous_chain_block(_prev_facts(item), now=now)
+    assert held == f'{timeline.PREVIOUS_CHAIN_HEADER}\n{timeline.PREVIOUS_CHAIN_NONE}'
+    closed = timeline.previous_chain_block(_prev_facts(item), now=_at(_day(10), 20))
+    assert f'已平仓（{sale_day.isoformat()}，实际 -1.0R）' in closed
+    # executed before the cutoff but recorded after it
+    late_record = {**segment, 'sell_recorded_at': _at(_day(9), 10), 'closed_at': _at(_day(7), 15)}
+    item2 = _prev_item(buys=[buy], segments=[late_record], valid_until=_day(5))
+    item2['facts']['open_lots'] = []
+    assert timeline.previous_chain_block(_prev_facts(item2), now=now).endswith(timeline.PREVIOUS_CHAIN_NONE)
+    assert '已平仓' in timeline.previous_chain_block(_prev_facts(item2), now=_at(_day(9), 20))
+    # a buy recorded after the cutoff is invisible even though it was executed before it
     sneaky = _buy(3)
     sneaky.update(ticker='MU', recorded_at=_at(_day(10)))
-    item2 = _prev_item(buys=[sneaky])
-    assert '已过期未执行' in timeline.previous_chain_block(_prev_facts(item2), now=now)
+    item3 = _prev_item(buys=[sneaky])
+    assert '已过期未执行' in timeline.previous_chain_block(_prev_facts(item3), now=now)
+
+
+def test_previous_chain_block_session_follows_the_cutoff_clock():
+    assert timeline._session_at(_at(_day(8), 20)) == _day(8)      # 16:00 New York: the close is in
+    assert timeline._session_at(_at(_day(8), 19)) == _day(7)      # 15:00: still the day before
+    assert timeline._session_at(datetime(2026, 10, 10, 18, tzinfo=UTC)) == date(2026, 10, 9)     # a Saturday
+
+
+def test_previous_chain_block_last_version_changes_only():
+    first = _prev_item(changes=None)
+    second_id = uuid.uuid4()
+    first['plans'][0]['changes'] = [{'field': 'stop', 'text': '早先的变化'}]
+    renewal = {**first['plans'][0], 'id': second_id, 'version_no': 1, 'changes': []}
+    first['plans'].append(renewal)
+    first['chain']['versions'].append({'plan_id': second_id, 'ticker': 'MU', 'signal_date': SD, 'version_no': 1,
+                                       'as_of_session': _day(2), 'cutoff_at': _at(_day(2), 21)})
+    block = timeline.previous_chain_block(_prev_facts(first), now=NOW_PREV)
+    assert '早先的变化' not in block and '最后一版：续期，无模型变化' in block
 
 
 def test_previous_chain_block_prefix_and_truncation():
@@ -1236,3 +1278,22 @@ def test_entry_cap_from_latest_trigger():
     row = _build(entry_cap=timeline.entry_cap(chain, [second]), as_of_session=_day(9), version_no=1,
                  supersedes_plan_id=str(uuid.uuid4()), bars=_bars(_day(9)))
     assert row['inputs']['chain_entry_cap'] == _day(19).isoformat() and row['valid_until'] == _day(12)
+
+
+def test_exit_review_then_all_fills_voided_stays_terminal():
+    """M2: an exit instruction was given, then the fills were corrected away: the chain does not drift back to entry."""
+    chain = _chain2(valid_until=_day(8))
+    chain['reviews'] = [_review2(chain['head_plan']['id'], outcome='invalidate', mode='holding', session=_day(2))]
+    voided = _buy(1, voided=_at(_day(3)))
+    state = _state2(chain, _facts2(buys=[voided], open_lots=[_lot(voided)]), session=_day(4))
+    assert state['state'] == 'invalidated' and not state['active']
+
+
+def test_holding_status_missing_bar_note_is_explicit():
+    """M3: the 「缺 S 的日线」 note is added whenever the bar is missing, even if the reason contains 缺 already."""
+    facts, session = _hfacts((100, 101, 102, 104), reason='缺乏催化，继续持有')
+    facts['bars'].pop()
+    row = timeline.holding_status(facts, session=session)
+    assert row['reason'].startswith('缺乏催化，继续持有') and row['reason'].endswith(f'缺 {session.isoformat()} 的日线')
+    again = timeline.holding_status({**facts, 'reason': row['reason']}, session=session)
+    assert again['reason'] == row['reason']                       # not appended twice

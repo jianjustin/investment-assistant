@@ -119,7 +119,7 @@ def test_families_and_rules_have_cards(catalog):
 
 
 CODE_SET_CASES = [
-    ('conditions', sorted(conditions.CONDITIONS), ('agent.invalidation', 'agent.review_when')),
+    ('conditions', sorted(conditions.CONDITIONS_ALL), ('agent.invalidation', 'agent.review_when')),
     ('reason_text', sorted(REASON_TEXT), ('agent.reject_reasons',)),
     ('chain_states', list(timeline.CHAIN_STATES), ('review.chain_state',)),
     ('signal_kinds', list(timeline.SIGNAL_KINDS_V2), ('agent.signals',)),

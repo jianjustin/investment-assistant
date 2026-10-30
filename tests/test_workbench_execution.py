@@ -65,6 +65,9 @@ def test_status_pending_vs_not_executed():
     assert execution.status(plan, [], session=date(2026, 11, 2), chain_ended=True) == 'not_executed'
     other = [_trade(uuid.uuid4(), day=date(2026, 10, 31))]                                  # linked to another version
     assert execution.status(plan, other, session=date(2026, 11, 2), chain_ended=False) == 'pending'
+    # M1: a revision of a holding / exiting chain is never waiting for a fill
+    assert execution.status(plan, [], session=date(2026, 11, 2), chain_ended=False,
+                            chain_in_entry=False) == 'not_executed'
     voided = [_trade(plan['id'], day=date(2026, 10, 31), voided=True)]
     assert execution.status(plan, voided, session=date(2026, 11, 2), chain_ended=False) == 'pending'
 

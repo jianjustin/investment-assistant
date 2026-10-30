@@ -12,7 +12,7 @@ sources: [investment_assistant/workbench/agent/conditions.py, investment_assista
 ## 是什么
 复查条件是 Agent 告诉系统"在什么情况下请再叫我看一次这份计划"。它和[失效条件](agent.invalidation.md)用同一张 `condition-2` 登记表，区别是：失效条件成立计划就作废，复查条件成立只是意味着当天要让模型认真复查。
 
-可用于复查的 `kind` 共十种（与失效条件有重叠）：
+可用于复查的 `kind` 在 `condition-2` 下共十种（与失效条件有重叠；`condition-1` 下的 `agent-2` 计划只用前九种，没有 `held_sessions_reached`）：
 
 | `kind` | 参数 | 文案模板 |
 | --- | --- | --- |

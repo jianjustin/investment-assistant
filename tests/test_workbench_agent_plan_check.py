@@ -351,7 +351,7 @@ def run3(p: dict, previous=None, **kwargs) -> dict:
 def test_constants_v3():
     assert plan_check.CHANGE_FIELDS == ('action', 'entry', 'entry_type', 'stop', 'target1', 'max_hold_sessions',
                                         'thesis', 'invalidation', 'review_when')
-    assert plan_check.CHANGE_FIELDS_V2 == ('action', 'entry', 'stop', 'target1', 'thesis', 'invalidation',
+    assert plan_check.CHANGE_FIELDS_AGENT2 == ('action', 'entry', 'stop', 'target1', 'thesis', 'invalidation',
                                            'review_when')
     assert plan_check.HOST_FIELDS == ('valid_until', 'entry_cap')
     assert plan_check.AGENT_MAX_HOLD_RANGE == (5, 20) and plan_check.MAX_HOLD_DEFAULT == 10
