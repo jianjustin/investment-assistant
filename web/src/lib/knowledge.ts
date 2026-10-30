@@ -237,7 +237,7 @@ export const ATTACH = {
   },
   // 「今日」计划表的执行状态列（v2.9 R20：决定退役，执行依据 basis 改指执行状态）
   today: {
-    basis: 'review.execution_status',
+    basis: 'system.decision',  // Task 4 switches to review.execution_status together with that concept card (R8)
   },
   // 「标的」页（关键数据一段的概念由接口的 key_data.concepts 给出，规则名用 ruleConcept）
   instrument: {
