@@ -61,6 +61,7 @@ class Market:
 
     def __init__(self):
         self.overrides: dict[tuple[str, date], dict] = {}
+        self.volumes: dict[tuple[str, date], int] = {}        # a spike makes a volume_breakout buy (v2.9 retriggers)
         self.filings: list[dict] = []
         self.earnings: dict[str, date] = {}
         self.calls: list[tuple] = []
@@ -80,7 +81,8 @@ class Market:
         index = pd.DatetimeIndex([pd.Timestamp(d, tz='America/New_York') for d, _ in rows])
         return pd.DataFrame({'Open': [b['open'] for _, b in rows], 'High': [b['high'] for _, b in rows],
                              'Low': [b['low'] for _, b in rows], 'Close': [b['close'] for _, b in rows],
-                             'Adj Close': [b['close'] for _, b in rows], 'Volume': [1000] * len(rows),
+                             'Adj Close': [b['close'] for _, b in rows],
+                             'Volume': [self.volumes.get((ticker, d), 1000) for d, _ in rows],
                              'Stock Splits': [0.0] * len(rows)}, index=index)
 
     def news(self, ticker):
@@ -112,11 +114,11 @@ class RoutedModel(BaseChatModel):
     def route(messages) -> str:
         system = messages[0].content if messages else ''
         human = messages[1].content if len(messages) > 1 else ''
-        if system == agent_graph.REVIEW_PROMPT:
+        if system in (agent_graph.REVIEW_PROMPT, agent_graph.REVIEW_PROMPT_V2):
             return 'review'
         if system == agent_graph.COUNTER_PROMPT_V2:
             return 'counter'
-        if system == agent_graph.PROPOSE_PROMPT_V2:
+        if system in (agent_graph.PROPOSE_PROMPT_V2, agent_graph.PROPOSE_PROMPT_V3):
             return 'revise' if '本次是修订' in human else 'propose'
         return 'other'
 
@@ -185,13 +187,15 @@ def tool(name, args, call_id='t1'):
     return AIMessage(content='', tool_calls=[{'name': name, 'args': args, 'id': call_id}])
 
 
-def plan_json(*, stop=115.0, review_when=None, changes=None, action='buy'):
+def plan_json(*, stop=115.0, review_when=None, changes=None, action='buy', entry_type='zone_limit', max_hold=10,
+              entry_low=120.0, entry_high=128.0, target1=140.0):
     if action == 'pass':
         return json.dumps({'action': 'pass', 'summary': '回撤后不再值得做',
                            'thesis': [{'text': '放量突破 20 日线', 'refs': ['call:1']}]}, ensure_ascii=False)
     out = {'action': 'buy', 'summary': '回踩修复放量',
+           'entry_type': entry_type, 'max_hold_sessions': max_hold,
            'levels': {k: {'value': v, 'refs': ['call:1']} for k, v in
-                      (('entry_low', 120.0), ('entry_high', 128.0), ('stop', stop), ('target1', 140.0))},
+                      (('entry_low', entry_low), ('entry_high', entry_high), ('stop', stop), ('target1', target1))},
            'thesis': [{'text': '放量突破 20 日线', 'refs': ['call:1']}],
            'invalidation': [{'kind': 'close_below', 'params': {'price': 112}, 'refs': ['call:1']}]}
     if review_when is not None:
@@ -234,15 +238,16 @@ def make_model(**queues):
     return RoutedModel(queues={k: list(v) for k, v in queues.items()}, calls={}, seen=[])
 
 
-def run(db, market, k, *, tickers=None, pool=None, model=None, agent=None, clock=None, run_id=None):
-    """One batch at the evening of day(k) with a list-backed stages-2 recorder.
+def run(db, market, k, *, tickers=None, pool=None, model=None, agent=None, clock=None, run_id=None, at=None):
+    """One batch at the evening of day(k) (or at ``at``, later that evening) with a list-backed stages-2 recorder.
 
     Returns (summary, stage rows by id, model)."""
     model = model or make_model()
     rows: list[dict] = []
     run_id = run_id or f'run-{k}-{uuid.uuid4().hex[:6]}'
+    now = at or evening(day(k))
     recorder = stages_module.StageRecorder(run_id, 'manual_batch', day(k), writer=rows.append,
-                                           wall_now=lambda: evening(day(k)))
+                                           wall_now=lambda: now)
     deps = service.Deps(bar_fetcher=market.bars, news_fetcher=market.news, filing_source=market,
                         earnings_fetcher=market.earnings_calendar, universe=Universe('empty', S1, 'test', ()))
     deps.agent_model = model
@@ -250,7 +255,7 @@ def run(db, market, k, *, tickers=None, pool=None, model=None, agent=None, clock
     deps.agent_settings = agent or settings()
     deps.clock = clock
     summary = service.run_batch(tickers=None if pool is not None else list(tickers), pool=pool,
-                                now=evening(day(k)), deps=deps, run_id=run_id, stages=recorder)
+                                now=now, deps=deps, run_id=run_id, stages=recorder)
     return summary, {row['stage']: row for row in rows}, model
 
 
@@ -312,7 +317,7 @@ def test_quiet_day_host_maintain_without_model(db):
     assert (row['outcome'], row['decided_by'], row['trigger'], row['mode']) == ('maintain', 'host', 'batch', 'entry')
     assert row['reason'] == f'无新信号，复查条件未满足（到 {FAR} 再看）'
     assert row['review_agent_run_id'] is None and row['attempt'] == 1 and row['session'] == day(1)
-    assert [s['kind'] for s in row['signals']] == list(plan_review.timeline.SIGNAL_KINDS)
+    assert [s['kind'] for s in row['signals']] == list(plan_review.timeline.SIGNAL_KINDS_V2)
     assert not any(s['fired'] for s in row['signals'])
     assert [(c['list'], c['kind'], c['result']) for c in row['conditions']] == [
         ('invalidation', 'close_below', 'not_met'), ('review_when', 'date_reached', 'not_met')]
@@ -333,7 +338,7 @@ def test_default_next_session_calls_model(db):
     [row] = reviews(db)
     assert (row['outcome'], row['decided_by'], row['reason']) == ('maintain', 'agent', '趋势未变')
     run_row = repository.agent_run_by_id(db, row['review_agent_run_id'])
-    assert (run_row['mode'], run_row['agent_version'], run_row['status']) == ('review', 'agent-review-1', 'ok')
+    assert (run_row['mode'], run_row['agent_version'], run_row['status']) == ('review', 'agent-review-2', 'ok')
     assert run_row['plan_id'] is None and run_row['cutoff_at'] == evening(day(1))
     assert row['input_tokens'] == 10 and row['output_tokens'] == 5
     assert [(c['kind'], c['result']) for c in row['conditions'] if c['list'] == 'review_when'] == \
@@ -399,12 +404,17 @@ def test_signal_triggers_revision(db, monkeypatch, kind):
     assert version['version_no'] == 1 and version['origin'] == 'review'
     assert str(version['supersedes_plan_id']) == str(v0['plan']['id'])
     assert version['as_of_session'] == session and version['cutoff_at'] == evening(session)
-    assert version['diff'] == [{'field': 'stop', 'before': '115.00', 'after': '117.00'}]
+    assert version['diff'] == [
+        {'field': 'stop', 'before': '115.00', 'after': '117.00', 'host_only': False},      # the model's change ...
+        {'field': 'valid_until', 'before': v0['plan']['valid_until'].isoformat(),         # ... and the host field (D7)
+         'after': plan['valid_until'].isoformat(), 'host_only': True}]
     assert plan['valid_from'] == add_trading_days(session, 1) and plan['status'] == 'ok'
-    assert plan['plan_version'] == 'agent-2' and plan['stop'] == 117
+    assert plan['plan_version'] == 'agent-3' and plan['stop'] == 117
+    assert (plan['entry_type'], plan['max_hold_sessions']) == ('zone_limit', 10)
+    assert version['schema_version'] == 'agent-3' and plan['inputs']['chain_mode'] == 'entry'
     assert str(row['new_plan_id']) == str(plan['id'])
     revise_run = repository.agent_run_by_id(db, row['revision_agent_run_id'])
-    assert (revise_run['mode'], revise_run['agent_version'], revise_run['status']) == ('revise', 'agent-2', 'ok')
+    assert (revise_run['mode'], revise_run['agent_version'], revise_run['status']) == ('revise', 'agent-3', 'ok')
     assert str(revise_run['plan_id']) == str(plan['id']) and str(version['agent_run_id']) == str(revise_run['id'])
     assert {c['phase'] for c in repository.agent_tool_calls(db, revise_run['id'])} == {'propose', 'counter'}
     assert [c['phase'] for c in repository.agent_tool_calls(db, row['review_agent_run_id'])] == ['review']
@@ -558,7 +568,8 @@ def test_chain_ends(db):
     summary, rows, model = run(db, market, 3, tickers=['SYNA', 'SYNB', 'SYNC'])            # SYNB 已到截止日
     stage = rows['review']
     assert stage['input_count'] == 0 and summary['review']['objects'] == 0
-    assert stage['detail']['ended'] == {'expired': 1, 'closed_by_decision': 1, 'position_closed': 1}
+    assert stage['detail']['ended'] == {'expired': 1, 'invalidated': 0, 'closed_by_decision': 1, 'position_closed': 1,
+                                        'superseded': 0}
     assert stage['detail']['holdings_without_chain'] == []
     assert model.calls.get('review', 0) == 0 and reviews(db, 'SYNA') == reviews(db, 'SYNB') == []
 

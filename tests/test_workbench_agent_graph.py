@@ -285,7 +285,7 @@ def run_v2(monkeypatch, make, responses, *, previous=None, evidence='', user_ref
 def test_v2_constants():
     from investment_assistant.workbench import timeline
     assert graph.AGENT_V2 == 'agent-2' and graph.AGENT_V2 is timeline.AGENT_V2
-    assert graph.REVIEW_VERSION == 'agent-review-1'
+    assert graph.REVIEW_VERSION == 'agent-review-2'
     assert graph.AGENT_VERSION == 'agent-1'   # agent-1 kept as is
 
 
@@ -898,3 +898,96 @@ def test_retro_discuss_model_exception_propagates(monkeypatch, scripted_model):
         retro(monkeypatch, scripted_model, [])
     with pytest.raises(AssertionError):
         discuss(monkeypatch, scripted_model, [])
+
+
+# --- agent-3 (v2.9 spec §5.5, §4.6, §7.2) ---
+
+def _plan3_json(*, entry_type='zone_limit', max_hold=10, **kwargs):
+    payload = json.loads(_plan2_json(**kwargs))
+    if payload['action'] == 'buy':
+        payload['entry_type'], payload['max_hold_sessions'] = entry_type, max_hold
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def run_v3(monkeypatch, make, responses, *, previous=None, evidence='', run_id='run-v3', review_reason=None,
+           mode='entry', via=None, previous_chain=None, user_refs=frozenset()):
+    from langgraph.checkpoint.memory import InMemorySaver
+    from investment_assistant.workbench import timeline
+    model = make(responses)
+    result = graph.run_unit_v2(unit=UNIT, ctx=_ctx(monkeypatch), model=model, checkpointer=InMemorySaver(),
+                               run_id=run_id, last_close=LAST_CLOSE, as_of_session=S, now=lambda: NOW,
+                               previous=previous, evidence=evidence, user_refs=user_refs,
+                               review_reason=review_reason, version=timeline.AGENT_V3, mode=mode, via=via,
+                               previous_chain=previous_chain)
+    return result, model
+
+
+def _v3_script(**kwargs):
+    return [_tool_call('get_price_bars', {'ticker': 'AMD', 'lookback': 30}, 't1'),
+            AIMessage(content=_plan3_json(**kwargs)),
+            AIMessage(content=json.dumps({'counter': [{'thesis': 1, 'text': '假突破', 'refs': ['call:1']},
+                                                      {'thesis': 2, 'text': '量能不足', 'refs': ['call:1']}],
+                                          'risks': []}, ensure_ascii=False))]
+
+
+def test_agent3_prompt_sections(monkeypatch, scripted_model):
+    block = '同标的上一条链（只读背景，不可引用；价位与论点仍须引用本次工具调用）\n- 链 AMD·2026-10-14（共 2 版）'
+    result, model = run_v3(monkeypatch, scripted_model, _v3_script(entry_type='breakout_stop', max_hold=12),
+                           previous_chain=block)
+    system, human = model.seen[0][0], model.seen[0][1]
+    assert system.content == graph.PROPOSE_PROMPT_V3 and system.content != graph.PROPOSE_PROMPT_V2
+    for needle in ('zone_limit 区间限价', 'breakout_stop 突破买入', 'next_open 次日开盘', '最长持有 max_hold_sessions',
+                   '5 到 20 的整数', '成本加 1R', '再次触发', '持仓期修订', '同标的上一条链'):
+        assert needle in graph.PROPOSE_PROMPT_V3, needle
+    # the first-version message carries the previous-chain block right after the single head line
+    assert human.content.count('\n\n') == 1 and human.content.endswith(block)
+    assert human.content.startswith('标的 AMD · 信号日 2026-10-21')
+    # the condition table is condition-2: the time stop is a review condition only
+    row = next(line for line in graph.PROPOSE_PROMPT_V3.splitlines() if line.startswith('| held_sessions_reached'))
+    assert row.endswith('|  | ✓ |') and 'sessions' in row
+    assert 'held_sessions_reached' not in graph.PROPOSE_PROMPT_V2          # agent-2's prompt is untouched
+    assert result['status'] == 'ok'
+
+
+def test_parse_entry_type_and_max_hold(monkeypatch, scripted_model):
+    result, _ = run_v3(monkeypatch, scripted_model, _v3_script(entry_type='next_open', max_hold=7))
+    assert result['status'] == 'ok'
+    assert result['output']['entry_type'] == 'next_open' and result['output']['max_hold_sessions'] == 7
+    for bad, reason in (({'entry_type': 'market'}, 'invalid_entry_type'), ({'max_hold': 4}, 'invalid_max_hold'),
+                        ({'max_hold': 21}, 'invalid_max_hold')):
+        failed, _ = run_v3(monkeypatch, scripted_model, _v3_script(**bad), run_id='run-bad')
+        assert (failed['status'], failed['reason']) == ('rejected', reason)
+
+
+def test_agent3_revision_message_modes(monkeypatch, scripted_model):
+    prev = {**PREVIOUS, 'entry_type': 'zone_limit', 'max_hold_sessions': 10}
+    _, model = run_v3(monkeypatch, scripted_model,
+                      _v3_script(stop=96.0, changes=[]), previous=prev, via='retrigger',
+                      evidence='## 再次触发\n', review_reason='再次触发（趋势回踩，2026-10-21），直接修订')
+    human = model.seen[0][1].content
+    assert '本次是修订：' in human and '"entry_type": "zone_limit"' in human and '"max_hold_sessions": 10' in human
+    assert '再次触发（趋势回踩' in human and human.rstrip().endswith('## 再次触发')
+    _, holding = run_v3(monkeypatch, scripted_model,
+                        _v3_script(stop=97.0, changes=[{'field': 'stop', 'text': '上移止损', 'refs': ['call:1']}]),
+                        previous=prev, mode='holding', run_id='run-hold')
+    assert '本次是修订（持仓期）：' in holding.seen[0][1].content
+    # an agent-2 predecessor shows the defaults the diff reads it as
+    _, legacy = run_v3(monkeypatch, scripted_model, _v3_script(stop=97.0, changes=[
+        {'field': 'stop', 'text': '上移止损', 'refs': ['call:1']}]), previous=PREVIOUS, run_id='run-legacy')
+    assert '"entry_type": "zone_limit"' in legacy.seen[0][1].content
+
+
+def test_review_prompt_v2_and_retro2_wording():
+    assert graph.REVIEW_PROMPT_V2 != graph.REVIEW_PROMPT
+    assert '持仓状态' in graph.REVIEW_PROMPT_V2 and '再次触发' in graph.REVIEW_PROMPT_V2
+    assert graph.REVIEW_PROMPT_V2.endswith('"reason": 一句话, "refs": [...]}')
+    assert '持仓状态' not in graph.REVIEW_PROMPT
+
+
+def test_retro2_prompt_wording():
+    assert graph.RETRO_AGENT_V1 == 'agent-retro-1' and graph.RETRO_AGENT_V2 == 'agent-retro-2'
+    assert '你的执行' in graph.RETRO_PROMPT_V2 and 'execution、holding' in graph.RETRO_PROMPT_V2
+    assert 'tracks、decision' not in graph.RETRO_PROMPT_V2 and 'tracks、decision' in graph.RETRO_PROMPT
+    assert '你的执行' not in graph.RETRO_PROMPT
+    # same output structure (the retro check is unchanged)
+    assert graph.RETRO_PROMPT_V2.splitlines()[-2:] == graph.RETRO_PROMPT.splitlines()[-2:]

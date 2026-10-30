@@ -1,4 +1,5 @@
 """The ``daily`` task shell (v2.8 §4.7, §5.9): the lock, the graph run, ``job_reports`` and the failure notice.
+v2.9 D36: a database without migration 029 is refused (``error / migration_029_missing``, one failure notice).
 
 One *execution* — a first run or a resume — takes the ``daily:run`` session lock on a connection of its own, runs
 ``workflow.run`` / ``workflow.resume``, appends one ``job_reports`` row (``task = 'daily'``, the run's ``run_id``;
@@ -122,8 +123,8 @@ def is_running() -> bool:
 
 
 def ensure_ready() -> None:
-    """The pre-check of the manual run entries: ``service.Unavailable('migration_028_missing')`` (HTTP 503) when the
-    database answers and migration 028 has not run, so the caller is told instead of getting a 200 and a run that only
+    """The pre-check of the manual run entries: ``service.Unavailable('migration_028_missing')`` (HTTP 503; likewise
+    ``migration_029_missing``, v2.9) when the database answers and migration 028 has not run, so the caller is told instead of getting a 200 and a run that only
     records ``migration_028_missing``. Without a database to ask (not configured, unreachable, tables missing) it
     passes: the run itself reports what is wrong."""
     try:
@@ -133,6 +134,13 @@ def ensure_ready() -> None:
         return
     if not ready:
         raise service.Unavailable('migration_028_missing')
+    try:
+        with service.read_only_tx() as conn:
+            executable = repository.executable_ready(conn)
+    except Exception:   # noqa: BLE001 - nothing to ask
+        return
+    if not executable:
+        raise service.Unavailable('migration_029_missing')       # v2.9 D36
 
 
 def _trigger(trigger_source: str) -> str:
@@ -286,6 +294,16 @@ def _ready() -> bool:
         return False
 
 
+def _executable_ready() -> bool:
+    """Migration 029 (v2.9 D36): the plan / trade reads of the new code need its columns and tables, so a database
+    without it is refused before anything is read — no half-new, half-old run (no timeline-1 fallback)."""
+    try:
+        with service.read_only_tx() as conn:
+            return repository.executable_ready(conn)
+    except Exception:    # noqa: BLE001 - an unreadable database cannot run the workflow either
+        return False
+
+
 def run(config: AssistantConfig | None = None, *, trigger_source: str = 'scheduled', now: datetime | None = None,
         deps: service.Deps | None = None, run_id: str | None = None, checkpointer_factory=None, sleep=time.sleep,
         notify_cfg: Any = None, explicit_pool=None) -> dict[str, Any]:
@@ -301,6 +319,9 @@ def run(config: AssistantConfig | None = None, *, trigger_source: str = 'schedul
         with exclusive(), _active(rid):
             if not _ready():            # D36: no half-new, half-old runs
                 return _refused(rid, 'migration_028_missing', started_at=started_at, trigger_source=trigger_source,
+                                config=effective, notify_cfg=notify_cfg)
+            if not _executable_ready():     # v2.9 D36: the same rule for migration 029, checked before any plan / trade read
+                return _refused(rid, 'migration_029_missing', started_at=started_at, trigger_source=trigger_source,
                                 config=effective, notify_cfg=notify_cfg)
             try:
                 result = workflow.run(run_id=rid, trigger=_trigger(trigger_source), now=moment, deps=deps,

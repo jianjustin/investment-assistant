@@ -40,11 +40,9 @@ from investment_assistant.workbench.agent.tools import _PLAN_LEVEL_KEYS
 
 TIMELINE_V1 = 'timeline-1'
 TIMELINE_V2 = 'timeline-2'
-# plan_review.py still writes `timeline_version = timeline.TIMELINE_VERSION` on rows its timeline-1 logic
-# produced. Spec §2 fixes TIMELINE_VERSION = 'timeline-2'; it flips in Task 3 together with plan_review
-# switching to chain_state_v2 (a 'timeline-2' holding-mode invalidate row means the exit phase, so main must
-# not label v1 rows with it before then).
-TIMELINE_VERSION = TIMELINE_V1
+# v2.9: plan_review judges chains with `chain_state_v2` and stamps its rows `timeline-2` (a holding-mode
+# invalidation of that version is the exit phase, D17).
+TIMELINE_VERSION = TIMELINE_V2
 AGENT_V2 = 'agent-2'                 # plan_version of agent-2 plans and agent_version of their runs
 AGENT_V3 = 'agent-3'                 # v2.9: agent-2 plus entry_type / max_hold_sessions and the host fields
 CHAIN_ENTRY_SESSIONS = 10

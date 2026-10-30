@@ -40,12 +40,14 @@ def holding(ticker='NVDA', **over):
 
 
 def build(units=(), holdings=(), summary=None, last_push_failed=False, extended_plans=0, market=None,
-          agent_summary=None, screen=None, plan_updates=None, retro=None, fetch_status=None):
+          agent_summary=None, screen=None, plan_updates=None, retro=None, fetch_status=None, holding_status=None,
+          merged=None, session_units=None):
     return digest.build(session=SESSION, units=list(units), holdings=list(holdings),
                         summary=summary or {'errors': [], 'earnings': {}},
                         last_push_failed=last_push_failed, public_url=URL,
                         extended_plans=extended_plans, market=market, agent_summary=agent_summary,
-                        screen=screen, plan_updates=plan_updates, retro=retro, fetch_status=fetch_status)
+                        screen=screen, plan_updates=plan_updates, retro=retro, fetch_status=fetch_status,
+                        holding_status=holding_status, merged=merged, session_units=session_units)
 
 
 def agent_ok(ticker='NVDA', summary='回踩修复放量', first_risk='财报临近'):
@@ -580,7 +582,8 @@ def test_plan_updates_only_revise_with_version_and_invalidate():
     nvda = dg['plan_updates'][0]
     assert nvda == {'ticker': 'NVDA', 'kind': 'revise', 'from_version': 0, 'to_version': 1,
                     'changes': ['止损上移到 97', '论点补充 8-K 订单'], 'levels': LEVELS,
-                    'valid_until': date(2026, 10, 28), 'decided_by': 'agent', 'reason': '理由'}
+                    'valid_until': date(2026, 10, 28), 'decided_by': 'agent', 'reason': '理由',
+                    'mode': 'entry', 'via': None, 'exit_reason': None, 'retrigger': None}
     assert build()['plan_updates'] == []
 
 
@@ -604,7 +607,7 @@ def test_plan_update_field_texts():
     assert values[0] == ('NVDA 第 0 → 1 版：止损上移到 97；论点补充 8-K 订单 · '
                          '新价位 区间 99–102 · 止损 97 · T1 115 · 有效期至 2026-10-28')
     assert values[1] == 'TSM 作废（系统规则）：失效条件成立：收盘跌破 112'
-    assert values[2] == 'EXH 作废（Agent）：论点被证伪'
+    assert values[2] == 'EXH 退出指令（论点被证伪）'              # v2.9 §11: a holding-phase invalidation is an exit
 
 
 def test_invalidated_chain_says_so_before_baseline():
@@ -647,3 +650,122 @@ def test_fetch_degraded_line():
     for quiet in (build(fetch_status=[_family('bars', 'success', 3, 3), _family('fred', 'skipped', 0, 2)]),
                   build(fetch_status=[]), build(fetch_status=None), build()):
         assert '数据：' not in all_text(templates.workbench_digest(quiet))
+
+
+# --- v2.9 §11: executable new plans, holding status lines, exit marker, no undecided units ---
+
+def agent3_ok(ticker='MU', version_no=2, entry_type='zone_limit', retrigger=None, max_hold=10):
+    plan = plan_row(ticker=ticker, kind='agent', plan_version='agent-3', entry_low=D('99'), entry_high=D('102'),
+                    stop=D('95'), target1=D('115'), entry_type=entry_type, max_hold_sessions=max_hold,
+                    valid_from=date(2026, 10, 23), valid_until=date(2026, 10, 27))
+    return {'id': 'r10', 'status': 'ok', 'model': 'gpt-test', 'agent_version': 'agent-3',
+            'output': {'action': 'buy', 'summary': '回踩修复放量', 'thesis': [{'text': '放量突破', 'refs': ['call:1']}]},
+            'counter': {'status': 'ok', 'counter': [{'thesis': 1, 'text': '量能未放大', 'refs': ['call:1']}],
+                        'risks': [], 'dropped': 0, 'uncountered': []},
+            'plan': plan, 'input_tokens': 10, 'output_tokens': 5, 'created_at': '2026-10-22T23:00:00+00:00',
+            'chain': {'version_no': version_no, 'head_plan_id': 'p9', 'state': 'entry', 'mode': 'entry',
+                      'basis': None, 'latest_review': None, 'signal_date': date(2026, 10, 14),
+                      'retrigger': retrigger}}
+
+
+def test_new_plan_three_lines():
+    dg = build(units=[unit(ticker='MU', plan=plan_row(ticker='MU'), agent=agent3_ok(retrigger={
+        'from_version': 1, 'to_version': 2}))])
+    lines = plan_field(dg, 'MU').split('\n')
+    assert lines[0] == ('MU 10-14 第 2 版（再次触发，第 1 → 2 版）：区间限价 99–102 · 止损 95 · T1 115 · 166 股 · '
+                        '有效至 2026-10-27')
+    assert lines[1] == '开盘：区间内买 / 高开不追挂 102 / 低开 ≤95 作废、否则回到 99 买'
+    assert lines[2].startswith('最长持有 10 天未到 1R 即退出 · 回踩修复放量 · 反证：量能未放大')
+    assert '规则基线：区间 98.5–101.5 · 止损 94 · T1 112 · 166 股' in plan_field(dg, 'MU')     # after the Agent lines
+    # next_open: the open case collapses to the first valid day
+    nxt = plan_field(build(units=[unit(ticker='MU', plan=plan_row(ticker='MU'),
+                                       agent=agent3_ok(entry_type='next_open', max_hold=7))]), 'MU').split('\n')
+    assert nxt[0].startswith('MU 10-14 第 2 版：次日开盘 99–102') and '（再次触发' not in nxt[0]
+    assert nxt[1] == '开盘：仅 10-23 开盘在 99–102 买，否则作废'
+    assert nxt[2].startswith('最长持有 7 天未到 1R 即退出')
+
+
+def test_new_plan_merged_baseline_follows():
+    u = unit(ticker='MU', plan=plan_row(ticker='MU'), agent=agent3_ok())
+    u['merged'] = [{'signal_date': date(2026, 10, 22), 'plan': plan_row(ticker='MU', entry_low=D('100'))}]
+    value = plan_field(build(units=[u], merged={('MU', SESSION)}), 'MU')
+    assert value.index('规则基线：') < value.index('今日再次触发的规则基线（2026-10-22）：区间 100–101.5')
+
+
+def status_row(ticker='MU', instruction='hold', reason='趋势未变，继续持有', **over):
+    row = {'ticker': ticker, 'session': SESSION, 'quantity': D('10'), 'avg_cost': D('100'), 'stop': D('94.8'),
+           'target1': D('108'), 'held_sessions': 4, 'max_hold_sessions': 10, 'to_stop_pct': D('-5.20'),
+           'to_t1_pct': D('8.10'), 'r_now': D('0.62'), 't1_reached': False, 'instruction': instruction,
+           'reason': reason, 'exit_reason': 'stop_touched' if instruction == 'exit' else None}
+    row.update(over)
+    return row
+
+
+def test_holding_section_pushes_maintain():
+    dg = build(holdings=[holding('MU')], holding_status=[status_row()])
+    assert dg['overview']['holdings'] == 1 and dg['holdings'][0]['instruction'] == 'hold'
+    msgs = templates.workbench_digest(dg)
+    holdings_msg = next(m for m in msgs if m.title.startswith('💼'))
+    [field] = holdings_msg.fields
+    assert field.value == 'MU 持有 4/10 天 · 距止损 −5.20% · 距 T1 +8.10% · 现 +0.6R · 继续持有：趋势未变，继续持有'
+    # a position with no row (the review stage failed) falls back to the old fields and says so
+    fallback = build(holdings=[holding('MU'), holding('AMD')], holding_status=[status_row()])
+    text = all_text(templates.workbench_digest(fallback))
+    assert fallback['overview']['holdings'] == 2 and '今日持仓状态未写入（每日复查失败），以下为现算' in text
+
+
+def test_exit_marker():
+    dg = build(holding_status=[status_row('MU', 'exit', '退出指令自 2026-10-22 起（止损触及），仍持有 10 股'),
+                               status_row('AMD', 'hold'), status_row('TSM', 'no_plan', '无计划持仓（回撤规则看护）',
+                                                                       to_stop_pct=None, to_t1_pct=None,
+                                                                       r_now=None, max_hold_sessions=None)])
+    values = {f.name: f.value for m in templates.workbench_digest(dg) if m.title.startswith('💼') for f in m.fields}
+    assert values['MU'].startswith('⚠ MU 持有 4/10 天') and '次一交易日开盘卖出：退出指令自 2026-10-22 起' in values['MU']
+    assert not values['AMD'].startswith('⚠')
+    assert values['TSM'] == 'TSM 持有 4 天 · 无计划持仓（回撤规则看护）：无计划持仓（回撤规则看护）'
+
+
+def test_plan_updates_exit_and_retrigger_text():
+    rows = [
+        review('invalidate', ticker='MU', decided_by='host', reason='止损触及（95.00）：应已按止损卖出；仍持有则次一交易日开盘卖出',
+               mode='holding'),
+        {**review('revise', ticker='NVDA', new_plan_id='p1', from_version=1, to_version=2, levels=LEVELS,
+                  valid_until=date(2026, 10, 28), changes=['止损上移到 97']), 'via': 'retrigger',
+         'retrigger': {'unit_signal_dates': ['2026-10-22'], 'rule_ids': ['volume_breakout']}},
+        {**review('revise', ticker='TSM', new_plan_id='p2', from_version=0, to_version=1, levels=LEVELS,
+                  valid_until=date(2026, 10, 28), changes=[]), 'via': 'retrigger',
+         'retrigger': {'unit_signal_dates': ['2026-10-22'], 'rule_ids': ['volume_breakout']}},
+    ]
+    values = [f.value for f in templates.workbench_digest(build(plan_updates=rows))[2].fields]
+    assert values[0] == 'MU 退出指令（止损触及（95.00）：应已按止损卖出；仍持有则次一交易日开盘卖出）'
+    assert values[1].startswith('NVDA 第 1 → 2 版（再次触发）：止损上移到 97 · 新价位 区间 99–102')
+    assert values[2].startswith('TSM 第 0 → 1 版（再次触发）：再次触发（放量突破，2026-10-22），沿用价位，有效期延至 2026-10-28')
+
+
+def test_digest_has_no_undecided_units():
+    dg = build(units=[unit(plan=plan_row())])
+    assert 'undecided' not in dg['pending']
+    text = all_text(templates.workbench_digest(dg))
+    assert '未决定' not in text
+    assert 'undecided' not in str(dg)
+
+
+def test_pending_section_counts():
+    dg = build(units=[unit('MU', plan=plan_row(ticker='MU'), agent=agent3_ok()),
+                      unit('NVDA', plan=plan_row())],
+               holding_status=[status_row('AMD'), status_row('TSM', 'exit', '退出指令自 10-21 起')])
+    assert dg['pending']['entry'] == ['MU', 'NVDA'] and dg['pending']['exit'] == ['TSM']
+    assert dg['pending']['holding'] == ['AMD', 'TSM'] and dg['overview']['pending'] == 3
+    msgs = templates.workbench_digest(dg)
+    pending = next(m for m in msgs if m.title.startswith('⏳'))
+    first = pending.fields[0]
+    assert first.name == '入场期可执行 2 · 持仓 2（退出指令 1）'
+    assert first.value == '入场期：MU、NVDA\n持仓：AMD、TSM\n退出指令：TSM'
+    assert '待处理 3 · 异常 0' in all_text(msgs)
+
+
+def test_overview_counts_merged_units():
+    merged_unit = unit('MU', plan=plan_row(ticker='MU'), agent=None)
+    dg = build(units=[unit('NVDA', plan=plan_row(), agent=agent2_ok())], session_units=[
+        merged_unit, unit('NVDA', plan=plan_row(), agent=agent2_ok())], merged={('MU', SESSION)})
+    assert dg['overview']['agent'] == {'ok': 1, 'pass': 0, 'missing': 0, 'merged': 1}

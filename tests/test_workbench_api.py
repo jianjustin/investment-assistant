@@ -1100,7 +1100,7 @@ def test_today_and_chain_knowledge_refs(seeded, client):
     assert [v['knowledge_refs'] for v in chain['versions']] == [expected]
     assert [v['plan_id'] for v in chain['versions']] == [plan_id]
     assert {'ticker', 'signal_date', 'session', 'state', 'head_plan_id', 'version_no', 'latest_review',
-            'shadow_version', 'versions', 'reviews', 'inputs'} == set(chain)
+            'shadow_version', 'versions', 'reviews', 'inputs', 'retriggers', 'holding_status', 'notes'} == set(chain)
     # every block that shows a plan carries the key; status-only blocks (error, skipped, rejected) keep their shape
     assert all(('knowledge_refs' in u['agent']) == ('plan' in u['agent'])
                for u in client.get('/api/workbench/today').json()['units'] if u.get('agent'))

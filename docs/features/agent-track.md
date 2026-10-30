@@ -44,6 +44,17 @@
   - 用户输入的时间以数据库写入时刻为准，不能补登更早的时间；更正、撤回只对之后的复查生效，不回填旧版。
   - `GET /api/workbench/user-inputs` 不带 `signal_date` 时，按该标的的候选日逐个读取各链的输入，候选日很多时较慢。
 
+### v2.9：可执行的计划（`agent-3`、活跃链、再次触发、退出期、持仓状态）
+
+设计见 [v2.9 可执行的计划](../specs/2026-10-30-v2.9-executable-plans-design.md) §4、§5.5、§7 与 §21 的修订。上线后新开的链首版是 `agent-3`；旧的 `agent-2` 链照常复查，它们的修订版按 `agent-3` 生成，链里出现 `agent-2` 与 `agent-3` 混排（按版本行的 `schema_version` 区分），`agent-2` 版本没有执行字段，计划表按 `zone_limit` + 10 日显示、影子只算 `plan-shadow-1`。
+
+- **执行字段**：`agent-3` 输出多两个必填项：`entry_type`（`zone_limit` / `breakout_stop` / `next_open`，模型只选类型，开盘三种情形的做法由宿主按类型生成，见[入场类型](../knowledge/concepts/plan.entry_type.md)与[开盘三种情形](../knowledge/concepts/plan.open_scenarios.md)）与 `max_hold_sessions`（整数 5–20，默认 10，见[最长持有](../knowledge/concepts/plan.max_hold.md)）。`CHANGE_FIELDS` 加这两项；`valid_until`、`entry_cap` 是宿主字段，只出现在版本行的宿主差异 `diff`（`host_only: true`），不进模型的 `changes`。提示词（`PROPOSE_PROMPT_V3`）说明三种类型、最长持有与「再次触发」的续期写法；条件表是 `condition-2`（`held_sessions_reached` 只能作复查条件，失效条件由宿主按 `max_hold_sessions` 注入）。校验新增原因：`invalid_entry_type`、`invalid_max_hold`、`stop_lowered`（持仓期不能下移止损）、`stop_above_close`（持仓期止损不能高于最新收盘）、`active_chain`（见 `REASON_TEXT`，前端同步）。
+- **首版的「同标的上一条链」背景块**：见[每日计划 · v2.9](daily-plan.md#v29一只股票一条活跃链再次触发与退出期)；块的哈希存在运行的 `output.input_digest.previous_chain`。`get_position` 工具现在只读截止时间之前录入并成交的成交（`list_trades(cutoff=截止时间)`，D33），与首版、复查、修订共用的截止时间一致。
+- **一只股票一条活跃链**：`plan` 节点（实现在 `signals` 节点的规则循环里）为已有活跃链的标的写 `chain_retriggers`，`agent` 节点不为这些单元提议；见[一只股票一条活跃链](../knowledge/concepts/system.active_chain.md)与[再次触发](../knowledge/concepts/agent.retrigger.md)。第八项信号 `retrigger` 的窗口是 `chain_retriggers.created_at ∈ (上次有效复查的截止时间, 本次截止时间]`（R4）。
+- **退出期与持仓状态**：持仓期的作废进入退出期，退出期的链不再复查；每个持仓标的每个交易日有一行 `holding_status`，见[持仓状态](../knowledge/concepts/review.holding_status.md)。链状态的九种见[版本链状态](../knowledge/concepts/review.chain_state.md)。
+- **链视图**：`plan_review chain`（与 `GET /api/workbench/chains/{ticker}/{signal_date}` 的 `chain_view`）另给 `retriggers`（并入的单元，每条带它产出的版本号 `version_no`，没有产出为 `null`）、`holding_status`（该链的全部状态行）与 `notes`（备注）；`state` 是 `timeline-2` 的 `{state, mode, active, basis, basis_ref, timeline_version, renewable}`。
+- **已知限制（v2.9 补充）**：并入的链当天被宿主作废时，这次触发只剩规则基线，不补开新链（要等下一次触发）；无链持仓与同标的新入场链并存时，持仓状态按标的一行（全部未平批次）、链上的买入按链，两边的股数可能不同；分次买入使加权成本上移后，`reached_1r` 可能由真变假，时间止损重新生效；旧 `agent-2` 链的持仓止损按链最新版取（持仓期修订上移的止损开始生效）。
+
 ## 就此计划讨论
 
 从计划卡、「标的」页的计划行、复盘卡进入，问「这个止损怎么来的」「为什么这版放宽了入场区间」：Agent 只读这份计划（或这张卡）的推导链、运行记录、概念卡和你的经验，给带引用的解释，**不改任何东西**；需要时可以起草一条经验（落为草稿，等你审定）。设计：[v2.7 §8](../specs/2026-10-28-v2.7-growth-loop-design.md#8-就此计划讨论)，版本 `agent-discuss-1`，模块 `workbench/discussion.py`（用例）、`agent/discuss_tools.py` 与 `agent/growth_check.py`（工具与校验）。

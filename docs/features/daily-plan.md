@@ -97,6 +97,12 @@
 
 价位四舍五入到 0.01。重跑结果相同就返回原计划；结果不同则记入运行报告的冲突列表，不覆盖原计划。采纳时提交自定价位，会另存一份 `own` 计划，和决定在同一事务里写入，建议股数按新价位重算。
 
+### `plan-2`：规则基线带执行字段（v2.9）
+
+自 v2.9 起每个无冲突的买入单元生成的规则计划是 `plan-2`：价位、有效期、仓位、财报与市场环境规则**逐字沿用 `plan-1`**（推导里这些步骤与 `plan-1` 一一相同），另写入两个执行字段 `entry_type = zone_limit`（区间限价，见[入场类型](../knowledge/concepts/plan.entry_type.md)）与 `max_hold_sessions = 10`（见[最长持有](../knowledge/concepts/plan.max_hold.md)），`inputs.entry_rules_version = 'entry-1'`。推导注册 `('plan-2', 'rule')`，除 `plan-1` 的步骤外多核对这两个字段等于常量。上线之前生成的 `plan-1` 行不重算、不补字段，仍按 `('plan-1', 'rule')` 推导；同一单元重跑不比较 `plan-1` 与 `plan-2`。
+
+该标的已有活跃链时，单元照常生成 `plan-2`，计划行 `inputs.active_chain = {ticker, signal_date}` 标出并入了哪条链（见下节）。
+
 ## 计划推导
 
 每份计划的价位都能只用它 `inputs` 指向的已存行重算出来（只读回读，按 id 取行，修订过的新行不会被误取）。批处理在 `plan`、`agent` 与 `review` 阶段结束前对本阶段产出的计划（`review` 为本次修订出的新版）做一次核对，计数写进阶段行的 `detail.derivation`；有计划判为 `mismatch` / `incomplete` 时该阶段记 `degraded`，运行报告的 `errors` 多一条 `derivation_mismatch: <标的> <计划id>`——已存计划、推送内容与其他阶段不受影响。
@@ -129,6 +135,18 @@
 - **互斥**：每条链的复查全程（读取、调用模型、写入）在一条不经连接池的专用连接上持有会话级 advisory lock `review-run:<标的>:<信号日>`，读取与写入事务里另有事务级锁 `review:<标的>:<信号日>`；任一把被占（正在重新复查）时本次跳过（`review_in_progress`），不写行，也不调用模型。写入前核对链仍有效、最新版没变；模型调用期间链被改动（如提交了不买的决定）时不写复查记录，但模型运行记为 `skipped`（`review_in_progress`）并带 token，计入每日上限。模型调用期间不占用数据库事务。阶段 `detail.excluded` 逐链记下未复查的链与原因（`fresh_version`、`already_reviewed`、`object_cap` 与无行跳过），供 `plan_review check` 核对。
 - **阶段证据**：`review` 行的输入 = 复查对象数，产出 = 有效复查记录数，`outputs` 列出复查记录、新版计划与复查 / 修订运行的 id，`detail` 有各结论与 `decided_by` 计数、信号触发次数、入场 / 持仓对象数、`ended`、`holdings_without_chain`、token 与新版推导核对；Agent 不可用但有对象时宿主可判定的照写、其余写 `skipped`、阶段 `degraded`（`agent_unavailable`），没有对象时整阶段 `skipped`（`agent_unavailable: <原因>`）。迁移 026 未执行时本阶段不运行，本次按 `stages-1` 记账。
 - **验证一次**：手动运行后，`stage_runs` 该 `run_id` 有 10 条有效行，`review` 行的输出计数等于 `plan_reviews` 里该交易日 `trigger = batch` 的有效记录数；信号日当天的新链只出现在 `review` 行的 `skips`（`fresh_version`）里，次一交易日才有复查记录。
+
+### v2.9：一只股票一条活跃链、再次触发与退出期
+
+- **活跃链**：`timeline-2` 的链状态有九种，`entry`（入场期）、`holding`（持仓期）、`exiting`（退出期）三种算活跃，同一个标的至多一条（见[一只股票一条活跃链](../knowledge/concepts/system.active_chain.md)）。复查的对象仍是 `entry` 与 `holding`；`exiting` 的链不复查、不调用模型，只写当天的持仓状态。`detail.ended` 的计数改为「过期 · 作废 · 平仓 · 被取代 · 否决（旧决定）」，`detail.exiting` 列出退出期的链。
+- **`plan` 节点写再次触发**（设计 R2：这件事在 `signals` 节点的规则循环里做，与规则基线同一事务、同一把事务级锁 `chain-open:<标的>`；`plan` 节点的证据行写出 `detail.retriggers = {count, by_state, tickers}`）：为每个无冲突的买入单元生成 `plan-2` 之后，若该标的已有活跃链（入场期最后一个有效日或入场期上限那天触发的，算可续期的活跃链，R5），就写一行 `chain_retriggers`（`created_at` 取本次批处理的截止时间，所以同一次运行与之后的重新复查都按截止时间读到它）；没有活跃链则什么也不写，单元照常进 `agent` 节点开新链。同一 session 重跑读回已有的行，不重复写；已并入的单元重跑仍是并入。
+- **`agent` 节点**：有 `chain_retriggers` 行的单元不提议、不写运行行，阶段 `skips` 记 `active_chain`（附链键，如 `MU·2026-10-21`），解读直接用规则版简报（`prompt_version = rules-1`，不单独跑 `agent-brief-1`）；`summary.agent.merged` 与阶段 `detail.merged` 记并入数，`GET /api/workbench/agent-runs` 的 `coverage.merged` 把它算作已覆盖。写首版之前在同一把锁下再核对一次：期间另一条链已经活跃，就把这次提议记为 `skipped / active_chain`（保留 token）并补写并入行，不开第二条链。手动「重新运行 Agent」遇活跃链 → 409 `active_chain`；已并入、但所并入的链已结束的单元可以开自己的链（R17）。
+- **首版带「同标的上一条链」证据块**：提议者的人类消息在现有一行之后加最近一条已结束链的摘要（只读背景、不可引用；模型写的文字每行前缀 `    │ `；至多 2000 字；只用截止时间之前的记录），块全文与哈希存进该次运行的 `output.input_digest.previous_chain`。首版是 `agent-3`：计划行 `plan_version = agent-3`，必填 `entry_type` 与 `max_hold_sessions`。
+- **入场期 `retrigger`**：该信号（第八项）触发时，复查跳过单阶段复查，直接走修订流程（提议 + 反方 + 校验）：复查行 `decided_by = agent`、`review_agent_run_id` 为空、`detail.via = 'retrigger'`，新版有效期 `S+1…min(S+3, 入场期上限)`，入场期上限取最近一次触发后第 10 个交易日（D6）。模型字段全无变化时允许「续期」版（`changes = []`，宿主差异只有 `valid_until` / `entry_cap`，标 `host_only`）；修订输出 `pass` 仍作废。失效条件成立仍先由宿主作废。持仓期的 `retrigger` 只是证据，进单阶段复查的证据块（不加仓）；退出期的记进持仓状态的 `detail.signals`。
+- **持仓期的宿主步骤**（D18，顺序固定）：① 止损触及（当天最低价 ≤ 有效止损，含 T1 之后的移动止损）→ 作废，原因「止损触及（<价>）：应已按止损卖出；仍持有则次一交易日开盘卖出」；② 时间止损（宿主把计划的 `max_hold_sessions` 注入为 `source = max_hold` 的失效条件）成立 → 作废，原因「时间止损：持有 n 个交易日仍未到 1R，次一交易日开盘卖出」；③ 其余失效条件成立 → 作废。三者都不调用模型。持仓期的作废**不再结束链**，而是进入退出期（复查行 `mode = holding`、`timeline_version = timeline-2`，`detail.exit_reason` 为 `stop_touched` / `time_stop` / `invalidation` / `agent_invalidate`），直到这些买入全部平仓 → `position_closed`。其余照旧：无事可看由宿主维持、预算闸门、单阶段复查（`agent-review-2`，证据块加「再次触发」与「持仓状态」）、修订；持仓期修订的止损只能上移、必须低于复查日收盘，入场区间照抄上一版（止损可以高于入场区间下沿，计划行 `inputs.chain_mode = holding`）。退出期点「重新复查」→ 409 `chain_exiting`。
+- **持仓状态 `holding_status`**（D19）：`review` 节点在全部复查之后，对**每个持仓标的**写一行——复查成功、跳过、出错、Agent 不可用、无链持仓、退出期的链都有；有链的取链最新版的止损 / T1，1R 的风险取第一笔关联买入所关联版本的止损（D20），无链的取成交关联的计划；字段、指令（`hold` / `sell_half` / `exit` / `no_plan`）与维持理由模板见[持仓状态](../knowledge/concepts/review.holding_status.md)。同一 session 重跑不写新行（先写的为准）；持仓事实只用截止时间之前的成交（`list_trades(cutoff=now)`，R11）。阶段 `detail.holding_status = {rows, by_instruction}`。
+- **核对**：`python -m investment_assistant.workbench.plan_review check --session D` 另有三项（任一不过退出码 1）：① 首版为 `agent-3` 的链所在标的至多一条活跃链；② 当天每个 `chain_retriggers` 行指向的链有一条带 `retrigger` 信号的复查记录（被 `object_cap` 等排除、或已进退出期的除外）；③ 每个当天有未平批次的标的恰有一行 `holding_status`。`chain` 命令另打印并入的单元、持仓状态行与备注。
+- **迁移 029 门**：`daily` 在 029 未执行时拒绝运行（`job_reports` 记 `error / migration_029_missing`，失败通知一次，不跑图），手动运行入口返回 503；在读取任何计划或成交之前检查。
 
 ## 复盘卡检测
 
@@ -197,6 +215,12 @@
   - 作废：「<标的> 作废（Agent / 系统规则）：<理由>」。
   - 维持、修订失败（没有新版）、跳过、出错都不推；扩展池入场期的链不推（只影子跟踪），持仓期的链总是推。
   - 时间窗（D25）：起点是上一次成功的、交易日早于本次的每日推送读取复查记录的时刻（`job_reports` 里 `workbench`（v2.7 及以前）或 `daily` 的 `summary.push.sent = true`，取 `summary.push.reviews_until`；没有这个键的旧记录取报告时间 `created_at`；休市日那一行不算），终点是本次推送读取复查记录的时刻（写进本次的 `summary.push.reviews_until`），只取复查交易日不晚于本次的记录；从未成功推送过时只取本交易日的记录。推送之后才做的重新复查——包括推送发送期间、运行报告落库之前写入的——下一次推送照样会推。手动「重新推送今日计划」（`POST /api/workbench/push`）不写运行报告，不移动时间窗；同一交易日重推时起点不变，内容只会多出此后新写入的记录。迁移 026 未执行时不发这条消息，概览也不写「计划更新」一行。
+
+- **v2.9 的推送格式**（设计 §11）：
+  - **新计划**（每个入场期链一项，加当天没有链的规则基线；扩展池不推）三行：「<标的> <月-日> 第 n 版：<入场类型> L–U · 止损 S · T1 W · N 股 · 有效至 E」、「开盘：区间内买 / 高开不追挂 U / 低开 ≤S 作废、否则回到 L 买」（`next_open`：「开盘：仅 <首个有效日> 开盘在 L–U 买，否则作废」）、「最长持有 n 天未到 1R 即退出 · 摘要 · 反证：…」；本次窗口内由再次触发产生的版本，第一行写「（再次触发，第 n−1 → n 版）」；规则基线行照旧在 Agent 行之后，当天并入这条链的单元另附其规则基线。
+  - **持仓**消息每个持仓标的一行持仓状态「MU 持有 4/10 天 · 距止损 −5.20% · 距 T1 +8.10% · 现 +0.6R · 继续持有：<维持理由>」，**维持也推**；`exit` 行前加「⚠」。某个持仓当天没有状态行（`review` 节点整体失败）时按旧字段现算并写明「今日持仓状态未写入（每日复查失败），以下为现算」。
+  - **计划更新**：持仓期作废写「<标的> 退出指令（<原因>）」；再次触发的修订写「<标的> 第 n−1 → n 版（再次触发）：<变化说明>」，续期版没有模型变化说明时写宿主模板「再次触发（<规则>，<信号日>），沿用价位，有效期延至 <日期>」。
+  - **待处理与异常**：不再有「未决定单元」，改为「入场期可执行 n · 持仓 m（退出指令 k）」；概览的「待处理」= 入场期可执行 + 退出指令；Agent 建议计数把并入已有链的单元单列（「并入已有链」），不算「未给出」。
 
 ## 入口与验证
 

@@ -204,12 +204,13 @@ def plan_context(conn, ticker: str, session: date, *, now: datetime,
 
 
 def _generate_rule_plan(conn, ticker: str, session: date, ticker_bars: list[dict[str, Any]], summary: dict[str, Any],
-                        *, now: datetime) -> dict[str, Any] | None:
-    """Build and store the rule plan for a fresh buy unit; record skip/conflict in the summary.
+                        *, now: datetime, active_chain: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Build and store the rule baseline (`plan-2`, v2.9 §5.4) for a fresh buy unit; record skip/conflict in the summary.
 
-    Returns None when the plan was skipped, else ``{'status': inserted|existing|conflict, 'id': plan_id,
-    'plan_status': ok|invalid}`` for the stage accounting (v2.4 §4); ``plan_status`` is the stored plan row's
-    own status. The summary is written exactly as before."""
+    ``active_chain`` (``{'ticker', 'signal_date'}``) marks a unit that joined an active chain: the plan row keeps
+    ``inputs.active_chain``. Returns None when the plan was skipped, else ``{'status': inserted|existing|conflict,
+    'id': plan_id, 'plan_status': ok|invalid}`` for the stage accounting (v2.4 §4); ``plan_status`` is the stored
+    plan row's own status. The summary is written exactly as before."""
     from investment_assistant.config import load_config
 
     entry = repository.pool_entry_at(conn, ticker, session, cutoff_at=now)
@@ -221,7 +222,8 @@ def _generate_rule_plan(conn, ticker: str, session: date, ticker_bars: list[dict
         snapshot=repository.snapshot_at(conn, session, cutoff_at=now),
         exposure=exposure(conn, session, cutoff_at=now, ticker=ticker),
         params=load_config().workbench,
-        context=plan_context(conn, ticker, session, now=now, screen_ref=screen_ref))
+        context=plan_context(conn, ticker, session, now=now, screen_ref=screen_ref),
+        version=plans.PLAN_VERSION, active_chain=active_chain)
     if 'skip' in plan:
         summary['plans'][ticker] = f"skip: {plan['skip']}"
         return None
@@ -260,6 +262,38 @@ def _note_plan(acc: stages_module.StageAcc, ticker: str, planned: dict[str, Any]
         counts[planned['plan_status']] += 1
     if planned['status'] == 'conflict':
         acc.degrade('conflict', ticker)
+
+
+RETRIGGER_STATES = ('entry', 'holding', 'exiting')
+
+
+def _empty_retriggers() -> dict[str, Any]:
+    return {'count': 0, 'by_state': {state: 0 for state in RETRIGGER_STATES}, 'tickers': []}
+
+
+def _note_retrigger(acc: stages_module.StageAcc, ticker: str, row: dict[str, Any]) -> None:
+    """Fold one committed merge (a stored ``chain_retriggers`` row, never a locally computed value) into the plan
+    stage's ``detail.retriggers = {count, by_state, tickers}`` (v2.9 spec §4.2)."""
+    retriggers = acc.detail.setdefault('retriggers', _empty_retriggers())
+    retriggers['count'] += 1
+    retriggers['by_state'][row['chain_state']] += 1
+    if ticker not in retriggers['tickers']:
+        retriggers['tickers'].append(ticker)
+
+
+def _open_or_merge(conn, ticker: str, session: date, *, now: datetime) -> dict[str, Any] | None:
+    """The `plan` node's chain decision for one buy unit (v2.9 spec §4.2, D3), under the transaction-level lock
+    ``chain-open:<ticker>``: the ticker's active chain on S (R5: an entry chain on its last valid day renews), or
+    None when the unit opens a chain of its own. A unit already merged on an earlier run of the session stays
+    merged (its stored row decides), and a unit never merges into its own or a later chain."""
+    from investment_assistant.workbench import plan_review     # imports this module
+
+    repository.lock(conn, f'chain-open:{ticker}')
+    stored = repository.retrigger_for_unit(conn, ticker, session)
+    if stored is not None:
+        return {'row': stored}
+    found = plan_review.active_chain_of(conn, ticker, session=session, now=now, before=session)
+    return {'found': found} if found is not None else None
 
 
 def _check_derivations(acc: stages_module.StageAcc, plan_ids: list[Any], summary: dict[str, Any]) -> None:
@@ -888,6 +922,8 @@ def stage_rules(state: dict[str, Any], ctx, sig_acc: stages_module.StageAcc | No
     for acc_ in (sig_acc, plan_acc):   # 空跑与重跑时两个列表也在（inserted 为 []，v2.4 §4）
         if acc_ is not None:
             acc_.outputs.update({'inserted': [], 'existing': []})
+    if plan_acc is not None:           # v2.9 §4.2: every run states how many units merged into an active chain
+        plan_acc.detail['retriggers'] = _empty_retriggers()
     for ticker in all_tickers:
         entry = summary['tickers'].setdefault(ticker, {'bars': None, 'skipped_bars': [], 'news': None,
                                                        'candidates': [], 'skips': [], 'error': None})
@@ -925,7 +961,28 @@ def stage_rules(state: dict[str, Any], ctx, sig_acc: stages_module.StageAcc | No
                     if plan_acc is not None:
                         plan_acc.input()
                     with (plan_acc.timing() if plan_acc is not None else nullcontext()):
-                        noted['plan'] = _generate_rule_plan(conn, ticker, session, ticker_bars, summary, now=now)
+                        # v2.9 §4.2 (R2): the active-chain decision and the chain_retriggers row share this
+                        # ticker's transaction with the rule baseline, under the chain-open lock
+                        merged = (_open_or_merge(conn, ticker, session, now=now)
+                                  if repository.timeline_ready(conn) and repository.executable_ready(conn) else None)
+                        found = (merged or {}).get('found')
+                        stored = (merged or {}).get('row')
+                        target = ({'ticker': ticker, 'signal_date': found['chain']['signal_date']} if found
+                                  else {'ticker': ticker, 'signal_date': stored['chain_signal_date']} if stored
+                                  else None)
+                        noted['plan'] = _generate_rule_plan(conn, ticker, session, ticker_bars, summary, now=now,
+                                                            active_chain=target)
+                        if found is not None:
+                            noted['retrigger'] = repository.insert_chain_retrigger(conn, {
+                                'ticker': ticker, 'unit_signal_date': session,
+                                'chain_signal_date': found['chain']['signal_date'],
+                                'chain_state': found['chain_state'], 'rule_ids': unit['rule_ids'],
+                                'baseline_plan_id': noted['plan']['id'] if noted['plan'] else None,
+                                'entry_cap': timeline.retrigger_cap(found['chain_state'], session),
+                                'run_id': run_id or 'unknown', 'timeline_version': timeline.TIMELINE_VERSION,
+                                'created_at': now})
+                        elif stored is not None:
+                            noted['retrigger'] = stored
                     noted['planned'] = True
                 # Briefs come from the agent stage only (P4 §7.3): propose for
                 # conflict-free buys, interpret for everything else on the main list.
@@ -941,6 +998,8 @@ def stage_rules(state: dict[str, Any], ctx, sig_acc: stages_module.StageAcc | No
                 _note_signals(sig_acc, ticker, noted)
                 if noted.get('planned'):
                     _note_plan(plan_acc, ticker, noted['plan'], summary['plans'][ticker])
+                    if noted.get('retrigger') is not None:
+                        _note_retrigger(plan_acc, ticker, noted['retrigger'])
     summary['timings']['rules'] = round(clock() - t_rules, 1)
     delta: dict[str, Any] = {'summary': summary}
     if plan_acc is not None:
@@ -957,6 +1016,7 @@ def stage_plan_check(state: dict[str, Any], ctx, acc: stages_module.StageAcc | N
     accounting (the shell passes the live accumulator, the graph restores it from ``refs['plan_acc']``)."""
     summary = state['summary']
     if acc is not None:
+        acc.detail.setdefault('retriggers', _empty_retriggers())     # written by the rule loop; a node restored without it says 0
         _check_derivations(acc, acc.outputs['inserted'] + acc.outputs['existing'], summary)
     return {'summary': summary}
 
@@ -968,7 +1028,7 @@ def stage_agent(state: dict[str, Any], ctx, acc: stages_module.StageAcc | None) 
     opened = None if ctx.legacy else _wall(ctx)().isoformat()
     started, clock = agent_window({**state, 'agent_started_at': opened}, ctx)
     unavailable = _agent_stage(session, now=now, deps=ctx.deps, summary=summary, started=started, clock=clock,
-                               acc=acc, timeline_ready=state.get('timeline_ready'))
+                               acc=acc, timeline_ready=state.get('timeline_ready'), run_id=state.get('run_id'))
     if ctx.recorder is not None:
         if unavailable is not None:    # 不可用压过「空跑成功」：整阶段 skipped（v2.4 §4）
             ctx.recorder.skip('agent', f'agent_unavailable: {unavailable}')
@@ -1438,6 +1498,7 @@ def push(*, now: datetime, force: bool, summary: dict[str, Any] | None = None, n
         view = today(now=now)
         plan_updates = None
         reviews_until = None
+        units, holding_rows, merged = view['units'], None, set()
         if repository.timeline_ready(conn):
             # D25: reviews written since the last successful daily push of an earlier session
             # (batch and recheck alike); never pushed before → this session's reviews only. The window
@@ -1447,20 +1508,77 @@ def push(*, now: datetime, force: bool, summary: dict[str, Any] | None = None, n
             since = repository.last_successful_push_at(conn, before_session=session)
             plan_updates = _plan_update_rows(conn, repository.reviews_since(conn, since, session,
                                                                              until=reviews_until))
+        if repository.timeline_ready(conn) and repository.executable_ready(conn):
+            # v2.9 §11: the new plans are the entry-phase chains and the day's rule baselines (there are no
+            # undecided units any more); the holdings are the day's status rows, quiet days included
+            units, merged = _push_units(conn, session, view['units'], now=now, plan_updates=plan_updates)
+            holding_rows = repository.holding_status_for(conn, session=session)
         payload = digest_module.build(
-            session=session, units=view['units'], holdings=view.get('holdings', []), summary=summary or {},
+            session=session, units=units, holdings=view.get('holdings', []), summary=summary or {},
             last_push_failed=_last_push_failed(conn, session),
             public_url=load_config().workbench.public_url,
             extended_plans=sum(1 for u in view.get('extended_units', []) if u.get('plan') is not None),
             market=view.get('market'), agent_summary=(summary or {}).get('agent'),
             screen=view.get('screen'), plan_updates=plan_updates,
             retro=retro_counts if retro_counts is not None else (summary or {}).get('retro'),
-            fetch_status=fetch_status)
+            fetch_status=fetch_status, holding_status=holding_rows, merged=merged, session_units=view['units'])
     out = notifier.send_notifications('workbench', templates.workbench_digest(payload), notify_cfg, client=client)
     result = {'session': session.isoformat(), **out}
     if reviews_until is not None:
         result['reviews_until'] = reviews_until.isoformat()
     return result
+
+
+def _push_units(conn, session: date, view_units: list[dict[str, Any]], *, now: datetime,
+                plan_updates: list[dict[str, Any]] | None) -> tuple[list[dict[str, Any]], set[tuple]]:
+    """The unit entries of the push's 「新计划」 section (v2.9 §11) and the set of today's units merged into a chain.
+
+    One entry per main-list chain in the entry phase at S (judged by `timeline-2`): its head version with the chain
+    key and, when a retrigger revision of the window produced that head, the 「再次触发，第 n−1 → n 版」 mark; the
+    unit's rule baseline follows, then the baselines of the units merged into the chain today. Today's buy units that
+    opened no chain (an Agent pass, error or skip) keep their old entry (rule baseline plus the Agent's reason).
+    Extended-pool chains are not pushed."""
+    revised = {u['ticker']: u for u in plan_updates or []
+               if u.get('via') == 'retrigger' and u.get('outcome') == 'revise' and u.get('to_version') is not None}
+    entries: list[dict[str, Any]] = []
+    by_chain: dict[tuple, dict[str, Any]] = {}
+    for chain in repository.all_chains(conn):
+        if chain['pool'] == 'extended':
+            continue
+        ticker, signal_date = chain['ticker'], chain['signal_date']
+        status = chain_status(conn, ticker, signal_date, session=session, now=now)
+        if status is None or status['state']['state'] != 'entry':
+            continue
+        head = status['head']
+        run = repository.agent_run_by_id(conn, head['version']['agent_run_id'])
+        update = revised.get(ticker)
+        retrigger = ({'from_version': update['from_version'], 'to_version': update['to_version']}
+                     if update and update['to_version'] == head['version']['version_no'] else None)
+        entry = repository.pool_entry_at(conn, ticker, signal_date, cutoff_at=now)
+        unit = {'ticker': ticker, 'signal_date': signal_date, 'proposed_action': 'buy', 'labels': [],
+                'rule_ids': [c['rule_id'] for c in repository.unit_candidates(conn, ticker, signal_date)],
+                'source': entry.get('source') if entry else None,
+                'plan': repository.rule_plan(conn, ticker, signal_date),
+                'brief': _brief_view(repository.latest_brief(conn, ticker, signal_date)),
+                'agent': _agent_view(run, head['plan'], {**_chain_view(status), 'signal_date': signal_date,
+                                                         'retrigger': retrigger}),
+                'merged': []}
+        entries.append(unit)
+        by_chain[(ticker, signal_date)] = unit
+    merged: set[tuple] = set()
+    for u in view_units:
+        if u['signal_date'] != session or u.get('proposed_action') != 'buy' or 'conflict' in (u.get('labels') or []):
+            continue
+        row = repository.retrigger_for_unit(conn, u['ticker'], u['signal_date'])
+        if row is not None:
+            merged.add((u['ticker'], u['signal_date']))
+            target = by_chain.get((u['ticker'], row['chain_signal_date']))
+            if target is not None:
+                target['merged'].append({'signal_date': u['signal_date'], 'plan': u.get('plan')})
+        elif (u['ticker'], u['signal_date']) not in by_chain:
+            entries.append({**u, 'merged': []})
+    entries.sort(key=lambda e: (e['ticker'], e['signal_date']))
+    return entries, merged
 
 
 def _plan_update_rows(conn, reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1480,8 +1598,10 @@ def _plan_update_rows(conn, reviews: list[dict[str, Any]]) -> list[dict[str, Any
             run = repository.agent_run_by_id(conn, first['agent_run_id']) if first else None
             pools[key] = run.get('pool') if run else None
         reviewed = repository.version_by_plan(conn, row['head_plan_id'])
+        detail = row.get('detail') or {}
         item.update(pool=pools[key], from_version=reviewed['version_no'] if reviewed else None,
-                    to_version=None, changes=[], levels=None, valid_until=None)
+                    to_version=None, changes=[], levels=None, valid_until=None, via=detail.get('via'),
+                    exit_reason=detail.get('exit_reason'), retrigger=detail.get('retrigger'))
         if row['outcome'] == 'revise' and row['new_plan_id'] is not None:
             version = repository.version_by_plan(conn, row['new_plan_id'])
             plan = repository.plan_by_id(conn, row['new_plan_id']) or {}
@@ -1560,7 +1680,7 @@ def _instrument_plans(conn, ticker: str, since: date) -> tuple[list[dict[str, An
     versions: dict[str, dict[str, Any]] = {}
     if ready:
         for plan in rows:
-            if plan['kind'] == 'agent' and plan['plan_version'] == agent_graph.AGENT_V2:
+            if plan['kind'] == 'agent' and plan['plan_version'] in (agent_graph.AGENT_V2, agent_graph.AGENT_V3):
                 version = repository.version_by_plan(conn, plan['id'])
                 if version is not None:
                     versions[str(plan['id'])] = version
@@ -1685,7 +1805,7 @@ def shadow(*, now: datetime, since: date | None = None) -> dict[str, Any]:
 def _plan_chains(conn, plans: list[dict[str, Any]]) -> dict[Any, dict[str, Any]]:
     """v2.5 §9.1: ``plan_id → {version_no, origin, is_head, supersedes_plan_id}`` for the agent-2 versions
     among ``plans``; agent-1, rule and own plans (and everything without migration 026) are absent."""
-    wanted = [p for p in plans if p['kind'] == 'agent' and p['plan_version'] == agent_graph.AGENT_V2]
+    wanted = [p for p in plans if p['kind'] == 'agent' and p['plan_version'] in (agent_graph.AGENT_V2, agent_graph.AGENT_V3)]
     if not wanted or not repository.timeline_ready(conn):
         return {}
     versions_by_unit: dict[tuple, list[dict[str, Any]]] = {}
@@ -2193,11 +2313,11 @@ def _agent_run_row(unit: dict, *, settings, attempt: int, now: datetime, status:
     return {'id': run_id or str(uuid.uuid4()), 'ticker': unit['ticker'],
             'signal_date': unit['signal_date'], 'pool': unit['pool'], 'attempt': attempt,
             'mode': mode,
-            # v2.5 §5.1: first versions (and the skips standing in for them) are agent-2 runs
+            # v2.5 §5.1 / v2.9 §5.5: first versions, revisions (and the skips standing in for them) are agent-3 runs
             'agent_version': {'interpret': agent_graph.INTERPRET_VERSION,
                               'review': agent_graph.REVIEW_VERSION,
                               'retro': agent_graph.RETRO_AGENT_VERSION,
-                              'discuss': agent_graph.DISCUSS_AGENT_VERSION}.get(mode, agent_graph.AGENT_V2),
+                              'discuss': agent_graph.DISCUSS_AGENT_VERSION}.get(mode, agent_graph.AGENT_V3),
             'provider': settings.provider,
             'model': settings.model, 'cutoff_at': now, 'status': status, 'reason': reason, 'detail': detail,
             'output': output, 'counter': counter, 'plan_id': plan_id,
@@ -2210,7 +2330,7 @@ def _brief_run(run: dict) -> dict:
     agent-1 shape); an agent-2 brief's contra is the first per-thesis counter instead (v2.5 Task 6), so the
     agent-2 counter is presented with ``counter.counter[:1]`` in that slot. Other runs pass through."""
     counter = run.get('counter')
-    if run.get('agent_version') != agent_graph.AGENT_V2 or not isinstance(counter, dict):
+    if run.get('agent_version') not in (agent_graph.AGENT_V2, agent_graph.AGENT_V3) or not isinstance(counter, dict):
         return run
     return {**run, 'counter': {'status': counter.get('status'), 'risks': list(counter.get('counter') or [])[:1]}}
 
@@ -2245,18 +2365,83 @@ def _checkpoint_missing(exc: BaseException) -> bool:
     return False
 
 
-def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt: int) -> dict:
-    """One unit through the agent-2 graph: the chain's first version (v2.5 §5.1). Plan, run, calls,
-    version 0 and the brief share one transaction; a model or checkpoint failure, or any failure
-    while writing, lands as this unit's error row and never propagates. Needs migration 026."""
+def _merged_brief(unit: dict, *, now: datetime) -> dict[str, Any]:
+    """The rule-only brief of a unit merged into an active chain (v2.9 §4.3): the unit is not proposed, so nothing
+    but the rules speaks for it; no agent run stands behind it."""
+    return {'ticker': unit['ticker'], 'signal_date': unit['signal_date'], 'model': None, 'prompt_version': 'rules-1',
+            'cutoff_at': now, 'input_refs': [], 'output': briefs.rule_summary(unit, unit['candidates']),
+            'status': 'fallback', 'error': agent_reason_text('active_chain'), 'agent_run_id': None}
+
+
+def agent_reason_text(reason: str) -> str:
+    from investment_assistant.workbench.agent import REASON_TEXT
+
+    return REASON_TEXT.get(reason, reason)
+
+
+def _previous_chain_facts(conn, ticker: str, signal_date: date, *, now: datetime) -> dict[str, Any]:
+    """``timeline.previous_chain_block``'s input for the ticker's chains opened before ``signal_date``, read as the
+    cutoff ``now`` knew them (spec §4.6): fills with ``list_trades(cutoff=now)`` (R11), bars up to the last session
+    closed by ``now``, the version plan rows with the model's ``changes`` text, the closed segments of the chain's
+    fills with the sale's recording time (so a sale recorded after the cutoff cannot show)."""
+    from investment_assistant.workbench import plan_review     # imports this module
+
+    session = bars.latest_closed_session(now)
+    ctx = plan_review.ticker_context(conn, ticker, now=now)
+    sale_recorded = {t['id']: t['recorded_at'] for t in ctx['trades'] if t['side'] == 'sell'}
+    items = []
+    for chain in ctx['chains']:
+        if chain['signal_date'] >= signal_date:
+            continue
+        item = plan_review.read_chain_facts(conn, chain, session=session, now=now, context=ctx, point_in_time=True)
+        if item is None:
+            continue
+        rows = []
+        for version in item['chain']['versions']:
+            plan = repository.plan_by_id(conn, version['plan_id'])
+            run = repository.agent_run_by_id(conn, version['agent_run_id'])
+            rows.append({**plan, 'version_no': version['version_no'], 'created_at': version['created_at'],
+                         'changes': ((run or {}).get('output') or {}).get('changes') or []})
+        buy_ids = {str(b['id']) for b in item['buys']}
+        segments = [{**seg, 'sell_recorded_at': sale_recorded.get(seg['sell_trade_id'])}
+                    for seg in ctx['book']['closed'] if str(seg['buy_trade_id']) in buy_ids]
+        items.append({'chain': item['chain'], 'facts': item['facts'], 'plans': rows, 'segments': segments})
+    return {'as_of_session': session, 'bars': repository.read_bars(conn, ticker, session, cutoff_at=now, limit=400),
+            'spy_bars': repository.read_bars(conn, BENCHMARK, session, cutoff_at=now, limit=400),
+            'splits': repository.split_events(conn, ticker), 'chains': items}
+
+
+def _first_version_guard(conn, unit: dict, *, now: datetime) -> dict[str, Any] | None:
+    """The check a first version needs under the ``chain-open:<ticker>`` lock just before it is written (v2.9
+    §4.7): None when the ticker has no active chain, else ``{'found': the active chain}``. Judged at
+    ``max(signal date, latest closed session)``. A merge row of the unit counts only through the chain it points
+    at being active (R17: a unit merged into a chain that has ended may open its own)."""
+    from investment_assistant.workbench import plan_review     # imports this module
+
+    found = plan_review.active_chain_of(conn, unit['ticker'],
+                                        session=max(unit['signal_date'], bars.latest_closed_session(now)), now=now)
+    return {'found': found} if found is not None else None
+
+
+def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt: int,
+                    run_id: str | None = None) -> dict:
+    """One unit through the agent-3 graph: the chain's first version (v2.5 §5.1, v2.9 §5.5). Plan, run, calls,
+    version 0 and the brief share one transaction taken under the ``chain-open:<ticker>`` lock, which first checks
+    again that the ticker has no active chain and the unit was not merged (§4.7; otherwise the proposal is recorded
+    as a ``skipped / active_chain`` run with its tokens and the rule-only brief, and a merge row is written when
+    the active chain is an earlier one). The proposer's message carries the 「同标的上一条链」 block (§4.6); its
+    text and hash are kept in the run's ``output`` as ``input_digest.previous_chain`` (``agent_runs`` has no digest
+    column; ``detail`` is the error text of a failed run and stays empty for an ok one). A model or checkpoint
+    failure, or any failure while writing, lands as this unit's error row and never propagates. Needs migration
+    026 (and 029 for the guard); ``run_id`` is the daily run's, stamped on a merge row written here."""
     from investment_assistant.config import load_config
 
-    run_id = str(uuid.uuid4())
+    agent_run_id = str(uuid.uuid4())
     ticker, signal_date = unit['ticker'], unit['signal_date']
 
     def row(status: str, **kwargs) -> dict:
         return _agent_run_row(unit, settings=settings, attempt=attempt, now=now, status=status,
-                              run_id=run_id, **kwargs)
+                              run_id=agent_run_id, **kwargs)
 
     def write(run_row: dict, calls: list[dict] | None = None) -> dict:
         with _tx() as conn:
@@ -2268,8 +2453,10 @@ def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt:
 
     try:
         with _tx() as conn:
-            bars = repository.read_bars(conn, ticker, signal_date, cutoff_at=now)
-        last_close = Decimal(str(bars[-1]['close']))
+            bars_ = repository.read_bars(conn, ticker, signal_date, cutoff_at=now)
+            block = timeline.previous_chain_block(_previous_chain_facts(conn, ticker, signal_date, now=now), now=now)
+        digest = {'input_digest': {'previous_chain': timeline.previous_chain_digest(block)}}
+        last_close = Decimal(str(bars_[-1]['close']))
         ctx = agent_tools.ToolContext(ticker=ticker, session=signal_date, cutoff_at=now, read=_read_only)
         with ExitStack() as stack:
             try:
@@ -2282,9 +2469,10 @@ def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt:
             model_obj = deps.agent_model if deps.agent_model is not None else agent_model.chat_model(settings)
             try:
                 result = agent_graph.run_unit_v2(unit=unit, ctx=ctx, model=model_obj,
-                                                 checkpointer=checkpointer, run_id=run_id,
+                                                 checkpointer=checkpointer, run_id=agent_run_id,
                                                  last_close=last_close, as_of_session=signal_date,
-                                                 now=lambda: now)
+                                                 now=lambda: now, version=timeline.AGENT_V3,
+                                                 previous_chain=block)
             except Unavailable:
                 raise
             except Exception as exc:
@@ -2294,35 +2482,58 @@ def _run_agent_unit(unit: dict, *, now: datetime, deps: Deps, settings, attempt:
                 return write(row('error', reason=reason, detail=detail))
         if result['status'] == 'ok':
             with _tx() as conn:   # v2.5 §5.1: plan → run → calls → version 0 → brief, one transaction
+                repository.lock(conn, f'chain-open:{ticker}')
+                guard = _first_version_guard(conn, unit, now=now) if repository.executable_ready(conn) else None
+                if guard is not None:       # §4.7: a chain opened (or the unit merged) since the plan node ran
+                    found = guard.get('found')
+                    if (found is not None and found['chain']['signal_date'] < signal_date
+                            and repository.retrigger_for_unit(conn, ticker, signal_date) is None):
+                        baseline = repository.rule_plan(conn, ticker, signal_date)
+                        repository.insert_chain_retrigger(conn, {
+                            'ticker': ticker, 'unit_signal_date': signal_date,
+                            'chain_signal_date': found['chain']['signal_date'], 'chain_state': found['chain_state'],
+                            'rule_ids': [c['rule_id'] for c in unit['candidates']],
+                            'baseline_plan_id': baseline['id'] if baseline else None,
+                            'entry_cap': timeline.retrigger_cap(found['chain_state'], signal_date),
+                            'run_id': run_id or 'agent', 'timeline_version': timeline.TIMELINE_VERSION,
+                            'created_at': now})
+                    skipped = row('skipped', reason='active_chain', input_tokens=result['input_tokens'],
+                                  output_tokens=result['output_tokens'])
+                    record = repository.insert_agent_run(conn, skipped, result['calls'])
+                    if unit['pool'] == 'main':
+                        repository.store_brief(conn, briefs.for_run(_brief_run(skipped), result['calls'], unit=unit,
+                                                                    candidates=unit['candidates']))
+                    return record
                 plan = timeline.build_version_plan(
-                    output=result['output'], agent_run_id=run_id, model=settings.model, ticker=ticker,
+                    output=result['output'], agent_run_id=agent_run_id, model=settings.model, ticker=ticker,
                     signal_date=signal_date, as_of_session=signal_date, version_no=0, supersedes_plan_id=None,
-                    mode='entry', bars=bars,
+                    mode='entry', bars=bars_,
                     earnings_row=repository.latest_earnings(conn, ticker, cutoff_at=now),
                     snapshot=repository.snapshot_at(conn, signal_date, cutoff_at=now),
                     exposure=exposure(conn, signal_date, cutoff_at=now, ticker=ticker),
                     params=load_config().workbench,
-                    context=plan_context(conn, ticker, signal_date, now=now))
+                    context=plan_context(conn, ticker, signal_date, now=now), version=timeline.AGENT_V3)
                 plan_id = repository.store_plan(conn, plan)['record']['id']
-                run_row = row('ok', plan_id=plan_id, output=result['output'],
+                run_row = row('ok', plan_id=plan_id, output={**result['output'], **digest},
                               counter=result['counter'], input_tokens=result['input_tokens'],
                               output_tokens=result['output_tokens'])
                 record = repository.insert_agent_run(conn, run_row, result['calls'])
                 repository.insert_plan_version(conn, {
                     'plan_id': plan_id, 'ticker': ticker, 'signal_date': signal_date, 'version_no': 0,
-                    'supersedes_plan_id': None, 'origin': 'signal', 'agent_run_id': run_id,
+                    'supersedes_plan_id': None, 'origin': 'signal', 'agent_run_id': agent_run_id,
                     'cutoff_at': run_row['cutoff_at'], 'as_of_session': signal_date, 'diff': None,
-                    'schema_version': timeline.AGENT_V2})
+                    'schema_version': timeline.AGENT_V3})
                 # v2.7 D18: the knowledge this plan cited, in the plan's own transaction (none: nothing written)
                 repository.insert_knowledge_citations(conn, [
-                    {**cited, 'agent_run_id': run_id, 'plan_id': plan_id}
+                    {**cited, 'agent_run_id': agent_run_id, 'plan_id': plan_id}
                     for cited in agent_growth_check.knowledge_citations(
                         output=result['output'], counter=result['counter'], mode='propose', calls=result['calls'])])
                 if unit['pool'] == 'main':
                     repository.store_brief(conn, briefs.for_run(_brief_run(run_row), result['calls'], unit=unit,
                                                                 candidates=unit['candidates']))
                 return record
-        return write(row(result['status'], reason=result['reason'], output=result['output'],
+        return write(row(result['status'], reason=result['reason'],
+                         output={**result['output'], **digest} if result['output'] else result['output'],
                          counter=result['counter'], input_tokens=result['input_tokens'],
                          output_tokens=result['output_tokens']), result['calls'])
     except Unavailable:
@@ -2384,8 +2595,14 @@ def _run_interpret_unit(unit: dict, *, now: datetime, deps: Deps, settings, atte
 
 def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str, Any],
                  started: float, clock: Callable[[], float],
-                 acc: stages_module.StageAcc | None = None, timeline_ready: bool | None = None) -> str | None:
+                 acc: stages_module.StageAcc | None = None, timeline_ready: bool | None = None,
+                 run_id: str | None = None) -> str | None:
     """The agent track after all rule plans (§8.1): skip rules, then one unit at a time.
+
+    v2.9 §4.3: a unit the `plan` node merged into an active chain (a ``chain_retriggers`` row) is not proposed — no
+    run row, stage skip ``active_chain`` naming the chain — and gets the rule-only brief; ``summary['agent']
+    ['merged']`` maps ticker -> chain signal date. ``run_id`` (the daily run's) stamps a retrigger row the
+    first-version guard has to write itself (§4.7).
 
     ``acc`` (v2.4 §4) collects the stage accounting next to ``record`` and the skip branches. Returns the
     unavailable reason (disabled / not_configured) or None, so the caller can close an unavailable stage
@@ -2494,10 +2711,12 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
             if acc is not None:
                 acc.fail(unit['ticker'], exc)
 
+    merged: dict[str, str] = {}
     with _tx() as conn:
         groups = _session_units(conn, session, now=now)
         ready = repository.timeline_ready(conn) if timeline_ready is None else timeline_ready
         resets_ready = repository.daily_ready(conn)     # migration 028: the attempt-reset table exists
+        merges_ready = repository.executable_ready(conn)        # migration 029: chain_retriggers exists
     if acc is not None:
         acc.input(sum(len(units) for units in groups.values()))
     if not ready:
@@ -2508,31 +2727,77 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
     def propose(unit: dict, attempt: int) -> dict:
         if not ready:       # the shared gates above still come first (deadline, provider, quota, attempts)
             return _skip(unit, 'migration_026_missing', now=now, settings=settings, attempt=attempt)
-        return _run_agent_unit(unit, now=now, deps=deps, settings=settings, attempt=attempt)
+        return _run_agent_unit(unit, now=now, deps=deps, settings=settings, attempt=attempt, run_id=run_id)
+
+    def propose_or_merge(unit: dict) -> None:
+        """§4.3: a merged unit is not proposed; everything else goes through the shared gates."""
+        if merges_ready:
+            try:
+                with _tx() as conn:
+                    row = repository.retrigger_for_unit(conn, unit['ticker'], unit['signal_date'])
+                    if row is not None and unit['pool'] == 'main' and repository.latest_brief(
+                            conn, unit['ticker'], unit['signal_date']) is None:
+                        repository.store_brief(conn, _merged_brief(unit, now=now))
+            except Unavailable:
+                raise
+            except Exception as exc:   # §2: an agent failure never drags the rule track
+                summary['errors'].append(f"{unit['ticker']} agent: {exc}")
+                if acc is not None:
+                    acc.fail(unit['ticker'], exc)
+                return
+            if row is not None:
+                merged[unit['ticker']] = row['chain_signal_date'].isoformat()
+                if acc is not None:
+                    acc.skip('active_chain', f"{unit['ticker']}·{row['chain_signal_date'].isoformat()}")
+                return
+        run_one(unit, 'propose', propose)
 
     def interpret(unit: dict, attempt: int) -> dict:
         return _run_interpret_unit(unit, now=now, deps=deps, settings=settings, attempt=attempt)
 
     for unit in groups['main_buy']:          # §7.3: main propose, main interpret, extended propose
-        run_one(unit, 'propose', propose)
+        propose_or_merge(unit)
     for unit in groups['main_other']:
         run_one(unit, 'interpret', interpret)
     for unit in groups['extended']:
-        run_one(unit, 'propose', propose)
+        propose_or_merge(unit)
 
     summary['agent'] = {'runs': runs, 'briefs': briefs, 'tokens': tokens,
-                       'quota_exhausted': quota_exhausted}
+                       'quota_exhausted': quota_exhausted, 'merged': merged}
     if connection_lost:
         summary['agent']['connection_lost'] = connection_lost      # the review stage after this one honours it
     summary['timings']['agent'] = round(clock() - t_agent, 1)
     if acc is not None:
         acc.detail['tokens'] = dict(tokens)
+        acc.detail['merged'] = len(merged)
         acc.duration_ms += (clock() - t_agent) * 1000
     return unavailable
 
 
 class AgentConflict(RuntimeError):
-    """The unit already has an ok/pass agent run."""
+    """The unit already has an ok/pass agent run (``already_completed``), needs no re-run (``not_needed``), or —
+    v2.9 §4.7 — the ticker already has an active plan chain (``active_chain``; ``chain_signal_date`` names it)."""
+
+    def __init__(self, message: str = '', *, chain_signal_date: date | None = None, version_no: int | None = None):
+        super().__init__(message)
+        self.chain_signal_date = chain_signal_date
+        self.version_no = version_no
+
+
+def _assert_unit_may_open(conn, ticker: str, signal_date: date, *, now: datetime) -> None:
+    """A manual run (``run_agent``, ``rerun_agent``) may only open a chain when the ticker has no active one
+    (v2.9 §4.7, D2): ``AgentConflict('active_chain')`` otherwise. The unit's own chain does not count (the
+    already-ok guard answers for that), and a unit merged into a chain that has since ended may open its own
+    (R17: the merge row only counts while the chain it points at is active). A no-op before migration 029."""
+    from investment_assistant.workbench import plan_review     # imports this module
+
+    if not repository.executable_ready(conn):
+        return
+    found = plan_review.active_chain_of(conn, ticker, session=max(signal_date, bars.latest_closed_session(now)),
+                                        now=now)
+    if found is not None and found['chain']['signal_date'] != signal_date:
+        raise AgentConflict('active_chain', chain_signal_date=found['chain']['signal_date'],
+                            version_no=found['chain']['versions'][-1]['version_no'])
 
 
 def run_agent(ticker: str, signal_date: date, *, now: datetime, deps: Deps | None = None) -> dict[str, Any]:
@@ -2556,6 +2821,7 @@ def run_agent(ticker: str, signal_date: date, *, now: datetime, deps: Deps | Non
         prior = repository.agent_runs_for(conn, ticker, signal_date)
         if any(r['status'] in ('ok', 'pass') for r in prior):
             raise AgentConflict(f'{ticker} {signal_date} 已有 Agent 建议')
+        _assert_unit_may_open(conn, ticker, signal_date, now=now)
         extended = _unit_is_extended(conn, ticker, signal_date, held=book['position'] is not None, now=now)
         entry = repository.pool_entry_at(conn, ticker, signal_date, cutoff_at=now)
         agent_unit = {'ticker': unit['ticker'], 'signal_date': signal_date,
@@ -2618,9 +2884,14 @@ def rerun_agent(ticker: str, signal_date: date, mode: str, *, request_id: str, o
             unit = synthesis.synthesize(ticker, signal_date, group, holding=book['position'] is not None, now=now)
             if unit is None or unit['proposed_action'] != 'buy' or 'conflict' in unit['labels']:
                 raise ValueError(f'{ticker} {signal_date} 不是无冲突的买入单元')
+            _assert_unit_may_open(conn, ticker, signal_date, now=now)     # before the reset row is written
         latest = repository.latest_agent_run(conn, ticker, signal_date, mode)
-        if latest is None or not (latest['status'] == 'error'
-                                  or (latest['status'] == 'skipped' and latest['reason'] == 'max_attempts')):
+        merged_before = (mode == 'propose' and repository.executable_ready(conn)
+                         and repository.retrigger_for_unit(conn, ticker, signal_date) is not None)
+        if latest is None and merged_before:      # R17: merged, never proposed, and the chain it joined is over
+            pass
+        elif latest is None or not (latest['status'] == 'error'
+                                    or (latest['status'] == 'skipped' and latest['reason'] == 'max_attempts')):
             raise AgentConflict('not_needed')
         reset = repository.insert_attempt_reset(conn, {'ticker': ticker, 'signal_date': signal_date, 'mode': mode,
                                                        'request_id': request_uuid, 'origin': origin})
@@ -2669,25 +2940,38 @@ def unit_buys(conn, ticker: str, signal_date: date) -> list[dict[str, Any]]:
 
 
 def chain_status(conn, ticker: str, signal_date: date, *, session: date,
-                 book: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """An agent-2 chain read at session S: ``{'head', 'versions', 'reviews', 'state', 'latest_review'}``,
-    or None when the unit has no agent-2 chain. ``state`` is ``timeline.chain_state``'s ``{state, mode,
-    basis}``; ``latest_review`` is the chain's newest effective review row (maintain / revise / invalidate)
-    or None. The caller has checked ``repository.timeline_ready``; ``book`` (``_book``) may be passed in
-    to save the trade read."""
+                 book: dict[str, Any] | None = None, now: datetime | None = None,
+                 context: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """An agent chain read at session S: ``{'head', 'versions', 'reviews', 'state', 'latest_review'}``, or None
+    when the unit has no agent chain. ``latest_review`` is the chain's newest effective review row (maintain /
+    revise / invalidate) or None. The caller has checked ``repository.timeline_ready``.
+
+    With ``now`` (the cutoff) the chain is judged by `timeline-2` (v2.9 spec §4.1): ``state`` is
+    ``chain_state_v2``'s ``{state, mode, active, basis, basis_ref, timeline_version, renewable}`` and the result
+    also carries ``chain`` / ``facts`` (its inputs, for the `plan` node and the review) and ``buys`` (the
+    chain's live fills, read with ``list_trades(cutoff=now)``); ``context`` (``plan_review.ticker_context``) saves
+    the ticker-wide reads when several chains of one ticker are read. Without ``now`` the `timeline-1` judge runs as
+    before (the read views not yet moved to timeline-2; ``book`` may be passed in to save the trade read)."""
     head = repository.chain_head(conn, ticker, signal_date)
     if head is None:
         return None
     versions = repository.chain_versions(conn, ticker, signal_date)
     reviews = repository.chain_reviews(conn, ticker, signal_date)
+    effective = [r for r in reviews if r['outcome'] in repository.EFFECTIVE_REVIEW_OUTCOMES]
+    latest = effective[-1] if effective else None
+    if now is not None:
+        from investment_assistant.workbench import plan_review     # imports this module
+
+        item = plan_review.read_chain_facts(conn, {'ticker': ticker, 'signal_date': signal_date}, session=session,
+                                            now=now, context=context)
+        return {'head': head, 'versions': versions, 'reviews': reviews, 'state': item['state'],
+                'latest_review': latest, 'chain': item['chain'], 'facts': item['facts'], 'buys': item['buys']}
     book = book if book is not None else _book(conn, ticker)
     state = timeline.chain_state(versions=versions, head_plan=head['plan'], reviews=reviews,
                                  decision=repository.decision_head(conn, ticker, signal_date),
                                  unit_buys=unit_buys(conn, ticker, signal_date), open_lots=book['open'],
                                  session=session, legacy=False)
-    effective = [r for r in reviews if r['outcome'] in repository.EFFECTIVE_REVIEW_OUTCOMES]
-    return {'head': head, 'versions': versions, 'reviews': reviews, 'state': state,
-            'latest_review': effective[-1] if effective else None}
+    return {'head': head, 'versions': versions, 'reviews': reviews, 'state': state, 'latest_review': latest}
 
 
 def _review_view(row: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -2793,13 +3077,16 @@ def _agent_status_line(run: dict[str, Any] | None) -> str | None:
 
 
 def agent_runs(*, now: datetime, since: date | None = None) -> dict[str, Any]:
-    """Run rows without result payloads, plus coverage: every buy unit in range has a run or is missing."""
+    """Run rows without result payloads, plus coverage: every buy unit in range has a run, is merged into an active
+    chain (``coverage.merged``, counted as covered, v2.9 §4.3) or is missing."""
     session = bars.latest_closed_session(now)
     with _tx() as conn:
         start = since if since is not None else session - timedelta(days=14)
         runs = repository.list_agent_runs(conn, start)
         total = covered = 0
         missing: list[dict[str, Any]] = []
+        merged: list[dict[str, Any]] = []
+        merges_ready = repository.executable_ready(conn)
         for group in repository.candidate_groups_since(conn, start):
             ticker, signal_date = group['ticker'], group['signal_date']
             book = _book(conn, ticker)
@@ -2811,9 +3098,15 @@ def agent_runs(*, now: datetime, since: date | None = None) -> dict[str, Any]:
             total += 1
             if repository.latest_agent_run(conn, ticker, signal_date) is not None:
                 covered += 1
+            elif merges_ready and (row := repository.retrigger_for_unit(conn, ticker, signal_date)) is not None:
+                covered += 1        # v2.9 §4.3: merged into an active chain, so nothing to propose: not missing
+                merged.append({'ticker': ticker, 'signal_date': signal_date,
+                               'chain_signal_date': row['chain_signal_date']})
             else:
                 missing.append({'ticker': ticker, 'signal_date': signal_date})
-    return {'since': start, 'runs': runs, 'coverage': {'units': total, 'covered': covered, 'missing': missing}}
+    return {'since': start, 'runs': runs,
+            'coverage': {'units': total, 'covered': covered, 'merged': len(merged), 'merged_units': merged,
+                         'missing': missing}}
 
 
 def agent_run_detail(run_id: str) -> dict[str, Any]:

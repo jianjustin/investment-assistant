@@ -169,6 +169,12 @@ def _plan(r: dict) -> str:
     status = _join([_pair('有效', _get(r['detail'], 'status', 'ok')), _pair('作废', _get(r['detail'], 'status', 'invalid'))])
     if status:
         text += f'（{status}）'
+    merged = _get(r['detail'], 'retriggers', 'count')
+    if merged:                                   # v2.9 §4.2: units that merged into an active chain
+        by_state = _get(r['detail'], 'retriggers', 'by_state') or {}
+        text += f"；{merged} 个单元并入已有活跃链（" + _join([_pair('入场期', by_state.get('entry', 0)),
+                                                           _pair('持仓', by_state.get('holding', 0)),
+                                                           _pair('退出期', by_state.get('exiting', 0))]) + '）'
     checked, consistent = _get(r['detail'], 'derivation', 'checked'), _get(r['detail'], 'derivation', 'consistent')
     if checked is not None and consistent is not None:
         text += f'；推导核对一致 {consistent}/{checked}'
@@ -187,6 +193,9 @@ def _agent(r: dict) -> str:
     shown = _join([_pair('token 输入', tokens_in), _pair('输出', tokens_out)])
     if shown:
         text += f'；{shown}'
+    merged = _get(r['detail'], 'merged')
+    if merged:                                   # v2.9 §4.3: not proposed again, the chain already exists
+        text += f'；{merged} 个单元并入已有链，不重复提议'
     return text
 
 
@@ -208,10 +217,29 @@ def _review(r: dict) -> str:
     if decided:
         text += f'；{decided}'
     ended = _get(r['detail'], 'ended')
-    if isinstance(ended, dict) and any(ended.get(k) for k in ('expired', 'closed_by_decision', 'position_closed')):
+    if isinstance(ended, dict) and 'superseded' in ended:         # timeline-2 rows (v2.9 §6.3)
+        total = sum(int(ended.get(k) or 0) for k in ('expired', 'invalidated', 'position_closed', 'superseded',
+                                                     'closed_by_decision'))
+        if total:
+            parts = [_pair('过期', ended.get('expired', 0)), _pair('作废', ended.get('invalidated', 0)),
+                     _pair('平仓', ended.get('position_closed', 0)), _pair('被取代', ended.get('superseded', 0))]
+            if ended.get('closed_by_decision'):
+                parts.append(_pair('否决', ended['closed_by_decision']))
+            text += f'；已结束 {total}（' + _join(parts) + '）'
+    elif isinstance(ended, dict) and any(ended.get(k) for k in ('expired', 'closed_by_decision', 'position_closed')):
         text += '；已结束的链：' + _join([_pair('过期', ended.get('expired', 0)),
                                          _pair('否决', ended.get('closed_by_decision', 0)),
                                          _pair('平仓', ended.get('position_closed', 0))])
+    retriggered = _get(r['detail'], 'signals', 'retrigger')
+    if retriggered:
+        text += f'；再次触发 {retriggered} 条'
+    exiting = _get(r['detail'], 'exiting')
+    if isinstance(exiting, list) and exiting:
+        text += f'；退出期不复查 {len(exiting)} 条'
+    holding_rows = _get(r['detail'], 'holding_status', 'rows')
+    if holding_rows is not None:
+        exits = _get(r['detail'], 'holding_status', 'by_instruction', 'exit') or 0
+        text += f'；持仓状态 {holding_rows} 行（退出指令 {exits}）'
     without = _get(r['detail'], 'holdings_without_chain')
     if isinstance(without, list) and without:
         text += '；无 Agent 计划的持仓：' + ', '.join(str(t) for t in without)

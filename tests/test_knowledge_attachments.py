@@ -37,7 +37,9 @@ EXACT_STEP_CONCEPT = {
     'levels_ordered': 'plan.status',
 }
 # 「其余不挂」: the steps the spec leaves without a concept.
-UNATTACHED_STEPS = {'as_of_session', 'chain_entry_cap', 'entry_mid', 'version_no'}
+# v2.9: plan-2 / agent-3 derivation adds entry_type and max_hold_sessions; mapping them to plan.entry_type / plan.max_hold
+# needs the front-end STEP_CONCEPT table too (web/ is not Task 3's), so they stay unattached for now
+UNATTACHED_STEPS = {'as_of_session', 'chain_entry_cap', 'entry_mid', 'version_no', 'entry_type', 'max_hold_sessions'}
 
 
 def step_concept(key: str) -> str | None:

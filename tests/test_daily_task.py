@@ -387,3 +387,19 @@ def test_a_chain_stopping_failure_still_tells_when_to_resume(daily_db, clock, no
     flaky('regime', monkeypatch, fail_times=2)
     run_daily(clock)
     assert '续跑' in failure_notice_fields(notices)
+
+
+def test_daily_refuses_without_029(daily_db, clock, notices, job_reports, monkeypatch):
+    """v2.9 D36: no graph, no stage rows, one `error / migration_029_missing` report and one failure notice —
+    checked before any plan or trade is read."""
+    from investment_assistant.workbench import repository, service
+
+    seed_watchlist(daily_db, [('NVDA', ['core'])])
+    monkeypatch.setattr(repository, 'executable_ready', lambda conn: False)
+    out = run_daily(clock)
+    assert out['status'] == 'error' and out['summary']['error'] == 'migration_029_missing'
+    assert [(r['status'], r['summary']['error']) for r in job_reports.rows()] == [('error', 'migration_029_missing')]
+    assert daily_db.execute('SELECT count(*) FROM stage_runs').fetchone()[0] == 0
+    assert len([t for t in notices.titles('workbench') if '每日工作流失败' in t]) == 1
+    with pytest.raises(service.Unavailable, match='migration_029_missing'):        # the manual entry's pre-check
+        daily.ensure_ready()

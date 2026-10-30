@@ -397,6 +397,7 @@ def test_agent_track_end_to_end(offline, scripted_model):
 
     def buy_json(ref):
         return json.dumps({'action': 'buy', 'summary': '回踩修复放量',
+                           'entry_type': 'zone_limit', 'max_hold_sessions': 10,
                            'levels': {k: {'value': v, 'refs': [ref]} for k, v in
                                       (('entry_low', 120.0), ('entry_high', 128.0), ('stop', 115.0),
                                        ('target1', 140.0))},
@@ -435,7 +436,7 @@ def test_agent_track_end_to_end(offline, scripted_model):
     runs = {t: repository.agent_runs_for(offline, t, S1) for t in ('SYNTH', 'SYNC', 'SYNE')}
     assert all(len(v) == 1 for v in runs.values())                       # agent_runs 三行
     agent_plan = repository.agent_plan(offline, 'SYNTH', S1)
-    assert agent_plan['kind'] == 'agent' and agent_plan['plan_version'] == 'agent-2'
+    assert agent_plan['kind'] == 'agent' and agent_plan['plan_version'] == 'agent-3'
     assert str(runs['SYNTH'][0]['plan_id']) == str(agent_plan['id'])
 
     # 推送（替身客户端）：只有主列表单元；作废建议只写原因，不写内容
@@ -443,7 +444,7 @@ def test_agent_track_end_to_end(offline, scripted_model):
     push_out = service.push(now=evening(S1), force=True, summary=batch, notify_cfg=NotifyConfig(), client=spy)
     assert push_out['sent'] is True
     pushed_text = json.dumps(spy.payloads, ensure_ascii=False)
-    assert 'Agent 第 0 版：区间 120–128 · 止损 115 · T1 140' in pushed_text        # v2.5 §10.3
+    assert 'SYNTH 09-01 第 0 版：区间限价 120–128 · 止损 115 · T1 140' in pushed_text        # v2.9 §11
     assert 'Agent 未给出计划（引用无效已作废）' in pushed_text
     assert 'SYNE' not in pushed_text                                       # 扩展池不推送
     assert 'Agent 建议 1 · 不建议 0 · 未给出 1' in pushed_text
@@ -472,7 +473,8 @@ def test_agent_track_end_to_end(offline, scripted_model):
     assert {p['kind'] for p in shadow['plans']} == {'rule', 'agent'}
 
     # 覆盖率 3/3：每个买入单元都有 Agent 建议或明确原因
-    assert service.agent_runs(now=after)['coverage'] == {'units': 3, 'covered': 3, 'missing': []}
+    assert service.agent_runs(now=after)['coverage'] == {'units': 3, 'covered': 3, 'merged': 0, 'merged_units': [],
+                                                           'missing': []}
 
     # 同日重跑：ok/pass 单元不再运行，agent 计划不新增（失败的 SYNC 按 §8.1 重试）
     again = service.run_batch(now=evening(S1), deps=agent_deps([
@@ -505,7 +507,7 @@ def test_signal_day_creates_agent2_version_zero(offline, scripted_model, monkeyp
         return AIMessage(content='', tool_calls=[{'name': name, 'args': args, 'id': call_id}])
 
     plan_json = json.dumps({
-        'action': 'buy', 'summary': '回踩修复放量',
+        'action': 'buy', 'summary': '回踩修复放量', 'entry_type': 'zone_limit', 'max_hold_sessions': 10,
         'levels': {k: {'value': v, 'refs': ['call:1']} for k, v in
                    (('entry_low', 120.0), ('entry_high', 128.0), ('stop', 115.0), ('target1', 140.0))},
         'thesis': [{'text': '放量突破 20 日线', 'refs': ['call:1']}, {'text': '回踩不破前低', 'refs': ['call:1']}],
@@ -535,10 +537,10 @@ def test_signal_day_creates_agent2_version_zero(offline, scripted_model, monkeyp
 
     # SYNTH: plan → run → version 0 → brief
     [plan] = [p for p in repository.plans_for_unit(offline, 'SYNTH', S1) if p['kind'] == 'agent']
-    assert plan['plan_version'] == 'agent-2'
+    assert plan['plan_version'] == 'agent-3'
     assert plan['inputs']['version_no'] == 0 and plan['inputs']['as_of_session'] == S1.isoformat()
     [run] = repository.agent_runs_for(offline, 'SYNTH', S1)
-    assert run['agent_version'] == 'agent-2' and run['mode'] == 'propose' and run['status'] == 'ok'
+    assert run['agent_version'] == 'agent-3' and run['mode'] == 'propose' and run['status'] == 'ok'
     assert str(run['plan_id']) == str(plan['id'])
     assert [c['phase'] for c in repository.agent_tool_calls(offline, run['id'])] == ['propose', 'counter']
     [version] = repository.chain_versions(offline, 'SYNTH', S1)
@@ -546,9 +548,9 @@ def test_signal_day_creates_agent2_version_zero(offline, scripted_model, monkeyp
         (0, 'signal', None, None)
     assert str(version['plan_id']) == str(plan['id']) and str(version['agent_run_id']) == str(run['id'])
     assert version['cutoff_at'] == run['cutoff_at'] == evening(S1)
-    assert version['as_of_session'] == S1 and version['schema_version'] == 'agent-2'
+    assert version['as_of_session'] == S1 and version['schema_version'] == 'agent-3'
     brief = repository.latest_brief(offline, 'SYNTH', S1)
-    assert brief['agent_run_id'] == run['id'] and brief['prompt_version'] == 'agent-2'
+    assert brief['agent_run_id'] == run['id'] and brief['prompt_version'] == 'agent-3'
     assert brief['output']['summary'] == '回踩修复放量'
     assert brief['output']['contra'] == [{'thesis': 1, 'text': '突破量能不足', 'refs': ['call:2']}]
     head = repository.chain_head(offline, 'SYNTH', S1)
@@ -630,6 +632,7 @@ def test_review_expansion_end_to_end(offline, scripted_model):
         return AIMessage(content='', tool_calls=[{'name': name, 'args': args, 'id': name + '-1'}])
 
     alpha_json = _json.dumps({'action': 'buy', 'summary': '回踩修复放量',
+                              'entry_type': 'zone_limit', 'max_hold_sessions': 10,
                               'levels': {'entry_low': {'value': 124, 'refs': ['call:1']},
                                          'entry_high': {'value': 125.5, 'refs': ['call:1']},
                                          'stop': {'value': 120, 'refs': ['call:1']},
@@ -663,7 +666,7 @@ def test_review_expansion_end_to_end(offline, scripted_model):
     assert batch['agent']['runs'] == {'ALPHA': 'ok', 'BETA': 'pass'}
     assert repository.latest_brief(offline, 'POSN', S1)['prompt_version'] == 'agent-brief-1'   # 持仓解读由 Agent 产出
     prompt_versions = [r[0] for r in offline.execute('SELECT prompt_version FROM signal_briefs').fetchall()]
-    assert set(prompt_versions) <= {'agent-2', 'agent-brief-1'}                               # 不再有 Codex
+    assert set(prompt_versions) <= {'agent-2', 'agent-3', 'agent-brief-1'}                               # 不再有 Codex
 
     view = service.today(now=evening(S1))
     alpha_unit = next(u for u in view['units'] if u['ticker'] == 'ALPHA')

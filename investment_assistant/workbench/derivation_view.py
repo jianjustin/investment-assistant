@@ -17,7 +17,7 @@ from typing import Any
 from investment_assistant.data import identity
 from investment_assistant.workbench import derivation, repository, service
 from investment_assistant.workbench import stages as stages_module
-from investment_assistant.workbench.timeline import AGENT_V2
+from investment_assistant.workbench.timeline import AGENT_V2, AGENT_V3
 
 RUN_NOTE_PRE_V24 = 'v2.4 之前生成，无阶段证据'
 RUN_NOTE_NO_TABLE = '迁移 025 未执行，暂无阶段证据'
@@ -63,12 +63,16 @@ def load_rows(conn, plan: dict[str, Any]) -> derivation.Rows:
         rows.rule_plan = _by_id(conn, repository.plan_by_id, plan['based_on_id'], 'trade_plans', missing)
     if plan.get('kind') == 'agent' and inp.get('agent_run_id') is not None:
         rows.agent_run = _by_id(conn, repository.agent_run_by_id, inp['agent_run_id'], 'agent_runs', missing)
-    if plan.get('kind') == 'agent' and plan.get('plan_version') == AGENT_V2:
+    if plan.get('kind') == 'agent' and plan.get('plan_version') in (AGENT_V2, AGENT_V3):
         # v2.5 §5.2: the version row; on a database without migration 026 it cannot exist either
         rows.version = (repository.version_by_plan(conn, plan['id'])
                         if plan.get('id') is not None and repository.timeline_ready(conn) else None)
         if rows.version is None:
             missing.append(f"agent_plan_versions:{plan.get('id')}")
+        if plan.get('plan_version') == AGENT_V3 and repository.executable_ready(conn):
+            # v2.9 D6: the entry-phase cap follows the chain's retrigger rows
+            rows.retriggers = repository.chain_retriggers_for(conn, plan['ticker'],
+                                                              chain_signal_date=plan['signal_date'])
     rows.candidates = repository.unit_candidates(conn, plan['ticker'], plan['signal_date'])
     rows.missing = missing
     return rows

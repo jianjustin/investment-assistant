@@ -47,6 +47,9 @@ REQUIRED_IDS = (
     'agent.knowledge_citation', 'system.discussion', 'review.weekly_learning',
     # v2.8 (3): the spec calls the first data.fetch_policy, but card ids must start with an existing group (knowledge.GROUPS)
     'system.fetch_policy', 'system.daily_workflow', 'system.agent_connection',
+    # v2.9 executable plans, Task 3 (6): review.execution_status joins in Task 4 (105 cards)
+    'plan.entry_type', 'plan.open_scenarios', 'plan.max_hold', 'agent.retrigger', 'system.active_chain',
+    'review.holding_status',
 )
 
 STAGE_STATUSES = ('success', 'partial', 'degraded', 'failed', 'skipped')
@@ -103,7 +106,7 @@ def body_of(catalog, card_id: str) -> str:
 
 
 def test_catalog_loads_and_matches_required_ids(catalog):
-    assert len(REQUIRED_IDS) == 98 and len(set(REQUIRED_IDS)) == 98
+    assert len(REQUIRED_IDS) == 104 and len(set(REQUIRED_IDS)) == 104
     assert set(catalog.concepts) == set(REQUIRED_IDS)
 
 
@@ -132,6 +135,10 @@ CODE_SET_CASES = [
     ('retro_fact_keys', list(retro.FACT_KEYS), ('review.retro_card',)),
     ('retry_statuses', sorted(fetch_policy.RETRY_STATUSES), ('system.fetch_policy',)),
     ('fetch_error_kinds', list(fetch_policy.ERROR_KINDS), ('system.fetch_policy',)),
+    # v2.9 Task 3: the executable-plan vocabularies
+    ('entry_types', list(entry_rules.ENTRY_TYPES), ('plan.entry_type',)),
+    ('holding_instructions', list(timeline.INSTRUCTIONS), ('review.holding_status',)),
+    ('exit_reasons', list(timeline.EXIT_REASONS), ('review.holding_status',)),
 ]
 
 

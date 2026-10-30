@@ -203,7 +203,7 @@ def test_agent_run_row_versions_for_new_modes(db):
                                       reason='stage_budget', mode=mode)
 
     assert [row(m)['agent_version'] for m in ('retro', 'discuss', 'propose', 'revise', 'review', 'interpret')] == [
-        'agent-retro-1', 'agent-discuss-1', 'agent-2', 'agent-2', 'agent-review-1', 'agent-brief-1']
+        'agent-retro-1', 'agent-discuss-1', 'agent-3', 'agent-3', 'agent-review-2', 'agent-brief-1']
     for mode in ('retro', 'discuss'):                             # migration 027 relaxed the mode constraint
         stored = repository.insert_agent_run(db, row(mode), [])
         assert (stored['mode'], stored['status']) == (mode, 'skipped')

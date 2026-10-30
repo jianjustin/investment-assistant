@@ -626,3 +626,44 @@ def test_a_closed_stages_4_run_is_recognised():
              row('retro', status='skipped', reason='not_due', version='stages-4', run_id='daily-h')]
     view = run_overview.build(rows, session=SESSION, run_id=None, ready=True)
     assert view['runs'][0]['closed'] is True and view['headline'] == run_overview.CLOSED_HEADLINE
+
+
+# --- v2.9 (spec §6.3, §4.2, §4.3): the new ended breakdown and the new counts of plan / agent / review ---
+
+def test_ended_sentence_breakdown():
+    detail = {'outcomes': {'maintain': 1, 'revise': 0, 'invalidate': 0}, 'decided_by': {'host': 1, 'agent': 0},
+              'ended': {'expired': 3, 'invalidated': 2, 'position_closed': 1, 'superseded': 1, 'closed_by_decision': 0}}
+    out = describe(row('review', i=1, o=1, detail=detail))
+    assert '；已结束 7（过期 3 · 作废 2 · 平仓 1 · 被取代 1）' in out['sentence']
+    assert '否决' not in out['sentence']
+    with_legacy = describe(row('review', i=1, o=1, detail={
+        **detail, 'ended': {**detail['ended'], 'closed_by_decision': 2}}))
+    assert '已结束 9（过期 3 · 作废 2 · 平仓 1 · 被取代 1 · 否决 2）' in with_legacy['sentence']
+    empty = describe(row('review', i=1, o=1, detail={
+        **detail, 'ended': {'expired': 0, 'invalidated': 0, 'position_closed': 0, 'superseded': 0,
+                            'closed_by_decision': 0}}))
+    assert '已结束' not in empty['sentence']
+    # rows written before v2.9 keep their sentence
+    old = describe(row('review', i=1, o=1, detail={
+        **detail, 'ended': {'expired': 1, 'closed_by_decision': 0, 'position_closed': 2}}))
+    assert '已结束的链：过期 1 · 否决 0 · 平仓 2' in old['sentence']
+
+
+def test_plan_agent_review_new_counts():
+    plan = describe(row('plan', i=3, o=3, detail={
+        'status': {'ok': 3, 'invalid': 0}, 'retriggers': {'count': 2, 'by_state': {'entry': 1, 'holding': 1, 'exiting': 0},
+                                                           'tickers': ['MU', 'AMD']}}))
+    assert plan['sentence'] == '3 个买入单元，生成规则计划 3 份（有效 3 · 作废 0）；2 个单元并入已有活跃链（入场期 1 · 持仓 1 · 退出期 0）'
+    quiet = describe(row('plan', i=1, o=1, detail={'retriggers': {'count': 0, 'by_state': {}, 'tickers': []}}))
+    assert '并入' not in quiet['sentence']
+    agent = describe(row('agent', i=3, o=2, outputs={'plan_ids': ['a']},
+                         detail={'tokens': {'input': 900, 'output': 120}, 'merged': 1}, skips=[
+                             {'reason': 'active_chain', 'count': 1, 'samples': ['MU·2026-10-21']}]))
+    assert agent['sentence'].startswith('Agent 处理 3 个单元，2 个给出结果，新 Agent 计划 1 份；token 输入 900 · 输出 120；'
+                                        '1 个单元并入已有链，不重复提议')
+    assert '跳过 1（已有进行中的计划链，这次触发已并入 × 1）' in agent['sentence']
+    review = describe(row('review', i=2, o=2, detail={
+        'outcomes': {'maintain': 1, 'revise': 1, 'invalidate': 0}, 'decided_by': {'host': 0, 'agent': 2},
+        'signals': {'retrigger': 1, 'new_8k': 0}, 'exiting': [{'ticker': 'AMD', 'signal_date': '2026-10-14'}],
+        'holding_status': {'rows': 3, 'by_instruction': {'hold': 2, 'exit': 1, 'sell_half': 0, 'no_plan': 0}}}))
+    assert review['sentence'].endswith('；再次触发 1 条；退出期不复查 1 条；持仓状态 3 行（退出指令 1）')

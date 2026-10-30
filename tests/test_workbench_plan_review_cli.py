@@ -257,3 +257,109 @@ def test_later_recheck_version_does_not_mask_missing_batch_review(db, capsys):
     assert code == 1
     [missing] = _lines(out, '缺有效复查')
     assert 'SYNTH 2026-09-01 第 0 版 entry' in missing and '阶段跳过（review_in_progress）' in missing
+
+
+# ---------------------------------------------------------------- v2.9: the three new checks and the chain output
+
+from test_workbench_executable_flow import fill, holding_chain, merge, renewal, spike   # noqa: E402
+
+
+def test_check_flags_two_active_chains(db, capsys, monkeypatch):
+    """① (spec §9.2): an agent-3 chain next to another active chain of the ticker (a holding one here)."""
+    market = Market()
+    v0 = signal_day(db, market, ['SYNTH'])[0]['SYNTH']
+    fill(db, 'SYNTH', '10', '125', 1, v0['plan']['id'])               # chain A is holding, so B does not supersede it
+    spike(market, 'SYNTH', 1)
+    monkeypatch.setattr(service, '_open_or_merge', lambda *args, **kwargs: None)       # the plan node misses A
+    monkeypatch.setattr(service, '_first_version_guard', lambda *args, **kwargs: None)   # ... and so does the guard
+    run(db, market, 1, tickers=['SYNTH'], model=make_model(propose=proposal('SYNTH'), counter=counter(),
+                                                          review=verdict('SYNTH', 'maintain', '照旧', cite=False)))
+    db.commit()
+    code, out = _run(capsys, 'check', '--session', day(1).isoformat())
+    assert code == 1
+    [bad] = _lines(out, '问题  SYNTH：同一时间有 2 条活跃链')
+    assert f'{S1.isoformat()} holding' in bad and f'{day(1).isoformat()} entry' in bad
+    assert _lines(out, '唯一活跃链：1 处不一致')
+
+
+def test_check_flags_retrigger_without_review(db, capsys):
+    """② (spec §9.2): a merge on S with no review row of the chain carrying the retrigger signal."""
+    market = Market()
+    signal_day(db, market, ['SYNTH'])
+    merge(db, 1)
+    db.commit()
+    code, out = _run(capsys, 'check', '--session', day(1).isoformat())
+    assert code == 1
+    assert _lines(out, f'问题  SYNTH 再次触发（{day(1).isoformat()} 并入 {S1.isoformat()}）当天没有带 retrigger 信号的复查记录')
+    # the batch then reviews the chain: the signal is on its row
+    run(db, market, 1, tickers=['SYNTH'], model=make_model(revise=renewal('SYNTH'), counter=counter()))
+    db.commit()
+    code, out = _run(capsys, 'check', '--session', day(1).isoformat())
+    assert code == 0, out
+    assert _lines(out, '再次触发：通过')
+
+
+def test_check_flags_missing_holding_status(db, capsys):
+    """③ (spec §9.2): every ticker with open lots on S has its holding_status row."""
+    market = Market()
+    holding_chain(db, market)
+    run(db, market, 2, tickers=['SYNTH'], model=make_model(review=verdict('SYNTH', 'maintain', '照旧', cite=False)))
+    db.commit()
+    code, out = _run(capsys, 'check', '--session', day(2).isoformat())
+    assert code == 0, out
+    assert _lines(out, '持仓状态：1 个持仓，1 行齐全 → 通过')
+    db.execute('DELETE FROM holding_status')                                    # test setup only
+    db.commit()
+    code, out = _run(capsys, 'check', '--session', day(2).isoformat())
+    assert code == 1
+    assert _lines(out, f'问题  SYNTH：{day(2).isoformat()} 有未平批次但没有持仓状态行')
+    assert _lines(out, '持仓状态：1 个持仓，0 行齐全 → 缺 1 行')
+
+
+def test_check_passes_happy_path(db, capsys):
+    market = Market()
+    holding_chain(db, market)
+    merge(db, 2, state='holding')
+    run(db, market, 2, tickers=['SYNTH'], model=make_model(review=verdict('SYNTH', 'maintain', '照旧', cite=False)))
+    db.commit()
+    before = _counts(db)
+    code, out = _run(capsys, 'check', '--session', day(2).isoformat())
+    assert code == 0, out
+    assert _counts(db) == before                                              # read-only
+    assert _lines(out, '唯一活跃链：通过') and _lines(out, '再次触发：通过') and _lines(out, '持仓状态：1 个持仓，1 行齐全')
+    assert '通过' in _lines(out, '汇总')[0] and '问题 0 处' in _lines(out, '汇总')[0]
+
+
+def test_check_exiting_chain_needs_no_review_for_its_retrigger(db, capsys):
+    from test_workbench_executable_flow import exit_review
+
+    market = Market()
+    v0 = holding_chain(db, market)
+    exit_review(db, v0, 1)
+    merge(db, 2, state='exiting')
+    run(db, market, 2, tickers=['SYNTH'], model=make_model())
+    db.commit()
+    code, out = _run(capsys, 'check', '--session', day(2).isoformat())
+    assert code == 0, out
+
+
+def test_chain_output_includes_retriggers_status_notes(db, capsys, monkeypatch):
+    monkeypatch.setattr(plan_review, '_cli_now', lambda: evening(day(3)))
+    market = Market()
+    v0 = signal_day(db, market, ['SYNTH'])[0]['SYNTH']
+    fill(db, 'SYNTH', '10', '125', 1, v0['plan']['id'])
+    spike(market, 'SYNTH', 2)
+    run(db, market, 2, tickers=['SYNTH'], model=make_model(review=verdict('SYNTH', 'maintain', '趋势未变', cite=False)))
+    repository.insert_plan_note(db, {'request_id': str(uuid.uuid4()), 'request_hash': 'h', 'ticker': 'SYNTH',
+                                     'chain_signal_date': S1, 'plan_id': None, 'kind': 'note',
+                                     'body': '等财报后再加仓', 'supersedes_id': None})
+    db.commit()
+    code, out = _run(capsys, 'chain', '--ticker', 'SYNTH', '--date', S1.isoformat())
+    assert code == 0
+    [merged] = _lines(out, f'并入 {day(2).isoformat()}')
+    assert 'volume_breakout' in merged and '链状态 holding' in merged
+    [held] = _lines(out, f'持仓状态 {day(2).isoformat()}')
+    assert '持有 2 天' in held and '止损 115.00' in held and '继续持有' in held and '趋势未变' in held
+    [note] = _lines(out, '备注 #')
+    assert 'active' in note and '等财报后再加仓' in note
+    assert _lines(out, '状态 holding')

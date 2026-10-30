@@ -73,7 +73,7 @@ def test_agent_and_own_plans_derive_consistently(db, scripted_model):
     [agent_id] = _plan_ids(db, 'agent')
     out = view.plan_derivation(agent_id)
     assert out['consistency']['status'] == 'consistent', out['consistency']
-    assert out['plan']['plan_version'] == 'agent-2'                       # v2.5：首版是 agent-2
+    assert out['plan']['plan_version'] == 'agent-3'                       # v2.9：首版是 agent-3
     assert view.load_rows(db, repository.plan_by_id(db, agent_id)).version['version_no'] == 0
     assert out['inputs']['agent_run']['id'] is not None
     assert out['run']['stage'] == 'agent' and out['run']['run_id'] == 'run-agent'

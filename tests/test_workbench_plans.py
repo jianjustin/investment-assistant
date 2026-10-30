@@ -332,8 +332,8 @@ def _rule(version, **kwargs):
 def test_version_constants():
     assert (plans.PLAN_V1, plans.PLAN_V2) == ('plan-1', 'plan-2')
     assert plans.RULE_MAX_HOLD_SESSIONS == 10 and plans.MAX_HOLD_DEFAULT == 10
-    # callers that have not been rewired read PLAN_VERSION; it stays plan-1 until Task 3 flips it (see plans.py)
-    assert plans.PLAN_VERSION == plans.PLAN_V1
+    # v2.9 Task 3: stage_rules writes plan-2 and derivation registers it, so PLAN_VERSION is the plan-2 constant
+    assert plans.PLAN_VERSION == plans.PLAN_V2 == 'plan-2' and plans.PLAN_V1 == 'plan-1'
     default = plans.build_rule_plan(ticker='NVDA', signal_date=date(2026, 10, 21), bars=_bars(20), earnings_row=None,
                                     snapshot=_snapshot(), exposure=_exposure(), params=PARAMS)
     assert default['plan_version'] == 'plan-1' and 'entry_type' not in default and 'max_hold_sessions' not in default

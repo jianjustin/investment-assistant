@@ -22,11 +22,7 @@ from investment_assistant.workbench.entry_rules import DEFAULT_ENTRY_TYPE, ENTRY
 
 PLAN_V1 = 'plan-1'
 PLAN_V2 = 'plan-2'
-# The version the unrewired callers (service.py, derivation.py, the backcheck label) still read. Spec §2 fixes
-# PLAN_VERSION = 'plan-2'; it flips together with `derivation.REGISTERED_VERSIONS` getting ('plan-2', 'rule')
-# and the stage_rules caller passing version=PLAN_V2 (Task 3), because until then main would write plan-2 rows
-# its own derivation cannot check.
-PLAN_VERSION = PLAN_V1
+PLAN_VERSION = PLAN_V2               # v2.9: `stage_rules` writes plan-2 rule baselines, `derivation` checks them
 RULE_MAX_HOLD_SESSIONS = 10          # plan-2 rule baseline: exit when still below +1R after this many sessions
 MAX_HOLD_DEFAULT = 10                # what a plan without the field (agent-2, plan-1) is read as
 MAX_HOLD_RANGE = (3, 30)             # trade_plans.max_hold_sessions CHECK

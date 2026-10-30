@@ -1378,11 +1378,11 @@ def version_by_run(conn, agent_run_id) -> dict[str, Any] | None:
 
 
 def chain_head(conn, ticker: str, signal_date: date) -> dict[str, Any] | None:
-    """The chain's head — its highest-numbered agent-2 version — as {'plan': trade_plans row,
+    """The chain's head — its highest-numbered agent-2 / agent-3 version — as {'plan': trade_plans row,
     'version': agent_plan_versions row}; None when the unit has no agent-2 chain."""
     version = _one(conn, f"SELECT {', '.join('v.' + c.strip() for c in _VERSION_COLUMNS.split(','))} "
                          'FROM agent_plan_versions v JOIN trade_plans p ON p.id = v.plan_id '
-                         "WHERE v.ticker = %s AND v.signal_date = %s AND p.plan_version = 'agent-2' "
+                         "WHERE v.ticker = %s AND v.signal_date = %s AND p.plan_version IN ('agent-2', 'agent-3') "
                          'ORDER BY v.version_no DESC LIMIT 1', (ticker.upper(), signal_date))
     if version is None:
         return None
@@ -2017,16 +2017,19 @@ def insert_chain_retrigger(conn, row: dict[str, Any]) -> dict[str, Any]:
     second write returns the stored row with `replayed` True and changes nothing.
 
     `row` keys: ticker, unit_signal_date, chain_signal_date, chain_state, rule_ids, baseline_plan_id (may be
-    None), entry_cap (entry state only), run_id, timeline_version."""
+    None), entry_cap (entry state only), run_id, timeline_version; `created_at` (optional, default the database
+    clock) is the cutoff of the run that found the trigger: the `plan` node passes the batch's `now`, so the
+    row is visible to every reader whose cutoff is that run's (R4 windows read `created_at <= now`)."""
     ticker = row['ticker'].upper()
     inserted = _one(conn,
                     'INSERT INTO chain_retriggers (ticker, unit_signal_date, chain_signal_date, chain_state, '
-                    'rule_ids, baseline_plan_id, entry_cap, run_id, timeline_version) '
-                    'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (ticker, unit_signal_date) DO NOTHING '
+                    'rule_ids, baseline_plan_id, entry_cap, run_id, timeline_version, created_at) '
+                    'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, clock_timestamp())) '
+                    'ON CONFLICT (ticker, unit_signal_date) DO NOTHING '
                     f'RETURNING {_RETRIGGER_COLUMNS}',
                     (ticker, row['unit_signal_date'], row['chain_signal_date'], row['chain_state'],
                      list(row['rule_ids']), row.get('baseline_plan_id'), row.get('entry_cap'), row['run_id'],
-                     row['timeline_version']))
+                     row['timeline_version'], row.get('created_at')))
     if inserted is not None:
         return {**inserted, 'replayed': False}
     return {**retrigger_for_unit(conn, ticker, row['unit_signal_date']), 'replayed': True}
@@ -2190,3 +2193,10 @@ def chains_for_ticker(conn, ticker: str, *, cutoff: datetime | None = None) -> l
 
 # --- v2.9 additions ---
 # Tasks 3 and 4 append their queries below this line without touching the functions above.
+
+
+def retriggers_on(conn, unit_signal_date: date) -> list[dict[str, Any]]:
+    """Every retrigger row (all tickers) whose unit signal date is this session, oldest first: the merges the
+    day's `plan` node made (`plan_review check`, ② of spec §9.2)."""
+    return _all(conn, f'SELECT {_RETRIGGER_COLUMNS} FROM chain_retriggers WHERE unit_signal_date = %s '
+                      'ORDER BY created_at, id', (unit_signal_date,))

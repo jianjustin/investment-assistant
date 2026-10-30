@@ -220,7 +220,7 @@ def test_batch_writes_rule_plan_for_buy_unit(db):
     assert summary['plans']['NVDA'] == 'inserted'
     unit = service.today(now=NOW)['units'][0]
     plan = unit['plan']
-    assert plan['kind'] == 'rule' and plan['plan_version'] == 'plan-1' and plan['status'] == 'ok'
+    assert plan['kind'] == 'rule' and plan['plan_version'] == 'plan-2' and plan['status'] == 'ok'
     assert plan['sizing']['status'] == 'no_equity'
     bars = repository.read_bars(db, 'NVDA', SESSION, cutoff_at=NOW)
     levels = plans.rule_levels(Decimal(str(bars[-1]['close'])), plans.atr14(bars))
@@ -595,7 +595,7 @@ def test_rerun_with_context_returns_existing_p1_plan(db):
             earnings_row=repository.latest_earnings(conn, 'NVDA', cutoff_at=NOW),
             snapshot=repository.snapshot_at(conn, SESSION, cutoff_at=NOW),
             exposure=service.exposure(conn, SESSION, cutoff_at=NOW, ticker='NVDA'),
-            params=load_config().workbench)
+            params=load_config().workbench, version=plans.PLAN_V2)       # v2.9: the baseline is plan-2
         assert repository.store_plan(conn, p1)['status'] == 'inserted'
         assert 'context' not in p1['inputs']
     again = service.run_batch(now=NOW + timedelta(minutes=5), deps=deps(Sources()))
@@ -681,6 +681,7 @@ def _tool_msg(name, args):
 
 def _agent_buy(ref='call:1'):
     return json.dumps({'action': 'buy', 'summary': '回踩修复放量',
+                       'entry_type': 'zone_limit', 'max_hold_sessions': 10,
                        'levels': {'entry_low': {'value': 98.5, 'refs': [ref]},
                                   'entry_high': {'value': 101.5, 'refs': [ref]},
                                   'stop': {'value': 96.0, 'refs': [ref]},
@@ -726,10 +727,10 @@ def test_agent_order_main_before_extended(db, scripted_model):
 def test_agent_ok_writes_plan_run_calls(db, scripted_model):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
     plan = repository.agent_plan(db, 'NVDA', SESSION)
-    assert plan['kind'] == 'agent' and plan['plan_version'] == 'agent-2'
+    assert plan['kind'] == 'agent' and plan['plan_version'] == 'agent-3'
     run = repository.latest_agent_run(db, 'NVDA', SESSION)
     assert run['status'] == 'ok' and str(run['plan_id']) == str(plan['id'])
-    assert run['agent_version'] == 'agent-2'
+    assert run['agent_version'] == 'agent-3'
     [version] = repository.chain_versions(db, 'NVDA', SESSION)
     assert version['version_no'] == 0 and str(version['agent_run_id']) == str(run['id'])
     calls = repository.agent_tool_calls(db, run['id'])
@@ -976,7 +977,7 @@ def test_ok_and_skipped_runs_have_no_detail(db, scripted_model):
 def test_summary_agent_keys(db, scripted_model):
     summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
     assert summary['agent'] == {'runs': {'NVDA': 'ok'}, 'briefs': {'NVDA': 'ok'},
-                                'tokens': {'input': 40, 'output': 20}, 'quota_exhausted': False}
+                                'tokens': {'input': 40, 'output': 20}, 'quota_exhausted': False, 'merged': {}}
     assert 'agent' in summary['sources'] and 'agent' in summary['timings']
 
 
@@ -994,7 +995,7 @@ def test_manual_run_conflict_and_not_buy(db, scripted_model):
         service.run_agent('MU', SESSION, now=NOW)               # 不存在
     run = service.run_agent('NVDA', SESSION, now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
     assert run['status'] == 'ok' and run['plan_id'] is not None
-    assert run['agent_version'] == 'agent-2'
+    assert run['agent_version'] == 'agent-3'
     [version] = repository.chain_versions(db, 'NVDA', SESSION)       # 手动重跑也只生成首版
     assert (version['version_no'], version['origin']) == (0, 'signal')
     assert str(version['plan_id']) == str(run['plan_id'])
@@ -1012,7 +1013,7 @@ def test_today_unit_has_agent_ok_view(db, scripted_model):
                                   'input_tokens', 'output_tokens', 'created_at', 'chain', 'knowledge_refs'}
     assert unit['agent']['knowledge_refs'] == []                       # v2.7 §6.2: nothing cited by this plan
     assert unit['agent']['status'] == 'ok' and unit['agent']['model'] == 'gpt-test'
-    assert unit['agent']['plan']['kind'] == 'agent' and unit['agent']['agent_version'] == 'agent-2'
+    assert unit['agent']['plan']['kind'] == 'agent' and unit['agent']['agent_version'] == 'agent-3'
     assert unit['agent']['output']['levels']['entry_low']['value'] == '98.50'
     chain = unit['agent']['chain']
     assert set(chain) == {'version_no', 'head_plan_id', 'cutoff_at', 'diff', 'state', 'mode', 'basis',
@@ -1056,7 +1057,7 @@ def test_agent_runs_coverage_lists_missing(db, scripted_model):
     db.execute("INSERT INTO signal_candidates (ticker, signal_date, action, rule_id, rule_version, inputs) "
                "VALUES ('XNO', %s, 'buy', 'trend_reclaim', '1', '{}')", [SESSION])
     out = service.agent_runs(now=NOW)
-    assert out['coverage'] == {'units': 2, 'covered': 1,
+    assert out['coverage'] == {'units': 2, 'covered': 1, 'merged': 0, 'merged_units': [],
                                'missing': [{'ticker': 'XNO', 'signal_date': SESSION}]}
     assert [r['ticker'] for r in out['runs']] == ['NVDA']
     assert all('output' not in r and r['tool_calls'] >= 0 for r in out['runs'])
@@ -1140,7 +1141,7 @@ def test_buy_unit_brief_derived_from_proposal(db, scripted_model):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
     run = repository.latest_agent_run(db, 'NVDA', SESSION)
     brief = repository.latest_brief(db, 'NVDA', SESSION)
-    assert brief['prompt_version'] == 'agent-2' and brief['status'] == 'ok'
+    assert brief['prompt_version'] == 'agent-3' and brief['status'] == 'ok'
     assert brief['agent_run_id'] == run['id']
     assert brief['output']['summary'] == '回踩修复放量'
     # agent-2 (v2.5 Task 6): the brief carries the summary and the first per-thesis counter

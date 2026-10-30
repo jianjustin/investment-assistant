@@ -215,8 +215,10 @@ def get_market_context(ctx: ToolContext) -> dict | None:
 
 
 def get_position(ctx: ToolContext) -> dict | None:
+    """The open position as the cutoff knew it (v2.9 D33): only fills recorded and executed by `cutoff_at`, and a
+    void recorded after it had not happened yet."""
     def read_position(conn):
-        return positions.build(repository.list_trades(conn, ctx.ticker),
+        return positions.build(repository.list_trades(conn, ctx.ticker, cutoff=ctx.cutoff_at),
                                splits=repository.split_events(conn, ctx.ticker))['position']
 
     position = ctx.read(read_position)

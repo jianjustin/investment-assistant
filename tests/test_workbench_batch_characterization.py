@@ -268,7 +268,8 @@ def test_characterization_spy_failure_with_stages(db):
 SUMMARY_KEYS_V24 = {'session', 'cutoff_at', 'tickers', 'benchmark', 'filings', 'earnings', 'plans', 'conflicts',
                     'errors', 'briefs', 'screen', 'pool', 'etfs', 'macro', 'regime', 'sources', 'timings', 'agent'}
 EMPTY_REVIEW = {'objects': 0, 'outcomes': {'maintain': 0, 'revise': 0, 'invalidate': 0, 'skipped': 0, 'error': 0},
-                'tokens': {'input': 0, 'output': 0}}
+                'tokens': {'input': 0, 'output': 0},
+                'holding_status': {'rows': 0, 'by_instruction': {'hold': 0, 'sell_half': 0, 'exit': 0, 'no_plan': 0}}}
 EMPTY_RETRO = {'new_cards': 0, 'drafts': 0, 'to_review': 0}
 
 

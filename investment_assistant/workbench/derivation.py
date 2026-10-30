@@ -9,7 +9,11 @@ ones in ``plans.py``, so changing a formula without a new ``PLAN_VERSION`` fails
 Own plans keep the user's four levels as inputs and agent plans check them against the agent run's output;
 both size from the entry band midpoint. ``agent-2`` version plans (v2.5 §5.2) derive like ``agent-1`` except the
 validity window, which follows ``inputs.as_of_session`` and the entry-phase cap ``inputs.chain_entry_cap``, and
-they check the plan's ``agent_plan_versions`` row (missing → ``incomplete``). The trigger section
+they check the plan's ``agent_plan_versions`` row (missing → ``incomplete``). ``plan-2`` (v2.9 §5.4) derives like
+``plan-1`` plus its two execution fields (``entry_type``, ``max_hold_sessions``) against the rule constants; ``agent-3``
+derives like ``agent-2`` plus the two execution fields against the agent run's output, with the entry-phase cap
+taken from the chain's ``chain_retriggers`` rows written by the version's cutoff (the later of the signal date + 10
+sessions and every trigger's ``entry_cap``, D6). The trigger section
 (``derive_trigger``) reviews each candidate's frozen values against its rule's condition clauses; a violated
 clause is a mismatch.
 
@@ -33,7 +37,7 @@ from zoneinfo import ZoneInfo
 from investment_assistant.data.calendar import add_trading_days
 
 DERIVATION_VERSION = 'derivation-1'
-REGISTERED_VERSIONS = ('plan-1', 'agent-1', 'agent-2')
+REGISTERED_VERSIONS = ('plan-1', 'plan-2', 'agent-1', 'agent-2', 'agent-3')
 
 ENTRY_ATR = Decimal('0.5')
 STOP_ATR = Decimal('2')
@@ -44,6 +48,9 @@ EARNINGS_WARN_SESSIONS = 10
 ATR_PERIOD = 14
 MIN_BARS = ATR_PERIOD + 1
 CHAIN_ENTRY_SESSIONS = 10      # agent-2 entry-phase chain cap; a test keeps it equal to timeline's
+RULE_ENTRY_TYPE = 'zone_limit'            # plan-2 execution fields (v2.9 §5.4); a test keeps them equal to plans'
+RULE_MAX_HOLD_SESSIONS = 10
+ENTRY_TYPES = ('zone_limit', 'breakout_stop', 'next_open')
 
 EVIDENCE_TEXT = '规则 v1 与 `plan-1` 都未经验证（Phase 0 Gate HOLD）。推导一致只说明算术正确，不说明规则有效。'
 TRIGGER_NOTE = '触发段只复核候选冻结的取值是否满足阈值，不从原始日线重算均线。'
@@ -64,7 +71,8 @@ class Rows:
     regime: dict | None = None
     agent_run: dict | None = None
     rule_plan: dict | None = None
-    version: dict | None = None             # agent-2: the plan's agent_plan_versions row
+    version: dict | None = None             # agent-2 / agent-3: the plan's agent_plan_versions row
+    retriggers: list[dict] = field(default_factory=list)   # agent-3: the chain's chain_retriggers rows
     candidates: list[dict] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)   # e.g. ``price_bars:<id>``
 
@@ -657,9 +665,12 @@ def _version_steps(plan: dict[str, Any], rows: Rows, missing: list[str]) -> tupl
             version_no, as_of)
 
 
-def _chain_validity_steps(plan: dict[str, Any], version_no: int, as_of: date) -> tuple[Steps, date, date]:
+def _chain_validity_steps(plan: dict[str, Any], version_no: int, as_of: date,
+                          rows: Rows | None = None) -> tuple[Steps, date, date]:
     """agent-2 validity (D4): version 0 from the signal date, a revision from its generation session;
-    an entry-phase chain (``inputs.chain_entry_cap`` set) caps ``valid_until`` at the signal date + 10."""
+    an entry-phase chain (``inputs.chain_entry_cap`` set) caps ``valid_until`` at the signal date + 10. With
+    ``rows`` (agent-3, D6) the cap is the later of that and the ``entry_cap`` of every ``chain_retriggers`` row
+    of the chain written by the version's ``cutoff_at``."""
     signal = _date(plan['signal_date'])
     inp = plan.get('inputs') or {}
     if version_no == 0:
@@ -677,19 +688,32 @@ def _chain_validity_steps(plan: dict[str, Any], version_no: int, as_of: date) ->
                            _date(plan['valid_until'])))
         return steps, valid_from, base_until
     cap = add_trading_days(signal, CHAIN_ENTRY_SESSIONS)
+    if rows is None:
+        steps.append(_step('chain_entry_cap', '入场期链上限', '信号日后第 10 个交易日',
+                           {'signal_date': signal, 'CHAIN_ENTRY_SESSIONS': CHAIN_ENTRY_SESSIONS}, cap,
+                           _date(stored_cap)))
+    else:
+        cutoff = (rows.version or {}).get('cutoff_at')
+        triggers = [r for r in rows.retriggers if r.get('entry_cap') is not None
+                    and (cutoff is None or r['created_at'] <= cutoff)]
+        later = max([cap, *(_date(r['entry_cap']) for r in triggers)])
+        steps.append(_step('chain_entry_cap', '入场期链上限',
+                           '信号日后第 10 个交易日，与最近一次触发后第 10 个交易日取较大者',
+                           {'signal_date': signal, 'CHAIN_ENTRY_SESSIONS': CHAIN_ENTRY_SESSIONS,
+                            'chain_retriggers.entry_cap': [_date(r['entry_cap']) for r in triggers]}, later,
+                           _date(stored_cap)))
+        cap = later
     valid_until = min(base_until, cap)
-    steps.append(_step('chain_entry_cap', '入场期链上限', '信号日后第 10 个交易日',
-                       {'signal_date': signal, 'CHAIN_ENTRY_SESSIONS': CHAIN_ENTRY_SESSIONS}, cap,
-                       _date(stored_cap)))
     steps.append(_step('valid_until', '有效期止', f'min({start_text}后第 3 个交易日, chain_entry_cap)',
                        {f'{start_name}+3': base_until, 'chain_entry_cap': cap}, valid_until,
                        _date(plan['valid_until'])))
     return steps, valid_from, valid_until
 
 
-def _derive_agent2(plan: dict[str, Any], rows: Rows) -> tuple[list[dict], list[dict], list[str]]:
-    """agent-2 version plan: levels as agent-1, the version row checked, validity from as_of_session and the
-    chain cap, earnings flagged relative to as_of_session (the session the version was generated on)."""
+def _derive_agent_chain(plan: dict[str, Any], rows: Rows, *, v3: bool) -> tuple[list[dict], list[dict], list[str]]:
+    """agent-2 / agent-3 version plan: levels as agent-1, the version row checked, validity from as_of_session and the
+    chain cap, earnings flagged relative to as_of_session (the session the version was generated on). agent-3 adds
+    the two execution fields (against the run's output) and reads the cap from the chain's retrigger rows."""
     missing = _variant_missing(plan, rows)
     version_steps, version_no, as_of = _version_steps(plan, rows, missing)
     if 'bar_ids' in missing:
@@ -698,9 +722,53 @@ def _derive_agent2(plan: dict[str, Any], rows: Rows) -> tuple[list[dict], list[d
     steps, checks, missing = _derive_from_levels(
         plan, rows, missing, level_steps=level_steps, levels=levels,
         fallback_atr=(Decimal(0), '无 ATR', '日线不足 15 根，ATR 取 0'), agent=True,
-        validity=_chain_validity_steps(plan, version_no, as_of),
+        validity=_chain_validity_steps(plan, version_no, as_of, rows if v3 else None),
         earnings_ref=(as_of, 'as_of_session', '本版生成交易日'))
-    return version_steps + steps, checks, missing
+    extra: Steps = _agent_exec_steps(plan, rows, missing) if v3 else []
+    return version_steps + steps + extra, checks, missing
+
+
+def _agent_exec_steps(plan: dict[str, Any], rows: Rows, missing: list[str]) -> Steps:
+    """agent-3: the stored ``entry_type`` / ``max_hold_sessions`` must equal what the agent run's output chose (and
+    lie in the allowed set / range, which the run's own check enforced)."""
+    output = (rows.agent_run or {}).get('output') if rows.agent_run is not None else None
+    if not isinstance(output, dict):
+        return []
+    steps: Steps = []
+    cited_type, cited_hold = output.get('entry_type'), output.get('max_hold_sessions')
+    if cited_type not in ENTRY_TYPES:
+        missing.append('agent_runs.output.entry_type')
+    else:
+        steps.append(_step('entry_type', '入场类型', '已存入场类型须等于 agent_runs.output.entry_type',
+                           {'output.entry_type': cited_type}, cited_type, plan.get('entry_type'),
+                           source='agent_output'))
+    if isinstance(cited_hold, bool) or not isinstance(cited_hold, int):
+        missing.append('agent_runs.output.max_hold_sessions')
+    else:
+        steps.append(_step('max_hold_sessions', '最长持有', '已存最长持有须等于 agent_runs.output.max_hold_sessions',
+                           {'output.max_hold_sessions': cited_hold}, cited_hold,
+                           _opt_int(plan.get('max_hold_sessions')), source='agent_output'))
+    return steps
+
+
+def _derive_agent2(plan: dict[str, Any], rows: Rows) -> tuple[list[dict], list[dict], list[str]]:
+    return _derive_agent_chain(plan, rows, v3=False)
+
+
+def _derive_agent3(plan: dict[str, Any], rows: Rows) -> tuple[list[dict], list[dict], list[str]]:
+    return _derive_agent_chain(plan, rows, v3=True)
+
+
+def _derive_rule2(plan: dict[str, Any], rows: Rows) -> tuple[list[dict], list[dict], list[str]]:
+    """``plan-2``: the ``plan-1`` derivation word for word, plus the two execution fields against the rule constants."""
+    steps, checks, missing = _derive_rule(plan, rows)
+    steps = steps + [
+        _step('entry_type', '入场类型', 'plan-2 的规则基线恒用 zone_limit', {'RULE_ENTRY_TYPE': RULE_ENTRY_TYPE},
+              RULE_ENTRY_TYPE, plan.get('entry_type')),
+        _step('max_hold_sessions', '最长持有', 'plan-2 的规则基线恒为 RULE_MAX_HOLD_SESSIONS 个交易日',
+              {'RULE_MAX_HOLD_SESSIONS': RULE_MAX_HOLD_SESSIONS}, RULE_MAX_HOLD_SESSIONS,
+              _opt_int(plan.get('max_hold_sessions')))]
+    return steps, checks, missing
 
 
 # ---------------------------------------------------------------- trigger section
@@ -869,9 +937,11 @@ def derive_trigger(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # (plan_version, kind) -> derivation function.
 _DERIVERS: dict[tuple[str, str], Callable[[dict[str, Any], Rows], tuple[list[dict], list[dict], list[str]]]] = {
     ('plan-1', 'rule'): _derive_rule,
+    ('plan-2', 'rule'): _derive_rule2,
     ('plan-1', 'own'): _derive_own,
     ('agent-1', 'agent'): _derive_agent,
     ('agent-2', 'agent'): _derive_agent2,
+    ('agent-3', 'agent'): _derive_agent3,
 }
 
 

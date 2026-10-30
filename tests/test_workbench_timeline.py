@@ -75,8 +75,8 @@ def _head(plan_id=None, *, valid_until=None, regime='neutral'):
 # ---------------------------------------------------------------- constants
 
 def test_constants():
-    # plan_review still labels its timeline-1 rows with TIMELINE_VERSION; it flips to timeline-2 in Task 3
-    assert timeline.TIMELINE_VERSION == timeline.TIMELINE_V1 == 'timeline-1'
+    # v2.9 Task 3: plan_review judges chains with chain_state_v2 and stamps its rows timeline-2
+    assert timeline.TIMELINE_VERSION == timeline.TIMELINE_V2 == 'timeline-2' and timeline.TIMELINE_V1 == 'timeline-1'
     assert timeline.TIMELINE_V2 == 'timeline-2'
     assert timeline.AGENT_V2 == 'agent-2' and timeline.AGENT_V3 == 'agent-3'
     assert timeline.CHAIN_ENTRY_SESSIONS == 10

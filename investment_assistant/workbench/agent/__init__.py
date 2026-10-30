@@ -37,4 +37,10 @@ REASON_TEXT = {
     # v2.8 ChatGPT connection (spec §8.8, verbatim; the frontend AGENT_REASON_TEXT has the same texts)
     'not_connected': 'ChatGPT 未连接',
     'model_unavailable': '所选模型不可用',
+    # v2.9 agent-3 (spec §5.5, verbatim; R3 adds stop_above_close; the frontend AGENT_REASON_TEXT has the same texts)
+    'invalid_entry_type': '入场类型不在允许的三种之内',
+    'invalid_max_hold': '最长持有须为 5–20 个交易日',
+    'stop_lowered': '持仓期不能下移止损',
+    'stop_above_close': '持仓期止损不能高于最新收盘',
+    'active_chain': '已有进行中的计划链，这次触发已并入',
 }

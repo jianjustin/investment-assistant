@@ -3,8 +3,8 @@ id: agent.reject_reasons
 title: "作废与跳过原因"
 group: agent
 version: 1
-applies_to: [agent-2, agent-1, agent-review-1, agent-retro-1, agent-discuss-1]
-summary: "Agent 一份建议为什么被作废、跳过或出错，共 28 个原因代码，每个有固定的中文文案；被作废的建议只显示原因、不显示内容。"
+applies_to: [agent-3, agent-2, agent-1, agent-review-2, agent-review-1, agent-retro-1, agent-discuss-1]
+summary: "Agent 一份建议为什么被作废、跳过或出错，共 33 个原因代码，每个有固定的中文文案；被作废的建议只显示原因、不显示内容。"
 related: [agent.action_levels, agent.citation, agent.review_outcome, agent.invalidation]
 sources: [investment_assistant/workbench/agent/__init__.py, investment_assistant/workbench/agent/model.py, investment_assistant/workbench/plan_review.py]
 ---
@@ -13,7 +13,7 @@ sources: [investment_assistant/workbench/agent/__init__.py, investment_assistant
 Agent 运行的状态有五种：`ok`（通过）、`pass`（不建议买）、`rejected`（校验作废）、`error`（出错）、`skipped`（没有运行）。后三种都带一个原因代码，页面上显示对应的中文文案。作废（`rejected`）的建议**只显示原因，不显示内容**，因为内容没通过校验，不能当作建议看待。
 
 ## 怎么算 / 从哪来
-原因代码与文案由系统固定，下表是全部 28 个：
+原因代码与文案由系统固定，下表是全部 33 个：
 
 | 代码 | 文案 | 一般出现的情形 |
 | --- | --- | --- |
@@ -45,8 +45,13 @@ Agent 运行的状态有五种：`ok`（通过）、`pass`（不建议买）、`
 | `draft_exists` | 这张卡已有成功的草稿 | 这张复盘卡已经有一份成功的草稿，不用重新起草 |
 | `not_connected` | ChatGPT 未连接 | 还没有连接 ChatGPT，连接已失效需要重新登录（刷新令牌过期、被撤销、重复使用，或账号不一致），或模型服务判定当前凭据 / 授权不可用；整个节点跳过 |
 | `model_unavailable` | 所选模型不可用 | 还没有选模型，或所选模型已不在 ChatGPT 提供的清单里（`model_not_found`）；整个节点跳过，到「设置 → Agent 连接」重新选择 |
+| `invalid_entry_type` | 入场类型不在允许的三种之内 | `agent-3` 的 `entry_type` 不是区间限价 / 突破买入 / 次日开盘之一，见[入场类型](plan.entry_type.md) |
+| `invalid_max_hold` | 最长持有须为 5–20 个交易日 | `agent-3` 的 `max_hold_sessions` 越界或不是整数，见[最长持有](plan.max_hold.md) |
+| `stop_lowered` | 持仓期不能下移止损 | 持仓期的修订把止损定得比上一版低 |
+| `stop_above_close` | 持仓期止损不能高于最新收盘 | 持仓期的修订把止损定在复查日收盘价或以上 |
+| `active_chain` | 已有进行中的计划链，这次触发已并入 | 这只股票已有活跃链，新触发并入它而不是另开（`agent` 阶段的跳过原因，也是手动重新运行的 409），见[再次触发](agent.retrigger.md) |
 
-大致规律：校验类原因（`malformed` 到 `no_change` 一带，以及 `retro_malformed`、`lesson_invalid`、`answer_malformed`）对应 `rejected`；`migration_027_missing`、`discussion_busy`、`draft_exists` 是复盘卡与讨论的前置检查拒绝的原因，不生成 Agent 运行；预算和可用性类（`disabled`、`quota_exhausted`、`token_budget`、`stage_budget`、`max_attempts`、`not_connected`、`model_unavailable` 等）对应 `skipped`；`model_error`、`checkpoint_unavailable` 对应 `error`。
+大致规律：校验类原因（`malformed` 到 `no_change` 一带，`invalid_entry_type`、`invalid_max_hold`、`stop_lowered`、`stop_above_close`，以及 `retro_malformed`、`lesson_invalid`、`answer_malformed`）对应 `rejected`；`migration_027_missing`、`discussion_busy`、`draft_exists` 是复盘卡与讨论的前置检查拒绝的原因，不生成 Agent 运行；预算和可用性类（`active_chain`、`disabled`、`quota_exhausted`、`token_budget`、`stage_budget`、`max_attempts`、`not_connected`、`model_unavailable` 等）对应 `skipped`；`model_error`、`checkpoint_unavailable` 对应 `error`。
 
 ## 在系统里哪里看到
 「今日」Agent 块的"Agent 未给出计划：原因"；复盘卡页的起草失败原因与讨论里"这次回答没有通过引用校验"；计划页复查记录里的跳过、出错和"修订未通过"的原因；「运行一览」阶段行的跳过原因。

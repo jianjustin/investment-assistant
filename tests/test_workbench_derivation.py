@@ -70,7 +70,8 @@ def test_constants_match_plans():
     assert plans.PLAN_VERSION in derivation.REGISTERED_VERSIONS
     assert plans.AGENT_VERSION in derivation.REGISTERED_VERSIONS
     from investment_assistant.workbench import timeline
-    assert timeline.AGENT_V2 in derivation.REGISTERED_VERSIONS
+    assert timeline.AGENT_V2 in derivation.REGISTERED_VERSIONS and timeline.AGENT_V3 in derivation.REGISTERED_VERSIONS
+    assert plans.PLAN_V1 in derivation.REGISTERED_VERSIONS and plans.PLAN_V2 in derivation.REGISTERED_VERSIONS
     assert derivation.CHAIN_ENTRY_SESSIONS == timeline.CHAIN_ENTRY_SESSIONS
 
 
@@ -989,3 +990,91 @@ def test_violated_clause_makes_mismatch():
     own, own_rows = _make_own()
     own_rows.candidates = [_cand('volume_breakout', {**VOLUME_BREAKOUT, 'volume': 1400}, {'volume_multiple': 1.5})]
     assert derivation.derive_plan(own, own_rows)['consistency']['mismatches'][0]['key'] == 'trigger:volume_breakout'
+
+
+# ---------------------------------------------------------------- plan-2 and agent-3 (v2.9 §5.4, §5.5, D6)
+
+def test_plan2_derivation_consistent():
+    plan = plans.build_rule_plan(
+        ticker='AAA', signal_date=SIGNAL, bars=_bars(), earnings_row=None, snapshot=_snapshot(), exposure=_exposure(),
+        params=WorkbenchConfig(), version=plans.PLAN_V2)
+    plan['id'] = uuid.uuid4()
+    result = derivation.derive_plan(plan, _rows(_bars(), None, _snapshot()))
+    assert result['consistency'] == {'status': 'consistent', 'mismatches': [], 'missing': []}, result['consistency']
+    assert result['plan']['plan_version'] == 'plan-2'
+    assert _step(result, 'entry_type')['result'] == 'zone_limit' and _step(result, 'entry_type')['consistent'] is True
+    hold = _step(result, 'max_hold_sessions')
+    assert (hold['result'], hold['stored'], hold['consistent']) == ('10', '10', True)
+    # the plan-1 steps are the same, step for step
+    old = plans.build_rule_plan(ticker='AAA', signal_date=SIGNAL, bars=_bars(), earnings_row=None,
+                                snapshot=_snapshot(), exposure=_exposure(), params=WorkbenchConfig())
+    old['id'] = uuid.uuid4()
+    first = derivation.derive_plan(old, _rows(_bars(), None, _snapshot()))
+    assert [s for s in result['steps'] if s['key'] not in ('entry_type', 'max_hold_sessions')] == first['steps']
+    plan['max_hold_sessions'] = 12                                              # tampered execution field
+    tampered = derivation.derive_plan(plan, _rows(_bars(), None, _snapshot()))
+    assert [m['key'] for m in tampered['consistency']['mismatches']] == ['max_hold_sessions']
+    assert derivation.RULE_ENTRY_TYPE == plans.DEFAULT_ENTRY_TYPE and derivation.RULE_MAX_HOLD_SESSIONS == plans.RULE_MAX_HOLD_SESSIONS
+
+
+def _make_agent3(*, as_of=SIGNAL, version_no=0, mode='entry', entry_type='zone_limit', max_hold=10, retriggers=(),
+                 cutoff=None, run_id='run-3'):
+    from datetime import UTC, datetime
+
+    from investment_assistant.workbench import timeline
+    bars = _bars()
+    cutoff = cutoff or datetime(2026, 10, 30, 22, 0, tzinfo=UTC)
+    entry_cap = timeline.entry_cap({'signal_date': SIGNAL}, list(retriggers)) if mode == 'entry' else None
+    output = {'action': 'buy', 'summary': 's', 'entry_type': entry_type, 'max_hold_sessions': max_hold,
+              'levels': {key: {'value': str(value), 'refs': ['call:1']} for key, value in OWN_LEVELS.items()}}
+    plan = timeline.build_version_plan(
+        output=output, agent_run_id=run_id, model='m', ticker='AAA', signal_date=SIGNAL, as_of_session=as_of,
+        version_no=version_no, supersedes_plan_id=None if version_no == 0 else uuid.uuid4(), mode=mode, bars=bars,
+        earnings_row=None, snapshot=_snapshot(), exposure=_exposure(), params=WorkbenchConfig(), context=None,
+        version=timeline.AGENT_V3, entry_cap=entry_cap)
+    plan['id'] = uuid.uuid4()
+    rows = _rows(bars, None, _snapshot())
+    rows.agent_run = {'id': run_id, 'status': 'ok', 'output': output}
+    rows.version = {'plan_id': plan['id'], 'version_no': version_no, 'as_of_session': as_of, 'cutoff_at': cutoff}
+    rows.retriggers = list(retriggers)
+    return plan, rows
+
+
+def test_agent3_derivation_consistent_and_checks_execution_fields():
+    plan, rows = _make_agent3(entry_type='breakout_stop', max_hold=12)
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency'] == {'status': 'consistent', 'mismatches': [], 'missing': []}, result['consistency']
+    assert result['plan']['plan_version'] == 'agent-3'
+    assert _step(result, 'entry_type')['source'] == 'agent_output' and _step(result, 'entry_type')['stored'] == 'breakout_stop'
+    assert _step(result, 'max_hold_sessions')['result'] == '12'
+    plan['max_hold_sessions'] = 9
+    plan['entry_type'] = 'next_open'
+    bad = derivation.derive_plan(plan, rows)
+    assert [m['key'] for m in bad['consistency']['mismatches']] == ['entry_type', 'max_hold_sessions']
+    plan, rows = _make_agent3()
+    rows.agent_run['output'].pop('entry_type')
+    assert 'agent_runs.output.entry_type' in derivation.derive_plan(plan, rows)['consistency']['missing']
+
+
+def test_agent3_validity_uses_retrigger_cap():
+    from datetime import UTC, datetime
+    first_cap = add_trading_days(SIGNAL, 10)
+    trigger_day = add_trading_days(SIGNAL, 8)
+    retrigger = {'unit_signal_date': trigger_day, 'entry_cap': add_trading_days(trigger_day, 10),
+                 'created_at': datetime(2026, 10, 30, 21, 0, tzinfo=UTC), 'chain_state': 'entry'}
+    plan, rows = _make_agent3(as_of=trigger_day, version_no=1, retriggers=[retrigger])
+    result = derivation.derive_plan(plan, rows)
+    assert result['consistency']['status'] == 'consistent', result['consistency']
+    cap = _step(result, 'chain_entry_cap')
+    assert cap['result'] == add_trading_days(trigger_day, 10).isoformat() and cap['consistent'] is True
+    assert cap['result'] != first_cap.isoformat()
+    assert _step(result, 'valid_until')['result'] == add_trading_days(trigger_day, 3).isoformat()
+    # a trigger written after the version's cutoff is not part of its cap
+    late = {**retrigger, 'created_at': datetime(2026, 10, 30, 23, 0, tzinfo=UTC)}
+    plan, rows = _make_agent3(as_of=trigger_day, version_no=1, retriggers=[retrigger])
+    rows.retriggers = [late]
+    mismatch = derivation.derive_plan(plan, rows)
+    assert [m['key'] for m in mismatch['consistency']['mismatches']] == ['chain_entry_cap', 'valid_until']
+    # a holding revision has no cap at all
+    plan, rows = _make_agent3(as_of=add_trading_days(SIGNAL, 15), version_no=2, mode='holding')
+    assert 'chain_entry_cap' not in _keys(derivation.derive_plan(plan, rows))

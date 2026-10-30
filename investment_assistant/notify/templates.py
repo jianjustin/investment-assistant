@@ -170,7 +170,8 @@ def workbench_digest(digest: dict) -> list[Notification]:
             shares = None if p.get('sizing_status') is None else (
                 '缺资金快照，无法计算' if p['sizing_status'] == 'no_equity' else f"{p.get('shares')} 股")
             baseline = ' · '.join(filter(None, [band, shares]))
-            lead = [_agent_line(agent), f"规则基线：{baseline}" if band else None]
+            lead = [_agent_line(agent, ticker=p['ticker']), f"规则基线：{baseline}" if band else None,
+                    *_merged_lines(p.get('merged'))]
             position = None
         else:
             lead = []
@@ -186,27 +187,33 @@ def workbench_digest(digest: dict) -> list[Notification]:
 
     fields = []
     for h in digest.get('holdings') or []:
-        stop_line = f"止损 {h.get('stop')}（{h.get('mode')}）" if h.get('stop') is not None else '无计划持仓（position_drawdown）'
-        t1 = '已触 T1' if h.get('t1_reached') else '未触 T1'
-        pct = ''
-        if h.get('to_stop_pct') is not None:
-            pct = f"距止损 {h['to_stop_pct']:+.1%} · 距 T1 {h.get('to_target_pct', 0):+.1%}"
         eve = '⚠️ 下一交易日为财报日' if h.get('earnings_eve') else ''
         alerts = ''
         if 'plan_stop' in (h.get('plan_alerts') or []):
             alerts = '⚠️ 今日触发 plan_stop，请核对券商止损单是否已成交'
         elif 'plan_target' in (h.get('plan_alerts') or []):
             alerts = '今日触发 plan_target（卖出一半）'
+        if h.get('instruction'):         # v2.9 §11: one status line per position, quiet days too; exit gets a ⚠
+            _clip_field(fields, h['ticker'], '；'.join(filter(None, [_holding_status_line(h), eve, alerts])))
+            continue
+        stop_line = f"止损 {h.get('stop')}（{h.get('mode')}）" if h.get('stop') is not None else '无计划持仓（position_drawdown）'
+        t1 = '已触 T1' if h.get('t1_reached') else '未触 T1'
+        pct = ''
+        if h.get('to_stop_pct') is not None:
+            pct = f"距止损 {h['to_stop_pct']:+.1%} · 距 T1 {h.get('to_target_pct', 0):+.1%}"
+        stale = '今日持仓状态未写入（每日复查失败），以下为现算' if h.get('stale') else ''
         _clip_field(fields, h['ticker'], '；'.join(filter(None, [
-            f"{h.get('quantity')} 股 @ {h.get('avg_cost')}", stop_line, t1, pct, eve, alerts])) or '—')
+            f"{h.get('quantity')} 股 @ {h.get('avg_cost')}", stop_line, t1, pct, eve, alerts, stale])) or '—')
     holdings_msg = _fit_message(f"💼 持仓 · {session}", fields, _footer())
     updates_msg = _plan_updates_message(session, digest.get('plan_updates') or [])
 
     fields = []
     pending = digest.get('pending') or {}
-    undecided = pending.get('undecided') or []
-    _clip_field(fields, f"未决定单元 ({len(undecided)})",
-                '\n'.join(undecided) or '无')
+    entry, holding, exiting = pending.get('entry') or [], pending.get('holding') or [], pending.get('exit') or []
+    _clip_field(fields, f"入场期可执行 {len(entry)} · 持仓 {len(holding)}（退出指令 {len(exiting)}）",
+                '\n'.join(filter(None, [f"入场期：{'、'.join(entry)}" if entry else '',
+                                        f"持仓：{'、'.join(holding)}" if holding else '',
+                                        f"退出指令：{'、'.join(exiting)}" if exiting else ''])) or '无')
     expiring = pending.get('expiring') or []
     _clip_field(fields, f"即将过期计划 ({len(expiring)})",
                 '\n'.join(f"{e['ticker']} 至 {e['valid_until']}" for e in expiring) or '无')
@@ -221,16 +228,62 @@ def workbench_digest(digest: dict) -> list[Notification]:
 
 
 def _plan_update_text(u: dict) -> str:
-    """One revision or invalidation of the plan-updates message (v2.5 §10.3, wording verbatim)."""
+    """One revision or invalidation of the plan-updates message (v2.5 §10.3, wording verbatim; v2.9 §11: a
+    holding-phase invalidation is an exit instruction, a retrigger revision says 「再次触发」)."""
     if u.get('kind') == 'invalidate':
+        if u.get('mode') == 'holding':
+            return f"{u['ticker']} 退出指令（{u.get('reason') or '—'}）"
         by = 'Agent' if u.get('decided_by') == 'agent' else '系统规则'
         return f"{u['ticker']} 作废（{by}）：{u.get('reason') or '—'}"
     changes = '；'.join(str(c) for c in u.get('changes') or [])
-    head = f"{u['ticker']} 第 {u.get('from_version')} → {u.get('to_version')} 版"
     levels = u.get('levels') or {}
+    if u.get('via') == 'retrigger':
+        if not changes:
+            changes = f"{_retrigger_phrase(u.get('retrigger'))}，沿用价位，有效期延至 {u.get('valid_until') or '—'}"
+        return (f"{u['ticker']} 第 {u.get('from_version')} → {u.get('to_version')} 版（再次触发）：{changes}"
+                f" · 新价位 区间 {_num(levels.get('entry_low'))}–{_num(levels.get('entry_high'))}"
+                f" · 止损 {_num(levels.get('stop'))} · T1 {_num(levels.get('target1'))}"
+                f" · 有效期至 {u.get('valid_until') or '—'}")
+    head = f"{u['ticker']} 第 {u.get('from_version')} → {u.get('to_version')} 版"
     return (f"{head}{'：' + changes if changes else ''} · 新价位 区间 {_num(levels.get('entry_low'))}"
             f"–{_num(levels.get('entry_high'))} · 止损 {_num(levels.get('stop'))} · T1 {_num(levels.get('target1'))}"
             f" · 有效期至 {u.get('valid_until') or '—'}")
+
+
+def _retrigger_phrase(retrigger: dict | None) -> str:
+    """「再次触发（<规则>，<信号日>）」 from a review row's ``detail.retrigger`` (the newest merge)."""
+    from investment_assistant.workbench import labels
+
+    retrigger = retrigger or {}
+    rules = '、'.join(labels.RULE_TEXT.get(r, r) for r in retrigger.get('rule_ids') or [])
+    days = retrigger.get('unit_signal_dates') or []
+    return f"再次触发（{rules}，{days[-1] if days else '—'}）"
+
+
+def _signed(value, digits: int = 2, suffix: str = '') -> str:
+    """+8.10% / −5.20% (a real minus sign, spec §7.3's example) from a stored number."""
+    number = float(value)
+    return f"{number:+.{digits}f}{suffix}".replace('-', '−')
+
+
+def _holding_status_line(h: dict) -> str:
+    """「MU 持有 4/10 天 · 距止损 −5.20% · 距 T1 +8.10% · 现 +0.6R · 继续持有：<维持理由>」 (spec §7.3, §11); an exit
+    instruction gets a ⚠ in front. Quiet days are pushed too."""
+    from investment_assistant.workbench import timeline
+
+    held = f"持有 {h['held_sessions']}/{h['max_hold_sessions']} 天" if h.get('max_hold_sessions') \
+        else f"持有 {h['held_sessions']} 天"
+    parts = [f"{h['ticker']} {held}"]
+    if h.get('to_stop_pct') is not None:
+        parts.append(f"距止损 {_signed(h['to_stop_pct'], 2, '%')}")
+    if h.get('to_t1_pct') is not None:
+        parts.append(f"距 T1 {_signed(h['to_t1_pct'], 2, '%')}")
+    elif h.get('t1_reached'):
+        parts.append('已触 T1')
+    if h.get('r_now') is not None:
+        parts.append(f"现 {_signed(h['r_now'], 1, 'R')}")
+    line = f"{' · '.join(parts)} · {timeline.INSTRUCTION_TEXT[h['instruction']]}：{h.get('reason') or '—'}"
+    return f"⚠ {line}" if h['instruction'] == 'exit' else line
 
 
 def _plan_updates_message(session: str, updates: list[dict]) -> Notification | None:
@@ -341,7 +394,49 @@ def workbench_closed(ny_date) -> list[Notification]:
                          fields=[], footer=_footer())]
 
 
-def _agent_line(agent: dict | None) -> str:
+def _merged_lines(merged: list[dict] | None) -> list[str]:
+    """The rule baselines of units merged into the chain today (v2.9 §4.3, §11), after the Agent lines."""
+    lines = []
+    for item in merged or []:
+        plan = item.get('plan') or {}
+        if plan.get('entry_low') is None:
+            continue
+        shares = '缺资金快照，无法计算' if (plan.get('sizing') or {}).get('status') == 'no_equity' \
+            else f"{(plan.get('sizing') or {}).get('shares')} 股"
+        lines.append(f"今日再次触发的规则基线（{item.get('signal_date')}）：区间 {_num(plan['entry_low'])}–"
+                     f"{_num(plan['entry_high'])} · 止损 {_num(plan['stop'])} · T1 {_num(plan['target1'])} · {shares}")
+    return lines
+
+
+def _executable_lines(agent: dict, ticker: str | None) -> str:
+    """The three lines of an agent-3 version (v2.9 spec §11): the plan, the open scenarios, the max hold with the
+    summary and the first counter."""
+    from investment_assistant.workbench import entry_rules
+
+    shares = (f"{agent['shares']} 股" if agent.get('shares') is not None else '缺资金快照，无法计算')
+    low, high, stop = _num(agent['entry_low']), _num(agent['entry_high']), _num(agent['stop'])
+    version = f"{agent['chain_signal_date']:%m-%d} 第 {agent['version_no']} 版" if agent.get('chain_signal_date') \
+        else f"第 {agent.get('version_no')} 版"
+    mark = ''
+    if agent.get('retrigger'):
+        mark = f"（再次触发，第 {agent['retrigger']['from_version']} → {agent['retrigger']['to_version']} 版）"
+    first = (f"{ticker + ' ' if ticker else ''}{version}{mark}："
+             f"{entry_rules.ENTRY_TYPE_TEXT.get(agent['entry_type'], agent['entry_type'])} {low}–{high}"
+             f" · 止损 {stop} · T1 {_num(agent['target1'])} · {shares} · 有效至 {agent.get('valid_until') or '—'}")
+    if agent['entry_type'] == 'next_open':
+        valid_from = agent.get('valid_from')
+        day = f"{valid_from:%m-%d}" if hasattr(valid_from, 'strftime') else (valid_from or '首个有效日')
+        second = f"开盘：仅 {day} 开盘在 {low}–{high} 买，否则作废"
+    else:
+        second = f"开盘：区间内买 / 高开不追挂 {high} / 低开 ≤{stop} 作废、否则回到 {low} 买"
+    third = f"最长持有 {agent['max_hold_sessions']} 天未到 1R 即退出 · {agent['summary']}"
+    if agent.get('first_counter'):
+        third += f" · 反证：{agent['first_counter']}"
+    voided = '；'.join(f"作废 {r}" for r in agent.get('invalid_reasons') or [])
+    return '\n'.join([first, second, third + (f"；{voided}" if voided else '')])
+
+
+def _agent_line(agent: dict | None, ticker: str | None = None) -> str:
     """The agent's line ahead of the rule baseline. agent-2: 「Agent 第 n 版：区间 · 止损 · T1 · 股数 · 摘要
     · 首条反证」 (v2.5 §10.3); agent-1 units keep their P3 §10.2 line, marked as the old version."""
     if not agent:
@@ -355,6 +450,8 @@ def _agent_line(agent: dict | None) -> str:
                   else '缺资金快照，无法计算')   # same wording as the rule plan line
         band = (f"区间 {_num(agent['entry_low'])}–{_num(agent['entry_high'])}"
                 f" · 止损 {_num(agent['stop'])} · T1 {_num(agent['target1'])} · {shares}")
+        if not legacy and agent.get('entry_type'):          # agent-3 (v2.9 §11): three lines
+            return _executable_lines(agent, ticker)
         if legacy:
             line = f"Agent（{agent['model']}）买入 · {band}；{agent['summary']}"
             if agent.get('first_risk'):

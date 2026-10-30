@@ -25,8 +25,14 @@ def test_reason_text_covers_every_status_reason():
                'checkpoint_unavailable', 'thesis_count', 'invalid_condition', 'changes_mismatch', 'no_change',
                'review_malformed', 'migration_026_missing', 'review_in_progress', 'plan_invalid',
                'retro_malformed', 'lesson_invalid', 'answer_malformed', 'migration_027_missing',
-               'discussion_busy', 'draft_exists', 'not_connected', 'model_unavailable'}
+               'discussion_busy', 'draft_exists', 'not_connected', 'model_unavailable',
+               'invalid_entry_type', 'invalid_max_hold', 'stop_lowered', 'stop_above_close', 'active_chain'}
     assert set(REASON_TEXT) == reasons
+    assert {k: REASON_TEXT[k] for k in ('invalid_entry_type', 'invalid_max_hold', 'stop_lowered', 'stop_above_close',
+                                        'active_chain')} == {      # v2.9 spec §5.5 + R3, verbatim
+        'invalid_entry_type': '入场类型不在允许的三种之内', 'invalid_max_hold': '最长持有须为 5–20 个交易日',
+        'stop_lowered': '持仓期不能下移止损', 'stop_above_close': '持仓期止损不能高于最新收盘',
+        'active_chain': '已有进行中的计划链，这次触发已并入'}
     assert REASON_TEXT['not_connected'] == 'ChatGPT 未连接' and REASON_TEXT['model_unavailable'] == '所选模型不可用'
     assert REASON_TEXT['plan_invalid'] == '修订版按规则作废'
     assert {k: REASON_TEXT[k] for k in reasons if k in ('retro_malformed', 'lesson_invalid', 'answer_malformed',
@@ -514,3 +520,35 @@ def test_get_knowledge_never_reads_drafts(workbench_db):
     # a reviewed lesson written as knowledge is visible as soon as it exists before the cutoff
     item_with_versions(conn, [(CUTOFF - timedelta(hours=1), ['AMD'], [])])
     assert len(get_knowledge_data(ctx_, ticker='AMD')['entries']) == 1
+
+
+def test_get_position_respects_cutoff(monkeypatch):
+    """v2.9 D33: only fills executed and recorded by the cutoff count; a void recorded after it is not applied."""
+    from investment_assistant.workbench import repository
+    from investment_assistant.workbench.agent.tools import get_position
+
+    def trade(trade_id, qty, executed, recorded, voided=None, side='buy'):
+        return {'id': trade_id, 'ticker': 'AMD', 'side': side, 'quantity': qty, 'price': 100, 'fee': 0,
+                'executed_at': executed, 'recorded_at': recorded, 'voided_at': voided}
+
+    before = CUTOFF - timedelta(days=2)
+    after = CUTOFF + timedelta(hours=3)
+    rows = [trade('a', 10, before, before), trade('late', 5, before, after),
+            trade('later', 7, after, after), trade('voided', 3, before, before, voided=after)]
+    asked = []
+
+    def list_trades(conn, ticker=None, *, cutoff=None):
+        asked.append(cutoff)
+        out = []
+        for t in rows:
+            if cutoff is not None and (t['recorded_at'] > cutoff or t['executed_at'] > cutoff):
+                continue
+            out.append({**t, 'voided_at': t['voided_at'] if t['voided_at'] and t['voided_at'] <= cutoff else None}
+                       if cutoff is not None else t)
+        return out
+
+    monkeypatch.setattr(repository, 'list_trades', list_trades)
+    monkeypatch.setattr(repository, 'split_events', lambda conn, ticker: [])
+    position = get_position(ctx(read=lambda fn: fn(object())))
+    assert asked == [CUTOFF]
+    assert position['quantity'] == '13' or float(position['quantity']) == 13       # 10 + the not-yet-voided 3
