@@ -637,3 +637,52 @@ it('plan rows have DiscussButton', async () => {
   expect(within(plans).getAllByRole('button', { name: '就此计划讨论' })).toHaveLength(3)
 })
 
+
+// ---- v2.10: primitive layer ----
+
+it('section error shows reason via DataBlock', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (String(url).startsWith('/api/watchlist')) return json({ rows: [{ ticker: 'NVDA' }] })
+    if (String(url).startsWith('/api/us-research/')) return json(fundamentalsView('NVDA'))
+    if (String(url).startsWith('/api/workbench/chains?')) return json({ ticker: 'NVDA', chains: [] })
+    if (String(url).startsWith('/api/workbench/user-inputs')) return json({ inputs: [] })
+    return json({ ...richView('NVDA'), focus: null, key_data: null, errors: { focus: 'f 失败', key_data: 'k 失败' } })
+  }))
+  render(Instrument, { sub: 'NVDA' })
+  const signal = await screen.findByRole('region', { name: '信号与计划' })
+  const focusBlock = signal.querySelector('[data-slot="data-block"][data-state="error"]') as HTMLElement
+  expect(focusBlock).not.toBeNull()
+  expect(within(focusBlock).getByRole('alert')).toHaveTextContent('今天该关注什么暂不可用：f 失败')
+  const keyBlock = screen.getByRole('region', { name: '关键数据' }).querySelector('[data-slot="data-block"][data-state="error"]') as HTMLElement
+  expect(within(keyBlock).getByRole('alert')).toHaveTextContent('暂无关键数据：k 失败')
+})
+
+it('MA legend uses chart tokens', async () => {
+  const root = document.documentElement
+  const set = (a: string, b: string, c: string) => {
+    root.style.setProperty('--chart-1', a); root.style.setProperty('--chart-2', b); root.style.setProperty('--chart-3', c)
+  }
+  set('#010101', '#020202', '#030303')
+  try {
+    rich()
+    render(Instrument, { sub: 'NVDA' })
+    const chart = await screen.findByTestId('instrument-chart')
+    expect(within(chart).getByText('MA20')).toHaveClass('text-chart-1')
+    expect(within(chart).getByText('MA50')).toHaveClass('text-chart-2')
+    expect(within(chart).getByText('MA200')).toHaveClass('text-chart-3')
+    // the lines on the canvas use the very same tokens, resolved to hex
+    expect(chartProps.at(-1).overlays.map((o: { color: string }) => o.color)).toEqual(['#010101', '#020202', '#030303'])
+    // plan sources in the second legend line
+    expect(within(chart).getByText('规则')).toHaveClass('text-chart-rule')
+    expect(within(chart).getByText('自定')).toHaveClass('text-chart-own')
+    expect(within(chart).getByText('Agent')).toHaveClass('text-chart-agent')
+    // and a theme switch hands the chart the new colours
+    root.setAttribute('data-theme', 'light')
+    set('#aa0000', '#00aa00', '#0000aa')
+    root.setAttribute('data-theme', 'dark')
+    await waitFor(() => expect(chartProps.at(-1).overlays.map((o: { color: string }) => o.color)).toEqual(['#aa0000', '#00aa00', '#0000aa']))
+  } finally {
+    for (const v of ['--chart-1', '--chart-2', '--chart-3']) root.style.removeProperty(v)
+    root.removeAttribute('data-theme')
+  }
+})

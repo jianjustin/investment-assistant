@@ -1,5 +1,9 @@
 <script lang="ts">
   import ConceptTerm from './ConceptTerm.svelte'
+  import { DataTable } from '$lib/ui/data-table/index'
+  import type { Column, RowGroup } from '$lib/ui/data-table/types'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import PlanLevels from '$lib/ui/domain/PlanLevels.svelte'
   import { ATTACH } from '../knowledge'
   import { fmtBeijing } from '../format'
   import * as tl from '../timeline'
@@ -50,6 +54,27 @@
     return r.text || (typeof end === 'string' ? end : end?.text ?? '')
   }
 
+  // 链与链之间的分隔用分组：一条链一组（组头是链的名字，已结束的链整组置灰）；没有链的行（规则基线）自成一组。
+  type Keyed = wb.HistoryRow & { _k: string }
+  const tableGroups = $derived<RowGroup<Keyed>[]>(groups.map((g, gi) => {
+    const chain = g.signal ? chains.find(c => c.signal_date === g.signal) : undefined
+    return {
+      key: `${g.signal ?? ''}|${gi}`,
+      label: g.signal ? `${ticker ? `${ticker}·` : ''}${md(g.signal)}` : '无链',
+      muted: !!chain && !tl.ACTIVE_STATES.includes(chain.state as tl.ChainState),
+      rows: g.rows.map((r, i) => ({ ...r, _k: `${gi}|${r.kind}|${r.at}|${i}` })),
+    }
+  }))
+  const levelNum = (v: string | number | null | undefined) => (v == null ? null : Number(v))
+  const columns: Column<Keyed>[] = [
+    { key: 'session', header: '日期', cell: dateCell },
+    { key: 'chain', header: '链与版本', cell: chainCell },
+    { key: 'levels', header: '入场 / 止损 / T1', cell: levelsCell },
+    { key: 'diff', header: '变化点', cell: diffCell },
+    { key: 'reason', header: '变化原因', cell: reasonCell },
+    { key: 'end', header: '结束方式', cell: endCell },
+  ]
+
   // 开关先在本地生效，再通知页面重新请求；页面回传的值覆盖本地值。
   let reviews = $state(false)
   let baselines = $state(false)
@@ -59,65 +84,46 @@
   }
 </script>
 
-<div class="space-y-2 text-sm">
+{#snippet dateCell(r: Keyed)}<span class="whitespace-nowrap" data-kind={r.kind}>{r.session}</span>{/snippet}
+{#snippet chainCell(r: Keyed)}{chainText(r)}{#if r.kind !== 'chain_open' && r.kind !== 'chain_end'} <span class="text-muted-foreground">{KIND_TEXT[r.kind] ?? r.kind}</span>{/if}{/snippet}
+{#snippet levelsCell(r: Keyed)}
+  {#if r.levels}<PlanLevels low={levelNum(r.levels.entry_low)} high={levelNum(r.levels.entry_high)} stop={levelNum(r.levels.stop)} target1={levelNum(r.levels.target1)} />{/if}
+  {#if r.validity}<span class="block text-muted-foreground">有效期 {r.validity.valid_from} 至 {r.validity.valid_until}</span>{/if}
+{/snippet}
+{#snippet diffCell(r: Keyed)}{#each diffItems(r) as d, di (di)}<span class="block">{d}</span>{/each}{/snippet}
+{#snippet reasonCell(r: Keyed)}
+  {#if r.kind === 'chain_open'}
+    <span>{r.text}</span>
+  {:else if r.kind !== 'chain_end'}
+    {#each changeTexts(r) as c, ci (ci)}<span class="block">{c}</span>{/each}
+    {#if signalsText(r)}<span class="block text-muted-foreground">触发：{signalsText(r)}</span>{/if}
+    {#if reasonLine(r)}<span class="block">{reasonLine(r)}</span>{/if}
+    {#if !changeTexts(r).length && !reasonLine(r)}<span class="block">{r.text}</span>{/if}
+    <span class="block text-muted-foreground">{fmtBeijing(r.at)}</span>
+  {/if}
+{/snippet}
+{#snippet endCell(r: Keyed)}{#if r.kind === 'chain_end'}<span class="font-medium">{endText(r)}</span>{/if}{/snippet}
+
+<div class="grid gap-2 text-sm">
   <div class="flex flex-wrap items-center gap-4 text-xs">
     <label class="flex items-center gap-1">
-      <input type="checkbox" bind:checked={reviews} onchange={change} />
+      <input type="checkbox" class="size-4 accent-primary" bind:checked={reviews} onchange={change} />
       显示每日维持的复查
     </label>
     <label class="flex items-center gap-1">
-      <input type="checkbox" bind:checked={baselines} onchange={change} />
+      <input type="checkbox" class="size-4 accent-primary" bind:checked={baselines} onchange={change} />
       显示规则基线
     </label>
     <span class="text-muted-foreground"><ConceptTerm id={I.chainState}>链状态说明</ConceptTerm></span>
   </div>
 
   {#if !rows?.length}
-    <p class="text-xs text-muted-foreground">该标的还没有计划历史</p>
+    <DataBlock state="empty" message="该标的还没有计划历史" />
   {:else}
     <div class="overflow-x-auto">
-      <table aria-label="计划历史" class="text-xs w-full min-w-[720px]">
-        <thead><tr class="text-left text-muted-foreground">
-          <th>日期</th><th>链与版本</th><th>入场 / 止损 / T1</th><th>变化点</th><th>变化原因</th><th>结束方式</th>
-        </tr></thead>
-        {#each groups as g, gi (gi)}
-          <tbody data-chain={g.signal ?? ''} class={gi > 0 ? (g.signal ? 'border-t-4 border-border' : 'border-t-2 border-border') : ''}>
-            {#each g.rows as r, i (`${r.kind}|${r.at}|${i}`)}
-              {#if r.kind === 'chain_open'}
-                <tr data-kind="chain_open" class="bg-muted align-top">
-                  <td class="whitespace-nowrap">{r.session}</td>
-                  <td>{chainText(r)}</td>
-                  <td colspan="4">{r.text}</td>
-                </tr>
-              {:else if r.kind === 'chain_end'}
-                <tr data-kind="chain_end" class="align-top border-t border-border">
-                  <td class="whitespace-nowrap">{r.session}</td>
-                  <td>{chainText(r)}</td>
-                  <td colspan="3"></td>
-                  <td class="font-medium">{endText(r)}</td>
-                </tr>
-              {:else}
-                <tr data-kind={r.kind} class="align-top border-t border-border">
-                  <td class="whitespace-nowrap">{r.session}</td>
-                  <td>{chainText(r)} <span class="text-muted-foreground">{KIND_TEXT[r.kind] ?? r.kind}</span></td>
-                  <td>{levelsText(r)}{#if r.validity}<span class="block text-muted-foreground">有效期 {r.validity.valid_from} 至 {r.validity.valid_until}</span>{/if}</td>
-                  <td>
-                    {#each diffItems(r) as d, di (di)}<span class="block">{d}</span>{/each}
-                  </td>
-                  <td>
-                    {#each changeTexts(r) as c, ci (ci)}<span class="block">{c}</span>{/each}
-                    {#if signalsText(r)}<span class="block text-muted-foreground">触发：{signalsText(r)}</span>{/if}
-                    {#if reasonLine(r)}<span class="block">{reasonLine(r)}</span>{/if}
-                    {#if !changeTexts(r).length && !reasonLine(r)}<span class="block">{r.text}</span>{/if}
-                    <span class="block text-muted-foreground">{fmtBeijing(r.at)}</span>
-                  </td>
-                  <td></td>
-                </tr>
-              {/if}
-            {/each}
-          </tbody>
-        {/each}
-      </table>
+      <div class="min-w-[720px]">
+        <DataTable {columns} groups={tableGroups} rowKey={r => r._k} ariaLabel="计划历史" sticky={false} />
+      </div>
     </div>
     {#if chains.length}
       <p class="text-xs text-muted-foreground">共 {chains.length} 条链</p>

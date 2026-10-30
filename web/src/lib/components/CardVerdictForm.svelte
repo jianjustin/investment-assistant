@@ -5,6 +5,11 @@
   import { fmtBeijing } from '../format'
   import { growthError, idempotentRequests, knowHref } from '../growth'
   import type { CardVerdict, CardVerdictLessonInput, KnowledgeValues, LessonDraftRow, VerdictAction } from '../growth'
+  import { Alert, AlertDescription } from '$lib/ui/alert/index'
+  import { Button } from '$lib/ui/button/index'
+  import Field from '$lib/ui/field/Field.svelte'
+  import { Textarea } from '$lib/ui/textarea/index'
+  import { notify } from '$lib/ui/toast'
 
   // 复盘卡的审定表单（spec §4.5）：每条教训草稿必须「采纳」（字段可改）或「不采纳」，可以「另写一条」，
   // 可以写「我的复盘」（0–2000 字）；一次提交，审定后不能再审定。失败保留所有输入；同一份内容重试复用 request_id。
@@ -22,6 +27,9 @@
   let error = $state('')
   let nextKey = 1
   const requests = idempotentRequests()
+  const uid = $props.id()
+  // the chosen answer is shown as pressed (a primary button per draft would break "at most one primary per section")
+  const PICKED = 'border-primary bg-primary/10 text-primary hover:bg-primary/10'
 
   const unhandled = $derived(drafts.filter(d => !choice[d.id]).length)
   const original = (d: LessonDraftRow): KnowledgeValues => ({
@@ -54,6 +62,7 @@
     try {
       await api.postCardVerdict(cardId, { request_id: requests.idFor(body), ...body })
       requests.done()
+      notify.success('已提交审定')
       onSubmitted?.()
     } catch (e) {
       error = growthError(e)
@@ -64,7 +73,7 @@
 </script>
 
 {#if verdict}
-  <div class="space-y-2 text-sm">
+  <div class="grid gap-2 text-sm">
     <p class="text-xs"><span class="font-medium">已审定</span> <span class="text-muted-foreground">{fmtBeijing(verdict.created_at)}</span></p>
     {#if verdict.note}
       <div>
@@ -72,7 +81,7 @@
         <p class="whitespace-pre-wrap">{verdict.note}</p>
       </div>
     {/if}
-    <ul class="space-y-0.5 text-xs">
+    <ul class="grid gap-0.5 text-xs">
       {#each verdict.lessons as lesson, i (i)}
         <li class={lesson.action === 'dismiss' ? 'text-muted-foreground' : ''}>
           <span>{lesson.title}</span>
@@ -86,9 +95,9 @@
     </ul>
   </div>
 {:else}
-  <div class="space-y-3 text-sm">
+  <div class="grid gap-3 text-sm">
     {#each drafts as d, i (d.id)}
-      <fieldset aria-label={`教训草稿 ${i + 1}：${d.title}`} class="border border-border rounded-sm p-3 space-y-2 min-w-0">
+      <fieldset aria-label={`教训草稿 ${i + 1}：${d.title}`} class="grid min-w-0 gap-2 rounded-md border border-border p-3">
         <legend class="px-1 text-xs text-muted-foreground">教训草稿 {i + 1}</legend>
         <p class="font-medium">{d.title}</p>
         <p class="whitespace-pre-wrap">{d.body}</p>
@@ -96,12 +105,10 @@
         <p class="text-xs"><span class="text-muted-foreground">反例</span> {d.counter_examples}</p>
         {#if d.refs?.length}<p class="text-xs text-muted-foreground">依据<RefList refs={d.refs} {runId} {onFact} /></p>{/if}
         <div class="flex gap-2">
-          <button type="button" aria-pressed={choice[d.id] === 'approve'}
-                  class="text-xs px-2 py-1 border rounded-sm {choice[d.id] === 'approve' ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:bg-muted'}"
-                  onclick={() => choice[d.id] = 'approve'}>采纳</button>
-          <button type="button" aria-pressed={choice[d.id] === 'dismiss'}
-                  class="text-xs px-2 py-1 border rounded-sm {choice[d.id] === 'dismiss' ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:bg-muted'}"
-                  onclick={() => choice[d.id] = 'dismiss'}>不采纳</button>
+          <Button size="sm" aria-pressed={choice[d.id] === 'approve'} class={choice[d.id] === 'approve' ? PICKED : ''}
+                  onclick={() => choice[d.id] = 'approve'}>采纳</Button>
+          <Button size="sm" aria-pressed={choice[d.id] === 'dismiss'} class={choice[d.id] === 'dismiss' ? PICKED : ''}
+                  onclick={() => choice[d.id] = 'dismiss'}>不采纳</Button>
         </div>
         {#if choice[d.id] === 'approve'}
           <KnowledgeForm initial={d} requireCounter hideSubmit onChange={(values, problem) => edits[d.id] = { values, problem }} />
@@ -110,25 +117,24 @@
     {/each}
 
     {#each extras as extra, i (extra.key)}
-      <fieldset aria-label={`另写的教训 ${i + 1}`} class="border border-border rounded-sm p-3 space-y-2 min-w-0">
+      <fieldset aria-label={`另写的教训 ${i + 1}`} class="grid min-w-0 gap-2 rounded-md border border-border p-3">
         <legend class="px-1 text-xs text-muted-foreground">另写的教训 {i + 1}</legend>
         <KnowledgeForm hideSubmit onChange={(values, problem) => extra.edit = { values, problem }} />
-        <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm"
-                onclick={() => extras = extras.filter(x => x.key !== extra.key)}>移除这一条</button>
+        <div><Button size="sm" onclick={() => extras = extras.filter(x => x.key !== extra.key)}>移除这一条</Button></div>
       </fieldset>
     {/each}
-    <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted"
-            onclick={() => extras = [...extras, { key: nextKey++, edit: null }]}>另写一条</button>
+    <div><Button size="sm" onclick={() => extras = [...extras, { key: nextKey++, edit: null }]}>另写一条</Button></div>
 
-    <label class="flex flex-col">我的复盘（0–2000 字）
-      <textarea aria-label="我的复盘" rows="3" class="border border-border rounded-sm px-2 py-1 bg-background" bind:value={note}></textarea>
-    </label>
+    <Field label="我的复盘（0–2000 字）" id={`${uid}-note`}>
+      {#snippet children({ id, describedby })}
+        <Textarea {id} aria-describedby={describedby} aria-label="我的复盘" rows={3} bind:value={note} />
+      {/snippet}
+    </Field>
 
-    {#if unhandled > 0}<p class="text-xs text-amber-700">还有 {unhandled} 条教训草稿没有处理</p>{/if}
-    {#if error}<p role="alert" class="text-xs text-red-600">{error}</p>{/if}
+    {#if unhandled > 0}<p class="text-xs text-warn">还有 {unhandled} 条教训草稿没有处理</p>{/if}
+    {#if error}<Alert variant="danger"><AlertDescription>{error}</AlertDescription></Alert>{/if}
     <div class="flex items-center gap-2">
-      <button type="button" class="px-3 py-1 rounded-sm bg-primary text-white disabled:opacity-50"
-              disabled={busy || unhandled > 0} onclick={submit}>提交审定</button>
+      <Button variant="primary" {busy} disabled={unhandled > 0} onclick={submit}>提交审定</Button>
       <span class="text-xs text-muted-foreground">审定后不能再审定；之后要改经验，到「我的知识」改版本。</span>
     </div>
   </div>

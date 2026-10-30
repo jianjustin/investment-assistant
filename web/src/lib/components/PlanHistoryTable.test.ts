@@ -33,19 +33,23 @@ const chains = (): HistoryChain[] => [
 afterEach(() => vi.restoreAllMocks())
 
 describe('PlanHistoryTable', () => {
-  it('renders two chains separated, each opened by a chain_open row and closed by chain_end', () => {
+  // v2.10: the table is a DataTable; a chain is a group (its header row is the divider between chains).
+  const bodyRows = () => [...screen.getByRole('table', { name: '计划历史' }).querySelectorAll('tbody tr')]
+  const kindOf = (tr: Element) => tr.querySelector('[data-kind]')?.getAttribute('data-kind') ?? 'group'
+
+  it('renders two chains as groups, each opened by a chain_open row and closed by chain_end', () => {
     render(PlanHistoryTable, { rows: rows(), chains: chains(), ticker: 'MU' })
-    const table = screen.getByRole('table', { name: '计划历史' })
-    const bodies = table.querySelectorAll('tbody')
-    expect(bodies).toHaveLength(2)
-    expect(bodies[0].getAttribute('data-chain')).toBe('2026-10-21')
-    expect(bodies[0].className).not.toContain('border-t-4')
-    expect(bodies[1].className).toContain('border-t-4')              // the divider between chains
-    const first = [...bodies[0].querySelectorAll('tr')]
-    expect(first[0].getAttribute('data-kind')).toBe('chain_open')
-    expect(first[0].className).toContain('bg-muted')             // grey
-    expect(first.at(-1)!.getAttribute('data-kind')).toBe('chain_end')
-    expect(first.at(-1)).toHaveTextContent('已过期未执行（2026-10-24）')
+    const trs = bodyRows()
+    expect(trs.map(kindOf)).toEqual(['group', 'chain_open', 'version', 'version', 'retrigger', 'chain_end',
+                                     'group', 'chain_open', 'version', 'review'])
+    expect(trs[0]).toHaveTextContent('MU·10-21（5）')               // the divider between chains
+    expect(trs[6]).toHaveTextContent('MU·10-28（3）')
+    expect(trs[5]).toHaveTextContent('已过期未执行（2026-10-24）')
+    // an ended chain is greyed (not removed); the live chain is not
+    expect(trs[1].getAttribute('data-muted')).toBe('true')
+    expect(trs[5].getAttribute('data-muted')).toBe('true')
+    expect(trs[7].getAttribute('data-muted')).toBeNull()
+    expect(screen.getByText('共 2 条链')).toBeInTheDocument()
   })
 
   it('writes why the chain opened again', () => {
@@ -55,7 +59,7 @@ describe('PlanHistoryTable', () => {
 
   it('shows levels, host diff item by item, the model change text and the fired signals', () => {
     render(PlanHistoryTable, { rows: rows(), chains: chains(), ticker: 'MU' })
-    const v1 = screen.getByRole('table', { name: '计划历史' }).querySelectorAll('tbody')[0].querySelectorAll('tr')[2]
+    const v1 = bodyRows()[3]
     expect(v1).toHaveTextContent('MU·10-21 第 1 版')
     expect(v1).toHaveTextContent('入场 90.00–92.00 · 止损 87.00 · T1 100.00')
     expect(v1).toHaveTextContent('止损 86.00 → 87.00')
@@ -63,20 +67,21 @@ describe('PlanHistoryTable', () => {
     expect(v1).toHaveTextContent('止损上移到前低')
     expect(v1).toHaveTextContent('触发：触及 T1')
     expect(v1).toHaveTextContent('Agent：T1 已触及')
-    const v0 = screen.getByRole('table', { name: '计划历史' }).querySelectorAll('tbody')[0].querySelectorAll('tr')[1]
+    const v0 = bodyRows()[2]
     expect(v0).toHaveTextContent('有效期 2026-10-22 至 2026-10-26')
   })
 
   it('keeps a merged unit as a row inside its chain', () => {
     render(PlanHistoryTable, { rows: rows(), chains: chains(), ticker: 'MU' })
-    const body = screen.getByRole('table', { name: '计划历史' }).querySelectorAll('tbody')[0]
-    expect(body.querySelector('tr[data-kind="retrigger"]')).toHaveTextContent('10-23 再次触发（趋势回踩修复），并入本链')
+    const retrigger = bodyRows().find(tr => kindOf(tr) === 'retrigger')!
+    expect(retrigger).toHaveTextContent('10-23 再次触发（趋势回踩修复），并入本链')
+    expect(bodyRows().indexOf(retrigger)).toBeLessThan(bodyRows().findIndex(tr => kindOf(tr) === 'chain_end'))     // inside the first chain
   })
 
   it('shows review rows (switch on) with the system or Agent verdict', () => {
     render(PlanHistoryTable, { rows: rows(), chains: chains(), ticker: 'MU', includeReviews: true })
     expect(screen.getByRole('checkbox', { name: '显示每日维持的复查' })).toBeChecked()
-    expect(screen.getByRole('table', { name: '计划历史' }).querySelector('tr[data-kind="review"]')).toHaveTextContent('系统规则：无新信号')
+    expect(bodyRows().find(tr => kindOf(tr) === 'review')).toHaveTextContent('系统规则：无新信号')
   })
 
   it('both switches are requests: toggling calls back with the full state', async () => {
@@ -113,11 +118,13 @@ describe('PlanHistoryTable', () => {
       version_no: null, levels: { entry_low: '88.00', entry_high: '90.00', stop: '84.00', target1: '96.00' }, text: '规则基线 plan-2' } as HistoryRow
     const ordered = [...base.slice(0, 5), baseline, ...base.slice(5)]
     render(PlanHistoryTable, { rows: ordered, chains: chains(), ticker: 'MU', includeBaselines: true })
-    const bodies = [...screen.getByRole('table', { name: '计划历史' }).querySelectorAll('tbody')]
-    expect(bodies.map(b => b.getAttribute('data-chain'))).toEqual(['2026-10-21', '', '2026-10-28'])
-    expect(bodies[1]).toHaveTextContent('88.00–90.00')
-    expect(bodies[0]).not.toHaveTextContent('88.00–90.00')
-    expect(bodies[2]).not.toHaveTextContent('88.00–90.00')
+    const trs = bodyRows()
+    const headers = trs.filter(tr => kindOf(tr) === 'group')
+    expect(headers.map(tr => tr.textContent!.trim())).toEqual(['MU·10-21（5）', '无链（1）', 'MU·10-28（3）'])
+    const between = (from: number, to: number) => trs.slice(trs.indexOf(headers[from]), to < headers.length ? trs.indexOf(headers[to]) : undefined)
+    expect(between(1, 2).map(tr => tr.textContent).join('')).toContain('88.00–90.00')
+    expect(between(0, 1).map(tr => tr.textContent).join('')).not.toContain('88.00–90.00')
+    expect(between(2, 3).map(tr => tr.textContent).join('')).not.toContain('88.00–90.00')
   })
 })
 

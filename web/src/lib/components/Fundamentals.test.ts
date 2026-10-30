@@ -104,3 +104,19 @@ it('reports nested partial failures and reloads retained data after manual refre
   await screen.findByText(/更新有缺失或失败/)
   expect(screen.queryByText('全部更新成功')).toBeNull()
 })
+
+it('notice is an alert', async () => {
+  const initial = respond
+  respond = (url, init) => url.startsWith('/api/us-research/') && !url.includes('/sync') ? json({ ...view(), financials: [] }) : initial(url, init)
+  render(Fundamentals, { ticker: 'MU' })
+  const notice = (await screen.findByText(/尚未采集：本机没有该股票的财季数据/)).closest('[data-slot="alert"]') as HTMLElement
+  expect(notice).not.toBeNull()
+  expect(notice.className).toMatch(/border-warn/)
+  // an update that did not finish is a danger alert with the reason, and a finished one an info status
+  respond = (url, init) => init?.method === 'POST' ? json({ error: 'down' }, 500) : initial(url, init)
+  await screen.findByText('未接入一致预期')
+  await fireEvent.click(screen.getByRole('button', { name: '手动更新' }))
+  const failed = (await screen.findByText(/更新未完成/)).closest('[data-slot="alert"]') as HTMLElement
+  expect(failed).toHaveAttribute('role', 'alert')
+  expect(failed.className).toMatch(/border-destructive/)
+})

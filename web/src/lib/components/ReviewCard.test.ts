@@ -336,3 +336,29 @@ describe('ReviewCard · retro-2 (你的执行与纪律) and retro-1 side by side
   })
 })
 
+
+describe('ReviewCard · v2.10', () => {
+  it('status pill text', async () => {
+    render(ReviewCard, { id: 12 })
+    const header = await screen.findByTestId('card-header')
+    const pill = within(header).getByText('待审定')
+    expect(pill).toHaveAttribute('data-domain', 'card')
+    expect(pill).toHaveAttribute('data-status', 'to_review')
+    expect(pill).toHaveAttribute('data-tone', 'warn')
+  })
+
+  it('failed redraft reason is an alert and a draft in progress is a running pill', async () => {
+    load(cardView({ status: 'draft_failed', lesson_drafts: [],
+      drafts: [draftRow({ id: 1, attempt: 1, status: 'error', reason: 'model_error', output: null })] }))
+    vi.spyOn(api, 'redraftCard').mockRejectedValue(new WorkbenchError('draft_exists', 409))
+    const first = render(ReviewCard, { id: 12 })
+    await fireEvent.click(await screen.findByRole('button', { name: '重新起草' }))
+    expect((await screen.findByText('这张卡已有成功的草稿')).closest('[data-slot="alert"]')).toHaveAttribute('role', 'alert')
+    first.unmount()
+    vi.spyOn(api, 'redraftCard').mockReturnValue(new Promise(() => {}))
+    render(ReviewCard, { id: 12 })
+    await fireEvent.click(await screen.findByRole('button', { name: '重新起草' }))
+    expect(screen.getByRole('button', { name: '重新起草' })).toHaveAttribute('aria-busy', 'true')
+    expect(await screen.findByText('起草中…')).toBeInTheDocument()
+  })
+})

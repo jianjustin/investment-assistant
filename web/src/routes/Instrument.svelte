@@ -2,6 +2,16 @@
   import { onMount, untrack } from 'svelte'
   import { getTickerChains, getWatchlist, pollRun, recheckChain } from '../lib/api'
   import CandleChart from '../lib/charts/CandleChart.svelte'
+  import { readChartTheme } from '../lib/charts/theme'
+  import { onThemeChange } from '../lib/theme'
+  import { Button } from '$lib/ui/button/index'
+  import * as Card from '$lib/ui/card/index'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import MetricValue from '$lib/ui/domain/MetricValue.svelte'
+  import PageHeader from '$lib/ui/domain/PageHeader.svelte'
+  import PlanLevels from '$lib/ui/domain/PlanLevels.svelte'
+  import Section from '$lib/ui/domain/Section.svelte'
+  import StatusPill from '$lib/ui/domain/StatusPill.svelte'
   import ConceptTerm from '../lib/components/ConceptTerm.svelte'
   import DiscussButton from '../lib/components/DiscussButton.svelte'
   import Fundamentals from '../lib/components/Fundamentals.svelte'
@@ -103,8 +113,8 @@
     && !!view && p.valid_until >= view.session))
   const annotations = $derived(view?.chart.annotations)
   const focusPlanLink = $derived(focus.find(item => item.link?.startsWith('#plan/'))?.link ?? null)
-  const planLine = (p: { entry_low: string | number; entry_high: string | number; stop: string | number; target1: string | number }) =>
-    `入场 ${p.entry_low}–${p.entry_high} · 止损 ${p.stop} · T1 ${p.target1}`
+  // 接口里的价位是字符串（"95.10"）：PlanLevels 要数字；转不成数字的按缺失处理。
+  const num = (value: string | number | null | undefined) => (value == null ? null : Number(value))
   const candidateValues = (c: wb.Candidate) =>
     Object.entries(c.inputs?.values ?? {}).map(([k, v]) => `${k}=${Array.isArray(v) ? v.join('/') : v}`).join(' · ')
   const NEWS_KINDS: wb.TimelineItem['kind'][] = ['filing', 'news']
@@ -118,7 +128,9 @@
     ['rs20', '相对 SPY 20 日强弱'], ['rs60', '相对 SPY 60 日强弱'],
   ]
   const EARNINGS_STATUS: Record<string, string> = { known: '已知', unknown: '未知' }
-  const KIND_COLOR: Record<string, string> = { rule: '#0ea5e9', own: '#a855f7', agent: '#f97316' }
+  // 均线颜色来自图表令牌 --chart-1…3（画布吃十六进制，所以读解析后的值）；图例文字用同名类 text-chart-1…3。切主题时重读。
+  let chartTheme = $state(readChartTheme())
+  const SELECT = 'h-8 rounded-md border border-input bg-card px-2 text-sm text-foreground'
   const chainLine = (c: tl.TickerChain) => [
     c.signal_date, tl.CHAIN_STATE_TEXT[c.state] ?? c.state, `第 ${c.version_no} 版`,
     c.latest_review
@@ -170,6 +182,8 @@
     untrack(() => { if (routed) select(routed, false) })
   })
 
+  onMount(() => onThemeChange(() => { chartTheme = readChartTheme() }))
+
   onMount(async () => {
     try {
       const rows = (await getWatchlist()) as { rows?: { ticker: string; identity_error?: string }[] }
@@ -182,33 +196,35 @@
   })
 </script>
 
-<section class="space-y-4">
-  <header class="flex items-center gap-3">
-    <h1 class="text-lg font-semibold">标的</h1>
-    <select aria-label="标的" class="border border-border rounded-sm px-2 py-1 text-sm bg-background" value={ticker}
-            onchange={e => select((e.currentTarget as HTMLSelectElement).value)}>
-      {#if ticker && !tickers.includes(ticker)}<option value={ticker}>{ticker}</option>{/if}
-      {#each tickers as t}<option value={t}>{t}</option>{/each}
-    </select>
-  </header>
+{#snippet missing()}<StatusPill domain="block" value="not_computed" />{/snippet}
+
+<div class="grid gap-6">
+  <PageHeader level={1} title="标的">
+    {#snippet actions()}
+      <select aria-label="标的" class={SELECT} value={ticker}
+              onchange={e => select((e.currentTarget as HTMLSelectElement).value)}>
+        {#if ticker && !tickers.includes(ticker)}<option value={ticker}>{ticker}</option>{/if}
+        {#each tickers as t}<option value={t}>{t}</option>{/each}
+      </select>
+    {/snippet}
+  </PageHeader>
 
   {#if error}
-    <p role="alert" class="text-sm text-red-600">{error}</p>
+    <DataBlock state="error" message={error} />
   {:else if loading}
-    <p class="text-sm text-muted-foreground">加载中…</p>
+    <DataBlock state="loading" skeleton="block" />
   {:else if !ticker}
-    <p class="text-sm text-muted-foreground">观察名单为空，请在「更多 → 设置 → 关注列表」添加美股。</p>
+    <DataBlock state="empty" message="观察名单为空，请在「更多 → 设置 → 关注列表」添加美股。" />
   {/if}
 
   {#if view}
-    <h2 class="font-semibold">{view.ticker} · 截至 {view.session}</h2>
+    <PageHeader level={2} title={`${view.ticker} · 截至 ${view.session}`} />
 
     <!-- ① 信号与计划：首屏先回答「今天该关注什么」 -->
-    <section aria-label="信号与计划" class="space-y-3">
-      <h2 class="font-semibold">信号与计划</h2>
-      {#if blockError('focus')}<p class="text-xs text-muted-foreground">今天该关注什么暂不可用：{blockError('focus')}</p>{/if}
+    <Section level={2} title="信号与计划">
+      {#if blockError('focus')}<DataBlock state="error" message={`今天该关注什么暂不可用：${blockError('focus')}`} />{/if}
       {#if focus.length}
-        <ul aria-label="今天该关注什么" class="space-y-1 text-sm">
+        <ul aria-label="今天该关注什么" class="grid gap-1 text-sm">
           {#each focus as item, i (i)}
             <li class="border-l-2 border-primary/50 pl-2">{item.text}
               {#if item.link}<a class="text-primary underline" href={item.link}>查看</a>{/if}
@@ -219,15 +235,15 @@
       {/if}
 
       {#if todays.length}
-        <div class="text-sm space-y-1">
+        <div class="grid gap-1 text-sm">
           <p class="text-xs text-muted-foreground"><ConceptTerm id={I.trigger}>今日触发</ConceptTerm></p>
-          <ul aria-label="今日触发" class="space-y-1">
+          <ul aria-label="今日触发" class="grid gap-1">
             {#each todays as c (c.id)}
               <li>
                 <ConceptTerm id={ruleConcept(c.rule_id)}>{wb.ruleLabel(c.rule_id)}</ConceptTerm> → {wb.ACTION_LABELS[c.action]}
                 <span class="text-xs text-muted-foreground">{candidateValues(c)}</span>
-                <button type="button" class="text-xs text-primary underline" aria-expanded={!!triggerOpen[c.id]}
-                        onclick={() => triggerOpen[c.id] = !triggerOpen[c.id]}>触发依据</button>
+                <Button variant="link" size="sm" class="text-xs" aria-expanded={!!triggerOpen[c.id]}
+                        onclick={() => triggerOpen[c.id] = !triggerOpen[c.id]}>触发依据</Button>
                 {#if triggerOpen[c.id]}<PlanDerivation unit={{ ticker: view.ticker, signal_date: c.signal_date }} />{/if}
               </li>
             {/each}
@@ -235,19 +251,18 @@
         </div>
       {/if}
 
-      <div class="border border-border rounded-sm p-3 bg-card text-sm space-y-1">
+      <Card.Root size="sm" class="gap-1 px-3 text-sm">
         <h3 class="font-medium"><ConceptTerm id={I.chain}>Agent 计划</ConceptTerm></h3>
         {#if chainsError}
-          <p class="text-xs text-muted-foreground">Agent 计划列表不可用：{chainsError}</p>
+          <DataBlock state="error" message={`Agent 计划列表不可用：${chainsError}`} />
         {:else if liveChains.length}
-          <ul aria-label="Agent 计划" class="space-y-1">
+          <ul aria-label="Agent 计划" class="grid gap-1">
             {#each liveChains as c (c.signal_date)}
               {@const head = planOfHead(c.head_plan_id)}
               {@const rk = rechecks[c.signal_date]}
-              <li>{chainLine(c)}{#if head} · {planLine(head)}{/if} · <a class="text-primary underline" href={`#plan/${c.head_plan_id}`}>查看</a>
-                <button type="button" class="text-xs px-2 py-0.5 border border-border rounded-sm hover:bg-muted disabled:opacity-50"
-                        disabled={rk?.busy || c.state === 'exiting'} title={c.state === 'exiting' ? wb.CHAIN_EXITING_TEXT : ''}
-                        onclick={() => recheck(c)}>重新复查</button>
+              <li>{chainLine(c)}{#if head} · <PlanLevels low={num(head.entry_low)} high={num(head.entry_high)} stop={num(head.stop)} target1={num(head.target1)} />{/if} · <a class="text-primary underline" href={`#plan/${c.head_plan_id}`}>查看</a>
+                <Button size="sm" class="text-xs" busy={rk?.busy} disabled={c.state === 'exiting'} title={c.state === 'exiting' ? wb.CHAIN_EXITING_TEXT : ''}
+                        onclick={() => recheck(c)}>重新复查</Button>
                 <DiscussButton context={{ kind: 'plan', plan_id: c.head_plan_id }} />
                 {#if rk?.text}<span class="text-xs">{rk.text}</span>{/if}
                 {#if c.latest_review?.reason}<p class="text-xs text-muted-foreground">{c.latest_review.reason}</p>{/if}
@@ -255,18 +270,18 @@
             {/each}
           </ul>
         {:else if chains.length}
-          <p class="text-xs text-muted-foreground">没有进行中的 Agent 计划，已结束的见下方计划历史</p>
+          <DataBlock state="empty" message="没有进行中的 Agent 计划，已结束的见下方计划历史" />
         {:else}
-          <p class="text-xs text-muted-foreground">该标的还没有 Agent 版本链</p>
+          <DataBlock state="empty" message="该标的还没有 Agent 版本链" />
         {/if}
-      </div>
+      </Card.Root>
 
       {#if livePlans.length}
-        <div class="text-sm space-y-1">
+        <div class="grid gap-1 text-sm">
           <p class="text-xs text-muted-foreground"><ConceptTerm id={I.entryZone}>当前有效的规则 / 自定计划</ConceptTerm></p>
-          <ul aria-label="当前有效的计划" class="space-y-1">
+          <ul aria-label="当前有效的计划" class="grid gap-1">
             {#each livePlans as p (p.id)}
-              <li>{wb.KIND_TEXT[p.kind] ?? p.kind} · {p.plan_version} · {planLine(p)} · 有效期至 {p.valid_until}
+              <li>{wb.KIND_TEXT[p.kind] ?? p.kind} · {p.plan_version} · <PlanLevels low={num(p.entry_low)} high={num(p.entry_high)} stop={num(p.stop)} target1={num(p.target1)} /> · 有效期至 {p.valid_until}
                 · <a class="text-primary underline" href={`#plan/${p.id}`}>推导</a></li>
             {/each}
           </ul>
@@ -281,25 +296,25 @@
           <p class="text-sm" aria-label="持仓止损">
             {#if h.stop != null}
               当前止损 {h.stop}（{h.mode === 'trailing' ? '移动' : '初始'}）<span class="text-xs"><ConceptTerm id={I.stop}>止损</ConceptTerm>{#if h.mode === 'trailing'} <ConceptTerm id={I.trailing}>移动止损</ConceptTerm>{/if}</span>
-              · T1 {h.target1 ?? '—'}（{h.t1_reached ? '已触 T1' : '未触 T1'}）<span class="text-xs"><ConceptTerm id={I.target1}>T1</ConceptTerm></span>
-              · 收盘 {h.last_close ?? '—'} · 距止损 {wb.pct(h.to_stop_pct)} · 距 T1 {wb.pct(h.to_target_pct)}
+              · T1 {#if h.target1 != null}{h.target1}{:else}{@render missing()}{/if}（{h.t1_reached ? '已触 T1' : '未触 T1'}）<span class="text-xs"><ConceptTerm id={I.target1}>T1</ConceptTerm></span>
+              · 收盘 {#if h.last_close != null}{h.last_close}{:else}{@render missing()}{/if} · 距止损 <MetricValue value={h.to_stop_pct} percent signed /> · 距 T1 <MetricValue value={h.to_target_pct} percent signed />
             {:else}
               无计划持仓（回撤规则看护）
             {/if}
           </p>
         {:else if blockError('holding')}
-          <p class="text-xs text-muted-foreground">当前止损与 T1 暂不可用：{blockError('holding')}</p>
+          <DataBlock state="error" message={`当前止损与 T1 暂不可用：${blockError('holding')}`} />
         {/if}
       {:else}
-        <p class="text-sm text-muted-foreground">当前无持仓</p>
+        <DataBlock state="empty" message="当前无持仓" />
       {/if}
 
       {#if timelineMissing}
-        <section class="border border-border rounded-sm p-3 bg-card text-sm">
-          <h2 class="font-semibold">我的补充</h2>
+        <Card.Root size="sm" role="region" aria-label="我的补充" class="gap-1 px-3 text-sm">
+          <h2 class="text-base font-medium">我的补充</h2>
           <p class="text-xs text-muted-foreground"><ConceptTerm id={I.userInput}>用户输入说明</ConceptTerm></p>
-          <p class="text-xs text-muted-foreground">暂不可用：{chainsError}</p>
-        </section>
+          <DataBlock state="error" message={`暂不可用：${chainsError}`} />
+        </Card.Root>
       {:else}
         <p class="text-xs text-muted-foreground"><ConceptTerm id={I.userInput}>用户输入说明</ConceptTerm></p>
         {#key view.ticker}
@@ -307,153 +322,151 @@
         {/key}
       {/if}
 
-      <section aria-label="计划历史" class="space-y-1">
-        <h3 class="font-medium">计划历史 <span class="text-xs font-normal"><ConceptTerm id={I.chain}>说明</ConceptTerm></span></h3>
+      <Section level={3} title="计划历史">
+        {#snippet actions()}<span class="text-xs"><ConceptTerm id={I.chain}>说明</ConceptTerm></span>{/snippet}
         {#if historyError}
-          <p class="text-xs text-muted-foreground">计划历史暂不可用：{historyError}</p>
+          <DataBlock state="error" message={`计划历史暂不可用：${historyError}`} />
         {:else if planHistory}
           <PlanHistoryTable rows={planHistory.rows} chains={planHistory.chains} ticker={view.ticker}
                             includeReviews={historyOpts.include_reviews} includeBaselines={historyOpts.include_baselines}
                             onToggle={changeHistory} />
         {:else}
-          <p class="text-xs text-muted-foreground">加载中…</p>
+          <DataBlock state="loading" skeleton="table" />
         {/if}
-      </section>
-    </section>
+      </Section>
+    </Section>
 
     <!-- ①' 我的知识：挂在这个标的上的有效经验（v2.7） -->
-    <section aria-label="我的知识" class="space-y-2">
-      <h2 class="font-semibold">我的知识</h2>
+    <Section level={2} title="我的知识">
       <p class="text-xs text-muted-foreground"><ConceptTerm id={ATTACH.myKnowledge.item}>说明</ConceptTerm>
         · <a class="text-primary underline" href={`#knowledge/mine/new?ticker=${encodeURIComponent(view.ticker)}`}>写一条</a></p>
       {#if blockError('knowledge')}
-        <p class="text-xs text-muted-foreground">暂不可用：{blockError('knowledge')}</p>
+        <DataBlock state="error" message={`暂不可用：${blockError('knowledge')}`} />
       {:else if knowledge.length}
-        <ul aria-label="我的知识条目" class="space-y-1 text-sm">
+        <ul aria-label="我的知识条目" class="grid gap-1 text-sm">
           {#each knowledge as e (e.id)}
             <li><a class="text-primary underline" href={`#knowledge/mine/${e.id}`}>{e.title}</a>
               <span class="text-xs text-muted-foreground"> · 适用范围：{e.scope} · 第 {e.current_version} 版 · 被引用 {e.citation_count} 次</span></li>
           {/each}
         </ul>
       {:else}
-        <p class="text-xs text-muted-foreground">还没有挂在 {view.ticker} 上的经验</p>
+        <DataBlock state="empty" message={`还没有挂在 ${view.ticker} 上的经验`} />
       {/if}
-    </section>
+    </Section>
 
     <!-- ② 关键数据：与 Agent 工具同一个纯函数现算，截至最近收盘 -->
-    <section aria-label="关键数据" class="space-y-2">
-      <h2 class="font-semibold">关键数据</h2>
+    <Section level={2} title="关键数据">
       {#if view.key_data}
         {@const kd = view.key_data}
-        <p class="text-xs text-muted-foreground">截至 {kd.as_of ?? '—'}
+        <p class="text-xs text-muted-foreground">截至 {#if kd.as_of}{kd.as_of}{:else}{@render missing()}{/if}
           {#if focusPlanLink} · 焦点计划 <a class="text-primary underline" href={focusPlanLink}>看推导</a>{/if}</p>
-        <ul aria-label="关键数据" class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-0.5 text-sm">
+        <ul aria-label="关键数据" class="grid grid-cols-1 gap-x-6 gap-y-0.5 text-sm md:grid-cols-2">
           {#each KEY_LABELS as [key, label] (key)}
             <li class="flex justify-between gap-2">
               <span class="text-muted-foreground">{#if kd.concepts?.[key]}<ConceptTerm id={kd.concepts[key]}>{label}</ConceptTerm>{:else}{label}{/if}</span>
-              <span class="tabular">{kd.values?.[key] ?? '—'}</span>
+              <span class="tabular-nums">{kd.values?.[key] ?? '—'}</span>
             </li>
           {/each}
         </ul>
+      {:else if blockError('key_data')}
+        <DataBlock state="error" message={`暂无关键数据：${blockError('key_data')}`} />
       {:else}
-        <p class="text-xs text-muted-foreground">暂无关键数据{blockError('key_data') ? `：${blockError('key_data')}` : ''}</p>
+        <DataBlock state="empty" message="暂无关键数据" />
       {/if}
-    </section>
+    </Section>
 
     <!-- ③ 背景：财报日、区制、行业、基本面、近期资讯与 SEC 文件 -->
-    <section aria-label="背景" class="space-y-2">
-      <h2 class="font-semibold">背景</h2>
-      {#if blockError('context')}<p class="text-xs text-muted-foreground">财报日、区制与行业暂不可用：{blockError('context')}</p>{/if}
-      <ul aria-label="背景要点" class="text-sm space-y-0.5">
+    <Section level={2} title="背景">
+      {#if blockError('context')}<DataBlock state="error" message={`财报日、区制与行业暂不可用：${blockError('context')}`} />{/if}
+      <ul aria-label="背景要点" class="grid gap-0.5 text-sm">
         <li><ConceptTerm id={I.earnings}>下次财报</ConceptTerm>：
           {#if view.context?.earnings?.date}
-            {view.context.earnings.date}（{EARNINGS_STATUS[view.context.earnings.status ?? ''] ?? view.context.earnings.status ?? '—'}{#if view.context.earnings.sessions_until != null}，距今 {view.context.earnings.sessions_until} 个交易日{/if}）
+            {view.context.earnings.date}（{#if view.context.earnings.status}{EARNINGS_STATUS[view.context.earnings.status] ?? view.context.earnings.status}{:else}{@render missing()}{/if}{#if view.context.earnings.sessions_until != null}，距今 {view.context.earnings.sessions_until} 个交易日{/if}）
           {:else}下次财报日未知{/if}</li>
         <li><ConceptTerm id={I.regime}>区制</ConceptTerm>：
           {#if view.context?.regime}{wb.REGIME_LABELS[view.context.regime.label] ?? view.context.regime.label}（{view.context.regime.session}）{:else}未生成{/if}</li>
         <li><ConceptTerm id={I.sector}>行业强弱</ConceptTerm>：
           {#if view.context?.sector}
             {view.context.sector.etf} {view.context.sector.state ? (wb.SECTOR_STATE_LABELS[view.context.sector.state] ?? view.context.sector.state) : '数据不足'}
-            · rs20 {view.context.sector.rs20 ?? '—'} · rs60 {view.context.sector.rs60 ?? '—'}
+            · rs20 {#if view.context.sector.rs20 != null}{view.context.sector.rs20}{:else}{@render missing()}{/if} · rs60 {#if view.context.sector.rs60 != null}{view.context.sector.rs60}{:else}{@render missing()}{/if}
           {:else}未映射行业 ETF{/if}</li>
       </ul>
       <Fundamentals ticker={view.ticker} />
       <p class="text-xs text-muted-foreground"><ConceptTerm id={I.news}>近期资讯</ConceptTerm> 与 <ConceptTerm id={I.filings}>SEC 文件</ConceptTerm></p>
-      <ol class="space-y-1 text-sm">
+      <ol class="grid gap-1 text-sm">
         {#each backgroundItems as item}
           <li class="flex gap-2">
-            <span class="text-xs text-muted-foreground w-32 shrink-0">{wb.dateTime(item.at)}</span>
-            <span class="text-xs px-1 rounded-sm bg-muted shrink-0">{KIND_LABELS[item.kind]}</span>
-            {#if item.url}<a class="underline" href={item.url} target="_blank" rel="noreferrer">{item.text}</a>{:else}<span>{item.text}</span>{/if}
+            <span class="w-32 shrink-0 text-xs text-muted-foreground">{wb.dateTime(item.at)}</span>
+            <span class="shrink-0 rounded-sm bg-muted px-1 text-xs">{KIND_LABELS[item.kind]}</span>
+            {#if item.url}<a class="text-primary underline" href={item.url} target="_blank" rel="noreferrer">{item.text}</a>{:else}<span>{item.text}</span>{/if}
           </li>
         {:else}
           <li class="text-muted-foreground">暂无记录</li>
         {/each}
       </ol>
-    </section>
+    </Section>
 
     <!-- ④ 历史：K 线与标注、计划价位、候选 / 决定 / 成交时间线 -->
-    <section aria-label="历史" class="space-y-2">
-      <h2 class="font-semibold">历史</h2>
+    <Section level={2} title="历史">
       {#if view.bars.length}
         {@const last = view.bars[view.bars.length - 1]}
         <p class="text-xs text-muted-foreground">最新日线 {last.price_date}：开 {last.open} · 收 {last.close}（拆股调整、未分红调整）</p>
       {/if}
       {#if view.chart.bars.length}
         {@const chartBars = view.chart.bars.map(b => ({ date: b.price_date, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume }))}
-        <div data-testid="instrument-chart">
+        <div data-testid="instrument-chart" class="grid gap-2">
           <CandleChart
             data={chartBars.map(b => ({ time: b.date, open: b.open, high: b.high, low: b.low, close: b.close }))}
             overlays={[
-              { color: '#22c55e', data: toLineData(chartBars, view.chart.bars.map(b => b.ma20)) },
-              { color: '#60a5fa', data: toLineData(chartBars, view.chart.bars.map(b => b.ma50)) },
-              { color: '#f59e0b', data: toLineData(chartBars, view.chart.bars.map(b => b.ma200)) },
+              { color: chartTheme.series[0], data: toLineData(chartBars, view.chart.bars.map(b => b.ma20)) },
+              { color: chartTheme.series[1], data: toLineData(chartBars, view.chart.bars.map(b => b.ma50)) },
+              { color: chartTheme.series[2], data: toLineData(chartBars, view.chart.bars.map(b => b.ma200)) },
             ]}
             markers={annotations?.markers ?? []}
             segments={annotations?.segments ?? []} />
           <VolumeBars bars={chartBars} days={250} />
-          <p class="text-xs text-muted-foreground">拆股调整、未分红调整 · <span style="color:#22c55e">MA20</span> · <span style="color:#60a5fa">MA50</span> · <span style="color:#f59e0b">MA200</span>
+          <p class="text-xs text-muted-foreground">拆股调整、未分红调整 · <span class="text-chart-1">MA20</span> · <span class="text-chart-2">MA50</span> · <span class="text-chart-3">MA200</span>
             <ConceptTerm id={I.movingAverage} /></p>
-          {#if blockError('chart.annotations')}<p class="text-xs text-muted-foreground">图上标注暂不可用：{blockError('chart.annotations')}</p>{/if}
+          {#if blockError('chart.annotations')}<DataBlock state="error" message={`图上标注暂不可用：${blockError('chart.annotations')}`} />{/if}
           {#if annotations?.markers?.length || annotations?.segments?.length}
             <p class="text-xs text-muted-foreground">标注：▲ 买入候选 · ▼ 卖出候选 · ● 观察候选 · B / S 你的成交 · 计划价位线（入场上下沿、止损、T1）：
-              <span style={`color:${KIND_COLOR.rule}`}>规则</span> · <span style={`color:${KIND_COLOR.own}`}>自定</span> · <span style={`color:${KIND_COLOR.agent}`}>Agent</span>（虚线为止损；作废的计划线段淡显）</p>
+              <span class="text-chart-rule">规则</span> · <span class="text-chart-own">自定</span> · <span class="text-chart-agent">Agent</span>（虚线为止损；作废的计划线段淡显）</p>
           {/if}
         </div>
       {:else}
-        <p class="text-xs text-muted-foreground">暂无日线，等下一次批处理采集</p>
+        <DataBlock state="empty" message="暂无日线，等下一次批处理采集" />
       {/if}
 
-      <div class="text-sm space-y-1">
+      <div class="grid gap-1 text-sm">
         <h3 class="font-medium"><ConceptTerm id={I.entryZone}>计划价位</ConceptTerm></h3>
         <p class="text-xs text-muted-foreground">说明：<ConceptTerm id={I.stop}>止损</ConceptTerm> <ConceptTerm id={I.target1}>T1</ConceptTerm> <ConceptTerm id={I.chain}>版本链</ConceptTerm></p>
         {#if plans.length}
-          <ul aria-label="计划价位" class="space-y-0.5">
+          <ul aria-label="计划价位" class="grid gap-0.5">
             {#each plans as p (p.id)}
-              <li>{wb.KIND_TEXT[p.kind] ?? p.kind}{p.kind === 'agent' && p.version_no != null ? ` · 第 ${p.version_no} 版` : ` · ${p.plan_version}`}
-                · {planLine(p)} · 有效期 {p.valid_from} 至 {p.valid_until}{p.status === 'invalid' ? ' · 已作废' : ''}
+              <li class={p.status === 'invalid' ? 'text-muted-foreground' : ''}>{wb.KIND_TEXT[p.kind] ?? p.kind}{p.kind === 'agent' && p.version_no != null ? ` · 第 ${p.version_no} 版` : ` · ${p.plan_version}`}
+                · <PlanLevels low={num(p.entry_low)} high={num(p.entry_high)} stop={num(p.stop)} target1={num(p.target1)} /> · 有效期 {p.valid_from} 至 {p.valid_until}{p.status === 'invalid' ? ' · 已作废' : ''}
                 · <a class="text-primary underline" href={`#plan/${p.id}`}>推导</a>
                 <DiscussButton context={{ kind: 'plan', plan_id: p.id }} /></li>
             {/each}
           </ul>
         {:else}
-          <p class="text-xs text-muted-foreground">图上窗口内没有计划{blockError('plans') ? `（计划列表暂不可用：${blockError('plans')}）` : ''}</p>
+          <DataBlock state="empty" message={`图上窗口内没有计划${blockError('plans') ? `（计划列表暂不可用：${blockError('plans')}）` : ''}`} />
         {/if}
         {#if annotations?.omitted}<p class="text-xs text-muted-foreground">另有 {annotations.omitted} 份未画</p>{/if}
       </div>
 
       <p class="text-xs text-muted-foreground"><ConceptTerm id={I.position}>候选、决定与成交</ConceptTerm></p>
-      <ol class="space-y-1 text-sm">
+      <ol class="grid gap-1 text-sm">
         {#each historyItems as item}
           <li class="flex gap-2">
-            <span class="text-xs text-muted-foreground w-32 shrink-0">{wb.dateTime(item.at)}</span>
-            <span class="text-xs px-1 rounded-sm bg-muted shrink-0">{KIND_LABELS[item.kind]}</span>
+            <span class="w-32 shrink-0 text-xs text-muted-foreground">{wb.dateTime(item.at)}</span>
+            <span class="shrink-0 rounded-sm bg-muted px-1 text-xs">{KIND_LABELS[item.kind]}</span>
             <span>{item.text}</span>
           </li>
         {:else}
           <li class="text-muted-foreground">暂无记录</li>
         {/each}
       </ol>
-    </section>
+    </Section>
   {/if}
-</section>
+</div>

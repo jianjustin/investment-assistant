@@ -4,11 +4,19 @@
   import { actualRText, CARD_STATUS_TEXT, DISCIPLINE_TEXT, endText, growthError, normalizeTicker } from '../growth'
   import type { CardStatus, ReviewCardRow } from '../growth'
   import { rText } from '../workbench'
+  import { DataTable } from '$lib/ui/data-table/index'
+  import type { Column } from '$lib/ui/data-table/types'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import StatusPill from '$lib/ui/domain/StatusPill.svelte'
+  import Field from '$lib/ui/field/Field.svelte'
+  import { Input } from '$lib/ui/input/index'
 
   // 「复盘 → 复盘卡」列表（spec §4.7）：按结束日倒序；标的 · 结束类型 · 结束日 · 你的决定 · 实际 R（无成交写「未成交」）·
   // 规则 / Agent 轨道 R · 纪律标记（待定的灰显）· 状态 · headline（没有草稿写状态文案）。可按状态、标的筛选。
   let { oncounts }: { oncounts?: (counts: Partial<Record<CardStatus, number>>) => void } = $props()
 
+  const uid = $props.id()
+  const SELECT = 'h-8 rounded-md border border-input bg-card px-2 text-sm text-foreground'
   let status = $state('')
   let ticker = $state('')
   let cards = $state<ReviewCardRow[] | null>(null)
@@ -39,20 +47,46 @@
 
   const stateOrder: CardStatus[] = ['to_review', 'reviewed', 'drafting', 'draft_failed']
   const settled = (row: ReviewCardRow) => row.flags.filter(f => !row.immature.includes(f))
+
+  const columns: Column<ReviewCardRow>[] = [
+    { key: 'ticker', header: '标的', cell: tickerCell },
+    { key: 'end', header: '结束', cell: endCell },
+    { key: 'execution', header: '你的执行 / 决定', value: row => row.execution_text ?? row.decision_text },
+    { key: 'actual', header: '实际 R', align: 'num', value: row => actualRText(row) },
+    { key: 'tracks', header: '规则 / Agent R', cell: tracksCell },
+    { key: 'flags', header: '纪律', cell: flagsCell },
+    { key: 'status', header: '状态', cell: statusCell },
+    { key: 'headline', header: '一句话', cell: headlineCell },
+  ]
 </script>
 
-<div class="space-y-3">
+{#snippet tickerCell(row: ReviewCardRow)}<a class="text-primary underline" href={`#review/cards/${row.id}`}>{row.ticker}</a>
+  {#if row.signal_date}<span class="block text-xs text-muted-foreground">{row.signal_date}</span>{/if}{/snippet}
+{#snippet endCell(row: ReviewCardRow)}{endText(row.end_kind, row.exit_basis)}<span class="block text-muted-foreground">{row.end_session}</span>{/snippet}
+{#snippet tracksCell(row: ReviewCardRow)}<span class="tabular-nums">规则 {rText(row.rule_r)}</span><span class="block tabular-nums">Agent {rText(row.agent_r)}</span>{/snippet}
+{#snippet flagsCell(row: ReviewCardRow)}
+  {#each settled(row) as flag (flag)}<span class="mr-1 rounded-sm border border-warn/40 bg-warn/10 px-1 text-foreground">{DISCIPLINE_TEXT[flag] ?? flag}</span>{/each}
+  {#each row.immature as flag (flag)}<span data-pending="true" class="mr-1 rounded-sm bg-muted px-1 text-muted-foreground">{DISCIPLINE_TEXT[flag] ?? flag}（待定）</span>{/each}
+{/snippet}
+{#snippet statusCell(row: ReviewCardRow)}<StatusPill domain="card" value={row.status} />{/snippet}
+{#snippet headlineCell(row: ReviewCardRow)}<span data-headline>{row.headline ?? CARD_STATUS_TEXT[row.status] ?? row.status}</span>{/snippet}
+
+<div class="grid gap-3">
   <div class="flex flex-wrap items-end gap-3 text-sm">
-    <label class="flex flex-col text-xs">状态
-      <select aria-label="状态" class="border border-border rounded-sm px-2 py-1 bg-background text-sm" bind:value={status} onchange={load}>
-        <option value="">全部</option>
-        {#each stateOrder as s (s)}<option value={s}>{CARD_STATUS_TEXT[s]}</option>{/each}
-      </select>
-    </label>
-    <label class="flex flex-col text-xs">标的
-      <input aria-label="标的" class="border border-border rounded-sm px-2 py-1 bg-background text-sm w-28" value={ticker}
-             onchange={e => { ticker = normalizeTicker((e.currentTarget as HTMLInputElement).value); void load() }} />
-    </label>
+    <Field label="状态" id={`${uid}-status`}>
+      {#snippet children({ id, describedby })}
+        <select {id} aria-describedby={describedby} class={SELECT} bind:value={status} onchange={load}>
+          <option value="">全部</option>
+          {#each stateOrder as s (s)}<option value={s}>{CARD_STATUS_TEXT[s]}</option>{/each}
+        </select>
+      {/snippet}
+    </Field>
+    <Field label="标的" id={`${uid}-ticker`}>
+      {#snippet children({ id, describedby })}
+        <Input {id} aria-describedby={describedby} class="w-28" value={ticker}
+               onchange={(e: Event) => { ticker = normalizeTicker((e.currentTarget as HTMLInputElement).value); void load() }} />
+      {/snippet}
+    </Field>
     {#if cards}
       <p class="text-xs text-muted-foreground">待审定 {counts.to_review ?? 0} · 已审定 {counts.reviewed ?? 0} · 起草中 {counts.drafting ?? 0}
         · 起草失败 {counts.draft_failed ?? 0}</p>
@@ -60,34 +94,12 @@
   </div>
 
   {#if error}
-    <p role="alert" class="text-sm text-red-600">{error}</p>
+    <DataBlock state="error" message={error} onRetry={() => void load()} />
   {:else if cards === null}
-    <p class="text-sm text-muted-foreground">加载中…</p>
+    <DataBlock state="loading" skeleton="table" />
   {:else if cards.length === 0}
-    <p class="text-sm text-muted-foreground">还没有复盘卡</p>
+    <DataBlock state="empty" message="还没有复盘卡" />
   {:else}
-    <table class="text-sm w-full">
-      <thead><tr class="text-left text-xs text-muted-foreground">
-        <th>标的</th><th>结束</th><th>你的执行 / 决定</th><th>实际 R</th><th>规则 / Agent R</th><th>纪律</th><th>状态</th><th>一句话</th>
-      </tr></thead>
-      <tbody>
-        {#each cards as row (row.id)}
-          <tr class="align-top border-t border-border">
-            <td><a class="text-primary underline" href={`#review/cards/${row.id}`}>{row.ticker}</a>
-              {#if row.signal_date}<span class="block text-xs text-muted-foreground">{row.signal_date}</span>{/if}</td>
-            <td class="text-xs">{endText(row.end_kind, row.exit_basis)}<span class="block text-muted-foreground">{row.end_session}</span></td>
-            <td class="text-xs">{row.execution_text ?? row.decision_text}</td>
-            <td class="text-xs">{actualRText(row)}</td>
-            <td class="text-xs">规则 {rText(row.rule_r)}<span class="block">Agent {rText(row.agent_r)}</span></td>
-            <td class="text-xs">
-              {#each settled(row) as flag (flag)}<span class="mr-1 px-1 rounded-sm bg-amber-100 text-amber-800">{DISCIPLINE_TEXT[flag] ?? flag}</span>{/each}
-              {#each row.immature as flag (flag)}<span data-pending="true" class="mr-1 px-1 rounded-sm bg-muted text-muted-foreground">{DISCIPLINE_TEXT[flag] ?? flag}（待定）</span>{/each}
-            </td>
-            <td class="text-xs">{CARD_STATUS_TEXT[row.status] ?? row.status}</td>
-            <td class="text-xs" data-headline>{row.headline ?? CARD_STATUS_TEXT[row.status] ?? row.status}</td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
+    <DataTable {columns} rows={cards} rowKey={row => row.id} ariaLabel="复盘卡列表" sticky={false} />
   {/if}
 </div>

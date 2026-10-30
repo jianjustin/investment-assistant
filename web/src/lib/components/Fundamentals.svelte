@@ -8,7 +8,17 @@
  import MetricDetails from './MetricDetails.svelte'
  import GuidanceEditor from './GuidanceEditor.svelte'
  import EChart from '../charts/EChart.svelte'
+ import { Alert, AlertDescription } from '$lib/ui/alert/index'
+ import { Button } from '$lib/ui/button/index'
+ import * as Card from '$lib/ui/card/index'
+ import { DataTable } from '$lib/ui/data-table/index'
+ import type { Column } from '$lib/ui/data-table/types'
+ import Field from '$lib/ui/field/Field.svelte'
+ import { Input } from '$lib/ui/input/index'
+ import PageHeader from '$lib/ui/domain/PageHeader.svelte'
+ import Section from '$lib/ui/domain/Section.svelte'
  let { ticker }: { ticker: string } = $props()
+ const uid=$props.id()
  let symbol=$state('')
  let view=$state<api.USResearchView|null>(null)
  let loading=$state(false)
@@ -81,59 +91,70 @@
   return rows.filter(r=>r.date>=cutoff.toISOString().slice(0,10))
  })
  let priceOption=$derived<EChartsOption>({tooltip:{trigger:'axis'},grid:{left:60,right:20,top:25,bottom:40},xAxis:{type:'category',data:bars.map(r=>r.date)},yAxis:{type:'value',scale:true,name:view?.currency??''},series:[{name:'调整收盘价',type:'line',showSymbol:false,connectNulls:false,data:bars.map(r=>r.adjusted_close??null)}]})
+ const barColumns:Column<any>[]=[
+  {key:'date',header:'日期'},
+  {key:'close',header:'未调整收盘',align:'num',value:b=>`${number(b.close)} ${b.currency??''}`.trim()},
+  {key:'adjusted_close',header:'调整收盘',align:'num',value:b=>`${number(b.adjusted_close)} ${b.currency??''}`.trim()},
+  {key:'volume',header:'成交量',align:'num',value:b=>number(b.volume,0)},
+  {key:'source',header:'来源',cell:sourceCell}
+ ]
 </script>
-<section class="fundamentals">
- <div class="heading"><h2>基本面{#if company}<span>{company}</span>{/if}</h2>
- <div class="controls"><button onclick={refresh} disabled={!symbol||loading}>读取本地数据</button><button class="primary" onclick={()=>update()} disabled={!symbol||busy||!!asOf}>{busy?'采集中…':'手动更新'}</button><button onclick={()=>update(true)} disabled={!symbol||busy||!!asOf}>续跑失败项</button></div></div>
- <p>币种 {view?.currency??'待确认'} · 财季采用公司实际起止日 · 来源先于判断</p>
- {#if error}<p role="alert" class="notice">{error}</p>{/if}{#if info}<p role="status" class="notice">{info}</p>{/if}
- {#if loading}<p role="status">正在读取本地数据…</p>{/if}
- {#if symbol}<details><summary onclick={()=>{if(!reportOpen)loadReports()}}>采集运行与历史报告</summary><p>研究更新逐项保存，不发送通知；页面读取只访问本机已保存的数据。{runId?'当前运行 '+runId:''}</p><a href="#tools/runs">查看持久运行报告</a><button onclick={loadReports}>读取最近报告</button>
- {#if reportsError}<p role="alert">{reportsError}</p>{/if}
- {#each reports as report}<details><summary>{report.started_at??report.created_at??report.run_id} · {report.status==='success'?'执行完成，需核对逐项覆盖':'存在缺失或失败'}</summary><pre>{JSON.stringify(report,null,2)}</pre></details>{/each}
+{#snippet sourceCell(bar:any)}{#if bar.source_url}<a class="text-primary underline" href={bar.source_url} target="_blank" rel="noreferrer">价格原文 ↗</a>{/if}<details class="my-1 text-xs"><summary class="cursor-pointer text-primary">来源记录</summary><pre class="max-w-100 whitespace-pre-wrap text-xs wrap-anywhere">{JSON.stringify(bar,null,2)}</pre></details>{/snippet}
+<section class="grid min-w-0 gap-4 wrap-anywhere">
+ <PageHeader level={2} title="基本面">
+  {#snippet meta()}{#if company}<span>{company}</span>{/if}{/snippet}
+  {#snippet actions()}
+   <Button onclick={refresh} disabled={!symbol||loading}>读取本地数据</Button>
+   <Button variant="primary" onclick={()=>update()} disabled={!symbol||!!asOf} busy={busy} busyText="采集中…">手动更新</Button>
+   <Button onclick={()=>update(true)} disabled={!symbol||busy||!!asOf}>续跑失败项</Button>
+  {/snippet}
+ </PageHeader>
+ <p class="text-sm text-muted-foreground">币种 {view?.currency??'待确认'} · 财季采用公司实际起止日 · 来源先于判断</p>
+ {#if error}<Alert variant="danger"><AlertDescription>{error}</AlertDescription></Alert>{/if}{#if info}<Alert variant="info"><AlertDescription>{info}</AlertDescription></Alert>{/if}
+ {#if loading}<p role="status" class="text-sm text-muted-foreground">正在读取本地数据…</p>{/if}
+ {#if symbol}<details class="text-xs"><summary class="cursor-pointer text-primary" onclick={()=>{if(!reportOpen)loadReports()}}>采集运行与历史报告</summary><p class="my-2 text-sm text-muted-foreground">研究更新逐项保存，不发送通知；页面读取只访问本机已保存的数据。{runId?'当前运行 '+runId:''}</p><div class="flex flex-wrap items-center gap-3"><a class="text-primary underline" href="#tools/runs">查看持久运行报告</a><Button size="sm" onclick={loadReports}>读取最近报告</Button></div>
+ {#if reportsError}<Alert variant="danger" class="mt-2"><AlertDescription>{reportsError}</AlertDescription></Alert>{/if}
+ {#each reports as report}<details class="my-2 text-xs"><summary class="cursor-pointer text-primary">{report.started_at??report.created_at??report.run_id} · {report.status==='success'?'执行完成，需核对逐项覆盖':'存在缺失或失败'}</summary><pre class="max-w-full whitespace-pre-wrap text-xs wrap-anywhere">{JSON.stringify(report,null,2)}</pre></details>{/each}
  </details>{/if}
  {#if view}
  {#if view.financials.length}
  <FinancialSeries rows={view.financials} />
- {:else}<p class="notice">尚未采集：本机没有该股票的财季数据，可点「手动更新」采集。</p>{/if}
- <section><h2>来源覆盖与更新状态</h2><p>采集完成不代表所有指标齐全。以下状态属于当前采集；旧值保留实际期间及上次成功时间。</p>
- <div class="coverage">{#each view.statuses as state}{@const coverage=state.last_success_details?.coverage??state.details?.coverage}<article class:warning={state.status!=='ready'}><h3>{datasetName(state.dataset)} · {statusName(state.status)}</h3>
- {#if state.retained_old_values}<strong>显示旧值</strong>{/if}<p>最近尝试 {state.attempted_at??'尚未尝试'}<br />上次成功 {state.succeeded_at??'尚无成功记录'}</p>
- {#if state.error}<p>{missingReason(state.error)}</p>{/if}
- {#if coverage}<p>实际来源范围 {coverage.start??'未知'} → {coverage.end??'未知'} · 完整性{coverage.complete===true?'已核验':'尚未确认'}</p>{/if}
- {#each state.last_success_details?.limitations??[] as limitation}<p>{missingReason(limitation)}</p>{/each}
- {#if state.dataset==='financials'}<p>已转换 {view.financials.length} 个财季，目标 12 季；逐项缺口见财务表。</p>{/if}
- {#if state.dataset==='market'}<p>本地日线 {view.market.bars[0]?.date??'未知'} → {view.market.bars.at(-1)?.date??'未知'} · {view.market.bars.length} 条；SPY {view.market.benchmarks.SPY?.length??0} 条 / QQQ {view.market.benchmarks.QQQ?.length??0} 条。</p>{/if}
- <details><summary>来源覆盖明细</summary><pre>{JSON.stringify(state,null,2)}</pre></details></article>{/each}</div>
- <details><summary>本机历史观察</summary><p>{view.pit.limitation??'来源回补不代表严格历史可用'}。{view.pit.metadata_scope}</p>
- <div class="controls"><label>本机观察截止时间<input type="datetime-local" bind:value={asOf} /></label><button onclick={refresh} disabled={loading}>按截止时间读取</button><button onclick={()=>{if(confirmResearchNavigation()){asOf='';load()}}}>回到当前数据</button></div></details>
- {#if displayedAsOf}<p class="notice">历史观察截止 {displayedAsOf}；指引编辑入口隐藏。采集状态与行业问题为当前信息。</p>{/if}
- </section>
- <section><h2>价格、同期表现与估值</h2><p>近一年价格趋势 {bars[0]?.date??'尚无数据'} → {bars.at(-1)?.date??'尚无数据'}。收益采用来源调整收盘价，可能随分红及拆股历史回补变化，不能视作严格总回报或严格历史可用数据。</p>
+ {:else}<Alert variant="warn" role="status"><AlertDescription>尚未采集：本机没有该股票的财季数据，可点「手动更新」采集。</AlertDescription></Alert>{/if}
+ <Card.Root class="min-w-0 px-4"><Section level={2} title="来源覆盖与更新状态"><p class="text-sm text-muted-foreground">采集完成不代表所有指标齐全。以下状态属于当前采集；旧值保留实际期间及上次成功时间。</p>
+ <div class="grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-3">{#each view.statuses as state}{@const coverage=state.last_success_details?.coverage??state.details?.coverage}<Card.Root size="sm" class={`min-w-0 gap-1 px-3 text-sm ${state.status!=='ready'?'border-warn/40 bg-warn/10':''}`}><h3 class="text-sm font-medium">{datasetName(state.dataset)} · {statusName(state.status)}</h3>
+ {#if state.retained_old_values}<strong class="text-xs">显示旧值</strong>{/if}<p class="text-muted-foreground">最近尝试 {state.attempted_at??'尚未尝试'}<br />上次成功 {state.succeeded_at??'尚无成功记录'}</p>
+ {#if state.error}<p class="text-muted-foreground">{missingReason(state.error)}</p>{/if}
+ {#if coverage}<p class="text-muted-foreground">实际来源范围 {coverage.start??'未知'} → {coverage.end??'未知'} · 完整性{coverage.complete===true?'已核验':'尚未确认'}</p>{/if}
+ {#each state.last_success_details?.limitations??[] as limitation}<p class="text-muted-foreground">{missingReason(limitation)}</p>{/each}
+ {#if state.dataset==='financials'}<p class="text-muted-foreground">已转换 {view.financials.length} 个财季，目标 12 季；逐项缺口见财务表。</p>{/if}
+ {#if state.dataset==='market'}<p class="text-muted-foreground">本地日线 {view.market.bars[0]?.date??'未知'} → {view.market.bars.at(-1)?.date??'未知'} · {view.market.bars.length} 条；SPY {view.market.benchmarks.SPY?.length??0} 条 / QQQ {view.market.benchmarks.QQQ?.length??0} 条。</p>{/if}
+ <details class="text-xs"><summary class="cursor-pointer text-primary">来源覆盖明细</summary><pre class="max-w-full whitespace-pre-wrap text-xs wrap-anywhere">{JSON.stringify(state,null,2)}</pre></details></Card.Root>{/each}</div>
+ <details class="text-xs"><summary class="cursor-pointer text-primary">本机历史观察</summary><p class="my-2 text-sm text-muted-foreground">{view.pit.limitation??'来源回补不代表严格历史可用'}。{view.pit.metadata_scope}</p>
+ <div class="flex flex-wrap items-end gap-3"><Field label="本机观察截止时间" id={`${uid}-asof`}>{#snippet children({id,describedby})}<Input {id} aria-describedby={describedby} type="datetime-local" bind:value={asOf} />{/snippet}</Field><Button onclick={refresh} disabled={loading}>按截止时间读取</Button><Button onclick={()=>{if(confirmResearchNavigation()){asOf='';load()}}}>回到当前数据</Button></div></details>
+ {#if displayedAsOf}<Alert variant="warn" role="status"><AlertDescription>历史观察截止 {displayedAsOf}；指引编辑入口隐藏。采集状态与行业问题为当前信息。</AlertDescription></Alert>{/if}
+ </Section></Card.Root>
+ <Card.Root class="min-w-0 px-4"><Section level={2} title="价格、同期表现与估值"><p class="text-sm text-muted-foreground">近一年价格趋势 {bars[0]?.date??'尚无数据'} → {bars.at(-1)?.date??'尚无数据'}。收益采用来源调整收盘价，可能随分红及拆股历史回补变化，不能视作严格总回报或严格历史可用数据。</p>
  {#if bars.some(r=>r.adjusted_close!=null)}<EChart option={priceOption} />{/if}
- <div class="performance">{#each ['3m','6m','12m'] as key}{@const window=view.market.performance.windows[key]}<article><h3>{key.replace('m',' 个月')}</h3>
- <p>实际 {window?.start??'未知'} → {window?.end??'未知'}<br />{window?.observations??0} 个观测日 · 最大日期间隔 {window?.max_gap_days??'未知'} 天</p>
- {#each ['return','max_drawdown'] as metric}<h4>{metricName(metric)}</h4><MetricDetails metric={window?.[metric]} />{/each}
- {#each ['SPY','QQQ'] as benchmark}<h4>{metricName(benchmark)}</h4><MetricDetails metric={window?.relative?.[benchmark]} period={(window?.relative?.[benchmark]?.start??'未知')+' → '+(window?.relative?.[benchmark]?.end??'未知')} />{/each}
- </article>{/each}</div>
- {#each view.market.limitations as limitation}<p class="notice">{missingReason(limitation)}</p>{/each}
- <div class="valuation">{#each ['pe_ttm','ps_ttm','fcf_yield'] as key}<article><h3>{metricName(key)}</h3><MetricDetails metric={view.valuation[key]} period={'行情日期 '+(view.valuation[key]?.market_date??'未知')} /></article>{/each}</div>
- <p>估值须核验同币种、同股权类别及行情时点。当前 Yahoo 市值及股权类别尚未核验；原始报价不替代该核验。常规 PE 须使用正的普通股股东 TTM 利润。</p>
- <details><summary>价格原始记录与报价来源</summary><p>调整价用于收益；估值使用可比未调整价格及市值来源。没有核验时保持空白。</p><pre>{JSON.stringify(view.market.quote,null,2)}</pre>
- <div class="table-scroll"><table><thead><tr><th>日期</th><th>未调整收盘</th><th>调整收盘</th><th>成交量</th><th>来源</th></tr></thead><tbody>{#each [...bars].reverse() as bar}<tr><td>{bar.date}</td><td>{number(bar.close)} {bar.currency??''}</td><td>{number(bar.adjusted_close)} {bar.currency??''}</td><td>{number(bar.volume,0)}</td><td>{#if bar.source_url}<a href={bar.source_url} target="_blank" rel="noreferrer">价格原文 ↗</a>{/if}<details><summary>来源记录</summary><pre>{JSON.stringify(bar,null,2)}</pre></details></td></tr>{/each}</tbody></table></div></details>
- </section>
+ <div class="grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-3">{#each ['3m','6m','12m'] as key}{@const window=view.market.performance.windows[key]}<Card.Root size="sm" class="min-w-0 gap-1 px-3 text-sm"><h3 class="text-sm font-medium">{key.replace('m',' 个月')}</h3>
+ <p class="text-muted-foreground">实际 {window?.start??'未知'} → {window?.end??'未知'}<br />{window?.observations??0} 个观测日 · 最大日期间隔 {window?.max_gap_days??'未知'} 天</p>
+ {#each ['return','max_drawdown'] as metric}<h4 class="mt-2 text-xs font-medium">{metricName(metric)}</h4><MetricDetails metric={window?.[metric]} />{/each}
+ {#each ['SPY','QQQ'] as benchmark}<h4 class="mt-2 text-xs font-medium">{metricName(benchmark)}</h4><MetricDetails metric={window?.relative?.[benchmark]} period={(window?.relative?.[benchmark]?.start??'未知')+' → '+(window?.relative?.[benchmark]?.end??'未知')} />{/each}
+ </Card.Root>{/each}</div>
+ {#each view.market.limitations as limitation}<Alert variant="warn" role="status"><AlertDescription>{missingReason(limitation)}</AlertDescription></Alert>{/each}
+ <div class="grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-3">{#each ['pe_ttm','ps_ttm','fcf_yield'] as key}<Card.Root size="sm" class="min-w-0 gap-1 px-3 text-sm"><h3 class="text-sm font-medium">{metricName(key)}</h3><MetricDetails metric={view.valuation[key]} period={'行情日期 '+(view.valuation[key]?.market_date??'未知')} /></Card.Root>{/each}</div>
+ <p class="text-sm text-muted-foreground">估值须核验同币种、同股权类别及行情时点。当前 Yahoo 市值及股权类别尚未核验；原始报价不替代该核验。常规 PE 须使用正的普通股股东 TTM 利润。</p>
+ <details class="text-xs"><summary class="cursor-pointer text-primary">价格原始记录与报价来源</summary><p class="my-2 text-sm text-muted-foreground">调整价用于收益；估值使用可比未调整价格及市值来源。没有核验时保持空白。</p><pre class="max-w-full whitespace-pre-wrap text-xs wrap-anywhere">{JSON.stringify(view.market.quote,null,2)}</pre>
+ <DataTable columns={barColumns} rows={[...bars].reverse()} rowKey={b=>b.date} ariaLabel="价格原始记录" sticky={false} /></details>
+ </Section></Card.Root>
  {#key displayedAsOf}<GuidanceEditor {symbol} records={view.guidance.records} comparisons={view.guidance.comparisons} readonly={!!displayedAsOf} onSaved={load} />{/key}
- <section><h2>财报原文与披露摘录</h2><p>本地原文摘录用于核验，不代替标准季度财务事实；解析失败或未披露的经营指标仍需手动核对。</p>
- {#each view.filings as filing}<article><h3>{filing.form} · {filing.filing_date}</h3><a href={filing.source_url} target="_blank" rel="noreferrer">财报原文 ↗</a>
- {#each filing.analysis?.guidance??[] as excerpt}<p>{excerpt.text??excerpt.quote??excerpt}</p>{/each}
- {#each filing.analysis?.warnings??[] as warning}<p>{missingReason(warning)}</p>{/each}
- <details><summary>原文摘录、覆盖与定位</summary><pre>{JSON.stringify(filing.analysis,null,2)}</pre><pre>{JSON.stringify(filing.limitations??[],null,2)}</pre></details></article>
- {:else}<p>暂无本机已处理原文，请核对本地财报来源覆盖。</p>{/each}
- </section>
+ <Card.Root class="min-w-0 px-4"><Section level={2} title="财报原文与披露摘录"><p class="text-sm text-muted-foreground">本地原文摘录用于核验，不代替标准季度财务事实；解析失败或未披露的经营指标仍需手动核对。</p>
+ {#each view.filings as filing}<Card.Root size="sm" class="min-w-0 gap-1 px-3 text-sm"><h3 class="text-sm font-medium">{filing.form} · {filing.filing_date}</h3><a class="text-primary underline" href={filing.source_url} target="_blank" rel="noreferrer">财报原文 ↗</a>
+ {#each filing.analysis?.guidance??[] as excerpt}<p class="text-muted-foreground">{excerpt.text??excerpt.quote??excerpt}</p>{/each}
+ {#each filing.analysis?.warnings??[] as warning}<p class="text-muted-foreground">{missingReason(warning)}</p>{/each}
+ <details class="text-xs"><summary class="cursor-pointer text-primary">原文摘录、覆盖与定位</summary><pre class="max-w-full whitespace-pre-wrap text-xs wrap-anywhere">{JSON.stringify(filing.analysis,null,2)}</pre><pre class="max-w-full whitespace-pre-wrap text-xs wrap-anywhere">{JSON.stringify(filing.limitations??[],null,2)}</pre></details></Card.Root>
+ {:else}<p class="text-sm text-muted-foreground">暂无本机已处理原文，请核对本地财报来源覆盖。</p>{/each}
+ </Section></Card.Root>
  {:else if !loading}
- <p class="notice">尚未采集：本机没有该股票的基本面数据，可点「手动更新」采集。</p>
+ <Alert variant="warn" role="status"><AlertDescription>尚未采集：本机没有该股票的基本面数据，可点「手动更新」采集。</AlertDescription></Alert>
  {/if}
 </section>
-<style>
- .fundamentals{display:grid;gap:1rem;min-width:0;overflow-wrap:anywhere}.fundamentals>*{min-width:0}.heading,.controls{display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}.controls{justify-content:flex-start}h2{font-size:1.1rem;font-weight:650}h2 span{font-size:.9rem;font-weight:400;margin-left:1rem}h3{font-size:.9rem;font-weight:600}h4{font-size:.8rem;margin-top:.8rem;font-weight:600}p{color:var(--muted-foreground);font-size:.85rem;margin:.65rem 0}section{padding:1.2rem;border:1px solid var(--border);border-radius:10px;background:var(--card)}article{padding:.9rem;border:1px solid var(--border);border-radius:7px;min-width:0}section>article{margin-top:.7rem}.coverage,.performance,.valuation{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:1rem;margin:.8rem 0}.warning,.notice{border:1px solid #d99b27;background:#d99b2710}.notice{padding:.8rem;border-radius:7px}a,summary{color:var(--primary)}summary{cursor:pointer}details{font-size:.8rem;margin:.6rem 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;font-size:.75rem}button{padding:.5rem .8rem;border:1px solid var(--border);background:var(--muted);border-radius:5px;font-size:.8rem}button:disabled{opacity:.5}.primary{background:var(--primary);color:white}label{min-width:0;max-width:100%;display:grid;gap:.25rem;font-size:.8rem}input{padding:.4rem;border:1px solid var(--border);background:var(--muted);min-width:0;max-width:100%}.table-scroll{max-width:100%;overflow-x:auto}table{border-collapse:collapse;min-width:100%;font-size:.8rem}th,td{text-align:left;padding:.6rem;white-space:nowrap;border-bottom:1px solid var(--border)}td pre{max-width:25rem}@media(max-width:600px){section{padding:.8rem}.controls{gap:.6rem}}
-</style>

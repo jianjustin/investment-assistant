@@ -19,7 +19,7 @@
       y={H - h}
       width={Math.max(W / shown.length - 1, 1)}
       height={h}
-      fill={b.volume >= 1.5 * avg20 ? '#22c55e' : '#3a3a3a'}
+      class={b.volume >= 1.5 * avg20 ? 'fill-chart-1' : 'fill-muted-foreground/40'}
     />
   {/each}
 </svg>

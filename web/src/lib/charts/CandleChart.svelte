@@ -2,6 +2,8 @@
   import { createChart, type IChartApi, type ISeriesApi, type CandlestickData, type LineData } from 'lightweight-charts'
   import { onMount, onDestroy } from 'svelte'
   import type { Marker, Segment } from '../knowledge'
+  import { onThemeChange } from '../theme'
+  import { candleOptions, readChartTheme, roleColor, type ChartTheme } from './theme'
 
   type Overlay = { color: string; data: { time: string; value: number }[] }
   // markers / segments (v2.6 §9.3) are optional; without them the chart is exactly the candles plus the overlays.
@@ -14,41 +16,51 @@
   let segmentSeries: ISeriesApi<'Line'>[] = []
   let markersSet = false
   let ro: ResizeObserver | undefined
-  let ready = $state(false)
+  let stopTheme: (() => void) | undefined
+  // Every colour comes from the design tokens through the chart theme (hex strings the canvas can parse).
+  let theme: ChartTheme = readChartTheme()
+  // Bumped whenever a chart instance is (re)built; the effects below depend on it to draw everything again.
+  let ready = $state(0)
 
-  // Candidate arrows follow the up / down colours; fills are blue (B) / purple (S); watch circles are amber.
-  const KIND_COLOR: Record<string, string> = { rule: '#0ea5e9', own: '#a855f7', agent: '#f97316' }
-  const FADED_ALPHA = 0.3
-
-  // Segments of a voided plan (status other than ok) keep their hue at a lower opacity.
+  // Segments by plan source; a voided plan (status other than ok) is drawn in the fill colour whatever its source.
   function segmentColor(seg: Segment): string {
-    const hex = KIND_COLOR[seg.kind] ?? '#64748b'
-    if (!seg.status || seg.status === 'ok') return hex
-    const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16))
-    return `rgba(${r}, ${g}, ${b}, ${FADED_ALPHA})`
+    if (seg.status && seg.status !== 'ok') return theme.fill
+    return seg.kind === 'rule' || seg.kind === 'own' || seg.kind === 'agent' ? roleColor(theme, seg.kind) : theme.mutedForeground
+  }
+
+  // lightweight-charts bakes fonts, grid and colours in when the instance is created: a new theme needs a new one.
+  function build() {
+    theme = readChartTheme()
+    const options = candleOptions(theme)
+    chart = createChart(el, { ...options.chart, width: el.clientWidth, height: 320 })
+    series = chart.addCandlestickSeries(options.series)
+    lineSeries = []
+    segmentSeries = []
+    markersSet = false
+    ready += 1
   }
 
   onMount(() => {
-    const style = getComputedStyle(document.documentElement)
-    const up = style.getPropertyValue('--up').trim() || '#16a34a'
-    const down = style.getPropertyValue('--down').trim() || '#dc2626'
-    chart = createChart(el, { width: el.clientWidth, height: 320, layout: { background: { color: 'transparent' } } })
-    series = chart.addCandlestickSeries({ upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down })
+    build()
     ro = new ResizeObserver(() => { if (el) chart?.applyOptions({ width: el.clientWidth }) })
     ro.observe(el)
-    ready = true
+    stopTheme = onThemeChange(() => {
+      chart?.remove()
+      chart = undefined
+      series = undefined
+      build()
+    })
   })
 
   function markerColor(m: Marker): string {
     if (m.color) return m.color
-    // fills are squares (B / S in the text, below / above the bar); only the text or position tells buy from sell
+    // fills are squares (B / S in the text, below / above the bar): a buy is up, a sell is down
     if (m.kind === 'trade') {
       const sell = /^\s*S\b/.test(m.text ?? '') || (!m.text && !/below/i.test(m.position ?? ''))
-      return sell ? '#9333ea' : '#2563eb'
+      return sell ? theme.down : theme.up
     }
-    if (m.shape === 'arrowUp') return '#16a34a'
-    if (m.shape === 'arrowDown') return '#dc2626'
-    return '#f59e0b'
+    // candidates (arrows and watch circles) are what the rules raised
+    return roleColor(theme, 'rule')
   }
 
   function syncMarkers() {
@@ -93,6 +105,7 @@
   $effect(() => { ready; segments; syncSegments() })
 
   onDestroy(() => {
+    stopTheme?.()
     ro?.disconnect()
     chart?.remove()
     chart = undefined

@@ -51,6 +51,7 @@ it('voids a trade only with a reason', async () => {
   expect(screen.getByRole('button', { name: '确认作废' })).toBeDisabled()
   await fireEvent.input(screen.getByLabelText('作废理由'), { target: { value: '价格录错' } })
   await fireEvent.click(screen.getByRole('button', { name: '确认作废' }))
+  await fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '确认作废' }))     // v2.10: through ConfirmDialog
   await waitFor(() => expect(calls.some(c => c.url === '/api/workbench/trades/t1/void')).toBe(true))
 })
 
@@ -149,6 +150,7 @@ describe('monthly and account tabs', () => {
     await fireEvent.click(screen.getByRole('button', { name: '作废' }))
     await fireEvent.input(screen.getByLabelText('作废理由'), { target: { value: '录错' } })
     await fireEvent.click(screen.getByRole('button', { name: '确认作废' }))
+    await fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '确认作废' }))     // v2.10: through ConfirmDialog
     await waitFor(() => {
       const voided = calls.find(c => c.url.includes('/account/flows/f1/void'))
       expect(voided).toBeTruthy()
@@ -490,8 +492,8 @@ describe('growth loop', () => {
     const tabs = screen.getAllByRole('link').filter(a => a.getAttribute('href')!.startsWith('#review/'))
     expect(tabs.slice(0, 3).map(a => a.getAttribute('href'))).toEqual(['#review/trades', '#review/cards', '#review/shadow'])
     expect(tabs[1]).toHaveTextContent('复盘卡')
-    // the badge shows the to_review count on every tab
-    expect(await screen.findByLabelText('待审定 2 张')).toHaveTextContent('2')
+    // the badge shows the to_review count on the cards tab (a TabNav badge, part of the link's name)
+    await waitFor(() => expect(tabs[1]).toHaveTextContent(/^复盘卡\s*2$/))
   })
 
   it('no badge without anything to review, and none when the cards cannot be read', async () => {
@@ -500,7 +502,7 @@ describe('growth loop', () => {
       : json({})
     render(Review, { sub: 'shadow' })
     await waitFor(() => expect((fetch as any).mock.calls.some((c: any[]) => String(c[0]).startsWith('/api/workbench/review-cards'))).toBe(true))
-    expect(screen.queryByLabelText(/待审定/)).toBeNull()
+    expect(screen.getByRole('link', { name: /^复盘卡/ })).toHaveTextContent(/^复盘卡$/)
   })
 
   it('the cards tab lists the cards', async () => {
@@ -867,3 +869,134 @@ describe('review-8 vs older snapshots (D30, D26)', () => {
   })
 })
 
+
+
+// ---- v2.10: primitive layer ----
+
+describe('primitive layer', () => {
+  it('tabs are links with aria-current', async () => {
+    const base = respond
+    respond = async (url, init) => url.startsWith('/api/workbench/review-cards')
+      ? json({ cards: [], counts: { to_review: 2, reviewed: 0, drafting: 0, draft_failed: 0 } }) : base(url, init)
+    render(Review, { sub: 'shadow' })
+    const nav = screen.getByRole('navigation', { name: '复盘页签' })
+    const links = within(nav).getAllByRole('link')
+    expect(links.map(a => a.getAttribute('href'))).toEqual(['#review/trades', '#review/cards', '#review/shadow', '#review/tracks',
+      '#review/weekly', '#review/monthly', '#review/account', '#review/backchecks'])
+    expect(links.map(a => a.textContent!.replace(/\d+$/, '').trim())).toEqual(['交易与持仓', '复盘卡', '对照组', '轨道对比', '周度复盘', '月度复盘', '资金', '上线前检查'])
+    expect(links.filter(a => a.getAttribute('aria-current') === 'page').map(a => a.textContent!.trim())).toEqual(['对照组'])
+    expect(screen.queryByRole('tablist')).toBeNull()
+    expect(screen.queryByRole('tab')).toBeNull()
+    await waitFor(() => expect(within(nav).getByRole('link', { name: /^复盘卡/ })).toHaveTextContent(/^复盘卡\s*2$/))
+  })
+
+  it('void trade needs confirm', async () => {
+    render(Review, { sub: 'trades' })
+    await screen.findByText(/101.5/)
+    await fireEvent.click(screen.getByRole('button', { name: '作废' }))
+    await fireEvent.input(screen.getByLabelText('作废理由'), { target: { value: '价格录错' } })
+    await fireEvent.click(screen.getByRole('button', { name: '确认作废' }))
+    // the reason alone sends nothing: the confirm dialog names the trade and the reason
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveAccessibleName('作废这笔成交？')
+    expect(dialog).toHaveTextContent('NVDA')
+    expect(dialog).toHaveTextContent('价格录错')
+    expect(calls.some(c => c.url.includes('/void'))).toBe(false)
+    await fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(calls.some(c => c.url.includes('/void'))).toBe(false)
+    // confirming sends the reason and the dialog closes
+    await fireEvent.click(screen.getByRole('button', { name: '确认作废' }))
+    await fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '确认作废' }))
+    await waitFor(() => expect(calls.some(c => c.url === '/api/workbench/trades/t1/void')).toBe(true))
+    const voided = calls.find(c => c.url === '/api/workbench/trades/t1/void')!
+    expect(JSON.parse(String(voided.init!.body))).toEqual({ reason: '价格录错' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('a voided trade stays in the list, greyed and struck through', async () => {
+    const base = respond
+    respond = async (url, init) => url === '/api/workbench/trades' && init?.method !== 'POST'
+      ? json({ trades: [{ ...trade, voided_at: '2026-10-24T01:00:00Z', void_reason: '价格录错' }] }) : base(url, init)
+    render(Review, { sub: 'trades' })
+    const item = (await screen.findByText(/已作废：价格录错/)).closest('li')!
+    expect(item.className).toMatch(/text-muted-foreground/)
+    expect(item).toHaveTextContent('101.5')
+    expect(within(item).queryByRole('button', { name: '作废' })).toBeNull()
+  })
+
+  it('numeric inputs decimal and right-aligned', async () => {
+    render(Review, { sub: 'trades' })
+    await screen.findByText(/浮动盈亏/)
+    for (const label of ['数量', '成交价', '费用']) {
+      const input = screen.getByLabelText(label)
+      expect(input).toHaveAttribute('inputmode', 'decimal')
+      expect(input.className).toMatch(/text-right/)
+    }
+    // a date time is not numeric, and it names its time zone
+    expect(screen.getByLabelText('成交时间').className).not.toMatch(/text-right/)
+    expect(screen.getByText('成交时间（本机时区）')).toBeInTheDocument()
+    await fireEvent.change(screen.getByLabelText('关联计划'), { target: { value: '__own__' } })
+    const group = screen.getByRole('group', { name: '自定计划' })
+    for (const label of ['入场下沿', '入场上沿', '止损', 'T1']) {
+      expect(within(group).getByLabelText(label)).toHaveAttribute('inputmode', 'decimal')
+      expect(within(group).getByLabelText(label).className).toMatch(/text-right/)
+    }
+    expect(within(group).getByLabelText('最长持有')).toHaveAttribute('inputmode', 'numeric')
+  })
+
+  it('numeric inputs of the account forms are decimal and right-aligned too', async () => {
+    respond = async (url) => url.includes('/account/snapshots')
+      ? json({ snapshots: [], flows: [], params: { risk_pct: 0.01, single_cap: 0.25, total_cap: 1 } }) : json({})
+    render(Review, { sub: 'account' })
+    await screen.findByText(/单票上限 25%/)
+    for (const label of ['总资金', '金额']) {
+      expect(screen.getByLabelText(label)).toHaveAttribute('inputmode', 'decimal')
+      expect(screen.getByLabelText(label).className).toMatch(/text-right/)
+    }
+  })
+
+  it('stats header shows calc version, n and cutoff', async () => {
+    respond = async (url) => url.includes('/weekly-reviews')
+      ? json({ reviews: [{ id: 'w1', week_start: '2026-10-19', calc_version: 'review-8', notes: '', supersedes_id: null,
+          created_at: '2026-10-26T02:00:00Z', stats: { week: { start: '2026-10-19' }, units: { executed: 1, not_executed: 2 },
+                                                       by_rule: {}, note: '描述性统计' } }] })
+      : json({})
+    render(Review, { sub: 'weekly' })
+    const [card] = await screen.findAllByRole('article')
+    expect(within(card).getByText('review-8').tagName).toBe('CODE')
+    expect(card).toHaveTextContent('口径 review-8')
+    expect(card).toHaveTextContent('n = 3')
+    expect(within(card).getByText(/^生成于 2026-10-26 10:00:00 北京$/)).toBeInTheDocument()
+    // n = 3 is under the minimum of 5: the sample pill says so
+    expect(card.querySelector('[data-domain="block"][data-status="insufficient"]')).not.toBeNull()
+  })
+
+  it('stats header of the shadow and track tabs shows version and n', async () => {
+    const first = render(Review, { sub: 'shadow' })
+    const shadow = await screen.findByTestId('stats-header')
+    expect(shadow).toHaveTextContent('口径 review-1')
+    expect(shadow).toHaveTextContent('n = 1')
+    first.unmount()
+    respond = async (url) => url.includes('/review/tracks') ? json(trackView) : json({})
+    render(Review, { sub: 'tracks' })
+    const tracks = await screen.findByTestId('stats-header')
+    expect(tracks).toHaveTextContent('口径 tracks-1')
+    expect(tracks).toHaveTextContent('n = 1')
+  })
+
+  it('an empty table says why instead of an empty grid', async () => {
+    respond = async (url) => url.includes('/review/shadow')
+      ? json({ session: '2026-10-22', since: '2026-07-24', calc_version: 'review-1', units: [] }) : json({})
+    render(Review, { sub: 'shadow' })
+    expect(await screen.findByText('暂无已决定的信号')).toBeInTheDocument()
+    expect(screen.queryByRole('table')).toBeNull()
+  })
+
+  it('an error is an alert block and the other tabs stay reachable', async () => {
+    respond = async (url) => url.startsWith('/api/watchlist') ? json({ rows: [] }) : json({ error: 'down' }, 503)
+    render(Review, { sub: 'shadow' })
+    expect((await screen.findByText(/数据库未就绪/)).closest('[data-slot="alert"]')).toHaveAttribute('role', 'alert')
+    expect(screen.getByRole('navigation', { name: '复盘页签' })).toBeInTheDocument()
+  })
+})
