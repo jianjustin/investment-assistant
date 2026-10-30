@@ -1,4 +1,7 @@
-"""Invalidation and review conditions `condition-1` (v2.5 spec §4.2). Pure functions.
+"""Invalidation and review conditions `condition-2` (v2.5 spec §4.2; v2.9 spec §7.1). Pure functions.
+
+`condition-2` is `condition-1` plus `held_sessions_reached` (the time stop). The eleven `condition-1` kinds
+judge exactly as before.
 
 An agent-2 plan declares invalidation conditions (1–5) and review conditions
 (0–3) picked from this registry; the host validates them when the plan is
@@ -23,11 +26,13 @@ from typing import Any, Literal
 from investment_assistant.data.calendar import add_trading_days, trading_days_between
 from investment_assistant.workbench.agent.citations import Rejected
 
-CONDITIONS_VERSION = 'condition-1'
+CONDITIONS_V1 = 'condition-1'
+CONDITIONS_VERSION = 'condition-2'
 
 PRICE_BAND = Decimal('0.5')          # price params within ±50 % of the last close at generation
 DATE_HORIZON_DAYS = 60               # date params at most 60 calendar days after as_of_session
 SESSIONS_RANGE = (1, 10)
+HELD_SESSIONS_RANGE = (3, 30)         # held_sessions_reached.sessions (the plan's max hold lies in 5–20)
 REGIME_LABELS = ('risk_on', 'neutral', 'risk_off')
 FILING_FORMS = ('8-K', '10-Q', '10-K')
 RS_WINDOWS = (20, 60)
@@ -56,6 +61,7 @@ CONDITIONS: dict[str, ConditionDef] = {d.kind: d for d in (
     ConditionDef('new_filing', ('form',), '出现新的 {form}', True, True),
     ConditionDef('date_reached', ('date',), '到 {date} 再看', False, True),
     ConditionDef('next_session', (), '下一交易日', False, True),
+    ConditionDef('held_sessions_reached', ('sessions',), '持有 {sessions} 个交易日仍未到 1R', True, True),
 )}
 
 
@@ -85,6 +91,10 @@ class Facts:
     filings: list[dict] | None = None                           # None = filing list unavailable
     rs: dict[int, float | None] = field(default_factory=dict)  # tools.indicators' rs20 / rs60
     as_of_session: date | None = None                          # the version's generation session
+    # held_sessions_reached (v2.9 spec §7.1): the open position as the host computed it for S, or None when it
+    # has none / the caller did not build it. Keys: held_sessions (int), reached_1r (bool | None = unknown),
+    # t1_reached (bool, optional: after T1 the time stop no longer applies, R9), mode (optional override).
+    position: dict | None = None
 
 
 # ---------------------------------------------------------------- params
@@ -123,7 +133,7 @@ def _float(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _normalize(name: str, raw: Any, *, last_close: Decimal, as_of_session: date) -> Any:
+def _normalize(name: str, raw: Any, *, last_close: Decimal, as_of_session: date, kind: str | None = None) -> Any:
     """One validated param in normalized form; None when it is not valid."""
     if name == 'price':
         price = _price(raw)
@@ -137,7 +147,8 @@ def _normalize(name: str, raw: Any, *, last_close: Decimal, as_of_session: date)
         return day
     if name == 'sessions':
         n = _int(raw)
-        return n if n is not None and SESSIONS_RANGE[0] <= n <= SESSIONS_RANGE[1] else None
+        low, high = HELD_SESSIONS_RANGE if kind == 'held_sessions_reached' else SESSIONS_RANGE
+        return n if n is not None and low <= n <= high else None
     if name == 'window':
         n = _int(raw)
         return n if n in RS_WINDOWS else None
@@ -173,7 +184,8 @@ def validate(item: dict, *, use: Literal['invalidation', 'review'], last_close: 
         raise Rejected(_REASON)
     params: dict[str, Any] = {}
     for name in definition.params:
-        value = _normalize(name, raw[name], last_close=last_close, as_of_session=as_of_session)
+        value = _normalize(name, raw[name], last_close=last_close, as_of_session=as_of_session,
+                           kind=definition.kind)
         if value is None:
             raise Rejected(_REASON)
         params[name] = value
@@ -366,6 +378,36 @@ def _eval_date_reached(params: dict, facts: Facts) -> tuple[str, str]:
     return 'not_met', f'未到 {day.isoformat()}'
 
 
+def _eval_held_sessions(params: dict, facts: Facts) -> tuple[str, str]:
+    """Time stop (spec §7.1, R9): met when the position has been held `sessions` days and never closed at or
+    above cost + 1R; unknown when 1R cannot be judged; not_met in the entry phase, after T1, or too early."""
+    sessions = _int(params.get('sessions'))
+    if sessions is None:
+        return 'unknown', '参数无效'
+    position = facts.position or {}
+    mode = position.get('mode', facts.mode)
+    if mode != 'holding':
+        return 'not_met', '入场期不适用'
+    held = position.get('held_sessions')
+    if held is None:
+        return 'unknown', '缺少持有天数'
+    if position.get('t1_reached'):
+        return 'not_met', '已触及 T1，时间止损不再适用'
+    if held < sessions:
+        return 'not_met', f'已持有 {held} 个交易日，不足 {sessions}'
+    reached = position.get('reached_1r')
+    if reached is None:
+        return 'unknown', '无法计算 1R'
+    if reached:
+        return 'not_met', f'已持有 {held} 个交易日，但收盘到过 1R'
+    return 'met', f'已持有 {held} 个交易日，收盘从未到 1R'
+
+
+def max_hold_condition(sessions: int) -> dict:
+    """The host-injected invalidation condition of a plan's max hold (spec D16, §7.1): the model cannot write it."""
+    return {'source': 'max_hold', 'kind': 'held_sessions_reached', 'params': {'sessions': sessions}}
+
+
 def evaluate(item: dict, facts: Facts) -> tuple[str, str]:
     """('met' | 'not_met' | 'unknown', detail) for one condition at facts.session."""
     kind = item.get('kind') if isinstance(item, dict) else None
@@ -390,4 +432,6 @@ def evaluate(item: dict, facts: Facts) -> tuple[str, str]:
         return _eval_filing(params, facts)
     if kind == 'date_reached':
         return _eval_date_reached(params, facts)
+    if kind == 'held_sessions_reached':
+        return _eval_held_sessions(params, facts)
     return 'met', '每个交易日都复查'                    # next_session

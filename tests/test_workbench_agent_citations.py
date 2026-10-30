@@ -29,8 +29,8 @@ def _buy(**overrides):
     return json.dumps(payload, ensure_ascii=False)
 
 
-def check(text, *, refs=REFS, price_refs=PRICE_REFS, last_close=LAST_CLOSE):
-    return check_proposal(text, refs=refs, price_refs=price_refs, last_close=last_close)
+def check(text, *, refs=REFS, price_refs=PRICE_REFS, last_close=LAST_CLOSE, **kwargs):
+    return check_proposal(text, refs=refs, price_refs=price_refs, last_close=last_close, **kwargs)
 
 
 def test_fenced_json_accepted():
@@ -188,3 +188,39 @@ def test_interpretation_unknown_ref_invalid():
 def test_interpretation_drops_action_and_levels():
     out = check_interpret(_interpret(action='buy', levels={'stop': 95}))
     assert 'action' not in out and 'levels' not in out
+
+
+# --- v2.9 spec §21 R3: holding-phase level ordering ---
+
+def _above_entry(**overrides):
+    """A holding revision that moved the stop up through the entry zone (stop 99 >= entry_low 98.5)."""
+    return _buy(stop={'value': 99.0, 'refs': ['call:1']}, **overrides)
+
+
+def test_holding_levels_allow_stop_above_entry():
+    out = check(_above_entry(), mode='holding')
+    assert out['levels']['stop']['value'] == Decimal('99.00')
+    assert out['levels']['entry_low']['value'] == Decimal('98.50')
+    # the same payload is a level_check failure for an entry-phase proposal (the default)
+    for kwargs in ({}, {'mode': 'entry'}):
+        with pytest.raises(Rejected) as ei:
+            check(_above_entry(), **kwargs)
+        assert ei.value.reason == 'level_check'
+
+
+def test_holding_levels_still_ordered_against_target():
+    for bad in (_buy(stop={'value': 108.0, 'refs': ['call:1']}),          # stop == target1
+                _buy(stop={'value': 109.0, 'refs': ['call:1']}),          # stop above target1
+                _buy(entry_high={'value': 108.0, 'refs': ['call:1']}),    # entry_high == target1
+                _buy(entry_low={'value': 102.0, 'refs': ['call:1']})):    # entry_low > entry_high
+        with pytest.raises(Rejected) as ei:
+            check(bad, mode='holding')
+        assert ei.value.reason == 'level_check'
+    with pytest.raises(Rejected) as ei:                                    # the ±50 % band holds in both modes
+        check(_buy(stop={'value': 40.0, 'refs': ['call:1']}), mode='holding')
+    assert ei.value.reason == 'level_check'
+
+
+def test_unknown_mode_is_a_programming_error():
+    with pytest.raises(ValueError):
+        check(_buy(), mode='exiting')

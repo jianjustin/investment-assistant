@@ -6,8 +6,8 @@ import pytest
 
 from investment_assistant.data import fetch_policy
 from investment_assistant.workbench import (
-    backcheck, derivation, families, knowledge, knowledge_items, knowledge_perf, labels, monthly, plan_shadow,
-    plans, regime, retro, review, rules, screen, stages, timeline, tracks, workflow,
+    backcheck, derivation, discipline, entry_rules, execution, families, knowledge, knowledge_items, knowledge_perf,
+    labels, monthly, plan_shadow, plans, regime, retro, review, rules, screen, stages, timeline, tracks, workflow,
 )
 from investment_assistant.workbench.agent import REASON_TEXT, chatgpt, conditions, graph, tools
 from investment_assistant.workbench.agent.discuss_tools import DISCUSS_TOOLS
@@ -80,6 +80,16 @@ CURRENT_VERSIONS = {
     'fetch_policy.FETCH_POLICY_VERSION': fetch_policy.FETCH_POLICY_VERSION,
     'workflow.DAILY_GRAPH_VERSION': workflow.DAILY_GRAPH_VERSION,
     'chatgpt.CHATGPT_PROTOCOL_VERSION': chatgpt.CHATGPT_PROTOCOL_VERSION,
+    # v2.9 pure-function layer: the new versions live beside the old constants until Task 3 / 4 flip the callers
+    'plans.PLAN_V2': plans.PLAN_V2,
+    'plan_shadow.SHADOW_V2': plan_shadow.SHADOW_V2,
+    'timeline.TIMELINE_V2': timeline.TIMELINE_V2,
+    'timeline.AGENT_V3': timeline.AGENT_V3,
+    'entry_rules.ENTRY_RULES_VERSION': entry_rules.ENTRY_RULES_VERSION,
+    'execution.EXECUTION_VERSION': execution.EXECUTION_VERSION,
+    'discipline.DISCIPLINE_VERSION': discipline.DISCIPLINE_VERSION,
+    'tracks.TRACKS_V2': tracks.TRACKS_V2,
+    'retro.RETRO_V2': retro.RETRO_V2,
 }
 
 
@@ -112,7 +122,7 @@ CODE_SET_CASES = [
     ('conditions', sorted(conditions.CONDITIONS), ('agent.invalidation', 'agent.review_when')),
     ('reason_text', sorted(REASON_TEXT), ('agent.reject_reasons',)),
     ('chain_states', list(timeline.CHAIN_STATES), ('review.chain_state',)),
-    ('signal_kinds', list(timeline.SIGNAL_KINDS), ('agent.signals',)),
+    ('signal_kinds', list(timeline.SIGNAL_KINDS_V2), ('agent.signals',)),
     ('stage_ids', list(stages.STAGE_IDS), ('system.stages',)),
     ('stage_status', list(STAGE_STATUSES), ('system.stage_status',)),
     ('track_status', sorted(tracks.TRACK_STATUS_TEXT), ('review.track_status',)),

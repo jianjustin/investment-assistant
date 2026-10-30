@@ -50,8 +50,15 @@ def _cent(value: Decimal) -> Decimal:
     return value.quantize(_CENT, rounding='ROUND_HALF_UP')
 
 
-def check_proposal(text: str, *, refs: set[str], price_refs: set[str], last_close: Decimal) -> dict:
-    """§6.2's six steps; a Rejected carries the step's reason, nothing is salvaged."""
+def check_proposal(text: str, *, refs: set[str], price_refs: set[str], last_close: Decimal,
+                   mode: str = 'entry') -> dict:
+    """§6.2's six steps; a Rejected carries the step's reason, nothing is salvaged.
+
+    mode='holding' (v2.9 spec §21 R3): a holding-phase revision may move the stop up through the entry price, so
+    the ordering step asks `entry_low <= entry_high < target1` and `stop < target1` instead of
+    `stop < entry_low <= entry_high < target1`; the ±50 % band is unchanged."""
+    if mode not in ('entry', 'holding'):
+        raise ValueError(f'unknown chain mode: {mode!r}')
     try:
         payload = _loads(text)
     except (json.JSONDecodeError, ValueError):
@@ -105,7 +112,11 @@ def check_proposal(text: str, *, refs: set[str], price_refs: set[str], last_clos
 
     if levels is not None:
         values = {key: _cent(item['value']) for key, item in levels.items()}
-        if not (values['stop'] < values['entry_low'] <= values['entry_high'] < values['target1']):
+        if mode == 'holding':
+            ordered = values['entry_low'] <= values['entry_high'] < values['target1'] and values['stop'] < values['target1']
+        else:
+            ordered = values['stop'] < values['entry_low'] <= values['entry_high'] < values['target1']
+        if not ordered:
             raise Rejected('level_check')
         low_band, high_band = last_close * (1 - LEVEL_BAND), last_close * (1 + LEVEL_BAND)
         if any(value < low_band or value > high_band for value in values.values()):

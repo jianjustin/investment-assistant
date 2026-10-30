@@ -2,7 +2,7 @@
 import ast
 import json
 import re
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal as D
 from zoneinfo import ZoneInfo
 
@@ -266,7 +266,8 @@ def test_decision_text_six():
 
 
 def test_constants():
-    assert retro.RETRO_VERSION == 'retro-1'
+    assert retro.RETRO_V1 == 'retro-1' and retro.RETRO_V2 == 'retro-2'
+    assert retro.RETRO_VERSION == retro.RETRO_V1       # retro_cards.py still builds retro-1 cards; flips in Task 4
     assert retro.END_KINDS == ('position_closed', 'stop', 'target', 'expired', 'invalidated')
     assert retro.END_TEXT == {'position_closed': '平仓', 'stop': '止损', 'target': '到 T1', 'expired': '过期未成交',
                               'invalidated': '作废'}
@@ -491,3 +492,173 @@ def test_card_status_four():
     assert retro.card_status(drafts=[bad, err, skipped, skipped], verdict=None) == 'drafting'   # skips are not tries
     assert retro.card_status(drafts=[], verdict=None) == 'drafting'
     assert retro.card_status(drafts=[bad, bad, bad, ok], verdict=None) == 'to_review'
+
+
+# ---- retro-2 (v2.9 spec D29) ------------------------------------------------------------------
+
+def test_fact_keys_retro2():
+    assert retro.FACT_KEYS_V2 == ('subject', 'plans', 'bars_after', 'shadow', 'tracks', 'execution', 'holding',
+                                  'trades', 'discipline', 'reviews', 'knowledge')
+    assert [k for k in retro.FACT_KEYS if k not in retro.FACT_KEYS_V2] == ['decision']
+    assert [k for k in retro.FACT_KEYS_V2 if k not in retro.FACT_KEYS] == ['execution', 'holding']
+    assert retro.BASIS_TEXT == {'decision': '决定时看到的版本', 'first': '首版'}            # the retro-1 table is untouched
+    assert retro.BASIS_TEXT_V2['fill'] and retro.BASIS_TEXT_V2['merged']
+
+
+def _fills(*specs):
+    return [{'id': tid, 'side': 'buy', 'quantity': D('10'), 'price': D('100'), 'executed_at': at(day)}
+            for tid, day in specs]
+
+
+def test_execution_fact_and_text():
+    # the six wordings, verbatim
+    assert retro.EXECUTION_TEXT == {
+        'adopted_agent': '采纳（照 Agent 第 {n} 版）', 'adopted_rule': '采纳（照规则基线）', 'own': '自定',
+        'out_of_validity': '有效期外成交', 'not_executed': '未执行', 'unplanned': '计划外成交'}
+    agent = plan('pa', kind='agent', plan_version='agent-3', valid_from=D1, valid_until=D3)
+    rule, own = plan('pr', plan_version='plan-2'), plan('po', kind='own', plan_version='plan-2')
+    cases = [
+        ('adopted-agent', _fills(('b1', D2)), {'b1': agent}, 'adopted', '采纳（照 Agent 第 2 版）'),
+        ('adopted-rule', _fills(('b1', D2)), {'b1': rule}, 'adopted', '采纳（照规则基线）'),
+        ('adopted-own', _fills(('b1', D2)), {'b1': own}, 'adopted', '自定'),
+        ('out-of-validity', _fills(('b1', D4)), {'b1': agent}, 'out_of_validity', '有效期外成交'),
+        ('not-executed', [], {}, 'not_executed', '未执行'),
+        ('unplanned', _fills(('b1', D2)), {}, 'unplanned', '计划外成交'),
+    ]
+    for name, buys, by_trade, status, text in cases:
+        fact = retro.execution_fact(buys=buys, plans_by_trade=by_trade, version_no_by_plan={'pa': 2})
+        assert (fact['status'], fact['text']) == (status, text), name
+        assert retro.execution_text(fact) == text, name
+        assert fact['status'] in retro.EXECUTION_STATUSES
+        json.dumps(fact)
+    fact = retro.execution_fact(buys=_fills(('b2', D3), ('b1', D2)), plans_by_trade={'b1': agent, 'b2': rule},
+                                version_no_by_plan={'pa': 2},
+                                notes=[{'id': 4, 'body': '想等回踩', 'created_at': at(D2)}],
+                                legacy_decision={'decision': 'accept', 'final_action': 'buy'})
+    assert fact['trade_ids'] == ['b1', 'b2']                                          # oldest first
+    assert (fact['follow'], fact['version_no'], fact['plan_id'], fact['plan_kind']) == ('agent', 2, 'pa', 'agent')
+    assert fact['first_fill']['quantity'] == '10' and fact['notes'][0]['body'] == '想等回踩'
+    assert fact['legacy_decision'] == {'decision': 'accept', 'final_action': 'buy'}
+    # the plan comes from the first buy that has one
+    later = retro.execution_fact(buys=_fills(('b1', D2), ('b2', D3)), plans_by_trade={'b2': rule})
+    assert later['follow'] == 'rule' and later['status'] == 'adopted'
+    # a fill after midnight UTC but still the previous New York day counts on that New York day
+    edge = retro.execution_fact(buys=[{**_fills(('b1', D3))[0], 'executed_at': datetime(2026, 10, 24, 1, tzinfo=UTC)}],
+                                plans_by_trade={'b1': agent})
+    assert edge['status'] == 'adopted'                                                # D3 is the last valid day
+
+
+def test_holding_fact_exit_instruction_vs_sell_date():
+    rows = [{'session': D1, 'held_sessions': 1, 'instruction': 'hold', 'exit_reason': None, 'max_hold_sessions': 10,
+             'r_now': D('0.10')},
+            {'session': D2, 'held_sessions': 2, 'instruction': 'hold', 'exit_reason': None, 'max_hold_sessions': 10,
+             'r_now': D('0.20')},
+            {'session': D3, 'held_sessions': 3, 'instruction': 'exit', 'exit_reason': 'stop_touched',
+             'max_hold_sessions': 10, 'r_now': D('-1.0')},
+            {'session': D4, 'held_sessions': 4, 'instruction': 'exit', 'exit_reason': 'stop_touched',
+             'max_hold_sessions': 10, 'r_now': D('-1.1')}]
+    fact = retro.holding_fact(rows, sell_date=D4)
+    assert fact['rows'] == 4 and fact['held_sessions'] == 4 and fact['max_hold_sessions'] == 10
+    assert fact['exit'] == {'session': '2026-10-23', 'reason': 'stop_touched'}
+    assert (fact['sell_date'], fact['sessions_to_sell'], fact['sold_before_exit']) == ('2026-10-26', 1, False)
+    assert fact['last'] == {'session': '2026-10-26', 'instruction': 'exit', 'r_now': '-1.1'}
+    same_day = retro.holding_fact(rows, sell_date=D3)
+    assert same_day['sessions_to_sell'] == 0
+    early = retro.holding_fact(rows, sell_date=D2)
+    assert early['sessions_to_sell'] is None and early['sold_before_exit'] is True
+    unsold = retro.holding_fact(rows)
+    assert unsold['sell_date'] is None and unsold['sessions_to_sell'] is None and unsold['sold_before_exit'] is False
+    no_exit = retro.holding_fact(rows[:2], sell_date=D4)
+    assert no_exit['exit'] is None and no_exit['sessions_to_sell'] is None
+    assert retro.holding_fact([]) is None
+    json.dumps(fact)
+
+
+def test_card_subject_kinds():
+    kind = retro.card_subject_kind
+    assert kind(linked_buys=2, unplanned_buys=0, notes=0) == 'unit'          # a chain / unit with linked fills
+    assert kind(linked_buys=0, unplanned_buys=0, notes=1) == 'unit'          # an unfilled chain you wrote a note on
+    assert kind(linked_buys=0, unplanned_buys=1, notes=0) == 'trade'         # a buy with no plan link
+    assert kind(linked_buys=1, unplanned_buys=1, notes=3) == 'trade'
+    assert kind(linked_buys=0, unplanned_buys=0, notes=0) is None            # decided nothing, did nothing
+
+
+def test_reference_plan_prefers_trade_link():
+    rule, own = plan('p-rule', plan_version='plan-2'), plan('p-own', kind='own', plan_version='plan-2')
+    a3 = plan('p-a3', kind='agent', plan_version='agent-3')
+    plans = [rule, own, a3]
+    ref = retro.reference_plan_v2
+    linked = lambda id_, plan_id, day: {**buy(id_, day), 'plan_id': plan_id}                 # noqa: E731
+    # the fill's own link first, the latest linked buy wins
+    assert ref(decision=None, plans=plans, has_buys=True, buys=[linked('b1', 'p-a3', D1)])['id'] == 'p-a3'
+    buys = [linked('b1', 'p-a3', D1), linked('b2', 'p-own', D2), linked('b3', None, D3)]
+    assert ref(decision=None, plans=plans, has_buys=True, buys=buys)['id'] == 'p-own'
+    assert ref(decision=None, plans=[rule], has_buys=True, buys=[linked('b1', 'gone', D1)]) is None
+    # a link beats the old decision route
+    chain = [{'id': 'd1', 'plan_id': 'p-rule'}]
+    assert ref(decision=chain[0], plans=plans, has_buys=True, buys=[{**linked('b1', 'p-a3', D1), 'decision_id': 'd1'}],
+               chain=chain)['id'] == 'p-a3'
+    # no plan link on any buy: the old decision route is retro-1's
+    old = {**buy('b1', D1), 'decision_id': 'd1'}
+    assert ref(decision=chain[0], plans=plans, has_buys=True, buys=[old], chain=chain)['id'] == 'p-rule'
+    assert ref(decision=None, plans=plans, has_buys=True, buys=[buy()]) is None
+    # without a position: executed plan -> seen version -> the newest rule baseline (plan-2 over plan-1) -> agent-1
+    p1 = plan('p-old', plan_version='plan-1')
+    assert ref(decision=None, plans=[p1, rule], has_buys=False)['id'] == 'p-rule'
+    assert ref(decision=None, plans=[p1], has_buys=False)['id'] == 'p-old'
+    a1 = plan('p-a1', kind='agent', plan_version='agent-1')
+    assert ref(decision=None, plans=[own, a1], has_buys=False)['id'] == 'p-a1'
+    assert ref(decision={'plan_id': 'p-own', 'agent_plan_id': 'p-a3'}, plans=plans, has_buys=False)['id'] == 'p-own'
+    assert ref(decision={'plan_id': None, 'agent_plan_id': 'p-a3'}, plans=plans, has_buys=False)['id'] == 'p-a3'
+    assert ref(decision=None, plans=[own], has_buys=False) is None
+    # retro-1's function is unchanged
+    assert retro.reference_plan(decision=None, plans=[rule], has_buys=False) is None      # plan-2 is not its rule plan
+
+
+def _facts_kwargs(**overrides):
+    base = dict(
+        subject={**UNIT, 'pool': 'core'},
+        end={'end_kind': 'position_closed', 'end_session': D4, 'event_key': 'unit:NVDA:2026-10-20:closed:s1',
+             'detail': {'exit_basis': 'stop', 'closing_sell_id': 's1'}},
+        plans=[plan('p1', plan_version='plan-2', valid_until=D5)], roles={'p1': ['executed', 'reference']},
+        bars=[bar(D1), bar(D2), bar(D3), bar(D4)], splits=[], shadow_by_plan={'p1': sim(legs=[leg(D3, 'stop')])},
+        track_row={'ticker': 'NVDA', 'signal_date': '2026-10-20', 'pool': 'core',
+                   'rule': {'plan_id': 'p1', 'status': 'voided', 'r': 0.0},
+                   'agent': {'run_id': None, 'run_status': None, 'run_reason': None, 'plan_id': None,
+                             'status': 'merged', 'r': None, 'version_no': None, 'version_basis': 'merged'},
+                   'actual': {'decision_id': None, 'final_action': None, 'plan_id': 'p1', 'plan_kind': 'rule',
+                              'buy_trade_ids': ['b1'], 'status': 'closed', 'r': 0.8, 'open': False}},
+        trades=[{**buy(), 'fee': D('1')}], segments=[segment(closed=D4)], actual_r=0.8,
+        discipline={'trades': [{'trade_id': 'b1', 'flags': [], 'immature': []}],
+                    'totals': {'chase': 0, 'early_take': 0, 'held_loser': 0, 'unplanned': 0, 'pending': 0},
+                    'as_of': '2026-10-28'},
+        reviews=None, knowledge=[])
+    base.update(overrides)
+    return base
+
+
+def test_build_facts_v2_and_text():
+    execution = retro.execution_fact(buys=_fills(('b1', D1)), plans_by_trade={'b1': plan('p1', plan_version='plan-2')},
+                                     notes=[{'id': 1, 'body': '私人备注原文', 'created_at': at(D1)}])
+    holding = retro.holding_fact([{'session': D2, 'held_sessions': 2, 'instruction': 'exit',
+                                   'exit_reason': 'time_stop', 'max_hold_sessions': 10, 'r_now': D('0.2')}],
+                                 sell_date=D4)
+    facts = retro.build_facts_v2(execution=execution, holding=holding, **_facts_kwargs())
+    assert tuple(facts) == retro.FACT_KEYS_V2 and 'decision' not in facts
+    json.dumps(facts)
+    assert facts['execution']['text'] == '采纳（照规则基线）' and facts['holding']['exit']['reason'] == 'time_stop'
+    assert facts['tracks']['agent']['status_text'] == '并入其他链' and facts['tracks']['rule']['status_text'] == '开盘作废'
+    none = retro.build_facts_v2(execution=retro.execution_fact(buys=[], plans_by_trade={}), holding=None,
+                                **_facts_kwargs())
+    assert none['holding'] is None and none['execution']['status'] == 'not_executed'
+    text = retro.facts_text_v2(facts)
+    assert text.index('[fact:subject]') < text.index('[fact:execution]') < text.index('[fact:holding]') \
+        < text.index('[fact:discipline]')
+    assert '[fact:decision]' not in text and '你的执行：采纳（照规则基线）' in text
+    assert '私人备注原文' not in text and '你写了 1 条备注' in text                       # note bodies never reach the Agent
+    assert '2026-10-22 起发出退出指令（time_stop），2026-10-26 卖出（指令后 2 个交易日）' in text
+    assert 'tracks-2' in text and 'plan-shadow-2' in text
+    assert '[fact:holding] 没有持仓状态记录' in retro.facts_text_v2(none)
+    # the retro-1 builders and the evidence text are unchanged
+    old = retro.build_facts(decision=None, decision_text='未决定（计划外成交）', **_facts_kwargs())
+    assert tuple(old) == retro.FACT_KEYS and 'tracks-1' in retro.facts_text(old)

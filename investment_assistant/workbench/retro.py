@@ -1,6 +1,11 @@
 """Review cards (v2.7 spec §4, ``retro-1``): end events, reference plan, frozen facts, decision text and card
 status. Pure functions over rows the caller has already read: no database, no clock, and no ``service``,
 ``agent`` or ``repository`` import. The host freezes the numbers here; the Agent only narrates them.
+
+``retro-2`` (v2.9 spec D29) lives beside ``retro-1``: the ``decision`` fact becomes ``execution`` (what you did,
+derived from the fills, with the old decision kept as ``legacy_decision``), a ``holding`` fact summarizes the
+daily holding status, the card's subjects follow the fills (or a note on an unfilled chain), and the reference
+plan prefers the fill's own plan link. The retro-1 functions and tables are unchanged; old cards render as before.
 """
 from __future__ import annotations
 
@@ -10,12 +15,16 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from investment_assistant.data.calendar import add_trading_days
+from investment_assistant.data.calendar import add_trading_days, trading_days_between
 # private helpers on purpose: reuse discipline's own split-basis / T1 judgement, as tracks.py does
 from investment_assistant.workbench.discipline import _current_basis, _splits_of, _t1_touched_while_held
-from investment_assistant.workbench.tracks import TRACK_STATUS_TEXT
+from investment_assistant.workbench.tracks import TRACK_STATUS_TEXT, TRACK_STATUS_TEXT_V2
 
-RETRO_VERSION = 'retro-1'
+RETRO_V1 = 'retro-1'
+RETRO_V2 = 'retro-2'
+# retro_cards.py still writes `retro_version = retro.RETRO_VERSION` on cards built by the retro-1 functions; spec
+# §2 fixes RETRO_VERSION = 'retro-2', which flips when it switches to build_facts_v2 (Task 4).
+RETRO_VERSION = RETRO_V1
 RETRO_LOOKBACK_SESSIONS = 5        # D6: only end events within the last 5 sessions are detected
 RETRO_MAX_DRAFTS = 5               # drafts started per batch run (§4.4)
 RETRO_MAX_ATTEMPTS = 3             # rejected / error drafts before a card counts as failed
@@ -40,6 +49,18 @@ DECISION_TEXT = {
 }
 FACT_KEYS = ('subject', 'plans', 'bars_after', 'shadow', 'tracks', 'decision', 'trades', 'discipline', 'reviews',
              'knowledge')
+FACT_KEYS_V2 = ('subject', 'plans', 'bars_after', 'shadow', 'tracks', 'execution', 'holding', 'trades', 'discipline',
+                'reviews', 'knowledge')
+# What you did with the unit, in words (spec §6.3); the frontend keeps a copy and a test guards it.
+EXECUTION_TEXT = {
+    'adopted_agent': '采纳（照 Agent 第 {n} 版）',
+    'adopted_rule': '采纳（照规则基线）',
+    'own': '自定',
+    'out_of_validity': '有效期外成交',
+    'not_executed': '未执行',
+    'unplanned': '计划外成交',
+}
+EXECUTION_STATUSES = ('adopted', 'out_of_validity', 'not_executed', 'unplanned')
 CARD_STATUSES = ('reviewed', 'to_review', 'draft_failed', 'drafting')
 CARD_STATUS_TEXT = {'reviewed': '已审定', 'to_review': '待审定', 'draft_failed': '起草失败（可手动审定或重新起草）',
                     'drafting': '起草中'}
@@ -442,6 +463,7 @@ KIND_TEXT = {'rule': '规则计划', 'own': '自定计划', 'agent': 'Agent'}
 ROLE_TEXT = {'reference': '参考', 'executed': '执行', 'seen_at_decision': '决定时看到', 'first': '首版',
              'head': '最新版'}
 BASIS_TEXT = {'decision': '决定时看到的版本', 'first': '首版'}
+BASIS_TEXT_V2 = {**BASIS_TEXT, 'fill': '成交时关联的版本', 'merged': '并入其他链'}
 
 
 def _r(value: Any) -> str:
@@ -485,8 +507,9 @@ def _bars_text(facts: dict[str, Any]) -> str:
     return '\n'.join([head, *lines])
 
 
-def _shadow_tracks_text(facts: dict[str, Any]) -> str:
-    lines = ['[fact:shadow] 影子模拟（plan-shadow-1，按各计划当时的价位逐日回放）：']
+def _shadow_tracks_text(facts: dict[str, Any], *, shadow_label: str = 'plan-shadow-1',
+                        tracks_label: str = 'tracks-1', basis_text: dict[str, str] = BASIS_TEXT) -> str:
+    lines = [f'[fact:shadow] 影子模拟（{shadow_label}，按各计划当时的价位逐日回放）：']
     for key, outcome in facts['shadow'].items():
         if outcome is None:
             lines.append(f'{key} | 未模拟（计划作废或没有结果）')
@@ -502,10 +525,10 @@ def _shadow_tracks_text(facts: dict[str, Any]) -> str:
     if 'agent' in t:
         a = t['agent']
         version = f"第 {a['version_no']} 版，" if a.get('version_no') is not None else ''
-        parts.append(f"Agent（{version}{BASIS_TEXT.get(a.get('version_basis'), '无版本')}）{a['status_text']} "
+        parts.append(f"Agent（{version}{basis_text.get(a.get('version_basis'), '无版本')}）{a['status_text']} "
                      f"R {_r(a['r'])}")
     parts.append(f"实际 {t['actual']['status_text']} R {_r(t['actual']['r'])}")
-    lines.append('[fact:tracks] 三条轨道（tracks-1，R 都按各自计划的止损算）：' + '；'.join(parts))
+    lines.append(f'[fact:tracks] 三条轨道（{tracks_label}，R 都按各自计划的止损算）：' + '；'.join(parts))
     return '\n'.join(lines)
 
 
@@ -561,6 +584,191 @@ def facts_text(facts: dict[str, Any]) -> str:
         _bars_text(facts),
         _shadow_tracks_text(facts),
         _decision_trades_text(facts),
+        _discipline_text(facts),
+        _reviews_knowledge_text(facts),
+    ]
+    return '\n\n'.join(sections)
+
+
+# ---- retro-2: execution, holding, subjects (v2.9 spec D29) ---------------------------------------------
+
+def reference_plan_v2(*, decision: dict[str, Any] | None, plans: list[dict[str, Any]], has_buys: bool,
+                      buys: list[dict[str, Any]] | tuple = (),
+                      chain: list[dict[str, Any]] | tuple = ()) -> dict[str, Any] | None:
+    """The reference plan with the fill's own link first (R6/D21): with a position, the plan of the latest buy
+    whose ``plan_id`` is among ``plans``; otherwise exactly ``reference_plan`` (the old decision's plan, then
+    what the user saw, then the rule baseline — now ``plan-2`` as well as ``plan-1`` — then ``agent-1``)."""
+    def find(plan_id: Any) -> dict[str, Any] | None:
+        if plan_id is None:
+            return None
+        return next((p for p in plans if str(p['id']) == str(plan_id)), None)
+
+    if has_buys:
+        for buy in sorted(buys, key=lambda b: (b['executed_at'], str(b['id'])), reverse=True):
+            found = find(buy.get('plan_id'))
+            if found is not None:
+                return found
+        return reference_plan(decision=decision, plans=plans, has_buys=True, buys=buys, chain=chain)
+    for plan_id in (decision.get('plan_id') if decision else None, decision.get('agent_plan_id') if decision else None):
+        found = find(plan_id)
+        if found is not None:
+            return found
+    rules = [p for p in plans if p.get('kind') == 'rule' and p.get('plan_version') in ('plan-2', 'plan-1')]
+    if rules:
+        return max(rules, key=lambda p: (p['plan_version'], str(p['id'])))      # plan-2 over plan-1
+    return next((p for p in plans if p.get('kind') == 'agent' and p.get('plan_version') == 'agent-1'), None)
+
+
+def execution_fact(*, buys: list[dict[str, Any]], plans_by_trade: dict[Any, dict[str, Any] | None],
+                   version_no_by_plan: dict[Any, int] | None = None, notes: list[dict[str, Any]] | tuple = (),
+                   legacy_decision: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The ``execution`` fact: what you did with the unit, derived from the fills (D23), as plain data.
+
+    buys: the subject's live buys (``id``, ``executed_at``, ``quantity``, ``price``); plans_by_trade: buy id ->
+    the plan row it is linked to (``id``, ``kind``, ``valid_from``, ``valid_until``), or None / absent;
+    version_no_by_plan: plan id -> Agent version number; notes: the live plan notes (frozen with the card);
+    legacy_decision: a decision from before v2.9, kept as is.
+
+    ``status``: ``not_executed`` (no buy), ``unplanned`` (buys, none with a plan), ``out_of_validity`` /
+    ``adopted`` by the first buy that has a plan (its New York day against the version's validity). ``follow``
+    is that plan's kind (agent / rule / own), ``version_no`` an Agent plan's version. ``text`` is the card wording.
+    """
+    versions = version_no_by_plan or {}
+    ordered = sorted(buys, key=lambda b: (b['executed_at'], str(b['id'])))
+    linked = next(((b, plans_by_trade[b['id']]) for b in ordered if plans_by_trade.get(b['id']) is not None), None)
+    fact: dict[str, Any] = {'status': 'not_executed', 'follow': None, 'version_no': None, 'plan_id': None,
+                            'plan_kind': None, 'trade_ids': [str(b['id']) for b in ordered], 'first_fill': None,
+                            'notes': [{'id': n.get('id'), 'body': n.get('body'), 'created_at': n.get('created_at')}
+                                      for n in notes],
+                            'legacy_decision': legacy_decision}
+    if ordered:
+        first = ordered[0]
+        fact['first_fill'] = {'executed_at': first['executed_at'], 'quantity': first.get('quantity'),
+                              'price': first.get('price')}
+        fact['status'] = 'unplanned'
+    if linked is not None:
+        buy, plan = linked
+        day = _ny_day(buy['executed_at'])
+        inside = _day(plan['valid_from']) <= day <= _day(plan['valid_until'])
+        fact.update(status='adopted' if inside else 'out_of_validity', follow=plan.get('kind'),
+                    plan_id=str(plan['id']), plan_kind=plan.get('kind'),
+                    version_no=versions.get(plan['id'], versions.get(str(plan['id']))) if plan.get('kind') == 'agent'
+                    else None)
+    fact['text'] = execution_text(fact)
+    return _jsonable(fact)
+
+
+def execution_text(fact: dict[str, Any]) -> str:
+    """The six wordings of ``EXECUTION_TEXT`` for an ``execution`` fact (spec §6.3)."""
+    status = fact['status']
+    if status in ('unplanned', 'not_executed', 'out_of_validity'):
+        return EXECUTION_TEXT[status]
+    if fact.get('follow') == 'agent':
+        number = fact.get('version_no')
+        return EXECUTION_TEXT['adopted_agent'].format(n='—' if number is None else number)
+    if fact.get('follow') == 'rule':
+        return EXECUTION_TEXT['adopted_rule']
+    return EXECUTION_TEXT['own']
+
+
+def holding_fact(rows: list[dict[str, Any]], *, sell_date: Any = None) -> dict[str, Any] | None:
+    """The ``holding`` fact: a summary of the position's daily ``holding_status`` rows, or None without rows.
+
+    rows: the subject ticker's rows over the holding (``session``, ``held_sessions``, ``instruction``,
+    ``exit_reason``, ``max_hold_sessions``, ``r_now``); sell_date: the day the position was actually closed.
+    ``exit`` is the first row whose instruction was ``exit``; ``sessions_to_sell`` counts the trading days from
+    that instruction to the sale (0 = the same day), ``sold_before_exit`` marks a sale earlier than the
+    instruction.
+    """
+    if not rows:
+        return None
+    ordered = sorted(rows, key=lambda r: _day(r['session']))
+    first_exit = next((r for r in ordered if r.get('instruction') == 'exit'), None)
+    last = ordered[-1]
+    sold = _day(sell_date) if sell_date is not None else None
+    exit_day = _day(first_exit['session']) if first_exit else None
+    sessions_to_sell = None
+    if sold is not None and exit_day is not None and sold >= exit_day:
+        sessions_to_sell = len(trading_days_between(exit_day, sold)) - 1
+    return {'rows': len(ordered), 'held_sessions': max(r['held_sessions'] for r in ordered),
+            'max_hold_sessions': last.get('max_hold_sessions'),
+            'exit': None if first_exit is None else {'session': exit_day.isoformat(),
+                                                     'reason': first_exit.get('exit_reason')},
+            'sell_date': None if sold is None else sold.isoformat(), 'sessions_to_sell': sessions_to_sell,
+            'sold_before_exit': bool(sold is not None and exit_day is not None and sold < exit_day),
+            'last': {'session': _day(last['session']).isoformat(), 'instruction': last.get('instruction'),
+                     'r_now': _jsonable(last.get('r_now'))}}
+
+
+def card_subject_kind(*, linked_buys: int, unplanned_buys: int, notes: int) -> str | None:
+    """D29: which kind of card a subject earns. A buy with no plan link makes a ``trade`` card; a chain or unit
+    with linked buys, or an unfilled one you wrote a note on, makes a ``unit`` card; otherwise none."""
+    if unplanned_buys:
+        return 'trade'
+    if linked_buys or notes:
+        return 'unit'
+    return None
+
+
+def build_facts_v2(*, execution: dict[str, Any], holding: dict[str, Any] | None, **kwargs: Any) -> dict[str, Any]:
+    """The eleven ``retro-2`` facts in ``FACT_KEYS_V2`` order: ``build_facts``' ten with ``decision`` replaced by
+    ``execution`` and ``holding`` added; ``kwargs`` are ``build_facts``' arguments except ``decision`` /
+    ``decision_text``. Track statuses read from the tracks-2 wording (``merged``, ``voided``)."""
+    facts = build_facts(decision=None, decision_text='', **kwargs)
+    facts.pop('decision')
+    for part in facts['tracks'].values():
+        part['status_text'] = TRACK_STATUS_TEXT_V2.get(part['status'], part['status'])
+    merged = {**facts, 'execution': _jsonable(execution), 'holding': _jsonable(holding)}
+    return {key: merged[key] for key in FACT_KEYS_V2}
+
+
+def _execution_trades_text(facts: dict[str, Any]) -> str:
+    e, t = facts['execution'], facts['trades']
+    line = f"[fact:execution] 你的执行：{e['text']}"
+    if e.get('first_fill'):
+        fill = e['first_fill']
+        line += f"（首笔 {fill['executed_at']}，{fill['quantity']} @ {fill['price']}）"
+    if e.get('notes'):
+        line += f"。你写了 {len(e['notes'])} 条备注（备注只给你自己看，不提供给 Agent）"
+    legacy = e.get('legacy_decision')
+    if legacy:
+        line += f"。旧决定：{legacy.get('decision')} → {legacy.get('final_action')}，理由：{legacy.get('reason')}"
+    sides = {'buy': '买', 'sell': '卖'}
+    deals = '、'.join(f"{sides.get(x['side'], x['side'])} {x['quantity']} @ {x['price']}（{x['executed_at']}）"
+                      for x in t['trades']) or '无'
+    return f"{line}。\n[fact:trades] 成交：{deals}；平仓段 {len(t['segments'])} 段；实际 R {_r(t['actual_r'])}。"
+
+
+def _holding_text(facts: dict[str, Any]) -> str:
+    h = facts['holding']
+    if h is None:
+        return '[fact:holding] 没有持仓状态记录（未持仓，或持仓状态未写入）。'
+    line = f"[fact:holding] 持仓状态共 {h['rows']} 天，最多持有 {h['held_sessions']} 个交易日"
+    if h.get('max_hold_sessions') is not None:
+        line += f"（最长持有 {h['max_hold_sessions']}）"
+    if h.get('exit'):
+        line += f"；{h['exit']['session']} 起发出退出指令（{h['exit']['reason']}）"
+        if h.get('sold_before_exit'):
+            line += '，你在指令之前已卖出'
+        elif h.get('sessions_to_sell') is not None:
+            line += f"，{h['sell_date']} 卖出（指令后 {h['sessions_to_sell']} 个交易日）"
+        else:
+            line += '，尚未卖出'
+    return line + '。'
+
+
+def facts_text_v2(facts: dict[str, Any]) -> str:
+    """``facts_text`` for retro-2: eight sections, ``[fact:execution]`` (with the trades) and ``[fact:holding]``
+    in place of the decision. Note bodies never appear (spec D25: notes stay out of every Agent prompt)."""
+    plans = '\n'.join(_plan_line(p) for p in facts['plans']) or '（没有相关计划）'
+    sections = [
+        _subject_text(facts),
+        f'[fact:plans] 各份计划当时的价位、有效期、截止时间与角色：\n{plans}',
+        _bars_text(facts),
+        _shadow_tracks_text(facts, shadow_label='plan-shadow-2；没有执行字段的旧计划为 plan-shadow-1',
+                            tracks_label='tracks-2', basis_text=BASIS_TEXT_V2),
+        _execution_trades_text(facts),
+        _holding_text(facts),
         _discipline_text(facts),
         _reviews_knowledge_text(facts),
     ]

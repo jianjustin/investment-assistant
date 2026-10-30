@@ -331,3 +331,228 @@ def test_check_review_rejections(text, reason):
     with pytest.raises(Rejected) as exc:
         check_review(text, refs=REFS)
     assert exc.value.reason == reason
+
+
+# ---------------------------------------------------------------- agent-3 (v2.9 spec §5.5, D7, R3)
+
+from investment_assistant.workbench.agent import plan_check  # noqa: E402
+
+
+def payload3(**over) -> dict:
+    return payload(**{'entry_type': 'zone_limit', 'max_hold_sessions': 10, **over})
+
+
+def run3(p: dict, previous=None, **kwargs) -> dict:
+    return check_plan(json.dumps(p), refs=REFS, price_refs=PRICE_REFS, user_refs=USER_REFS,
+                      last_close=kwargs.pop('last_close', LAST_CLOSE), as_of_session=AS_OF, previous=previous,
+                      schema='agent-3', **kwargs)
+
+
+def test_constants_v3():
+    assert plan_check.CHANGE_FIELDS == ('action', 'entry', 'entry_type', 'stop', 'target1', 'max_hold_sessions',
+                                        'thesis', 'invalidation', 'review_when')
+    assert plan_check.CHANGE_FIELDS_V2 == ('action', 'entry', 'stop', 'target1', 'thesis', 'invalidation',
+                                           'review_when')
+    assert plan_check.HOST_FIELDS == ('valid_until', 'entry_cap')
+    assert plan_check.AGENT_MAX_HOLD_RANGE == (5, 20) and plan_check.MAX_HOLD_DEFAULT == 10
+
+
+def test_agent2_default_schema_ignores_execution_fields():
+    out = run(payload3(entry_type='nonsense', max_hold_sessions=99))       # the old schema never looks at them
+    assert 'entry_type' not in out and 'max_hold_sessions' not in out
+
+
+def test_agent3_requires_entry_type_and_max_hold():
+    out = run3(payload3(entry_type='breakout_stop', max_hold_sessions=15))
+    assert (out['entry_type'], out['max_hold_sessions']) == ('breakout_stop', 15)
+    for key in ('entry_type', 'max_hold_sessions'):
+        p = payload3()
+        del p[key]
+        with pytest.raises(Rejected) as exc:
+            run3(p)
+        assert exc.value.reason == 'malformed', key
+    p = payload3(action='pass')                                   # a pass is not an executable plan
+    del p['levels'], p['entry_type'], p['max_hold_sessions']
+    out = run3(p)
+    assert out['action'] == 'pass' and out['entry_type'] is None and out['max_hold_sessions'] is None
+
+
+@pytest.mark.parametrize('value', ['limit', '', None, 3, 'ZONE_LIMIT', ['zone_limit']])
+def test_invalid_entry_type(value):
+    with pytest.raises(Rejected) as exc:
+        run3(payload3(entry_type=value))
+    assert exc.value.reason == 'invalid_entry_type'
+
+
+@pytest.mark.parametrize('value', [4, 21, 0, -5, 10.5, '10', None, True, [10]])
+def test_invalid_max_hold(value):
+    with pytest.raises(Rejected) as exc:
+        run3(payload3(max_hold_sessions=value))
+    assert exc.value.reason == 'invalid_max_hold'
+
+
+@pytest.mark.parametrize('value', [5, 10, 20])
+def test_max_hold_bounds_ok(value):
+    assert run3(payload3(max_hold_sessions=value))['max_hold_sessions'] == value
+
+
+def test_change_fields_include_new():
+    previous = run3(payload3())
+    new = payload3(entry_type='next_open', max_hold_sessions=15,
+                   changes=[{'field': 'entry_type', 'text': '改成次日开盘', 'refs': ['call:1']},
+                            {'field': 'max_hold_sessions', 'text': '延长持有', 'refs': ['call:1']}])
+    out = run3(new, previous=previous)
+    assert out['diff'] == [{'field': 'entry_type', 'before': 'zone_limit', 'after': 'next_open'},
+                           {'field': 'max_hold_sessions', 'before': 10, 'after': 15}]
+    with pytest.raises(Rejected) as exc:                           # the model must name both
+        run3(payload3(entry_type='next_open', max_hold_sessions=15,
+                      changes=[{'field': 'entry_type', 'text': 'x', 'refs': ['call:1']}]), previous=previous)
+    assert exc.value.reason == 'changes_mismatch'
+
+
+def test_host_fields_not_required_in_changes():
+    previous = run3(payload3())
+    out = run3(_stop_96(entry_type='zone_limit', max_hold_sessions=10, changes=STOP_CHANGE), previous=previous)
+    assert [d['field'] for d in out['diff']] == ['stop']
+    assert all(d['field'] not in plan_check.HOST_FIELDS for d in out['diff'])
+    with pytest.raises(Rejected) as exc:                           # a host field is not a model change
+        run3(_stop_96(entry_type='zone_limit', max_hold_sessions=10,
+                      changes=STOP_CHANGE + [{'field': 'valid_until', 'text': '顺延', 'refs': ['call:1']}]),
+             previous=previous)
+    assert exc.value.reason == 'changes_mismatch'
+
+
+def test_renewal_allowed_only_via_retrigger():
+    previous = run3(payload3())
+    out = run3(payload3(), previous=previous, via='retrigger')
+    assert out['changes'] == [] and out['diff'] == [] and out['action'] == 'buy'
+    out = run3(payload3(changes=[]), previous=previous, via='retrigger')
+    assert out['changes'] == []
+    with pytest.raises(Rejected) as exc:                           # nothing changed, so a change text is a mismatch
+        run3(payload3(changes=STOP_CHANGE), previous=previous, via='retrigger')
+    assert exc.value.reason == 'changes_mismatch'
+    # with a real change the usual rules apply even via a retrigger
+    out = run3(_stop_96(entry_type='zone_limit', max_hold_sessions=10, changes=STOP_CHANGE), previous=previous,
+               via='retrigger')
+    assert [d['field'] for d in out['diff']] == ['stop']
+
+
+@pytest.mark.parametrize('via,schema', [(None, 'agent-3'), ('review', 'agent-3'), ('recheck', 'agent-3'),
+                                        ('retrigger', 'agent-2')])
+def test_no_change_still_rejected_otherwise(via, schema):
+    previous = run3(payload3())
+    body = payload3() if schema == 'agent-3' else payload()
+    with pytest.raises(Rejected) as exc:
+        check_plan(json.dumps(body), refs=REFS, price_refs=PRICE_REFS, user_refs=USER_REFS, last_close=LAST_CLOSE,
+                   as_of_session=AS_OF, previous=previous, schema=schema, via=via)
+    assert exc.value.reason == 'no_change'
+
+
+def test_holding_mode_never_renews_via_retrigger():
+    previous = run3(payload3())
+    with pytest.raises(Rejected) as exc:
+        run3(payload3(), previous=previous, via='retrigger', mode='holding')
+    assert exc.value.reason == 'no_change'
+
+
+def _holding(stop, *, entry=(98, 100), target1=110, **over):
+    levels = {'entry_low': lv(entry[0]), 'entry_high': lv(entry[1]), 'stop': lv(stop), 'target1': lv(target1)}
+    return payload3(levels=levels, **over)
+
+
+def test_holding_levels_allow_stop_above_entry():
+    previous = run3(payload3())
+    changes = [{'field': 'stop', 'text': '上移止损到入场价之上', 'refs': ['call:1']}]
+    out = run3(_holding(99.5, changes=changes), previous=previous, mode='holding', last_close=Decimal('104'))
+    assert out['levels']['stop']['value'] == Decimal('99.50')           # >= entry_low 98: refused in the entry phase
+    assert [d['field'] for d in out['diff']] == ['stop']
+    with pytest.raises(Rejected) as exc:
+        run3(_holding(99.5, changes=changes), previous=previous, mode='entry', last_close=Decimal('104'))
+    assert exc.value.reason == 'level_check'
+
+
+def test_holding_entry_zone_is_copied_from_previous():
+    previous = run3(payload3())
+    # the model drifted the entry zone; in the holding phase that is ignored, so only the stop shows as a change
+    out = run3(_holding(96, entry=(97, 101), changes=STOP_CHANGE), previous=previous, mode='holding',
+               last_close=Decimal('104'))
+    assert (out['levels']['entry_low']['value'], out['levels']['entry_high']['value']) == \
+        (Decimal('98.00'), Decimal('100.00'))
+    assert [d['field'] for d in out['diff']] == ['stop']
+
+
+def test_holding_stop_lowered_rejected():
+    previous = run3(payload3())
+    with pytest.raises(Rejected) as exc:
+        run3(_holding(94, changes=[{'field': 'stop', 'text': '下移止损', 'refs': ['call:1']}]), previous=previous,
+             mode='holding', last_close=Decimal('104'))
+    assert exc.value.reason == 'stop_lowered'
+    same = run3(_holding(95, target1=112, changes=[{'field': 'target1', 'text': '上调目标', 'refs': ['call:1']}]),
+                previous=previous, mode='holding', last_close=Decimal('104'))      # equal stop is fine
+    assert [d['field'] for d in same['diff']] == ['target1']
+
+
+def test_stop_above_close_rejected():
+    previous = run3(payload3())
+    changes = [{'field': 'stop', 'text': '上移止损', 'refs': ['call:1']}]
+    for close in ('99', '99.50'):                                      # stop 99.50 >= close
+        with pytest.raises(Rejected) as exc:
+            run3(_holding(99.5, changes=changes), previous=previous, mode='holding', last_close=Decimal(close))
+        assert exc.value.reason == 'stop_above_close'
+    run3(_holding(99.5, changes=changes), previous=previous, mode='holding', last_close=Decimal('99.51'))
+
+
+def test_holding_target_must_stay_above_the_copied_entry_zone():
+    previous = run3(payload3())
+    with pytest.raises(Rejected) as exc:
+        run3(_holding(96, target1=100, changes=[{'field': 'target1', 'text': '压低目标', 'refs': ['call:1']}]),
+             previous=previous, mode='holding', last_close=Decimal('104'))
+    assert exc.value.reason == 'level_check'                           # T1 100 is not above entry_high 100
+
+
+def test_holding_mode_needs_previous_and_known_schema():
+    with pytest.raises(ValueError):
+        run3(payload3(), previous=None, mode='holding')
+    with pytest.raises(ValueError):
+        run3(payload3(), mode='exiting')
+    with pytest.raises(ValueError):
+        check_plan(json.dumps(payload3()), refs=REFS, price_refs=PRICE_REFS, user_refs=USER_REFS,
+                   last_close=LAST_CLOSE, as_of_session=AS_OF, previous=None, schema='agent-9')
+
+
+def test_held_sessions_reached_not_allowed_in_invalidation():
+    held = {'kind': 'held_sessions_reached', 'params': {'sessions': 10}, 'refs': ['call:1']}
+    with pytest.raises(Rejected) as exc:
+        run3(payload3(invalidation=[held]))
+    assert exc.value.reason == 'invalid_condition'
+    out = run3(payload3(review_when=[{'kind': 'held_sessions_reached', 'params': {'sessions': 8}}]))
+    assert out['review_when'] == [{'kind': 'held_sessions_reached', 'params': {'sessions': 8},
+                                   'text': '持有 8 个交易日仍未到 1R'}]
+    with pytest.raises(Rejected) as exc:                               # parameter range 3-30
+        run3(payload3(review_when=[{'kind': 'held_sessions_reached', 'params': {'sessions': 2}}]))
+    assert exc.value.reason == 'invalid_condition'
+    # agent-2 never knew the kind: refused in both lists
+    for key, item in (('invalidation', held), ('review_when', {'kind': 'held_sessions_reached',
+                                                                'params': {'sessions': 8}})):
+        with pytest.raises(Rejected) as exc:
+            run(payload(**{key: [item]}))
+        assert exc.value.reason == 'invalid_condition'
+
+
+def test_agent2_previous_defaults_no_spurious_diff():
+    previous = run(payload())                                          # an agent-2 version: no execution fields
+    assert 'entry_type' not in previous
+    same_defaults = run3(_stop_96(entry_type='zone_limit', max_hold_sessions=10, changes=STOP_CHANGE),
+                         previous=previous)
+    assert [d['field'] for d in same_defaults['diff']] == ['stop']     # the defaults equal, no extra difference
+    moved = run3(_stop_96(entry_type='breakout_stop', max_hold_sessions=12,
+                          changes=STOP_CHANGE + [{'field': 'entry_type', 'text': 'a', 'refs': ['call:1']},
+                                                 {'field': 'max_hold_sessions', 'text': 'b', 'refs': ['call:1']}]),
+                 previous=previous)
+    by_field = {d['field']: d for d in moved['diff']}
+    assert by_field['entry_type'] == {'field': 'entry_type', 'before': 'zone_limit', 'after': 'breakout_stop'}
+    assert by_field['max_hold_sessions'] == {'field': 'max_hold_sessions', 'before': 10, 'after': 12}
+    # diff() keeps the old field list unless asked for agent-3
+    assert diff(previous, run3(payload3(entry_type='next_open'))) == []
+    assert [d['field'] for d in diff(previous, run3(payload3(entry_type='next_open')), schema='agent-3')] == \
+        ['entry_type']

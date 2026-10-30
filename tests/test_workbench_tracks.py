@@ -202,6 +202,140 @@ def test_agent_track_carries_version_keys():
     assert tracks.TRACKS_VERSION == 'tracks-1'
 
 
+# --- v2.9 tracks-2 (spec D27) ---
+
+def _ver(tag, version_no, plan_id=None):
+    return {'plan_id': plan_id or f'plan-{tag}', 'version_no': version_no, 'ticker': 'NVDA', 'signal_date': S}
+
+
+def _fill(tid, plan_id, day=1, voided=False):
+    return {'id': tid, 'side': 'buy', 'plan_id': plan_id, 'executed_at': S + timedelta(days=day),
+            'voided_at': S if voided else None}
+
+
+UNIT = {'ticker': 'NVDA', 'signal_date': S}
+
+
+def test_tracks_versions_and_text():
+    assert (tracks.TRACKS_V1, tracks.TRACKS_V2) == ('tracks-1', 'tracks-2')
+    assert tracks.TRACKS_VERSION == tracks.TRACKS_V1               # service still builds tracks-1 rows; flips in Task 4
+    assert tracks.TRACK_STATUS_TEXT_V2['merged'] == '并入其他链' and tracks.TRACK_STATUS_TEXT_V2['voided']
+    assert {k: v for k, v in tracks.TRACK_STATUS_TEXT_V2.items() if k in tracks.TRACK_STATUS_TEXT} == \
+        tracks.TRACK_STATUS_TEXT
+    assert tracks.VERSION_BASES == ('decision', 'fill', 'first', 'merged')
+
+
+def test_voided_shadow_outcome_scores_zero():
+    out = tracks.plan_track(PLAN, {'status': 'voided', 'r': None})
+    assert out == {'plan_id': PLAN['id'], 'status': 'voided', 'r': 0.0}
+
+
+def test_version_basis_fill():
+    versions = [_ver('a', 0), _ver('b', 1), _ver('c', 2)]
+    fills = [_fill('t2', 'plan-c', day=2), _fill('t1', 'plan-b', day=1), _fill('rule', 'rule-plan', day=0)]
+    pick = tracks.agent_pick(UNIT, legacy_decision=None, chain_buys=fills, versions=versions, merged=False)
+    assert pick['version_basis'] == 'fill' and pick['version_no'] == 1 and pick['plan'] is versions[1]
+    assert pick['plan_id'] == 'plan-b'                               # the first fill that follows one of the chain's versions
+    voided = [_fill('t1', 'plan-b', voided=True), _fill('t2', 'plan-c', day=2)]
+    assert tracks.agent_pick(UNIT, legacy_decision=None, chain_buys=voided, versions=versions,
+                             merged=False)['version_no'] == 2
+
+
+def test_version_basis_legacy_decision():
+    versions = [_ver('a', 0), _ver('b', 1)]
+    decision = {'id': 1, 'agent_plan_id': 'plan-b'}
+    fills = [_fill('t1', 'plan-a')]
+    pick = tracks.agent_pick(UNIT, legacy_decision=decision, chain_buys=fills, versions=versions, merged=False)
+    assert (pick['version_basis'], pick['version_no']) == ('decision', 1)       # the old decision wins over the fill
+    beside = tracks.agent_pick(UNIT, legacy_decision={'id': 1, 'agent_plan_id': 'agent-1-plan'}, chain_buys=[],
+                               versions=versions, merged=False)
+    assert beside == {'plan': None, 'plan_id': 'agent-1-plan', 'version_no': None, 'version_basis': 'decision'}
+    no_agent_id = tracks.agent_pick(UNIT, legacy_decision={'id': 1, 'agent_plan_id': None}, chain_buys=[],
+                                    versions=versions, merged=False)
+    assert no_agent_id['version_basis'] == 'first'
+
+
+def test_version_basis_first():
+    versions = [_ver('b', 1), _ver('a', 0)]
+    pick = tracks.agent_pick(UNIT, legacy_decision=None, chain_buys=[], versions=versions, merged=False)
+    assert (pick['version_basis'], pick['version_no'], pick['plan_id']) == ('first', 0, 'plan-a')
+    unrelated = tracks.agent_pick(UNIT, legacy_decision=None, chain_buys=[_fill('t1', 'rule-plan')],
+                                  versions=versions, merged=False)
+    assert unrelated['version_basis'] == 'first'                     # a fill linked elsewhere says nothing about versions
+    none = tracks.agent_pick(UNIT, legacy_decision=None, chain_buys=[], versions=[], merged=False)
+    assert none == {'plan': None, 'plan_id': None, 'version_no': None, 'version_basis': None}
+
+
+def test_merged_unit_excluded_from_mean():
+    pick = tracks.agent_pick(UNIT, legacy_decision=None, chain_buys=[], versions=[], merged=True)
+    assert pick['version_basis'] == 'merged' and pick['plan'] is None
+    # a unit that opened its own chain is not merged (D22 / R17)
+    own = tracks.agent_pick(UNIT, legacy_decision=None, chain_buys=[], versions=[_ver('a', 0)], merged=True)
+    assert own['version_basis'] == 'first'
+    merged = tracks.merged_agent_track()
+    assert merged['status'] == 'merged' and merged['r'] is None and merged['version_basis'] == 'merged'
+
+    def row(agent_r, status='closed'):
+        agent = merged if status == 'merged' else {'status': status, 'r': agent_r}
+        return {'pool': 'core', 'rule': {'status': 'closed', 'r': 1.0}, 'agent': agent,
+                'actual': {'status': 'not_executed', 'r': 0.0, 'plan_kind': None}}
+    rows = [row(2.0), row(None, 'merged'), row(4.0)]
+    out = tracks.summarize_v2(rows)
+    agent = out['all']['agent']
+    assert (agent['units'], agent['determined'], agent['mean'], agent['merged']) == (3, 2, 3.0, 1)
+    assert out['all']['rule']['merged'] == 0 and out['all']['actual']['by_plan_kind'] == {'none': 3}
+    assert 'merged' not in tracks.summarize(rows)['all']['agent']    # tracks-1 summaries keep their shape
+
+
+def _plan_row(pid='p1', kind='agent', stop=95):
+    return {'id': pid, 'kind': kind, 'stop': D(stop), 'signal_date': S}
+
+
+def _actual_v2(**over):
+    kwargs = dict(plans_by_trade={}, buys=[], segments=[], open_lots=[], last_close=None, splits=[],
+                  session=S + timedelta(days=5), unit_valid_until=S + timedelta(days=3))
+    kwargs.update(over)
+    return tracks.actual_track_v2(**kwargs)
+
+
+def test_actual_track_from_linked_plan():
+    buy = {**_buy('b1'), 'plan_id': 'p1'}
+    out = _actual_v2(plans_by_trade={'b1': _plan_row()}, buys=[buy], segments=[_seg('b1')])
+    assert out['status'] == 'closed' and out['plan_kind'] == 'agent' and out['plan_id'] == 'p1'
+    assert out['r'] == 2.0                                            # (110 - 100) / (100 - 95)
+    assert out['buy_trade_ids'] == ['b1'] and out['open'] is False
+    assert out['decision_id'] is None and out['final_action'] is None
+    # the plan and kind come from the first buy that has one
+    second = {**_buy('b2'), 'plan_id': 'p2', 'executed_at': S + timedelta(days=2)}
+    out = _actual_v2(plans_by_trade={'b2': _plan_row('p2', 'own', 90), 'b1': _plan_row('p1', 'rule', 95)},
+                     buys=[second, buy], segments=[_seg('b1')])
+    assert out['plan_kind'] == 'rule' and out['plan_id'] == 'p1'
+    open_pos = _actual_v2(plans_by_trade={'b1': _plan_row()}, buys=[buy], open_lots=[_lot('b1')],
+                          last_close=D('105'))
+    assert open_pos['status'] == 'open' and open_pos['open'] is True and open_pos['r'] == 1.0
+
+
+def test_not_executed_without_fills():
+    gone = _actual_v2()
+    assert gone['status'] == 'not_executed' and gone['r'] == 0.0 and gone['plan_id'] is None
+    pending = _actual_v2(session=S + timedelta(days=2))
+    assert pending['status'] == 'pending' and pending['r'] is None
+    no_validity = _actual_v2(unit_valid_until=None)
+    assert no_validity['status'] == 'not_executed'
+    rejected = _actual_v2(legacy_decision={'id': 1, 'final_action': 'ignore'}, session=S + timedelta(days=2))
+    assert rejected['status'] == 'not_executed' and rejected['final_action'] == 'ignore' and rejected['decision_id'] == 1
+    accepted = _actual_v2(legacy_decision={'id': 1, 'final_action': 'buy'}, session=S + timedelta(days=2))
+    assert accepted['status'] == 'pending'
+
+
+def test_no_plan_buy():
+    out = _actual_v2(buys=[_buy('b1')], segments=[_seg('b1')])
+    assert out['status'] == 'no_plan' and out['r'] is None and out['plan_kind'] is None and out['plan_id'] is None
+    assert out['buy_trade_ids'] == ['b1']
+    unresolved = _actual_v2(buys=[_buy('b1')], plans_by_trade={'b1': None})
+    assert unresolved['status'] == 'no_plan'
+
+
 # SQL (disposable schema): service._track_rows over real rows.
 
 import pytest  # noqa: E402

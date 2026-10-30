@@ -1,4 +1,4 @@
-"""agent-2 plan, counter and review checks (v2.5 spec §4.1, §4.3). Pure functions.
+"""agent-2 / agent-3 plan, counter and review checks (v2.5 spec §4.1, §4.3; v2.9 spec §5.5). Pure functions.
 
 check_plan runs citations.check_proposal unchanged (refs = this run's calls plus
 the user inputs given to it), then the agent-2 gates in order: thesis count,
@@ -11,6 +11,15 @@ Two deliberate readings of the spec:
 - A 'pass' is not an executable plan: only its thesis (count, refs) is checked;
   invalidation / review_when / changes are ignored and come back empty with
   diff None. In a revision the caller turns a pass into an invalidation (D11).
+
+agent-3 (`schema='agent-3'`, v2.9) adds, after check_proposal: `entry_type` (one of three, else
+`invalid_entry_type`) and `max_hold_sessions` (an integer 5–20, else `invalid_max_hold`), both required of a buy
+(absent → malformed); `held_sessions_reached` may only be a review condition (the host injects the failure
+one); `CHANGE_FIELDS` grows by the two new fields; a revision found by a retrigger may keep every model field
+(only the host fields `valid_until` / `entry_cap` move, so `changes = []` is allowed, D7). `mode='holding'`
+(R3) checks a holding-phase revision: the entry zone is copied from the previous version, the stop may only
+rise (`stop_lowered`) and must stay under the review-day close (`stop_above_close`). The default
+`schema='agent-2'` keeps every old caller's behaviour exactly.
 
 diff is the one host diff (the timeline module reuses it). It accepts both the
 check_plan output (Decimal / date) and the same dict read back from JSON
@@ -26,13 +35,21 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from investment_assistant.workbench import entry_rules
 from investment_assistant.workbench.agent import conditions
 from investment_assistant.workbench.agent.citations import Rejected, _loads, check_proposal
 
+SCHEMA_V2 = 'agent-2'
+SCHEMA_V3 = 'agent-3'
 THESIS_RANGE = (1, 3)
 INVALIDATION_RANGE = (1, 5)
 REVIEW_WHEN_MAX = 3
-CHANGE_FIELDS = ('action', 'entry', 'stop', 'target1', 'thesis', 'invalidation', 'review_when')
+AGENT_MAX_HOLD_RANGE = (5, 20)
+MAX_HOLD_DEFAULT = 10                      # what an agent-2 version without the field is read as
+CHANGE_FIELDS_V2 = ('action', 'entry', 'stop', 'target1', 'thesis', 'invalidation', 'review_when')
+CHANGE_FIELDS = ('action', 'entry', 'entry_type', 'stop', 'target1', 'max_hold_sessions', 'thesis',
+                 'invalidation', 'review_when')
+HOST_FIELDS = ('valid_until', 'entry_cap')   # host-computed; only in timeline.host_diff, never in `changes`
 REVIEW_OUTCOMES = ('maintain', 'revise', 'invalidate')
 _CENT = Decimal('0.01')
 _THESIS_REF = re.compile(r'^T?([1-9])$')
@@ -53,11 +70,16 @@ def _cited(item_refs: Any, allowed: set[str]) -> bool:
 
 # ---------------------------------------------------------------- plan
 
-def _invalidation(raw: Any, *, allowed: set[str], last_close: Decimal, as_of_session: date) -> list[dict]:
+def _invalidation(raw: Any, *, allowed: set[str], last_close: Decimal, as_of_session: date,
+                  schema: str = SCHEMA_V2) -> list[dict]:
     if not isinstance(raw, list) or not INVALIDATION_RANGE[0] <= len(raw) <= INVALIDATION_RANGE[1]:
         raise Rejected('invalid_condition')
     out = []
     for item in raw:
+        # held_sessions_reached is the host's own failure condition (D16): the model never writes it there, and
+        # agent-2 knows no such kind at all
+        if isinstance(item, dict) and item.get('kind') == 'held_sessions_reached':
+            raise Rejected('invalid_condition')
         cond = conditions.validate(item, use='invalidation', last_close=last_close, as_of_session=as_of_session)
         if not _cited(cond.get('refs'), allowed):
             raise Rejected('invalid_condition')
@@ -65,13 +87,15 @@ def _invalidation(raw: Any, *, allowed: set[str], last_close: Decimal, as_of_ses
     return out
 
 
-def _review_when(raw: Any, *, last_close: Decimal, as_of_session: date) -> list[dict]:
+def _review_when(raw: Any, *, last_close: Decimal, as_of_session: date, schema: str = SCHEMA_V2) -> list[dict]:
     if raw is None or raw == []:
         raw = [{'kind': 'next_session', 'params': {}}]
     if not isinstance(raw, list) or len(raw) > REVIEW_WHEN_MAX:
         raise Rejected('invalid_condition')
     out = []
     for item in raw:
+        if schema == SCHEMA_V2 and isinstance(item, dict) and item.get('kind') == 'held_sessions_reached':
+            raise Rejected('invalid_condition')                 # condition-1 callers: not a registered kind
         cond = conditions.validate(item, use='review', last_close=last_close, as_of_session=as_of_session)
         cond.pop('refs', None)          # review conditions carry no citations; unchecked refs are not kept
         out.append(cond)
@@ -96,15 +120,56 @@ def _changes(raw: Any, *, allowed: set[str]) -> list[dict]:
     return out
 
 
+def _exec_fields(payload: dict) -> tuple[str, int]:
+    """agent-3's two execution fields of a buy: absent → malformed, a bad value → its own reason."""
+    if 'entry_type' not in payload or 'max_hold_sessions' not in payload:
+        raise Rejected('malformed')
+    entry_type, max_hold = payload['entry_type'], payload['max_hold_sessions']
+    if not isinstance(entry_type, str) or entry_type not in entry_rules.ENTRY_TYPES:
+        raise Rejected('invalid_entry_type')
+    low, high = AGENT_MAX_HOLD_RANGE
+    if isinstance(max_hold, bool) or not isinstance(max_hold, int) or not low <= max_hold <= high:
+        raise Rejected('invalid_max_hold')
+    return entry_type, max_hold
+
+
+def _holding_levels(out: dict, previous: dict | None, last_close: Decimal) -> None:
+    """R3 on a holding-phase buy: the entry zone is the previous version's (the model's entry fields are
+    ignored), T1 stays above it, the stop only rises and stays under the review-day close."""
+    if previous is None or not isinstance(previous.get('levels'), dict):
+        raise ValueError('a holding-phase revision needs the previous version')
+    levels, before = out['levels'], previous['levels']
+    for key in ('entry_low', 'entry_high'):
+        levels[key] = {'value': Decimal(_money(before[key]['value'])), 'refs': levels[key]['refs']}
+    if not levels['entry_high']['value'] < levels['target1']['value']:
+        raise Rejected('level_check')
+    stop, previous_stop = levels['stop']['value'], Decimal(_money(before['stop']['value']))
+    if stop < previous_stop:
+        raise Rejected('stop_lowered')
+    if stop >= last_close:
+        raise Rejected('stop_above_close')
+
+
 def check_plan(text: str, *, refs: set[str], price_refs: set[str], user_refs: set[str],
-               last_close: Decimal, as_of_session: date, previous: dict | None) -> dict:
-    """§4.1 in full; previous is the prior version's check_plan output (None = first version)."""
+               last_close: Decimal, as_of_session: date, previous: dict | None,
+               schema: str = SCHEMA_V2, mode: str = 'entry', via: str | None = None) -> dict:
+    """§4.1 in full; previous is the prior version's check_plan output (None = first version).
+
+    schema 'agent-3' adds the execution fields and the new gates (module docstring); mode 'holding' applies
+    the holding-phase level rules (agent-3 only); via 'retrigger' lets an entry-phase revision renew without
+    touching any model field."""
+    if schema not in (SCHEMA_V2, SCHEMA_V3):
+        raise ValueError(f'unknown plan schema: {schema!r}')
+    if mode not in ('entry', 'holding'):
+        raise ValueError(f'unknown chain mode: {mode!r}')
+    v3 = schema == SCHEMA_V3
     allowed = set(refs) | set(user_refs)
     payload = _payload(text)
     if isinstance(payload, dict) and isinstance(payload.get('thesis'), list) \
             and not THESIS_RANGE[0] <= len(payload['thesis']) <= THESIS_RANGE[1]:
         raise Rejected('thesis_count')
-    base = check_proposal(text, refs=allowed, price_refs=price_refs, last_close=last_close)
+    base = check_proposal(text, refs=allowed, price_refs=price_refs, last_close=last_close,
+                          mode='holding' if v3 and mode == 'holding' else 'entry')
     if not isinstance(payload, dict):   # unreachable: check_proposal accepted it, so it parsed to an object
         raise Rejected('malformed')
 
@@ -119,13 +184,19 @@ def check_plan(text: str, *, refs: set[str], price_refs: set[str], user_refs: se
         'changes': [],
         'diff': None,
     }
+    if v3:
+        out.update(entry_type=None, max_hold_sessions=None)
     if out['action'] == 'pass':
         return out
 
+    if v3:
+        out['entry_type'], out['max_hold_sessions'] = _exec_fields(payload)
+        if mode == 'holding':
+            _holding_levels(out, previous, last_close)
     out['invalidation'] = _invalidation(payload.get('invalidation'), allowed=allowed,
-                                        last_close=last_close, as_of_session=as_of_session)
+                                        last_close=last_close, as_of_session=as_of_session, schema=schema)
     out['review_when'] = _review_when(payload.get('review_when'), last_close=last_close,
-                                      as_of_session=as_of_session)
+                                      as_of_session=as_of_session, schema=schema)
 
     raw_changes = payload.get('changes')
     if previous is None:
@@ -133,8 +204,13 @@ def check_plan(text: str, *, refs: set[str], price_refs: set[str], user_refs: se
             raise Rejected('malformed')
         return out
 
-    host_diff = diff(previous, out)
+    host_diff = diff(previous, out, schema=schema)
     if not host_diff:
+        if v3 and mode == 'entry' and via == 'retrigger':
+            if raw_changes is not None and raw_changes != []:
+                raise Rejected('changes_mismatch')       # nothing changed, so there is nothing to explain
+            out['diff'] = []                              # renewal: only the host fields move (D7)
+            return out
         raise Rejected('no_change')
     changes = _changes(raw_changes, allowed=allowed)
     if {item['field'] for item in changes} != {item['field'] for item in host_diff}:
@@ -205,19 +281,25 @@ def _thesis_texts(plan: dict) -> list[str]:
     return [item.get('text') for item in plan.get('thesis') or [] if isinstance(item, dict)]
 
 
-def diff(previous: dict, new: dict) -> list[dict]:
-    """[{field, before, after}] for each changed field, in CHANGE_FIELDS order (§4.1)."""
+def diff(previous: dict, new: dict, *, schema: str = SCHEMA_V2) -> list[dict]:
+    """[{field, before, after}] for each changed field, in CHANGE_FIELDS order (§4.1).
+
+    schema 'agent-3' compares the two execution fields as well. A version without them (agent-2) reads as
+    `zone_limit` and 10 sessions, so an agent-2 predecessor never produces a spurious difference. The host
+    fields (HOST_FIELDS) are not compared here; `timeline.host_diff` adds them."""
     extract = {
         'action': lambda plan: plan.get('action'),
         'entry': _entry,
+        'entry_type': lambda plan: plan.get('entry_type') or entry_rules.DEFAULT_ENTRY_TYPE,
         'stop': lambda plan: _level(plan, 'stop'),
         'target1': lambda plan: _level(plan, 'target1'),
+        'max_hold_sessions': lambda plan: plan.get('max_hold_sessions') or MAX_HOLD_DEFAULT,
         'thesis': _thesis_texts,
         'invalidation': lambda plan: _conditions(plan, 'invalidation'),
         'review_when': lambda plan: _conditions(plan, 'review_when'),
     }
     out = []
-    for field in CHANGE_FIELDS:
+    for field in (CHANGE_FIELDS if schema == SCHEMA_V3 else CHANGE_FIELDS_V2):
         before, after = extract[field](previous), extract[field](new)
         if _canon(before) != _canon(after):
             out.append({'field': field, 'before': before, 'after': after})

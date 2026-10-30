@@ -1,4 +1,4 @@
-"""condition-1 registry (v2.5 spec §4.2): pure functions, no database."""
+"""condition-1 / condition-2 registry (v2.5 spec §4.2, v2.9 spec §7.1): pure functions, no database."""
 from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
@@ -41,14 +41,28 @@ def item(kind: str, **params) -> dict:
     return {'kind': kind, 'params': params}
 
 
+CONDITION1_KINDS = {'close_below', 'close_above', 'no_entry_by', 'no_entry_before_earnings',
+                    'earnings_within', 'regime_is', 'sector_weak', 'rs_below', 'new_filing',
+                    'date_reached', 'next_session'}
+
+
+def test_condition1_kinds_unchanged():
+    assert conditions.CONDITIONS_V1 == 'condition-1'
+    assert set(CONDITIONS) - CONDITION1_KINDS == {'held_sessions_reached'}
+    assert CONDITION1_KINDS <= set(CONDITIONS)
+    # the eleven old kinds keep their usage columns and templates
+    assert CONDITIONS['close_below'].text == '收盘跌破 {price}' and CONDITIONS['earnings_within'].params == ('sessions',)
+    old = {k: (d.invalidation, d.review) for k, d in CONDITIONS.items() if k in CONDITION1_KINDS}
+    assert sum(inv for inv, _ in old.values()) == 9 and sum(rev for _, rev in old.values()) == 9
+
+
 def test_registry_matches_spec():
-    assert CONDITIONS_VERSION == 'condition-1'
-    assert set(CONDITIONS) == {'close_below', 'close_above', 'no_entry_by', 'no_entry_before_earnings',
-                               'earnings_within', 'regime_is', 'sector_weak', 'rs_below', 'new_filing',
-                               'date_reached', 'next_session'}
+    assert CONDITIONS_VERSION == 'condition-2'
+    assert set(CONDITIONS) == CONDITION1_KINDS | {'held_sessions_reached'}
     assert all(isinstance(d, ConditionDef) and d.kind == k for k, d in CONDITIONS.items())
     review_only = {k for k, d in CONDITIONS.items() if d.review and not d.invalidation}
     invalidation_only = {k for k, d in CONDITIONS.items() if d.invalidation and not d.review}
+    assert CONDITIONS['held_sessions_reached'].invalidation and CONDITIONS['held_sessions_reached'].review
     assert review_only == {'date_reached', 'next_session'}
     assert invalidation_only == {'no_entry_by', 'no_entry_before_earnings'}
     assert all(d.invalidation or d.review for d in CONDITIONS.values())
@@ -143,6 +157,12 @@ CASES = [
     ('next_session_met', item('next_session'), {}, 'met'),
     ('next_session_met_without_data', item('next_session'),
      {'bars': [], 'bars_since_version': [], 'regime_label': None, 'filings': None}, 'met'),
+    # held_sessions_reached (condition-2)
+    ('held_sessions_met', item('held_sessions_reached', sessions=5), {'mode': 'holding', 'position': {
+        'held_sessions': 6, 'reached_1r': False}}, 'met'),
+    ('held_sessions_not_met', item('held_sessions_reached', sessions=5), {}, 'not_met'),
+    ('held_sessions_unknown', item('held_sessions_reached', sessions=5), {'mode': 'holding', 'position': {
+        'held_sessions': 6, 'reached_1r': None}}, 'unknown'),
 ]
 
 
@@ -282,3 +302,58 @@ def test_module_is_pure():
     text = open(source, encoding='utf-8').read()
     for banned in ('psycopg', 'repository', 'requests', 'httpx', 'agent.tools', 'from . import tools'):
         assert banned not in text
+
+
+# ---------------------------------------------------------------- held_sessions_reached (condition-2)
+
+def _held(sessions=10):
+    return item('held_sessions_reached', sessions=sessions)
+
+
+def _position(held, reached=False, **extra):
+    return {'held_sessions': held, 'reached_1r': reached, **extra}
+
+
+@pytest.mark.parametrize('position,mode,expected', [
+    (_position(9), 'holding', 'not_met'),                         # day n-1
+    (_position(10), 'holding', 'met'),                            # day n, never closed at +1R
+    (_position(14), 'holding', 'met'),
+    (_position(12, reached=True), 'holding', 'not_met'),          # reached 1R, then pulled back: stays off
+    (_position(12, reached=None), 'holding', 'unknown'),          # R <= 0 or no initial stop
+    (_position(9, reached=None), 'holding', 'not_met'),           # too early to matter
+    (_position(12, t1_reached=True), 'holding', 'not_met'),       # after T1 the time stop no longer applies (R9)
+    (None, 'holding', 'unknown'),
+    ({'held_sessions': None, 'reached_1r': None}, 'holding', 'unknown'),
+    (_position(12), 'entry', 'not_met'),                          # entry phase is not_met, not unknown
+    (None, 'entry', 'not_met'),
+])
+def test_held_sessions_reached_met_not_met_unknown(position, mode, expected):
+    result, detail = evaluate(_held(10), facts(mode=mode, position=position))
+    assert result == expected, detail
+    assert isinstance(detail, str) and detail
+
+
+def test_held_sessions_position_mode_overrides_facts_mode():
+    assert evaluate(_held(5), facts(mode='entry', position=_position(6, mode='holding')))[0] == 'met'
+
+
+def test_held_sessions_param_range():
+    for ok in (3, 5, 20, 30):
+        out = validate(_held(ok), use='invalidation', last_close=LAST_CLOSE, as_of_session=AS_OF)
+        assert out['params'] == {'sessions': ok} and out['text'] == f'持有 {ok} 个交易日仍未到 1R'
+        assert validate(_held(ok), use='review', last_close=LAST_CLOSE, as_of_session=AS_OF)['kind'] == \
+            'held_sessions_reached'
+    for bad in (2, 31, 0, 10.5, True, '10', None):
+        _rejected(item('held_sessions_reached', sessions=bad), 'invalidation')
+        _rejected(item('held_sessions_reached', sessions=bad), 'review')
+    _rejected(item('held_sessions_reached'), 'review')
+    # earnings_within keeps its own 1-10 range even though the param name is shared
+    _rejected(item('earnings_within', sessions=11), 'invalidation')
+    assert conditions.HELD_SESSIONS_RANGE == (3, 30)
+
+
+def test_max_hold_condition_shape():
+    cond = conditions.max_hold_condition(12)
+    assert cond == {'source': 'max_hold', 'kind': 'held_sessions_reached', 'params': {'sessions': 12}}
+    assert describe(cond) == '持有 12 个交易日仍未到 1R'
+    assert evaluate(cond, facts(mode='holding', position=_position(12)))[0] == 'met'

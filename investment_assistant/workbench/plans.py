@@ -1,9 +1,14 @@
-"""Plan-1 trade plan math: ATR14, rule levels, validity, earnings flags, sizing.
+"""Plan-1 / plan-2 trade plan math: ATR14, rule levels, validity, earnings flags, sizing.
 
 Pure functions; SQL and transactions live elsewhere. All prices come from
 price_bars OHLC (split-adjusted, not dividend-adjusted). Levels are rounded to
 cents half-up; ref_price and atr keep full precision and are frozen into the
 plan at generation. Changing a constant means a new PLAN_VERSION.
+
+`plan-2` (v2.9 spec §5.4) is `plan-1` word for word (levels, validity, sizing, earnings rules) plus the two
+execution fields `entry_type = 'zone_limit'` and `max_hold_sessions = 10` and `inputs.entry_rules_version`.
+The builders take `version=`: the default stays `plan-1`, so a caller that has not been rewired (Task 3 / 4)
+still writes exactly the old rows; passing `PLAN_V2` yields the new shape.
 """
 from __future__ import annotations
 
@@ -13,8 +18,18 @@ from typing import Any
 
 from investment_assistant.config import WorkbenchConfig
 from investment_assistant.data.calendar import add_trading_days
+from investment_assistant.workbench.entry_rules import DEFAULT_ENTRY_TYPE, ENTRY_RULES_VERSION
 
-PLAN_VERSION = 'plan-1'
+PLAN_V1 = 'plan-1'
+PLAN_V2 = 'plan-2'
+# The version the unrewired callers (service.py, derivation.py, the backcheck label) still read. Spec §2 fixes
+# PLAN_VERSION = 'plan-2'; it flips together with `derivation.REGISTERED_VERSIONS` getting ('plan-2', 'rule')
+# and the stage_rules caller passing version=PLAN_V2 (Task 3), because until then main would write plan-2 rows
+# its own derivation cannot check.
+PLAN_VERSION = PLAN_V1
+RULE_MAX_HOLD_SESSIONS = 10          # plan-2 rule baseline: exit when still below +1R after this many sessions
+MAX_HOLD_DEFAULT = 10                # what a plan without the field (agent-2, plan-1) is read as
+MAX_HOLD_RANGE = (3, 30)             # trade_plans.max_hold_sessions CHECK
 AGENT_VERSION = 'agent-1'   # the agent track's plan version; graph.py re-exports it
 CONTEXT_VERSION = 'context-2'
 ENTRY_ATR = Decimal('0.5')
@@ -175,10 +190,36 @@ def _freeze_inputs(inputs: dict[str, Any], context: dict | None) -> dict[str, An
     return {**inputs, 'context': context}
 
 
+def _exec_fields(version: str, max_hold_sessions: int | None = None) -> dict[str, Any]:
+    """The columns plan-2 adds (empty for plan-1, whose rows keep both NULL)."""
+    if version == PLAN_V1:
+        return {}
+    if version != PLAN_V2:
+        raise ValueError(f'unknown plan version: {version!r}')
+    hold = RULE_MAX_HOLD_SESSIONS if max_hold_sessions is None else max_hold_sessions
+    if isinstance(hold, bool) or not isinstance(hold, int) or not MAX_HOLD_RANGE[0] <= hold <= MAX_HOLD_RANGE[1]:
+        raise ValueError(f'max_hold_sessions must be an integer in {MAX_HOLD_RANGE}')
+    return {'entry_type': DEFAULT_ENTRY_TYPE, 'max_hold_sessions': hold}
+
+
+def _exec_inputs(version: str, inputs: dict[str, Any], active_chain: dict[str, Any] | None = None) -> dict[str, Any]:
+    if version == PLAN_V1:
+        return inputs
+    extra: dict[str, Any] = {'entry_rules_version': ENTRY_RULES_VERSION}
+    if active_chain is not None:
+        extra['active_chain'] = active_chain
+    return {**inputs, **extra}
+
+
 def build_rule_plan(*, ticker: str, signal_date: date, bars: list[dict[str, Any]], earnings_row: dict[str, Any] | None,
                     snapshot: dict[str, Any] | None, exposure: dict[str, Any],
-                    params: WorkbenchConfig, context: dict | None = None) -> dict[str, Any]:
-    """The rule plan for a buy unit; {'skip': 'atr_unavailable'} when the bars cannot price it."""
+                    params: WorkbenchConfig, context: dict | None = None, version: str = PLAN_V1,
+                    active_chain: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The rule plan for a buy unit; {'skip': 'atr_unavailable'} when the bars cannot price it.
+
+    `version=PLAN_V2` adds `entry_type`, `max_hold_sessions` and `inputs.entry_rules_version` (and
+    `inputs.active_chain = {ticker, signal_date}` when the unit joined an active chain); levels, validity,
+    sizing and flags are identical in both versions."""
     atr = _freeze(atr14(bars)) if (raw := atr14(bars)) is not None else None
     if atr is None or atr <= 0:
         return {'skip': 'atr_unavailable'}
@@ -195,20 +236,26 @@ def build_rule_plan(*, ticker: str, signal_date: date, bars: list[dict[str, Any]
     invalid_reasons = [*invalid, *size_invalid]
     return {
         'ticker': ticker, 'signal_date': signal_date, 'kind': 'rule', 'based_on_id': None,
-        'plan_version': PLAN_VERSION, 'ref_price': ref_price, 'atr': atr, **levels,
+        'plan_version': version, 'ref_price': ref_price, 'atr': atr, **levels,
         'trail_atr_multiple': TRAIL_ATR_MULTIPLE, 'valid_from': valid_from, 'valid_until': valid_until,
         'sizing': sizing, 'status': 'invalid' if invalid_reasons else 'ok',
         'invalid_reasons': invalid_reasons, 'warnings': [*warnings, *context_flags(context)],
-        'inputs': _freeze_inputs(_inputs(bars, earnings_row, snapshot, exposure), context),
+        'inputs': _exec_inputs(version, _freeze_inputs(_inputs(bars, earnings_row, snapshot, exposure), context),
+                               active_chain),
+        **_exec_fields(version),
     }
 
 
 def build_own_plan(*, rule_plan: dict[str, Any] | None, levels: dict[str, Decimal], ticker: str,
                    signal_date: date, bars: list[dict[str, Any]], earnings_row: dict[str, Any] | None,
                    snapshot: dict[str, Any] | None, exposure: dict[str, Any],
-                   params: WorkbenchConfig, context: dict | None = None) -> dict[str, Any]:
-    """A user-confirmed variant; rule-plan invalid reasons demote to warnings (spec §4.5)."""
-    valid_from, valid_until = validity(signal_date)
+                   params: WorkbenchConfig, context: dict | None = None, version: str = PLAN_V1,
+                   fill_session: date | None = None, max_hold_sessions: int | None = None) -> dict[str, Any]:
+    """A user-confirmed variant; rule-plan invalid reasons demote to warnings (spec §4.5).
+
+    `fill_session` (v2.9 spec §6.1) makes the validity the fill day alone, for a plan written together with a
+    fill; `version=PLAN_V2` adds the execution fields (`max_hold_sessions` defaults to 10)."""
+    valid_from, valid_until = validity(signal_date) if fill_session is None else (fill_session, fill_session)
     invalid, warnings = earnings_flags(earnings_row, signal_date=signal_date, valid_from=valid_from,
                                        valid_until=valid_until)
     atr = _freeze(atr14(bars)) if (raw := atr14(bars)) is not None else None
@@ -224,11 +271,12 @@ def build_own_plan(*, rule_plan: dict[str, Any] | None, levels: dict[str, Decima
     return {
         'ticker': ticker, 'signal_date': signal_date, 'kind': 'own',
         'based_on_id': rule_plan['id'] if rule_plan is not None else None,
-        'plan_version': PLAN_VERSION, 'ref_price': ref_price, 'atr': atr, **levels,
+        'plan_version': version, 'ref_price': ref_price, 'atr': atr, **levels,
         'trail_atr_multiple': TRAIL_ATR_MULTIPLE, 'valid_from': valid_from, 'valid_until': valid_until,
         'sizing': sizing, 'status': 'ok', 'invalid_reasons': [],
         'warnings': [*warnings, *invalid, *size_invalid, *context_flags(context)],
-        'inputs': _freeze_inputs(_inputs(bars, earnings_row, snapshot, exposure), context),
+        'inputs': _exec_inputs(version, _freeze_inputs(_inputs(bars, earnings_row, snapshot, exposure), context)),
+        **_exec_fields(version, max_hold_sessions),
     }
 
 

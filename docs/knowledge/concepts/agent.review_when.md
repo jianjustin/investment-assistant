@@ -2,17 +2,17 @@
 id: agent.review_when
 title: "下次复查条件"
 group: agent
-version: 1
-applies_to: [agent-2, condition-1]
+version: 2
+applies_to: [agent-2, agent-3, condition-1, condition-2]
 summary: "Agent 计划可以写 0 到 3 条复查条件，满足时当天必须认真复查；留空等于每个交易日都复查。"
 related: [agent.invalidation, agent.review_outcome, agent.signals, agent.changes]
 sources: [investment_assistant/workbench/agent/conditions.py, investment_assistant/workbench/agent/plan_check.py, investment_assistant/workbench/timeline.py]
 ---
 
 ## 是什么
-复查条件是 Agent 告诉系统"在什么情况下请再叫我看一次这份计划"。它和[失效条件](agent.invalidation.md)用同一张 `condition-1` 登记表，区别是：失效条件成立计划就作废，复查条件成立只是意味着当天要让模型认真复查。
+复查条件是 Agent 告诉系统"在什么情况下请再叫我看一次这份计划"。它和[失效条件](agent.invalidation.md)用同一张 `condition-2` 登记表，区别是：失效条件成立计划就作废，复查条件成立只是意味着当天要让模型认真复查。
 
-可用于复查的 `kind` 共九种（与失效条件有重叠）：
+可用于复查的 `kind` 共十种（与失效条件有重叠）：
 
 | `kind` | 参数 | 文案模板 |
 | --- | --- | --- |
@@ -25,8 +25,9 @@ sources: [investment_assistant/workbench/agent/conditions.py, investment_assista
 | `new_filing` | `form` | 出现新的 {form} |
 | `date_reached` | `date` | 到 {date} 再看 |
 | `next_session` | 无 | 下一交易日 |
+| `held_sessions_reached` | `sessions` | 持有 {sessions} 个交易日仍未到 1R |
 
-`date_reached` 和 `next_session` 只能做复查条件；`no_entry_by` 和 `no_entry_before_earnings` 只能做失效条件。
+`date_reached` 和 `next_session` 只能做复查条件；`held_sessions_reached`（`sessions` 为 3 到 30，入场期恒为未成立）模型只能写在这里，失效条件里的同类条件由宿主注入；`no_entry_by` 和 `no_entry_before_earnings` 只能做失效条件。
 
 ## 怎么算 / 从哪来
 - **条数**：0 到 3 条，留空等于只有一条 `next_session`。参数范围与失效条件相同，复查条件不要求带引用。

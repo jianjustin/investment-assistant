@@ -116,6 +116,130 @@ def test_pending_before_valid_from():
     assert out['status'] == 'pending' and out['fill_date'] is None and out['r'] is None
 
 
+# --- v2.9 spec §5.6: plan-shadow-2 ---
+
+from investment_assistant.workbench import entry_rules  # noqa: E402
+
+D5 = date(2026, 10, 27)
+
+
+def plan2(entry_type='zone_limit', max_hold=10, **overrides):
+    return plan(entry_type=entry_type, max_hold_sessions=max_hold, sizing={'shares': 100}, **overrides)
+
+
+def sim2(plan_dict, bars, splits=()):
+    return plan_shadow.simulate_v2(plan_dict, bars, spy(*(b['price_date'] for b in bars)), splits=list(splits))
+
+
+def test_shadow_versions():
+    assert (plan_shadow.SHADOW_V1, plan_shadow.SHADOW_V2) == ('plan-shadow-1', 'plan-shadow-2')
+    # callers that have not been rewired keep the plan-shadow-1 label beside simulate() until Task 3 / 4 flip it
+    assert plan_shadow.SHADOW_VERSION == plan_shadow.SHADOW_V1
+
+
+def test_shadow_v1_unchanged():
+    """simulate() is the old function: its result keys and numbers do not change, voiding or time stop never happen."""
+    bars = [bar(D1, 90, 93, 89, 92), bar(D2, 91, 96, 89, 93), bar(D3, 92, 99, 90, 94)]
+    out = sim(plan(), bars)
+    assert set(out) == {'status', 'fill_date', 'fill_price', 'legs', 'r', 'return', 'spy_return'}
+    assert out['fill_price'] == D('98')             # gap below the stop-ish open rebounds to 98: v1 still fills
+    # no time stop in plan-shadow-1: a long flat hold stays open
+    held = [bar(D1, 100, 103, 99, 101)] + [bar(d, 101, 102, 100.5, 101) for d in (D2, D3, D4, D5)]
+    assert sim(plan(), held)['status'] == 'open'
+
+
+CASE_OPEN = {'in_zone': dict(o=100, h=103, l=99), 'gap_up': dict(o=105, h=106, l=101),
+             'gap_down': dict(o=96, h=99, l=95), 'gap_down_under_stop': dict(o=93, h=99, l=92)}
+
+
+@pytest.mark.parametrize('entry_type', entry_rules.ENTRY_TYPES)
+@pytest.mark.parametrize('case', ['in_zone', 'gap_up', 'gap_down', 'gap_down_under_stop'])
+def test_shadow_v2_matches_scenarios(entry_type, case):
+    p = plan2(entry_type)
+    spec = CASE_OPEN[case]
+    rows = {r['case']: r for r in entry_rules.scenarios(p)}
+    row = rows['gap_down' if case.startswith('gap_down') else case]
+    out = sim2(p, [bar(D1, spec['o'], spec['h'], spec['l'], spec['o'])])
+    if row['action'] == 'void' or (row['action'] == 'stop_buy_lower' and case == 'gap_down_under_stop'):
+        assert out['status'] == 'voided' and out['fill_price'] is None and out['r'] is None
+        assert out['void_reason'] in ('gap_below_stop', 'gap_above_zone', 'gap_below_zone')
+    elif row['action'] == 'buy_open':
+        assert out['fill_price'] == D(str(spec['o'])) and out['fill_date'] == D1
+    elif row['action'] == 'limit_upper':
+        assert out['fill_price'] == D('102')            # the limit stays at U and the low reaches it
+    else:                                               # stop_buy_lower with the open above the stop
+        assert out['fill_price'] == D('98')
+    # the replay never fills where the text says the plan is dead
+    if entry_type == 'next_open' and case != 'in_zone':
+        assert out['status'] == 'voided'
+
+
+def test_shadow_v2_void_shape_and_unfilled_statuses():
+    out = sim2(plan2(), [bar(D1, 93, 99, 92, 95)])
+    assert out == {'status': 'voided', 'fill_date': None, 'fill_price': None, 'legs': [], 'r': None, 'return': None,
+                   'spy_return': None, 'void_reason': 'gap_below_stop', 'void_date': D1, 'time_stop_due': False}
+    expired = sim2(plan2(), [bar(D1, 110, 111, 105, 106), bar(D2, 110, 111, 105, 106), bar(D3, 110, 111, 105, 106)])
+    assert expired['status'] == 'expired' and expired['r'] is None
+    assert sim2(plan2(), [bar(D0, 100, 101, 99, 100)])['status'] == 'pending'
+
+
+def test_shadow_v2_same_as_v1_when_nothing_special():
+    bars = [bar(D1, 100, 103, 99, 101), bar(D2, 105, 113, 104, 111), bar(D3, 106, 108, 104, 105)]
+    assert sim2(plan2(), bars) == {**sim(plan(), bars), 'void_reason': None, 'void_date': None,
+                                   'time_stop_due': False}
+
+
+def test_time_stop_exits_next_open():
+    # fill D1 at 100 (open inside 98-102), R = 100 - 94 = 6, 1R = 106; max hold 3: D3's close is day 3
+    bars = [bar(D1, 100, 101, 99.5, 101), bar(D2, 101, 102, 100.5, 101), bar(D3, 101, 102, 100.5, 101.5),
+            bar(D4, 102.5, 103, 100.5, 102)]
+    out = sim2(plan2(max_hold=3), bars)
+    assert out['status'] == 'closed'
+    assert out['legs'] == [{'fraction': 1.0, 'exit_date': D4.isoformat(), 'exit_price': D('102.5'),
+                            'reason': 'time_stop'}]
+    assert out['r'] == pytest.approx(2.5 / 6)
+    pending = sim2(plan2(max_hold=3), bars[:3])                       # day 3 closed, day 4 not yet there
+    assert pending['status'] == 'open' and pending['time_stop_due'] is True and pending['legs'] == []
+    early = sim2(plan2(max_hold=4), bars)                             # day 3 is too early for a 4-day limit
+    assert early['status'] == 'open' and early['legs'] == []
+
+
+def test_time_stop_not_applied_after_1r():
+    bars = [bar(D1, 100, 101, 99.5, 101), bar(D2, 101, 108, 100.5, 107), bar(D3, 106, 107, 100.5, 101),
+            bar(D4, 101, 102, 100.5, 101.5), bar(D5, 101, 102, 100.5, 101)]
+    out = sim2(plan2(max_hold=3), bars)            # a close at 107 >= 106 on day 2 switches the time stop off
+    assert out['status'] == 'open' and out['legs'] == [] and out['time_stop_due'] is False
+
+
+def test_time_stop_off_after_t1_even_below_1r():
+    # T1 = 103 is below fill + 1R = 106, so a plan can hit T1 without ever closing at +1R (R9)
+    bars = [bar(D1, 100, 101, 99.5, 101), bar(D2, 101, 104, 100.5, 102), bar(D3, 101.5, 102, 100.5, 101.5),
+            bar(D4, 101.5, 102, 100.5, 101.5), bar(D5, 101.5, 102, 100.5, 101.5)]
+    out = sim2(plan2(max_hold=3, target1=D('103')), bars)
+    assert [leg['reason'] for leg in out['legs']] == ['target1']
+    assert out['status'] == 'open' and out['time_stop_due'] is False
+
+
+def test_time_stop_same_day_stop_first():
+    # day 3 is the max-hold day and trades through the stop: the stop exit counts, not the time stop
+    bars = [bar(D1, 100, 101, 99.5, 101), bar(D2, 101, 102, 100.5, 101), bar(D3, 101, 102, 93.5, 95),
+            bar(D4, 96, 97, 95, 96)]
+    out = sim2(plan2(max_hold=3), bars)
+    assert out['legs'] == [{'fraction': 1.0, 'exit_date': D3.isoformat(), 'exit_price': D('94'), 'reason': 'stop'}]
+    assert out['r'] == pytest.approx(-1.0)
+
+
+def test_simulate_both_old_plan_v1_only():
+    bars = [bar(D1, 100, 103, 99, 101), bar(D2, 101, 104, 100, 102)]
+    old = plan_shadow.simulate_both(plan(), bars, spy(D1, D2), splits=[])
+    assert set(old) == {'v1'} and old['v1'] == sim(plan(), bars)
+    new = plan_shadow.simulate_both(plan2(), bars, spy(D1, D2), splits=[])
+    assert set(new) == {'v2', 'v1'} and new['v1'] == sim(plan2(), bars)
+    assert new['v2']['status'] == 'open' and 'void_reason' in new['v2']
+    assert not plan_shadow.has_exec_fields(plan()) and plan_shadow.has_exec_fields(plan2())
+    assert not plan_shadow.has_exec_fields(plan(entry_type='zone_limit'))     # both fields or none
+
+
 # --- v2.5 §9.1: one shadow per version, chain info, first / latest summaries ---
 
 import uuid  # noqa: E402

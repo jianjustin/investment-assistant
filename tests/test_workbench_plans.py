@@ -314,3 +314,69 @@ def test_agent_plan_earnings_in_validity_invalid():
 def test_agent_plan_no_atr_uses_zero():
     plan = _agent_plan(bars=_bars(14))
     assert plan['atr'] == Decimal('0')
+
+
+# --- v2.9: plan-2 = plan-1 + execution fields (spec §5.4) ---
+
+_SNAP = _snapshot()
+_EARN = _earnings(date(2026, 10, 23))
+
+
+def _rule(version, **kwargs):
+    return plans.build_rule_plan(ticker='NVDA', signal_date=date(2026, 10, 21), bars=_bars(20),
+                                 earnings_row=_EARN, snapshot=_SNAP,
+                                 exposure=_exposure(), params=PARAMS, context={'regime': {'label': 'neutral'}},
+                                 version=version, **kwargs)
+
+
+def test_version_constants():
+    assert (plans.PLAN_V1, plans.PLAN_V2) == ('plan-1', 'plan-2')
+    assert plans.RULE_MAX_HOLD_SESSIONS == 10 and plans.MAX_HOLD_DEFAULT == 10
+    # callers that have not been rewired read PLAN_VERSION; it stays plan-1 until Task 3 flips it (see plans.py)
+    assert plans.PLAN_VERSION == plans.PLAN_V1
+    default = plans.build_rule_plan(ticker='NVDA', signal_date=date(2026, 10, 21), bars=_bars(20), earnings_row=None,
+                                    snapshot=_snapshot(), exposure=_exposure(), params=PARAMS)
+    assert default['plan_version'] == 'plan-1' and 'entry_type' not in default and 'max_hold_sessions' not in default
+    assert 'entry_rules_version' not in default['inputs']
+
+
+def test_plan2_levels_equal_plan1():
+    one, two = _rule(plans.PLAN_V1), _rule(plans.PLAN_V2)
+    assert (one['plan_version'], two['plan_version']) == ('plan-1', 'plan-2')
+    for key in ('ticker', 'signal_date', 'kind', 'based_on_id', 'ref_price', 'atr', 'entry_low', 'entry_high', 'stop',
+                'target1', 'trail_atr_multiple', 'valid_from', 'valid_until', 'sizing', 'status',
+                'invalid_reasons', 'warnings'):
+        assert one[key] == two[key], key
+    assert two['status'] == 'invalid' and two['invalid_reasons'] == ['earnings_in_validity']
+    assert {k: v for k, v in two['inputs'].items() if k != 'entry_rules_version'} == one['inputs']
+
+
+def test_plan2_exec_fields():
+    plan = _rule(plans.PLAN_V2)
+    assert plan['entry_type'] == 'zone_limit' and plan['max_hold_sessions'] == 10
+    assert plan['inputs']['entry_rules_version'] == 'entry-1' and 'active_chain' not in plan['inputs']
+    joined = _rule(plans.PLAN_V2, active_chain={'ticker': 'NVDA', 'signal_date': '2026-10-20'})
+    assert joined['inputs']['active_chain'] == {'ticker': 'NVDA', 'signal_date': '2026-10-20'}
+    assert {k: v for k, v in joined.items() if k != 'inputs'} == {k: v for k, v in plan.items() if k != 'inputs'}
+    with pytest.raises(ValueError):
+        _rule('plan-9')
+
+
+def test_own_plan_fill_session_validity():
+    levels = {'entry_low': Decimal('105'), 'entry_high': Decimal('106'), 'stop': Decimal('100'),
+              'target1': Decimal('115')}
+    common = dict(rule_plan=None, levels=levels, ticker='NVDA', signal_date=date(2026, 10, 22), bars=_bars(20),
+                  earnings_row=None, snapshot=_snapshot(), exposure=_exposure(), params=PARAMS)
+    fill = date(2026, 10, 27)
+    own = plans.build_own_plan(**common, version=plans.PLAN_V2, fill_session=fill)
+    assert (own['valid_from'], own['valid_until']) == (fill, fill)
+    assert own['plan_version'] == 'plan-2' and own['entry_type'] == 'zone_limit' and own['max_hold_sessions'] == 10
+    assert own['inputs']['entry_rules_version'] == 'entry-1'
+    custom = plans.build_own_plan(**common, version=plans.PLAN_V2, fill_session=fill, max_hold_sessions=15)
+    assert custom['max_hold_sessions'] == 15
+    for bad in (2, 31, 10.5, True):
+        with pytest.raises(ValueError):
+            plans.build_own_plan(**common, version=plans.PLAN_V2, fill_session=fill, max_hold_sessions=bad)
+    old = plans.build_own_plan(**common)
+    assert old['plan_version'] == 'plan-1' and 'entry_type' not in old
+    assert (old['valid_from'], old['valid_until']) == plans.validity(date(2026, 10, 22))
