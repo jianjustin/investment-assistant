@@ -3,7 +3,7 @@
   import * as wb from '../workbench'
 
   // 备注（spec §6.5）：写给自己的日志，不进 Agent 提示词、不触发复查。
-  // 提交由上层做（onNote 抛错即失败）；失败时保留正文与 request id，同一内容重试幂等。
+  // 提交由上层做（onNote 抛错即失败）；失败时保留正文与 request id，同一内容重试幂等；正文改过就换新的 request id。
   let { notes, onNote }: { notes: wb.PlanNote[]; onNote: (body: string, requestId: string) => Promise<void> } = $props()
 
   let body = $state('')
@@ -46,7 +46,7 @@
   {/if}
   <form class="space-y-1" onsubmit={submit}>
     <textarea aria-label="备注正文" class="w-full border border-border rounded p-2 text-sm bg-bg" rows="2"
-              placeholder="写给自己的备注（1–1000 字）" bind:value={body}></textarea>
+              placeholder="写给自己的备注（1–1000 字）" bind:value={body} oninput={() => { requestId = null }}></textarea>
     <p class="text-xs text-muted">{wb.NOTE_HINT_TEXT}</p>
     <div class="flex flex-wrap items-center gap-2">
       <button type="submit" class="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50"

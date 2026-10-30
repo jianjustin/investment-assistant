@@ -56,10 +56,20 @@
     const p = row.plan
     return p?.entry_type ? wb.openCaseText(kase, p.entry_type, p) : '—'
   }
+  // §7.3: 重新复查不写持仓状态行；当天行之后的复查结论显示在行旁
+  function laterReview(row: wb.PlanTableRow): string {
+    const r = row.status.latest_review
+    const h = row.holding
+    if (!r || !h) return ''
+    const later = r.trigger === 'recheck' || (!!h.session && r.session > h.session)
+    if (!later) return ''
+    const who = r.decided_by ? (tl.DECIDED_BY_TEXT[r.decided_by as tl.DecidedBy] ?? r.decided_by) : ''
+    return `之后的复查（${r.session}）：${tl.OUTCOME_TEXT[r.outcome as tl.Outcome] ?? r.outcome}${who ? ` · ${who}` : ''}${r.reason ? `：${r.reason}` : ''}`
+  }
   const entryTypeText = (p: wb.RowPlan) => p.entry_type_text ?? (p.entry_type ? wb.ENTRY_TYPE_TEXT[p.entry_type] : '—')
   const sharesText = (p: wb.RowPlan) => (p.shares != null ? `${p.shares} 股` : (p.shares_note ?? '—'))
   const resultText = (r: string | null | undefined) => (r ? (tl.CONDITION_RESULT_TEXT[r as tl.ConditionResultValue] ?? r) : '')
-  const execText = (row: wb.PlanTableRow) => wb.executionText(row.status.execution, row.status.execution_detail)
+  const execText = (row: wb.PlanTableRow) => wb.rowExecutionText(row.status)
 
   // 状态列保留颜色：作废红、过期橙、平仓绿、被取代灰，其余按强调色。
   function statusClass(row: wb.PlanTableRow): string {
@@ -82,8 +92,11 @@
   <span class="block">{row.chain ? row.chain.label : (row.plan ? `规则基线 ${row.plan.plan_version}` : '无计划')}</span>
   {#if row.plan}<span class="block text-xs text-muted">{wb.KIND_TEXT[row.plan.kind] ?? row.plan.kind} · {row.plan.plan_version}</span>{/if}
   {#if row.plan?.defaults_applied}<span class="block text-xs text-amber-700">{wb.DEFAULTS_APPLIED_TEXT}</span>{/if}
+  {#if !row.chain && wb.activeChainText(row)}<span class="block text-xs text-amber-700">{wb.activeChainText(row)}</span>{/if}
   {#each row.chain?.retriggers ?? [] as r (r.unit_signal_date)}
-    <span class="block text-xs text-amber-700">{md(r.unit_signal_date)} 再次触发 → 第 {row.chain?.version_no} 版</span>
+    <!-- 版本号只在这一次触发自带 version_no，或链上只有一次触发时写；否则每条都会写成当前最新版 -->
+    {@const v = r.version_no ?? (row.chain!.retriggers.length === 1 ? row.chain!.version_no : null)}
+    <span class="block text-xs text-amber-700">{md(r.unit_signal_date)} 再次触发{v != null ? ` → 第 ${v} 版` : ''}</span>
   {/each}
 {/snippet}
 
@@ -112,6 +125,8 @@
   {#if row.holding}
     <span class="block text-xs">{wb.holdingLine(row.holding)}</span>
     {#if row.holding.stale}<span class="block text-xs text-amber-700">{wb.STALE_HOLDING_TEXT}</span>{/if}
+    {@const later = laterReview(row)}
+    {#if later}<span data-testid="later-review" class="block text-xs text-muted">{later}</span>{/if}
   {:else}
     <span class="text-xs text-muted">—</span>
   {/if}
@@ -124,17 +139,20 @@
 {/snippet}
 
 {#snippet detail(row: wb.PlanTableRow)}
+  <div id={`row-detail-${row.row_id}`}>
   <PlanRowDetail {row} recheck={rechecks[row.row_id]} onRecheck={() => onRecheck(row)}
                  onNote={(body, requestId) => onNote(row, body, requestId)} />
+  </div>
 {/snippet}
 
 {#snippet expandButton(row: wb.PlanTableRow)}
-  <button type="button" class="text-xs text-accent underline" aria-expanded={!!expanded[row.row_id]}
+  <button type="button" class="text-xs text-accent underline" aria-expanded={!!expanded[row.row_id]} aria-controls={`row-detail-${row.row_id}`}
           aria-label={`${expanded[row.row_id] ? '收起' : '展开'} ${row.ticker}`} onclick={() => toggle(row)}>{expanded[row.row_id] ? '收起' : '展开'}</button>
 {/snippet}
 
 {#snippet tickerCell(row: wb.PlanTableRow)}
-  <button type="button" class="font-medium text-accent underline" onclick={() => toggle(row)}>{row.ticker}</button>
+  <button type="button" class="font-medium text-accent underline" aria-expanded={!!expanded[row.row_id]}
+          aria-controls={`row-detail-${row.row_id}`} onclick={() => toggle(row)}>{row.ticker}</button>
   {#if row.pool === 'extended'}<span class="text-xs px-1 rounded bg-surface-2">扩展池</span>{/if}
   <a class="block text-xs text-muted underline" href={`#instrument/${encodeURIComponent(row.ticker)}`}>标的页</a>
 {/snippet}
@@ -184,7 +202,7 @@
         <table aria-label="入场期计划" class="text-xs w-full min-w-[1100px]">
           <thead><tr class="text-left text-muted align-bottom">
             <th>标的</th><th>链与版本</th><th>动作</th>
-            <th><ConceptTerm id={T.basis}>入场类型</ConceptTerm>与区间</th><th>止损</th><th>T1</th><th>建议股数</th><th>有效期</th>
+            <th>入场类型与区间</th><th>止损</th><th>T1</th><th>建议股数</th><th>有效期</th>
             <th>开盘：区间内</th><th>开盘：高开</th><th>开盘：低开</th><th>本计划何时作废</th><th>状态</th><th></th>
           </tr></thead>
           <tbody>
@@ -255,10 +273,10 @@
 
   <section aria-label="已结束" class="space-y-2">
     <h2 class="font-semibold text-sm">
-      <button type="button" class="underline" aria-expanded={endedOpen} onclick={toggleEnded}>已结束 {endedRows.length}</button>
+      <button type="button" class="underline" aria-expanded={endedOpen} aria-controls="plan-table-ended" onclick={toggleEnded}>已结束 {endedRows.length}</button>
     </h2>
     {#if endedOpen}
-      <div data-testid="ended-group" class="text-muted">
+      <div id="plan-table-ended" data-testid="ended-group" class="text-muted">
         {#if endedRows.length === 0}
           <p class="text-sm">最近 5 个交易日内没有结束的计划</p>
         {:else if narrow}

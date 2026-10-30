@@ -337,4 +337,15 @@ describe('PlanTimeline', () => {
     await screen.findByRole('list', { name: '版本' })
     expect(screen.queryByRole('table', { name: '持仓状态' })).toBeNull()
   })
+
+  it('reads a gap-voided plan-shadow-2 version as 开盘作废, not the raw code', async () => {
+    const base = chain()
+    respond = async () => json(chain({ versions: [{ ...base.versions[0], plan: v3Plan('p0'),
+      shadow: { status: 'voided', fill_date: null, fill_price: null, legs: [], r: 0, return: null, spy_return: null } }, base.versions[1]] }))
+    render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
+    const rows = (await screen.findByRole('list', { name: '版本' })).querySelectorAll(':scope > li')
+    expect(rows[0]).toHaveTextContent('影子 开盘作废')
+    expect(rows[0]).not.toHaveTextContent('voided')
+  })
 })
+

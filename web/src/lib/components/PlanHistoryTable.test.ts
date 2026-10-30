@@ -97,4 +97,27 @@ describe('PlanHistoryTable', () => {
     expect(screen.getByText('该标的还没有计划历史')).toBeInTheDocument()
     expect(within(document.body).queryByRole('table', { name: '计划历史' })).toBeNull()
   })
+
+  it('survives identical diff or change texts in one row (keyed by position)', () => {
+    const dup = { kind: 'version', at: '2026-10-22T22:40:00Z', session: '2026-10-22', chain_signal_date: '2026-10-21', version_no: 1,
+      diff: [{ field: 'stop', before: '86.00', after: '87.00' }, { field: 'stop', before: '86.00', after: '87.00' }],
+      changes: ['止损上移', '止损上移'], text: '第 1 版' } as HistoryRow
+    render(PlanHistoryTable, { rows: [dup], chains: [], ticker: 'MU' })
+    expect(screen.getAllByText('止损 86.00 → 87.00')).toHaveLength(2)
+    expect(screen.getAllByText('止损上移')).toHaveLength(2)
+  })
+
+  it('keeps rows without a chain at their place in time (baselines between two chains)', () => {
+    const base = rows()
+    const baseline = { kind: 'version', at: '2026-10-25T22:40:00Z', session: '2026-10-25', chain_signal_date: null,
+      version_no: null, levels: { entry_low: '88.00', entry_high: '90.00', stop: '84.00', target1: '96.00' }, text: '规则基线 plan-2' } as HistoryRow
+    const ordered = [...base.slice(0, 5), baseline, ...base.slice(5)]
+    render(PlanHistoryTable, { rows: ordered, chains: chains(), ticker: 'MU', includeBaselines: true })
+    const bodies = [...screen.getByRole('table', { name: '计划历史' }).querySelectorAll('tbody')]
+    expect(bodies.map(b => b.getAttribute('data-chain'))).toEqual(['2026-10-21', '', '2026-10-28'])
+    expect(bodies[1]).toHaveTextContent('88.00–90.00')
+    expect(bodies[0]).not.toHaveTextContent('88.00–90.00')
+    expect(bodies[2]).not.toHaveTextContent('88.00–90.00')
+  })
 })
+

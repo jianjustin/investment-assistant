@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AGENT_REASON_TEXT, CONFLICT_TEXT, DECISIONS_RETIRED_TEXT, DECISION_LINK_RETIRED_TEXT, ENTRY_TYPE_TEXT,
   EXECUTION_TEXT, INSTRUCTION_TEXT, MIGRATION_029_TEXT, OPEN_CASE_TEXT, OPEN_SCENARIO_TEXT, STALE_HOLDING_TEXT, WorkbenchError,
-  describeError, executionText, getAccount, getDiscipline, getHoldingStatus, getLinkablePlans, getMonthly,
+  activeChainText, describeError, executionText, rowExecutionText, getAccount, getDiscipline, getHoldingStatus, getLinkablePlans, getMonthly,
   getPlanHistory, getPlanNotes, getPlanShadow, getPlanTable, getToday, holdingLine, levelsError, openCaseText,
   pct, postPlanNote, postTrade, publishedText, pushToday, RULE_LABELS, ruleLabel, signedPct, timeline,
   tradePlanText,
@@ -155,9 +155,14 @@ import { rText, TRACK_STATUS_TEXT } from './workbench'
 
 it('TRACK_STATUS_TEXT covers every status', () => {
   expect(Object.keys(TRACK_STATUS_TEXT).sort()).toEqual(['closed', 'expired', 'missing', 'no_plan',
-    'not_executable', 'not_executed', 'open', 'pass', 'pending', 'merged'].sort())
+    'not_executable', 'not_executed', 'open', 'pass', 'pending'].sort())
   expect(TRACK_STATUS_TEXT.missing).toBe('缺失')
   expect(TRACK_STATUS_TEXT.not_executed).toBe('未执行')
+})
+
+it('TRACK_STATUS_TEXT_V2 adds voided and merged (tracks.TRACK_STATUS_TEXT_V2)', async () => {
+  const { TRACK_STATUS_TEXT_V2 } = await import('./workbench')
+  expect(TRACK_STATUS_TEXT_V2).toEqual({ ...TRACK_STATUS_TEXT, voided: '开盘作废', merged: '并入其他链' })
 })
 
 it('rText formats sign and null', () => {
@@ -241,6 +246,15 @@ describe('v2.9 texts (verbatim from the spec)', () => {
       active_chain: '已有进行中的计划链，这次触发已并入' })
   })
 
+  it('409 templates are the spec sentences (R6, §4.7, R10), with the backend fillers as placeholders', () => {
+    expect(CONFLICT_TEXT).toEqual({
+      plan_stale: '成交时这条链已是第 {n} 版，请关联第 {n} 版',
+      plan_after_fill: '这一版生成于成交之后，不可能是你照着做的那一版',
+      chain_exiting: '这条链已发出退出指令，不再复查',
+      active_chain: '{ticker} 已有进行中的计划链（{date} 第 {n} 版），这次触发已并入' })
+    expect(JSON.stringify(CONFLICT_TEXT)).not.toContain('或选自定')
+  })
+
   it('410 / 409 / 400 / 503 messages', () => {
     expect(DECISIONS_RETIRED_TEXT).toBe('decisions_retired: v2.9 起不再记录决定，采纳由成交推导；可在计划上写备注')
     expect(describeError(new WorkbenchError(DECISIONS_RETIRED_TEXT, 410)))
@@ -250,6 +264,8 @@ describe('v2.9 texts (verbatim from the spec)', () => {
     expect(describeError(new WorkbenchError('迁移 029 未执行', 503))).toBe('迁移 029 未执行')
     expect(describeError(new WorkbenchError('plan_stale: 成交时这条链已是第 3 版，请关联第 3 版', 409)))
       .toBe('成交时这条链已是第 3 版，请关联第 3 版')
+    expect(describeError(new WorkbenchError('plan_stale', 409))).toBe('成交时这条链已是第 — 版，请关联第 — 版')
+    expect(describeError(new WorkbenchError('active_chain', 409))).toBe('已有进行中的计划链，这次触发已并入')
     expect(describeError(new WorkbenchError('plan_after_fill', 409))).toBe('这一版生成于成交之后，不可能是你照着做的那一版')
     expect(describeError(new WorkbenchError('chain_exiting', 409))).toBe(CONFLICT_TEXT.chain_exiting)
     expect(describeError(new WorkbenchError('active_chain: MU 已有进行中的计划链（10-29 第 2 版），这次触发已并入', 409)))
@@ -337,5 +353,23 @@ describe('v2.9 api', () => {
     const wb = await import('./workbench')
     expect('postDecision' in wb).toBe(false)
     expect('decisionPayload' in wb).toBe(false)
+  })
+})
+
+describe('v2.9 row helpers', () => {
+  it('renders 「已有活跃链，见 <TICKER>·<MM-DD>」 from the flag, the chain or inputs.active_chain', () => {
+    const chain = { signal_date: '2026-10-29' } as any
+    const base = (active_chain: unknown) => ({ ticker: 'MU', chain, baseline: { active_chain } as any })
+    expect(activeChainText(base(true))).toBe('已有活跃链，见 MU·10-29')
+    expect(activeChainText(base({ ticker: 'MU', signal_date: '2026-10-21' }))).toBe('已有活跃链，见 MU·10-21')
+    expect(activeChainText({ ticker: 'MU', chain: null, baseline: { active_chain: true } as any })).toBe('已有活跃链')
+    expect(activeChainText(base(false))).toBe('')
+  })
+
+  it('chain-level execution is 已执行, with what it followed', () => {
+    expect(rowExecutionText({ execution: 'executed', execution_basis: '照 Agent 第 2 版' })).toBe('已执行（照 Agent 第 2 版）')
+    expect(rowExecutionText({ execution: 'executed' })).toBe('已执行')
+    expect(rowExecutionText({ execution: 'pending' })).toBe('入场期，未成交')
+    expect(rowExecutionText({ execution: null })).toBe('')
   })
 })

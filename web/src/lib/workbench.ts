@@ -33,7 +33,7 @@ export interface Plan {
   sizing: { status: 'sized' | 'capped' | 'no_equity' | 'no_room'; shares: number | null
             risk_amount?: number | null; snapshot_as_of?: string | null } | null
   invalid_reasons: string[]; warnings: string[]; based_on_id?: string | null
-  inputs?: { context?: PlanContext }
+  inputs?: { context?: PlanContext; chain_mode?: 'entry' | 'holding' }   // chain_mode: R3, written by build_version_plan
   // v2.9 §5.1: execution fields; absent on plan-1 / agent-2 rows
   entry_type?: EntryType | null; max_hold_sessions?: number | null
 }
@@ -58,7 +58,7 @@ export interface AccountParams {
 }
 export interface AccountView { snapshots: Snapshot[]; flows: CashFlow[]; params: AccountParams }
 export interface PlanShadowOutcome {
-  status: 'pending' | 'expired' | 'open' | 'closed'; fill_date: string | null; fill_price: number | null
+  status: 'pending' | 'expired' | 'open' | 'closed' | 'voided'; fill_date: string | null; fill_price: number | null
   legs: { fraction: number; exit_date: string; exit_price: number; reason: string }[]
   r: number | null; return: number | null; spy_return: number | null
 }
@@ -281,7 +281,7 @@ export function describeError(error: unknown): string {
       return MIGRATION_029_TEXT
     if (error.status === 409) {
       for (const code of Object.keys(CONFLICT_TEXT)) {
-        if (error.message.startsWith(code)) return sentenceAfter(error.message, code) ?? CONFLICT_TEXT[code]
+        if (error.message.startsWith(code)) return sentenceAfter(error.message, code) ?? conflictFallback(code)
       }
     }
     if (error.status === 503) return `数据库未就绪：${error.message}`
@@ -388,7 +388,7 @@ export function timeline(view: InstrumentView): TimelineItem[] {
 // --- three-track comparison and review pushes (P4 design §4, §6) ---
 
 export type TrackStatus = 'missing' | 'not_executable' | 'pending' | 'expired' | 'open' | 'closed' | 'pass'
-  | 'not_executed' | 'no_plan' | 'merged'
+  | 'not_executed' | 'no_plan' | 'voided' | 'merged'
 export interface TrackResult { status: TrackStatus; r: number | null }
 export interface RuleTrack extends TrackResult { plan_id: string | null }
 export interface AgentTrack extends TrackResult { run_id: string | null; run_status: string | null; run_reason: string | null; plan_id: string | null }
@@ -412,10 +412,13 @@ export interface ReviewPush {
   trigger_source: 'scheduled' | 'manual'; sent: boolean; messages: number; reason: string | null; created_at: string
 }
 
-export const TRACK_STATUS_TEXT: Record<TrackStatus, string> = {
+export const TRACK_STATUS_TEXT: Record<Exclude<TrackStatus, 'voided' | 'merged'>, string> = {
   missing: '缺失', not_executable: '计划作废', pending: '待定', expired: '到期未成交',
   open: '未平仓', closed: '已平仓', pass: '不建议', not_executed: '未执行', no_plan: '无计划成交',
-  merged: '并入其他链',   // tracks-2 (v2.9 D27): the unit's trigger was merged into another chain
+}
+/** tracks.TRACK_STATUS_TEXT_V2: tracks-2 adds two statuses (the table above stays the tracks-1 one). */
+export const TRACK_STATUS_TEXT_V2: Record<TrackStatus, string> = {
+  ...TRACK_STATUS_TEXT, voided: '开盘作废', merged: '并入其他链',
 }
 
 export const getTracks = (since?: string, until?: string) => request<TracksView>(
@@ -484,12 +487,19 @@ export const DECISIONS_RETIRED_TEXT = `decisions_retired: ${DECISIONS_RETIRED_SE
 export const DECISION_LINK_RETIRED_TEXT = 'v2.9 起成交不再关联决定，请改为关联计划'
 /** 503 `migration_029_missing` (§13). */
 export const MIGRATION_029_TEXT = '迁移 029 未执行'
-/** 409 reasons (§6.1 + R6, §4.7 + R10); the backend sends `code: sentence` with n filled in, these are the fallbacks. */
+/** 409 texts, spec templates verbatim (R6 `plan_stale` / `plan_after_fill`, §4.7 `active_chain`, R10 `chain_exiting`).
+ *  `{n}` `{ticker}` `{date}` are filled by the backend; the page shows the backend's finished sentence. */
 export const CONFLICT_TEXT: Record<string, string> = {
-  plan_stale: '成交时这条链已是更新的一版，请关联最新的那一版，或选自定',
+  plan_stale: '成交时这条链已是第 {n} 版，请关联第 {n} 版',
   plan_after_fill: '这一版生成于成交之后，不可能是你照着做的那一版',
   chain_exiting: '这条链已发出退出指令，不再复查',
-  active_chain: '已有进行中的计划链，这次触发已并入',
+  active_chain: '{ticker} 已有进行中的计划链（{date} 第 {n} 版），这次触发已并入',
+}
+/** What the page shows for a bare 409 code (no sentence): the template with unknown parts as 「—」, except
+ *  `active_chain`, which falls back to the void-reason sentence (§5.5). */
+export function conflictFallback(code: string): string {
+  if (code === 'active_chain') return AGENT_REASON_TEXT.active_chain
+  return (CONFLICT_TEXT[code] ?? code).replace(/\{[a-z]+\}/g, '—')
 }
 export const CHAIN_EXITING_TEXT = CONFLICT_TEXT.chain_exiting
 /** R18: a holding without a `holding_status` row today is computed on the fly. */
@@ -528,7 +538,7 @@ export function executionText(status: string | null | undefined, detail?: { date
 
 // ---- types (spec §9.1) ----
 
-export interface RowRetrigger { unit_signal_date: string; rule_ids: string[] }
+export interface RowRetrigger { unit_signal_date: string; rule_ids: string[]; version_no?: number | null }
 export interface RowChain {
   signal_date: string; version_no: number; head_plan_id: string; state: string; label: string; retriggers: RowRetrigger[]
 }
@@ -541,14 +551,16 @@ export interface RowPlan {
 }
 export interface RowBaseline {
   plan_id: string; plan_version: string; entry_low: string; entry_high: string; stop: string; target1: string
-  shares: number | null; status: string; active_chain: boolean
+  shares: number | null; status: string
+  active_chain: boolean | { ticker: string; signal_date: string }    // inputs.active_chain = {ticker, signal_date} (§5.4)
 }
 export interface OpenScenario { case: OpenCase; action: string; text: string }
 export interface VoidWhen { source: 'validity' | 'gap' | 'invalidation' | 'max_hold' | 'stop' | string; text: string; last_result?: string | null }
 export interface RowStatus {
-  label: string; execution: ExecutionStatus | null
+  label: string; execution: ExecutionStatus | 'executed' | null    // chain level (R13): `executed`
+  execution_basis?: string | null     // chain level: what it followed, e.g. 「照 Agent 第 2 版」
   execution_detail?: { date?: string | null; quantity?: number | string | null } | null
-  latest_review?: { outcome: string; decided_by: string | null; reason: string | null; session: string; via?: string | null } | null
+  latest_review?: { outcome: string; decided_by: string | null; reason: string | null; session: string; via?: string | null; trigger?: string | null } | null
   today_signals?: string[]; changes_text?: string[]; diff?: { field: string; before: unknown; after: unknown }[]
 }
 export interface PlanNote { id: number; body: string; created_at: string; ticker?: string; chain_signal_date?: string | null; plan_id?: string | null; supersedes_id?: number | null }
@@ -669,3 +681,22 @@ export function holdingLine(h: HoldingStatus): string {
   const verb = INSTRUCTION_TEXT[h.instruction] ?? h.instruction
   return `${head} · ${verb}${tail}`
 }
+
+/** §5.4: 「已有活跃链，见 MU·10-29」 for a baseline whose unit joined an active chain; '' when it did not. */
+export function activeChainText(row: Pick<PlanTableRow, 'baseline' | 'chain' | 'ticker'>): string {
+  const flag = row.baseline?.active_chain
+  if (!flag) return ''
+  const mmdd = (d: string) => d.slice(5)
+  if (typeof flag === 'object') return `已有活跃链，见 ${flag.ticker}·${mmdd(flag.signal_date)}`
+  if (row.chain) return `已有活跃链，见 ${row.ticker}·${mmdd(row.chain.signal_date)}`
+  return '已有活跃链'
+}
+
+/** Row-end execution text: the state, plus what the chain followed when the backend says (R13 「照 Agent 第 n 版」). */
+export function rowExecutionText(status: Pick<RowStatus, 'execution' | 'execution_detail' | 'execution_basis'>): string {
+  const base = executionText(status.execution, status.execution_detail)
+  return base && status.execution_basis ? `${base}（${status.execution_basis}）` : base
+}
+
+/** Review snapshots from review-8 on speak of executions, not decisions (D30). */
+export const isExecutionReview = (calcVersion: string | null | undefined) => calcVersion === 'review-8'

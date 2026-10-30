@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import { fmtPct } from '../lib/format'
   import * as wb from '../lib/workbench'
   import * as api from '../lib/api'
@@ -156,16 +156,33 @@
       linkableError = wb.describeError(e)
     }
   }
+  // 可关联的计划是按代码与成交时间取的：代码变了，之前选的计划（和自定价位）不再属于这只票；成交时间变了，
+  // 选中的计划行也可能不再可关联——一律清掉重选（「自定」本身与成交时间无关，保留）。
+  let lastKey = ''
+  let lastExecuted = ''
   $effect(() => {
     const ticker = tickerKey
     const executed = form.executed
+    untrack(() => {
+      if (ticker !== lastKey) {
+        form.planChoice = ''
+        form.own = { entry_low: '', entry_high: '', stop: '', target1: '', max_hold: '' }
+      } else if (executed !== lastExecuted && form.planChoice !== OWN) {
+        form.planChoice = ''
+      }
+      lastKey = ticker
+      lastExecuted = executed
+    })
     if (!ticker) { linkableSeq++; linkable = null; linkableError = ''; return }
     const timer = setTimeout(() => { void loadLinkable(ticker, executed) }, 250)   // 输入代码时不逐字请求
     return () => clearTimeout(timer)
   })
 
   // 买入默认选活跃链最新版，没有时「无计划」；卖出可不关联（平仓按 FIFO 配对）
-  const planChoice = $derived(form.planChoice
+  // 选中的计划 id 不在当前可关联列表里（列表还没取到、取失败、换了票）就当没选过
+  const choiceValid = $derived(form.planChoice === NONE || form.planChoice === OWN
+    || !!linkable?.plans.some(p => p.plan_id === form.planChoice))
+  const planChoice = $derived((form.planChoice && choiceValid ? form.planChoice : '')
     || (form.side === 'buy' && linkable?.default_plan_id && linkable.plans.some(p => p.plan_id === linkable!.default_plan_id)
         ? linkable.default_plan_id : NONE))
   const ownError = $derived.by(() => {
@@ -410,21 +427,22 @@
   {/if}
 
   {#if tab === 'shadow' && shadow && !error}
-    <p class="text-xs text-muted">假设下一交易日开盘入场；数值为相对 SPY 的超额收益，卖出取反（避开的跌幅）。自 {shadow.since} 起，口径 {shadow.calc_version}。</p>
+    {@const allUnits = wb.isExecutionReview(shadow.calc_version)}
+    <p class="text-xs text-muted">假设下一交易日开盘入场；数值为相对 SPY 的超额收益，卖出取反（避开的跌幅）。{allUnits ? '范围是全部信号单元（不论你有没有成交）。' : ''}自 {shadow.since} 起，口径 {shadow.calc_version}。</p>
     <table class="text-sm w-full">
-      <thead><tr class="text-left text-xs text-muted"><th>标的</th><th>信号日</th><th>规则</th><th>建议</th><th>决定</th><th>5 日</th><th>10 日</th><th>20 日</th></tr></thead>
+      <thead><tr class="text-left text-xs text-muted"><th>标的</th><th>信号日</th><th>规则</th><th>建议</th>{#if !allUnits}<th>决定</th>{/if}<th>5 日</th><th>10 日</th><th>20 日</th></tr></thead>
       <tbody>
         {#each shadow.units as u (u.id)}
           <tr>
             <td>{u.ticker}</td><td>{u.signal_date}</td><td>{u.rule_ids.map(wb.ruleLabel).join('、')}</td>
-            <td>{wb.ACTION_LABELS[u.proposed_action]}</td><td>{wb.CHOICE_LABELS[u.decision]}</td>
+            <td>{wb.ACTION_LABELS[u.proposed_action]}</td>{#if !allUnits}<td>{wb.CHOICE_LABELS[u.decision]}</td>{/if}
             {#if u.outcome.status === 'pending_entry'}
               <td colspan="3" class="text-muted">待入场</td>
             {:else}
               {#each ['5', '10', '20'] as n}<td>{windowText(u.outcome.windows[n])}</td>{/each}
             {/if}
           </tr>
-        {:else}<tr><td colspan="8" class="text-muted">暂无已决定的信号</td></tr>{/each}
+        {:else}<tr><td colspan={allUnits ? 7 : 8} class="text-muted">{allUnits ? '暂无信号单元' : '暂无已决定的信号'}</td></tr>{/each}
       </tbody>
     </table>
   {/if}
@@ -449,9 +467,9 @@
               <td><a class="text-accent" href={`#instrument/${u.ticker}`}>{u.ticker}</a></td>
               <td>{u.signal_date}</td>
               <td>{u.pool === 'core' ? '核心' : '扩展'}</td>
-              <td>{wb.TRACK_STATUS_TEXT[u.rule.status]} {wb.rText(u.rule.r)}{#if u.rule.plan_id} · <a class="text-accent" href={`#plan/${u.rule.plan_id}`}>计划 {String(u.rule.plan_id).slice(0, 8)}</a>{/if}</td>
-              <td>{wb.TRACK_STATUS_TEXT[u.agent.status]} {wb.rText(u.agent.r)}{#if u.agent.run_id} · <button class="text-accent underline" onclick={() => openRun(u.agent.run_id!)}>{String(u.agent.run_id).slice(0, 8)}</button>{/if}</td>
-              <td>{wb.TRACK_STATUS_TEXT[u.actual.status]} {wb.rText(u.actual.r)}{#if u.actual.plan_kind} · 照{wb.KIND_TEXT[u.actual.plan_kind]}{/if}</td>
+              <td>{wb.TRACK_STATUS_TEXT_V2[u.rule.status]} {wb.rText(u.rule.r)}{#if u.rule.plan_id} · <a class="text-accent" href={`#plan/${u.rule.plan_id}`}>计划 {String(u.rule.plan_id).slice(0, 8)}</a>{/if}</td>
+              <td>{wb.TRACK_STATUS_TEXT_V2[u.agent.status]} {wb.rText(u.agent.r)}{#if u.agent.run_id} · <button class="text-accent underline" onclick={() => openRun(u.agent.run_id!)}>{String(u.agent.run_id).slice(0, 8)}</button>{/if}</td>
+              <td>{wb.TRACK_STATUS_TEXT_V2[u.actual.status]} {wb.rText(u.actual.r)}{#if u.actual.plan_kind} · 照{wb.KIND_TEXT[u.actual.plan_kind]}{/if}</td>
             </tr>
           {:else}<tr><td colspan="6" class="text-muted">窗口内没有可比单元</td></tr>{/each}
         </tbody>
@@ -472,7 +490,7 @@
     {#each weekly as r (r.id)}
       <article class="border border-border rounded p-3 text-sm space-y-2">
         <h2 class="font-semibold">{r.stats.week?.start ?? r.week_start} 周 ·
-          {#if r.stats.units?.executed !== undefined}已执行 {r.stats.units.executed} · 未执行 {r.stats.units?.not_executed ?? 0}
+          {#if wb.isExecutionReview(r.calc_version)}已执行 {r.stats.units.executed} · 未执行 {r.stats.units?.not_executed ?? 0}
           {:else}已决定 {r.stats.units?.decided ?? 0} · 未处理 {r.stats.units?.undecided ?? 0}{/if}
           <button class="ml-2 px-2 py-0.5 rounded bg-accent text-white text-xs" onclick={() => push('weekly', r.week_start)}>推送到 Discord</button>
           {#if pushResults['weekly:' + r.week_start]}<span class="text-xs text-muted">{pushResults['weekly:' + r.week_start]}</span>
@@ -480,7 +498,7 @@
         </h2>
         <p class="text-xs text-muted">{r.stats.note} 口径 {r.calc_version} · 生成于 {wb.dateTime(r.created_at)}{r.supersedes_id ? ' · 更正版' : ''}</p>
         {#if r.notes}<p>{r.notes}</p>{/if}
-        {#each [['按规则', r.stats.by_rule], ['按决定', r.stats.by_decision], ['按执行', r.stats.by_execution]] as [title, groups]}
+        {#each [['按规则', r.stats.by_rule], wb.isExecutionReview(r.calc_version) ? ['按执行', r.stats.by_execution] : ['按决定', r.stats.by_decision]] as [title, groups]}
           {#if groups && Object.keys(groups).length}
             <p class="text-xs text-muted">{title}（超额收益：均值 / 中位数 · 成熟数/总数）</p>
             <ul>
@@ -511,9 +529,12 @@
         {/if}
         {#if r.stats.execution?.length}
           <p class="text-xs text-muted">执行偏差</p>
-          <ul>{#each r.stats.execution as x}<li>{x.ticker} 成交价较 T+1 开盘 {wb.pct(x.slippage)} · 决定后 {Number(x.delay_hours).toFixed(1)} 小时成交</li>{/each}</ul>
+          <ul>{#each r.stats.execution as x}<li>{x.ticker} 成交价较 T+1 开盘 {wb.pct(x.slippage)} · {wb.isExecutionReview(r.calc_version) ? '版本生成后' : '决定后'} {Number(x.delay_hours).toFixed(1)} 小时成交</li>{/each}</ul>
         {/if}
-        {#if r.stats.unsignaled_trades?.length}<p>无信号交易 {r.stats.unsignaled_trades.length} 笔</p>{/if}
+        {#if wb.isExecutionReview(r.calc_version)}
+          {@const unplanned = r.stats.unplanned_trades ?? r.stats.unsignaled_trades}
+          {#if unplanned?.length}<p>计划外成交 {unplanned.length} 笔</p>{/if}
+        {:else if r.stats.unsignaled_trades?.length}<p>无信号交易 {r.stats.unsignaled_trades.length} 笔</p>{/if}
         {#if r.stats.plans && Object.keys(r.stats.plans).length}
           <p class="text-xs text-muted">计划影子（数量 / 已过期 / R 均值 / 中位数）</p>
           <ul>{#each Object.entries(r.stats.plans as Record<string, { count: number; expired: number; r_mean: number | null; r_median: number | null }>) as [kind, p]}
@@ -548,7 +569,7 @@
               <ul class="text-xs space-y-0.5">
                 {#each L.cards as c (c.card_id)}
                   <li><a class="text-accent underline" href={`#review/cards/${c.card_id}`}>{c.ticker} {c.end_text}</a>
-                    · 实际 {actualRText(c)} · {c.execution_text ?? c.decision_text}{c.headline ? ` · ${c.headline}` : ''}</li>
+                    · 实际 {actualRText(c)} · {wb.isExecutionReview(r.calc_version) ? (c.execution_text ?? c.decision_text) : c.decision_text}{c.headline ? ` · ${c.headline}` : ''}</li>
                 {/each}
               </ul>
               <p>被检验的知识 {L.knowledge.length} 条</p>

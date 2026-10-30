@@ -270,3 +270,96 @@ describe('row expansion', () => {
     expect(screen.getByRole('table', { name: '入场期计划' })).toBeInTheDocument()
   })
 })
+
+describe('PlanTable · review fixes', () => {
+  const chainWith = (retriggers: any[], version_no = 3) => ({ ...row().chain!, version_no, retriggers })
+
+  it('writes the version of a retrigger only when it is known (M3)', () => {
+    mount(groups({ entry: [row({ chain: chainWith([
+      { unit_signal_date: '2026-10-30', rule_ids: ['trend_reclaim'], version_no: 2 },
+      { unit_signal_date: '2026-11-02', rule_ids: ['trend_reclaim'] }]) })] }))
+    const table = screen.getByRole('table', { name: '入场期计划' })
+    expect(table).toHaveTextContent('10-30 再次触发 → 第 2 版')
+    expect(table).toHaveTextContent('11-02 再次触发')
+    expect(table).not.toHaveTextContent('11-02 再次触发 → 第 3 版')
+  })
+
+  it('a chain retriggered once still says which version it became (M3)', () => {
+    mount(groups({ entry: [row({ chain: chainWith([{ unit_signal_date: '2026-10-30', rule_ids: [] }], 1) })] }))
+    expect(screen.getByText('10-30 再次触发 → 第 1 版')).toBeInTheDocument()
+  })
+
+  it('the 入场类型 header carries no concept term (M4)', () => {
+    mount()
+    const head = screen.getByRole('table', { name: '入场期计划' }).querySelectorAll('th')[3]
+    expect(head.textContent).toBe('入场类型与区间')
+    expect(head.querySelector('button')).toBeNull()
+  })
+
+  it('prints 已有活跃链 on a baseline-only row and on the expanded baseline (M7)', async () => {
+    const baselineOnly = row({ row_id: 'plan:X', ticker: 'MU', chain: null,
+      baseline: { ...row().baseline!, active_chain: { ticker: 'MU', signal_date: '2026-10-29' } } })
+    mount(groups({ entry: [baselineOnly] }))
+    expect(screen.getAllByText('已有活跃链，见 MU·10-29').length).toBe(1)
+    await fireEvent.click(screen.getByRole('button', { name: '展开 MU' }))
+    await within(await screen.findByTestId('row-detail')).findByTestId('rule-baseline')
+    expect(screen.getAllByText('已有活跃链，见 MU·10-29').length).toBe(2)
+  })
+
+  it('a chain row with a merged baseline says where it went in the detail (M7)', async () => {
+    mount()
+    await fireEvent.click(screen.getByRole('button', { name: '展开 MU' }))
+    expect(await screen.findByText('已有活跃链，见 MU·10-29')).toBeInTheDocument()
+  })
+
+  it('toggles are wired with aria-expanded and aria-controls (M12)', async () => {
+    mount()
+    const ticker = screen.getByRole('button', { name: 'MU' })
+    expect(ticker).toHaveAttribute('aria-expanded', 'false')
+    await fireEvent.click(ticker)
+    expect(ticker).toHaveAttribute('aria-expanded', 'true')
+    const id = ticker.getAttribute('aria-controls')!
+    expect(document.getElementById(id)).not.toBeNull()
+    const ended = screen.getByRole('button', { name: '已结束 1' })
+    expect(ended).toHaveAttribute('aria-controls', 'plan-table-ended')
+    await fireEvent.click(ended)
+    expect(document.getElementById('plan-table-ended')).not.toBeNull()
+  })
+
+  it('shows chain-level 已执行 with what it followed (M13)', () => {
+    mount(groups({ holding: [holdRow({ status: { label: '持仓期', execution: 'executed', execution_basis: '照规则基线' } })] }))
+    expect(screen.getByRole('table', { name: '持仓计划' })).toHaveTextContent('已执行（照规则基线）')
+  })
+
+  it('shows a recheck conclusion that came after the holding status row (M14)', () => {
+    const status = (over: Record<string, unknown>) => ({ label: '持仓期', execution: 'adopted' as const, latest_review: {
+      outcome: 'invalidate', decided_by: 'agent', reason: '财报提前', session: '2026-10-30', trigger: 'recheck', ...over } })
+    mount(groups({ holding: [holdRow({ status: status({}) })] }))
+    expect(screen.getByTestId('later-review')).toHaveTextContent('之后的复查（2026-10-30）：作废 · Agent：财报提前')
+  })
+
+  it('does not repeat the batch review as a later one (M14)', () => {
+    mount(groups({ holding: [holdRow({ status: { label: '持仓期', execution: 'adopted', latest_review: {
+      outcome: 'maintain', decided_by: 'host', reason: '无新信号', session: '2026-10-30', trigger: 'batch' } } })] }))
+    expect(screen.queryByTestId('later-review')).toBeNull()
+  })
+
+  it('a note body edited after a failure gets a new request id (M6)', async () => {
+    let n = 0
+    vi.stubGlobal('crypto', { randomUUID: vi.fn(() => `req-${++n}`) })
+    const onNote = vi.fn().mockRejectedValueOnce(new Error('boom')).mockResolvedValue(undefined)
+    mount(groups(), { onNote })
+    await fireEvent.click(screen.getByRole('button', { name: '展开 MU' }))
+    const notes = within(await screen.findByTestId('row-detail')).getByRole('region', { name: '备注' })
+    const box = within(notes).getByLabelText('备注正文')
+    await fireEvent.input(box, { target: { value: '第一版' } })
+    await fireEvent.click(within(notes).getByRole('button', { name: '保存备注' }))
+    await waitFor(() => expect(onNote).toHaveBeenCalledTimes(1))
+    await within(notes).findByRole('alert')
+    await fireEvent.input(box, { target: { value: '第一版，改过' } })
+    await fireEvent.click(within(notes).getByRole('button', { name: '保存备注' }))
+    await waitFor(() => expect(onNote).toHaveBeenCalledTimes(2))
+    expect(onNote.mock.calls[1][2]).not.toBe(onNote.mock.calls[0][2])
+  })
+})
+

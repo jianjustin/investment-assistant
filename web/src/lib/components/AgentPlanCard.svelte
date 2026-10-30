@@ -35,7 +35,7 @@
     const defaulted = plan.entry_type == null
     const parts = [`入场类型 ${wb.ENTRY_TYPE_TEXT[plan.entry_type ?? 'zone_limit']}`,
                    `最长持有 ${plan.max_hold_sessions ?? 10} 个交易日`]
-    if (chain?.mode === 'holding') parts.push('入场类型与区间持仓期不适用')
+    if (plan.inputs?.chain_mode === 'holding') parts.push('入场类型与区间持仓期不适用')
     if (defaulted) parts.push(wb.DEFAULTS_APPLIED_TEXT)
     return parts.join(' · ')
   })

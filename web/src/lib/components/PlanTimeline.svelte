@@ -13,7 +13,7 @@
   // spec §11 计划页：版本链（v0…vn）、复查记录、「重新复查」。挂载时读一次链视图；数字照后端字符串显示。
   let { ticker, signalDate, currentPlanId }: { ticker: string; signalDate: string; currentPlanId: string } = $props()
 
-  const SHADOW_TEXT: Record<string, string> = { pending: '待成交', expired: '到期未成交', open: '持仓中', closed: '已平仓' }
+  const SHADOW_TEXT: Record<string, string> = { pending: '待成交', expired: '到期未成交', open: '持仓中', closed: '已平仓', voided: '开盘作废' }
   const LIST_TEXT: Record<string, string> = { invalidation: '失效', review_when: '复查' }
 
   let chain = $state<tl.Chain | null>(null)

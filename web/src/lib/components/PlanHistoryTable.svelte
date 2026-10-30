@@ -19,14 +19,14 @@
     chain_open: '新开链', version: '版本', retrigger: '再次触发', review: '复查', fill: '成交', chain_end: '结束',
   }
 
-  // 按链分组，保持出现顺序（行已按 at 正序）。
+  // 按链分组：连续的同链行一组，保持时间顺序（行已按 at 正序）；没有链的行（如规则基线）按原位置自成一组，
+  // 不并到别处。
   const groups = $derived.by(() => {
-    const out: { key: string; signal: string | null; rows: wb.HistoryRow[] }[] = []
+    const out: { signal: string | null; rows: wb.HistoryRow[] }[] = []
     for (const r of rows ?? []) {
-      const key = r.chain_signal_date ?? '__none__'
-      let g = out.find(x => x.key === key)
-      if (!g) { g = { key, signal: r.chain_signal_date, rows: [] }; out.push(g) }
-      g.rows.push(r)
+      const last = out[out.length - 1]
+      if (last && last.signal === r.chain_signal_date) last.rows.push(r)
+      else out.push({ signal: r.chain_signal_date, rows: [r] })
     }
     return out
   })
@@ -80,8 +80,8 @@
         <thead><tr class="text-left text-muted">
           <th>日期</th><th>链与版本</th><th>入场 / 止损 / T1</th><th>变化点</th><th>变化原因</th><th>结束方式</th>
         </tr></thead>
-        {#each groups as g, gi (g.key)}
-          <tbody data-chain={g.signal ?? ''} class={gi > 0 ? 'border-t-4 border-border' : ''}>
+        {#each groups as g, gi (gi)}
+          <tbody data-chain={g.signal ?? ''} class={gi > 0 ? (g.signal ? 'border-t-4 border-border' : 'border-t-2 border-border') : ''}>
             {#each g.rows as r, i (`${r.kind}|${r.at}|${i}`)}
               {#if r.kind === 'chain_open'}
                 <tr data-kind="chain_open" class="bg-surface-2 align-top">
@@ -102,10 +102,10 @@
                   <td>{chainText(r)} <span class="text-muted">{KIND_TEXT[r.kind] ?? r.kind}</span></td>
                   <td>{levelsText(r)}{#if r.validity}<span class="block text-muted">有效期 {r.validity.valid_from} 至 {r.validity.valid_until}</span>{/if}</td>
                   <td>
-                    {#each diffItems(r) as d (d)}<span class="block">{d}</span>{/each}
+                    {#each diffItems(r) as d, di (di)}<span class="block">{d}</span>{/each}
                   </td>
                   <td>
-                    {#each changeTexts(r) as c (c)}<span class="block">{c}</span>{/each}
+                    {#each changeTexts(r) as c, ci (ci)}<span class="block">{c}</span>{/each}
                     {#if signalsText(r)}<span class="block text-muted">触发：{signalsText(r)}</span>{/if}
                     {#if reasonLine(r)}<span class="block">{reasonLine(r)}</span>{/if}
                     {#if !changeTexts(r).length && !reasonLine(r)}<span class="block">{r.text}</span>{/if}

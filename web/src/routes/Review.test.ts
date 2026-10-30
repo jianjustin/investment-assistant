@@ -693,6 +693,52 @@ describe('trade form · 关联计划', () => {
     if (status === 409) await waitFor(() => expect(linkableCalls().length).toBeGreaterThanOrEqual(2))   // re-read after a stale link
   })
 
+  it('clears the chosen plan and the own levels when the ticker changes, and a stale plan id is never sent', async () => {
+    const base = respond
+    respond = async (url, init) => {
+      if (url.startsWith('/api/workbench/trades/linkable-plans')) {
+        const t = new URL(url, 'http://x').searchParams.get('ticker')
+        return json(t === 'MU' ? { ticker: 'MU', plans: [{ plan_id: 'mu1', label: 'Agent MU·10-29 第 2 版' }], default_plan_id: 'mu1' }
+                              : { ticker: 'NVDA', plans: [{ plan_id: 'ap2', label: 'Agent NVDA·10-22 第 2 版' }], default_plan_id: null })
+      }
+      return base(url, init)
+    }
+    render(Review, { sub: 'trades' })
+    await screen.findByText(/浮动盈亏/)
+    await fireEvent.input(screen.getByLabelText('代码'), { target: { value: 'mu' } })
+    await fireEvent.input(screen.getByLabelText('数量'), { target: { value: '5' } })
+    await fireEvent.input(screen.getByLabelText('成交价'), { target: { value: '102' } })
+    await fireEvent.input(screen.getByLabelText('成交时间'), { target: { value: '2026-10-23T10:15' } })
+    const select = screen.getByLabelText('关联计划') as HTMLSelectElement
+    await waitFor(() => expect([...select.options].some(o => o.value === 'mu1')).toBe(true))
+    await fireEvent.change(select, { target: { value: 'mu1' } })
+    expect(select.value).toBe('mu1')
+    await fireEvent.input(screen.getByLabelText('代码'), { target: { value: 'nvda' } })
+    await waitFor(() => expect([...select.options].some(o => o.value === 'ap2')).toBe(true))
+    expect(select.value).toBe('__none__')                           // the MU choice is gone, NVDA has no default
+    await fireEvent.click(screen.getByRole('button', { name: '记录成交' }))
+    await waitFor(() => expect(calls.some(isPost)).toBe(true))
+    const body = postBody()
+    expect(body.ticker).toBe('NVDA')
+    for (const key of ['plan_id', 'own_plan']) expect(key in body).toBe(false)
+  })
+
+  it('a change of the fill time drops a chosen plan row but keeps 自定', async () => {
+    withLinkable()
+    await fill()
+    const select = screen.getByLabelText('关联计划') as HTMLSelectElement
+    await waitFor(() => expect(select.value).toBe('ap2'))
+    await fireEvent.change(select, { target: { value: 'rp1' } })
+    expect(select.value).toBe('rp1')
+    await fireEvent.input(screen.getByLabelText('成交时间'), { target: { value: '2026-10-24T10:15' } })
+    await waitFor(() => expect(select.value).toBe('ap2'))           // back to the default for the new time
+    await waitFor(() => expect(linkableCalls()).toHaveLength(2))
+    await fireEvent.change(select, { target: { value: '__own__' } })
+    await fireEvent.input(screen.getByLabelText('成交时间'), { target: { value: '2026-10-25T10:15' } })
+    await waitFor(() => expect(linkableCalls()).toHaveLength(3))
+    expect(select.value).toBe('__own__')
+  })
+
   it('keeps the form usable when the linkable list cannot be read', async () => {
     const base = respond
     respond = async (url, init) => url.startsWith('/api/workbench/trades/linkable-plans')
@@ -743,3 +789,71 @@ describe('weekly review-8 snapshots', () => {
     expect(articles[1]).toHaveTextContent('否决')
   })
 })
+
+describe('review-8 vs older snapshots (D30, D26)', () => {
+  const stats = (extra: Record<string, unknown>) => ({ week: { start: '2026-10-19' }, by_rule: {}, note: '描述性统计',
+    execution: [{ ticker: 'MU', slippage: 0.01, delay_hours: 5.5 }], ...extra })
+  const snap = (id: string, calc_version: string, st: Record<string, unknown>) => ({
+    id, week_start: '2026-10-19', calc_version, notes: '', supersedes_id: null, created_at: '2026-10-26T02:00:00Z', stats: st })
+
+  it('review-8 reads 版本生成后 / 计划外成交 / execution_text; review-7 keeps 决定后 / 无信号交易 / decision_text', async () => {
+    const learning = (over: Record<string, unknown>) => ({
+      discipline: { cards: 1, chase: 0, early_take: 0, held_loser: 0, unplanned: 1, pending: 0 },
+      cards: [{ card_id: 4, ticker: 'MU', end_kind: 'position_closed', end_text: '平仓', decision_text: '否决', execution_text: '计划外成交',
+                actual_r: 0.5, rule_r: null, agent_r: null, flags: [], status: 'to_review', headline: null, ...over }],
+      counts: { total: 1, reviewed: 0, to_review: 1, drafting: 0, draft_failed: 0 }, knowledge: [] })
+    const base = respond
+    respond = async url => url.includes('/weekly-reviews') ? json({ reviews: [
+      snap('w8', 'review-8', stats({ units: { executed: 1, not_executed: 2 }, unplanned_trades: [{ id: 't1' }, { id: 't2' }], learning: learning({}) })),
+      snap('w7', 'review-7', stats({ units: { decided: 1, undecided: 2 }, unsignaled_trades: [{ id: 't1' }], learning: learning({}) }))] }) : base(url)
+    render(Review, { sub: 'weekly' })
+    const [w8, w7] = await screen.findAllByRole('article')
+    expect(w8).toHaveTextContent('版本生成后 5.5 小时成交')
+    expect(w8).not.toHaveTextContent('决定后')
+    expect(w8).toHaveTextContent('计划外成交 2 笔')
+    expect(w8).not.toHaveTextContent('无信号交易')
+    expect(w8).toHaveTextContent('实际 +0.50R · 计划外成交')            // learning card follows execution_text
+    expect(w7).toHaveTextContent('决定后 5.5 小时成交')
+    expect(w7).toHaveTextContent('无信号交易 1 笔')
+    expect(w7).toHaveTextContent('否决')
+    expect(w7).not.toHaveTextContent('版本生成后')
+  })
+
+  it('the 对照组 tab under review-8 covers all units and has no 决定 column; older snapshots are unchanged', async () => {
+    const unit = (over: Record<string, unknown>) => ({ id: 'u', ticker: 'MU', signal_date: '2026-10-22', proposed_action: 'buy',
+      rule_ids: ['trend_reclaim'], outcome: { status: 'entered', entry_price: 100, windows: {
+        '5': { status: 'mature', return: 0.02, spy_return: 0, excess: 0.02 }, '10': { status: 'immature' }, '20': { status: 'immature' } } }, ...over })
+    const base = respond
+    respond = async url => url.includes('/review/shadow') ? json({ session: '2026-10-29', since: '2026-07-30', calc_version: 'review-8', units: [unit({})] }) : base(url)
+    const first = render(Review, { sub: 'shadow' })
+    expect(await screen.findByText('+2.00%')).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: '决定' })).toBeNull()
+    expect(screen.getByText(/全部信号单元/)).toBeInTheDocument()
+    first.unmount()
+    respond = async url => url.includes('/review/shadow') ? json({ session: '2026-10-29', since: '2026-07-30', calc_version: 'review-8', units: [] }) : base(url)
+    const second = render(Review, { sub: 'shadow' })
+    expect(await screen.findByText('暂无信号单元')).toBeInTheDocument()
+    second.unmount()
+    respond = base
+    render(Review, { sub: 'shadow' })
+    expect(await screen.findByRole('columnheader', { name: '决定' })).toBeInTheDocument()
+  })
+
+  it('the tracks tab names tracks-2 statuses voided and merged', async () => {
+    const base = respond
+    const track = (status: string) => ({ status, r: null, plan_id: null })
+    const stat = { units: 1, determined: 0, pending: 0, missing: 0, mean: null, median: null, sum: null, wins: 0, by_status: {} }
+    const grp = { rule: stat, agent: stat, actual: stat }
+    respond = async url => url.includes('/review/tracks') && !url.includes('/trades') ? json({
+      session: '2026-10-29', since: '2026-10-01', until: '2026-10-29', calc_version: 'tracks-2',
+      summary: { all: grp, core: grp, extended: grp }, units: [{ ticker: 'MU', signal_date: '2026-10-22', pool: 'core',
+        rule: track('voided'), agent: { ...track('merged'), run_id: null, run_status: null, run_reason: null },
+        actual: { ...track('not_executed'), decision_id: null, final_action: null, buy_trade_ids: [], open: false, plan_kind: null } }] }) : base(url)
+    render(Review, { sub: 'tracks' })
+    const row = (await screen.findByText('MU')).closest('tr')!
+    expect(row).toHaveTextContent('开盘作废')
+    expect(row).toHaveTextContent('并入其他链')
+    expect(row).not.toHaveTextContent('voided')
+  })
+})
+

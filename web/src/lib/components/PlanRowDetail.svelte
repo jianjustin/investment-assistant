@@ -94,6 +94,7 @@
           <a class="text-xs text-accent underline" href={`#plan/${b.plan_id}`}>查看</a>
           <button type="button" class="text-xs text-accent underline" aria-expanded={derivationOpen}
                   onclick={() => derivationOpen = !derivationOpen}>展开推导</button></p>
+        {#if wb.activeChainText(row)}<p class="text-xs text-amber-700">{wb.activeChainText(row)}</p>{/if}
         {#if derivationOpen}<PlanDerivation planId={b.plan_id} />{/if}
       </div>
     {/if}

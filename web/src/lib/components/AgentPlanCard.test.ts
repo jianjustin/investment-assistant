@@ -321,10 +321,16 @@ describe('AgentPlanCard · executable fields (v2.9)', () => {
     expect(await screen.findByText('入场类型 区间限价 · 最长持有 10 个交易日 · 旧版计划，执行字段按默认值显示')).toBeInTheDocument()
   })
 
-  it('marks the entry fields as not applicable in the holding period', async () => {
-    const base = v3()
-    render(AgentPlanCard, { agent: { ...base, chain: { ...base.chain, mode: 'holding', state: 'holding' } } as any, onCall: () => {} })
+  it('marks the entry fields as not applicable for a version written in the holding period (plan.inputs.chain_mode)', async () => {
+    const base = v3({}, { inputs: { chain_mode: 'holding' } })
+    render(AgentPlanCard, { agent: base as any, onCall: () => {} })
     expect(await screen.findByText('入场类型 突破买入 · 最长持有 14 个交易日 · 入场类型与区间持仓期不适用')).toBeInTheDocument()
+  })
+
+  it('an old entry-period version of a chain that now holds is not marked', async () => {
+    const base = v3({}, { inputs: { chain_mode: 'entry' } })
+    render(AgentPlanCard, { agent: { ...base, chain: { ...base.chain, mode: 'holding', state: 'holding' } } as any, onCall: () => {} })
+    expect(await screen.findByText('入场类型 突破买入 · 最长持有 14 个交易日')).toBeInTheDocument()
   })
 
   it('an exiting chain says the exit instruction is out and no more reviews follow', async () => {

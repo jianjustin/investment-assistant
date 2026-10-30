@@ -247,8 +247,8 @@ export const DECISION_TEXT = {
 } as const
 /** retro.BASIS_TEXT: which Agent version a track follows (`facts.tracks.agent.version_basis` is the code). */
 export const VERSION_BASIS_TEXT: Record<string, string> = { decision: '决定时看到的版本', first: '首版' }
-/** tracks-2 `version_basis = fill` (v2.9 D27): the version the buy trade was linked to. */
-export const FILL_BASIS_TEXT: Record<string, string> = { fill: '成交时关联的版本' }
+/** retro.BASIS_TEXT_V2: tracks-2 adds `fill` (the version the buy trade was linked to) and `merged` (v2.9 D27). */
+export const VERSION_BASIS_TEXT_V2: Record<string, string> = { ...VERSION_BASIS_TEXT, fill: '成交时关联的版本', merged: '并入其他链' }
 /** The four discipline flags and 「待定」 (spec §4.3, §13). */
 export const DISCIPLINE_TEXT: Record<string, string> = {
   chase: '追高', early_take: '过早止盈', held_loser: '死扛亏损', unplanned: '计划外', pending: '待定',

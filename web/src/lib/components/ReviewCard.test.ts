@@ -317,4 +317,14 @@ describe('ReviewCard · retro-2 (你的执行与纪律) and retro-1 side by side
     render(ReviewCard, { id: 12 })
     expect(await screen.findByRole('region', { name: '复盘叙述' })).toHaveTextContent('决定回顾 决定照规则计划')
   })
+
+  it('names the merged basis of the Agent track', async () => {
+    const f = executionFacts()
+    load(cardView({ facts: { ...f, tracks: { ...f.tracks, agent: { ...f.tracks.agent!, status: 'merged', status_text: '并入其他链', version_basis: 'merged' } } } }))
+    render(ReviewCard, { id: 12 })
+    const tracks = await screen.findByRole('region', { name: '三条轨道' })
+    expect(tracks).toHaveTextContent('（并入其他链）')
+    expect(tracks).not.toHaveTextContent('（merged）')
+  })
 })
+
