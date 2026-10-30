@@ -984,6 +984,12 @@ def test_review_prompt_v2_and_retro2_wording():
     assert '持仓状态' not in graph.REVIEW_PROMPT
 
 
+def test_holding_revision_prompt_keeps_entry_fields():
+    """Review M3: the check compares entry_type, so the prompt must not say the model's value is ignored."""
+    assert '请原样保留入场类型与入场区间（区间以上一版为准）' in graph.PROPOSE_PROMPT_V3
+    assert '你写的会被忽略' not in graph.PROPOSE_PROMPT_V3
+
+
 def test_retro2_prompt_wording():
     assert graph.RETRO_AGENT_V1 == 'agent-retro-1' and graph.RETRO_AGENT_V2 == 'agent-retro-2'
     assert '你的执行' in graph.RETRO_PROMPT_V2 and 'execution、holding' in graph.RETRO_PROMPT_V2

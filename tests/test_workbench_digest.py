@@ -769,3 +769,28 @@ def test_overview_counts_merged_units():
     dg = build(units=[unit('NVDA', plan=plan_row(), agent=agent2_ok())], session_units=[
         merged_unit, unit('NVDA', plan=plan_row(), agent=agent2_ok())], merged={('MU', SESSION)})
     assert dg['overview']['agent'] == {'ok': 1, 'pass': 0, 'missing': 0, 'merged': 1}
+
+
+def test_rule_baseline_alone_is_three_lines():
+    """Review I2 (spec §11, D13): with no executable Agent plan the rule baseline is the plan, in the same format."""
+    base = plan_row(ticker='MU', plan_version='plan-2', entry_type='zone_limit', max_hold_sessions=10)
+    expected = ['MU 规则基线：区间限价 98.5–101.5 · 止损 94 · T1 112 · 166 股 · 有效至 2026-10-27',
+                '开盘：区间内买 / 高开不追挂 101.5 / 低开 ≤94 作废、否则回到 98.5 买',
+                '最长持有 10 天未到 1R 即退出 · 趋势回踩修复']
+    plain = plan_field(build(units=[unit(ticker='MU', plan=base, brief_summary=None)]), 'MU')
+    assert plain.split('；')[0].split('\n') == expected
+    assert '规则基线：区间' not in plain.replace('MU 规则基线：区间限价', '')          # not repeated as a second line
+    # an Agent pass / error / skip explanation follows the third line, on its own line
+    err = {'id': 'r3', 'status': 'error', 'reason': 'model_error', 'created_at': '2026-10-22T23:00:00+00:00'}
+    lines = plan_field(build(units=[unit(ticker='MU', plan=base, agent=err)]), 'MU').split('\n')
+    assert lines[:3] == expected and lines[3].startswith('Agent 未给出计划（')
+    # next_open keeps its one-line open case
+    nxt = plan_row(ticker='MU', plan_version='plan-2', entry_type='next_open', max_hold_sessions=7)
+    second = plan_field(build(units=[unit(ticker='MU', plan=nxt)]), 'MU').split('\n')[1]
+    assert second == '开盘：仅 10-23 开盘在 98.5–101.5 买，否则作废'
+    # plan-1 baselines (no execution fields) and an executable Agent plan keep the old shapes
+    old = plan_field(build(units=[unit(ticker='MU', plan=plan_row(ticker='MU'))]), 'MU')
+    assert '规则基线' not in old and old.startswith('动作 买入')
+    with_agent = plan_field(build(units=[unit(ticker='MU', plan=base, agent=agent3_ok())]), 'MU')
+    assert with_agent.split('\n')[0].startswith('MU 10-14 第 2 版：区间限价 99–102') and \
+        '；规则基线：区间 98.5–101.5 · 止损 94 · T1 112 · 166 股' in with_agent

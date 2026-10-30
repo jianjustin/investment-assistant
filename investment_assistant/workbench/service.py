@@ -162,18 +162,42 @@ def exposure(conn, session: date, *, cutoff_at: datetime, ticker: str) -> dict[s
 
 def _position_plan_state(conn, ticker: str, book: dict[str, Any], ticker_bars: list[dict[str, Any]],
                          session: date, *, now: datetime) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """(plan, active_stop state) for a held ticker; both None when the position has no plan."""
+    """(plan, active_stop state) for a held ticker; both None when the position has no plan.
+
+    v2.9 D20 / D22 (migration 029 and the timeline tables present): a position that belongs to a holding / exiting
+    chain follows the chain's latest version (a stop lifted by a holding-phase revision takes effect); otherwise the
+    plan its fills follow — ``trades.plan_id`` first, then the old decision route (``plan_review._plan_of_buy``). Fills
+    are read as the cutoff knew them (R11). Before 029 only the decision route exists, as before."""
     position = book['position']
     if position is None:
         return None, None
-    trades = repository.list_trades(conn, ticker)
-    plans_by_trade = repository.plan_for_buy_trades(conn, [lot['buy_trade_id'] for lot in book['open']])
-    plan = exits.position_plan(book['open'], trades, plans_by_trade)
+    if repository.timeline_ready(conn) and repository.executable_ready(conn):
+        from investment_assistant.workbench import plan_review     # imports this module
+
+        ctx = plan_review.ticker_context(conn, ticker, now=now)
+        position = ctx['book']['position']
+        if position is None:
+            return None, None
+        held = [i for i in plan_review.ticker_chain_items(conn, ticker, session=session, now=now, context=ctx)
+                if i['state']['state'] in ('holding', 'exiting')]
+        if held:
+            plan = max(held, key=lambda i: i['chain']['signal_date'])['chain']['head_plan']
+        else:
+            by_id = {t['id']: t for t in ctx['trades']}
+            plans_by_trade = {lot['buy_trade_id']: found for lot in ctx['book']['open']
+                              if (found := plan_review._plan_of_buy(conn, by_id[lot['buy_trade_id']])) is not None}
+            plan = exits.position_plan(ctx['book']['open'], ctx['trades'], plans_by_trade)
+        avg_cost = position['avg_cost']
+    else:
+        trades = repository.list_trades(conn, ticker)
+        plans_by_trade = repository.plan_for_buy_trades(conn, [lot['buy_trade_id'] for lot in book['open']])
+        plan = exits.position_plan(book['open'], trades, plans_by_trade)
+        avg_cost = position['avg_cost']
     if plan is None:
         return None, None
     opened = position['opened_at'].astimezone(NY).date()
     bars_since = [b for b in ticker_bars if b['price_date'] >= opened]
-    state = exits.active_stop(plan, bars_since, avg_cost=position['avg_cost'],
+    state = exits.active_stop(plan, bars_since, avg_cost=avg_cost,
                               splits=repository.split_events(conn, ticker)) if bars_since else {
         'stop': plan['stop'], 't1_reached': False, 't1_reached_on': None, 'mode': 'initial', 'target1': plan['target1']}
     return plan, state
@@ -2675,7 +2699,11 @@ def _agent_stage(session: date, *, now: datetime, deps: Deps, summary: dict[str,
                           if resets_ready else [])
             prior = [r for r in history if not resets or r['created_at'] > resets[0]['created_at']]
             done = ('ok', 'pass') if mode == 'propose' else ('ok',)
-            if any(r['status'] in done for r in history):
+            if any(r['status'] in done for r in history) or (
+                    mode == 'propose' and any(r['status'] == 'skipped' and r['reason'] == 'active_chain'
+                                              for r in prior)):
+                # a proposal set aside by the first-version guard (v2.9 §4.7) is done for the session: another
+                # run would pay for the same model call and be set aside again (a reset re-opens it)
                 if acc is not None:
                     acc.skip('already_completed', unit['ticker'])
                 return
@@ -2888,8 +2916,8 @@ def rerun_agent(ticker: str, signal_date: date, mode: str, *, request_id: str, o
         latest = repository.latest_agent_run(conn, ticker, signal_date, mode)
         merged_before = (mode == 'propose' and repository.executable_ready(conn)
                          and repository.retrigger_for_unit(conn, ticker, signal_date) is not None)
-        if latest is None and merged_before:      # R17: merged, never proposed, and the chain it joined is over
-            pass
+        if merged_before and (latest is None or (latest['status'] == 'skipped' and latest['reason'] == 'active_chain')):
+            pass        # R17: merged (never proposed, or proposed and set aside), and the chain it joined is over
         elif latest is None or not (latest['status'] == 'error'
                                     or (latest['status'] == 'skipped' and latest['reason'] == 'max_attempts')):
             raise AgentConflict('not_needed')

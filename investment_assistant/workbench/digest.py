@@ -106,6 +106,8 @@ def build(*, session: date, units: list[dict[str, Any]], holdings: list[dict[str
             'sizing_status': sizing.get('status') if rule_plan else None,
             'snapshot_as_of': snapshot_as_of.isoformat() if snapshot_as_of else None,
             'valid_from': plan['valid_from'], 'valid_until': plan['valid_until'],
+            'entry_type': rule_plan.get('entry_type') if rule_plan else None,
+            'max_hold_sessions': rule_plan.get('max_hold_sessions') if rule_plan else None,
             'warnings': plan.get('warnings') or [], 'invalid_reasons': plan.get('invalid_reasons') or [],
             'regime_label': (context.get('regime') or {}).get('label'),
             'next_earnings': context.get('next_earnings').isoformat()

@@ -403,3 +403,13 @@ def test_daily_refuses_without_029(daily_db, clock, notices, job_reports, monkey
     assert len([t for t in notices.titles('workbench') if '每日工作流失败' in t]) == 1
     with pytest.raises(service.Unavailable, match='migration_029_missing'):        # the manual entry's pre-check
         daily.ensure_ready()
+
+
+def test_daily_resume_refuses_without_029(daily_db, clock, notices, job_reports, monkeypatch):
+    """Review M4: a resume is gated like a first run — 503 `migration_029_missing`, nothing written."""
+    from investment_assistant.workbench import repository, service
+
+    monkeypatch.setattr(repository, 'executable_ready', lambda conn: False)
+    with pytest.raises(service.Unavailable, match='migration_029_missing'):
+        daily.resume(RUN_ID, 'collect', now=NOW, config=daily_config(), notify_cfg=NotifyCfg())
+    assert job_reports.rows() == [] and daily_db.execute('SELECT count(*) FROM stage_runs').fetchone()[0] == 0

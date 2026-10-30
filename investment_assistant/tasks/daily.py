@@ -351,6 +351,8 @@ def resume(run_id: str, node: str, *, now: datetime | None = None, deps: service
     effective = config if config is not None else load_config()
     started_at = datetime.now(UTC)
     with exclusive(), _active(run_id):
+        if not _executable_ready():         # v2.9 D36: the same gate as a first run; refused before anything is written
+            raise service.Unavailable('migration_029_missing')
         try:
             result = workflow.resume(run_id, node, now=now or datetime.now(UTC), deps=deps,
                                      checkpointer_factory=checkpointer_factory, sleep=sleep, notify_cfg=notify_cfg,

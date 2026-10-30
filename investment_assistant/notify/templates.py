@@ -164,7 +164,18 @@ def workbench_digest(digest: dict) -> list[Notification]:
                 if p.get('entry_low') is not None else None)   # agent-only units have no rule band
         field_name = f"【筛选】{p['ticker']}" if p.get('source') == 'screen' else p['ticker']
         agent = p.get('agent')
-        if agent:
+        own = _baseline_view(p)       # plan-2 rule baseline as a plan of its own (v2.9 §11, D13)
+        agent_plan = bool(agent) and agent.get('status') == 'ok' and bool(agent.get('entry_type')) \
+            and not agent.get('legacy')
+        if own is not None and not agent_plan:
+            # no executable Agent plan today (none, pass, error, skipped, old version): the baseline is the plan,
+            # in the same three lines; the Agent's explanation follows the third line
+            lines = _executable_lines(own, p['ticker'])
+            explanation = _agent_line(agent, ticker=p['ticker']) if agent else ''
+            lead = ['\n'.join(filter(None, [lines, explanation])), *_merged_lines(p.get('merged'))]
+            position = f"仓位 {sizing}" if p.get('sizing_status') is not None else None
+            band = None
+        elif agent:
             # v2.5 §10.3: the agent line first, the rule plan after it as the baseline.
             # 「规则基线：区间 · 止损 · T1 · 股数」 (§10.3, verbatim): shares only, no risk amount.
             shares = None if p.get('sizing_status') is None else (
@@ -180,7 +191,7 @@ def workbench_digest(digest: dict) -> list[Notification]:
             *lead,
             head,
             context,
-            None if agent else band,
+            None if (agent or own is not None) else band,
             position, funding, f"有效期 至 {p['valid_until']}", notes, p.get('evidence', ''),
             p.get('brief_summary') or '', p.get('contra') or '', p.get('url', '')])) or '—')
     plans_msg = _fit_message(f"🆕 新计划 · {session}", fields, _footer())
@@ -408,6 +419,21 @@ def _merged_lines(merged: list[dict] | None) -> list[str]:
     return lines
 
 
+def _baseline_view(p: dict) -> dict | None:
+    """A ``plan-2`` rule baseline in the shape ``_executable_lines`` reads (label 「规则基线」, the rules' names where
+    an Agent plan has its summary); None for a plan without the execution fields (``plan-1``) or without a band."""
+    from investment_assistant.workbench import labels
+
+    if p.get('plan_version') != 'plan-2' or p.get('entry_low') is None or not p.get('entry_type'):
+        return None
+    return {'label': '规则基线', 'entry_type': p['entry_type'], 'entry_low': p['entry_low'],
+            'entry_high': p['entry_high'], 'stop': p['stop'], 'target1': p['target1'],
+            'shares': None if p.get('sizing_status') == 'no_equity' else p.get('shares'),
+            'valid_from': p.get('valid_from'), 'valid_until': p.get('valid_until'),
+            'max_hold_sessions': p.get('max_hold_sessions'), 'first_counter': None, 'invalid_reasons': [],
+            'summary': '、'.join(labels.RULE_TEXT.get(r, r) for r in p.get('rule_ids') or []) or '规则基线'}
+
+
 def _executable_lines(agent: dict, ticker: str | None) -> str:
     """The three lines of an agent-3 version (v2.9 spec §11): the plan, the open scenarios, the max hold with the
     summary and the first counter."""
@@ -415,8 +441,8 @@ def _executable_lines(agent: dict, ticker: str | None) -> str:
 
     shares = (f"{agent['shares']} 股" if agent.get('shares') is not None else '缺资金快照，无法计算')
     low, high, stop = _num(agent['entry_low']), _num(agent['entry_high']), _num(agent['stop'])
-    version = f"{agent['chain_signal_date']:%m-%d} 第 {agent['version_no']} 版" if agent.get('chain_signal_date') \
-        else f"第 {agent.get('version_no')} 版"
+    version = agent.get('label') or (f"{agent['chain_signal_date']:%m-%d} 第 {agent['version_no']} 版"
+                                     if agent.get('chain_signal_date') else f"第 {agent.get('version_no')} 版")
     mark = ''
     if agent.get('retrigger'):
         mark = f"（再次触发，第 {agent['retrigger']['from_version']} → {agent['retrigger']['to_version']} 版）"

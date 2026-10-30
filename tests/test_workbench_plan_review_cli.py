@@ -363,3 +363,17 @@ def test_chain_output_includes_retriggers_status_notes(db, capsys, monkeypatch):
     [note] = _lines(out, '备注 #')
     assert 'active' in note and '等财报后再加仓' in note
     assert _lines(out, '状态 holding')
+
+
+def test_check_holding_status_uses_the_cutoff_the_run_froze(db, capsys):
+    """Review M5: a position opened after the batch's cutoff is not owed a status row for that session."""
+    market = Market()
+    holding_chain(db, market)
+    run(db, market, 2, tickers=['SYNTH'], model=make_model(review=verdict('SYNTH', 'maintain', '照旧', cite=False)))
+    rec = {'request_id': str(uuid.uuid4()), 'ticker': 'SYNB', 'side': 'buy', 'quantity': '5', 'price': '90', 'fee': 0,
+           'executed_at': evening(day(2)) - timedelta(hours=3), 'plan_id': None, 'note': None}
+    repository.insert_trade(db, rec, 'd', recorded_at=evening(day(2)) + timedelta(minutes=5))   # after the cutoff
+    db.commit()
+    code, out = _run(capsys, 'check', '--session', day(2).isoformat())
+    assert code == 0, out
+    assert _lines(out, '持仓状态：1 个持仓，1 行齐全 → 通过')

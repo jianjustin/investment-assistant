@@ -23,4 +23,4 @@ sources: [investment_assistant/workbench/timeline.py, investment_assistant/workb
 
 ## 注意
 - 没有 Agent 链的持仓（成交只关联规则基线）不参与复查，只有宿主算的持仓状态；之后同标的再触发会开一条入场期的新链，与持仓并存（链与持仓不自动合并）。
-- `superseded` 只按"同标的有更晚的链"判定，不区分旧链当时是否真的被替代。
+- `superseded` 只会出现在 v2.9 之前的重复旧链上：上线后新链只在同标的没有活跃链时才开。

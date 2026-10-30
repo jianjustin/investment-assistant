@@ -480,7 +480,8 @@ def test_holding_stop_touched_host_exit(db):
     assert (row['mode'], row['outcome'], row['decided_by'], row['timeline_version']) == (
         'holding', 'invalidate', 'host', 'timeline-2')
     assert row['reason'] == '止损触及（115.00）：应已按止损卖出；仍持有则次一交易日开盘卖出'
-    assert row['detail']['exit_reason'] == 'stop_touched' and not model.calls
+    assert row['detail']['exit_reason'] == 'stop_touched'
+    assert not {'review', 'revise', 'propose'} & set(model.calls)      # (the plan_stop sell unit only gets an interpretation)
     assert state_at(db, 3)['state'] == 'exiting'
     [status] = status_rows(db, 2)
     assert (status['instruction'], status['exit_reason'], status['review_id']) == ('exit', 'stop_touched', row['id'])
@@ -689,3 +690,143 @@ def test_holding_status_idempotent_same_session(db):
     run(db, market, 2, tickers=['SYNTH'], model=make_model(), run_id='run-b')
     [again] = status_rows(db, 2)
     assert again['id'] == first['id'] and again['run_id'] == 'run-a'            # the first row wins
+
+
+# ================================================================ position plans follow D20 / D22 (review I1)
+
+def _candidate_rules(db, ticker, k):
+    return {c['rule_id'] for c in repository.unit_candidates(db, ticker, day(k))}
+
+
+def test_plan_stop_for_a_fill_linked_by_plan_id_only(db):
+    """A fill that carries only `trades.plan_id` (no decision) still follows its plan: the stop is judged."""
+    market = Market()
+    run(db, market, 0, tickers=['SYNB'], model=make_model(), agent=settings(provider='off'))
+    baseline = repository.rule_plan(db, 'SYNB', S1)
+    fill(db, 'SYNB', '4', str(baseline['ref_price']), 1, baseline['id'])
+    assert db.execute('SELECT decision_id FROM trades').fetchone()[0] is None
+    market.overrides[('SYNB', day(2))] = {'low': float(baseline['stop']) - 1}
+    run(db, market, 2, tickers=['SYNB'], model=make_model(), agent=settings(provider='off'))
+    assert 'plan_stop' in _candidate_rules(db, 'SYNB', 2)
+    candidate = next(c for c in repository.unit_candidates(db, 'SYNB', day(2)) if c['rule_id'] == 'plan_stop')
+    assert candidate['inputs']['values']['stop'] == pytest.approx(float(baseline['stop']))
+
+
+def test_plan_stop_follows_the_chain_head_after_a_holding_revision(db):
+    """D20: the stop lifted by a holding-phase revision is the one the rule engine judges."""
+    market = Market()
+    holding_chain(db, market)
+    run(db, market, 2, tickers=['SYNTH'],
+        model=make_model(review=verdict('SYNTH', 'revise', '上移止损'),
+                         revise=revision('SYNTH', stop=125.0, changes=[{'field': 'stop', 'text': '止损上移到 125',
+                                                                        'refs': ['call:1']}]), counter=counter()))
+    assert head(db)['plan']['stop'] == 125
+    market.overrides[('SYNTH', day(3))] = {'low': 124.5}          # under the new stop, over the first version's 115
+    run(db, market, 3, tickers=['SYNTH'], model=make_model())
+    assert 'plan_stop' in _candidate_rules(db, 'SYNTH', 3)
+    market.overrides[('SYNTH', day(4))] = {'low': 126.0}          # the same ticker one day later stays quiet over 125
+    run(db, market, 4, tickers=['SYNTH'], model=make_model())
+    assert 'plan_stop' not in _candidate_rules(db, 'SYNTH', 4)
+
+
+# ================================================================ review fixes (task-3-review M2 M7 M8)
+
+def _sell(db, ticker, quantity, price, k, *, recorded_at):
+    rec = {'request_id': str(uuid.uuid4()), 'ticker': ticker, 'side': 'sell', 'quantity': quantity, 'price': price,
+           'fee': 0, 'executed_at': datetime.combine(day(k), time(10, 0), tzinfo=NY), 'plan_id': None, 'note': None}
+    repository.insert_trade(db, rec, 'digest-' + rec['request_id'], recorded_at=recorded_at)
+    db.commit()
+
+
+def test_rerun_allowed_for_a_unit_the_guard_set_aside(db, monkeypatch):
+    """M2 (R17): a proposal set aside as `skipped / active_chain` may be re-run once the chain it joined is over."""
+    market = Market()
+    signal_day(db, market, ['SYNTH'])
+    spike(market, 'SYNTH', 2)
+    monkeypatch.setattr(service, '_open_or_merge', lambda *args, **kwargs: None)       # the plan node misses the chain
+    model = make_model(propose=proposal('SYNTH'), revise=renewal('SYNTH'), counter=[*counter(), *counter()])
+    run(db, market, 2, tickers=['SYNTH'], model=model)
+    [skipped] = repository.agent_runs_for(db, 'SYNTH', day(2))
+    assert (skipped['status'], skipped['reason']) == ('skipped', 'active_chain')
+    now = evening(day(2)) + timedelta(hours=1)
+    with pytest.raises(service.AgentConflict, match='active_chain'):                    # the chain still stands
+        service.rerun_agent('SYNTH', day(2), 'propose', request_id=str(uuid.uuid4()), origin='api', now=now,
+                            deps=_deps(make_model()))
+    head_a = head(db)
+    repository.insert_plan_review(db, {
+        'ticker': 'SYNTH', 'signal_date': S1, 'head_plan_id': head_a['plan']['id'], 'session': day(2),
+        'trigger': 'recheck', 'run_id': 'run-x', 'mode': 'entry', 'timeline_version': 'timeline-2',
+        'outcome': 'invalidate', 'decided_by': 'host', 'reason': '失效条件成立', 'attempt': 1,
+        'cutoff_at': evening(day(2))})
+    db.commit()
+    out = service.rerun_agent('SYNTH', day(2), 'propose', request_id=str(uuid.uuid4()), origin='api', now=now,
+                              deps=_deps(make_model(propose=proposal('SYNTH'), counter=counter())))
+    assert out['run_id'] is not None and repository.chain_head(db, 'SYNTH', day(2)) is not None
+
+
+def test_set_aside_proposal_is_done_for_the_session(db):
+    """M7: a `skipped / active_chain` run counts as completed: re-running the session does not call the model again."""
+    market = Market()
+    run(db, market, 0, tickers=['SYNB'], model=make_model(), agent=settings(provider='off'))
+    unit_run = repository.latest_agent_run(db, 'SYNB', S1)
+    repository.insert_agent_run(db, {
+        'id': str(uuid.uuid4()), 'ticker': 'SYNB', 'signal_date': S1, 'pool': 'main', 'attempt': 5, 'mode': 'propose',
+        'agent_version': 'agent-3', 'provider': 'chatgpt', 'model': 'gpt-test', 'cutoff_at': evening(S1),
+        'status': 'skipped', 'reason': 'active_chain', 'detail': None, 'output': None, 'counter': None,
+        'plan_id': None, 'input_tokens': 10, 'output_tokens': 5, 'started_at': evening(S1),
+        'finished_at': evening(S1)}, [])
+    db.commit()
+    assert unit_run is not None
+    summary, rows, model = run(db, market, 0, tickers=['SYNB'], model=make_model(propose=proposal('SYNB'),
+                                                                                 counter=counter()))
+    assert model.calls.get('propose', 0) == 0
+    assert skips(rows['agent']).get('already_completed') == ['SYNB']
+
+
+def test_holding_status_for_a_chain_skipped_without_a_row(db, monkeypatch):
+    """M8: object_cap leaves no review row; the status says why."""
+    market = Market()
+    run(db, market, 0, tickers=['SYNA', 'SYNTH'], model=make_model(propose=[*proposal('SYNA'), *proposal('SYNTH')],
+                                                                    counter=[*counter(), *counter()]))
+    for ticker in ('SYNA', 'SYNTH'):
+        fill(db, ticker, '10', '125', 1, head(db, ticker)['plan']['id'])
+    monkeypatch.setattr(plan_review, 'REVIEW_MAX_OBJECTS', 1)
+    summary, rows, model = run(db, market, 2, tickers=['SYNA', 'SYNTH'],
+                               model=make_model(review=verdict('SYNA', 'maintain', '照旧', cite=False)))
+    assert rows['review']['detail']['excluded'] == [{'ticker': 'SYNTH', 'signal_date': S1.isoformat(),
+                                                     'reason': 'object_cap'}]
+    by_ticker = {r['ticker']: r for r in status_rows(db, 2)}
+    assert by_ticker['SYNTH']['reason'] == '今日复查未完成（超出复查对象上限），按第 0 版继续持有'
+    assert by_ticker['SYNA']['reason'] == '照旧'
+
+
+def test_holding_status_for_a_chain_whose_review_raised(db, monkeypatch):
+    """M8: a review that blows up (no row, not capped) is reported as an error in the status, not as 「复查未执行」."""
+    market = Market()
+    holding_chain(db, market)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError('db hiccup')
+
+    monkeypatch.setattr(plan_review, 'review_chain', boom)
+    summary, rows, model = run(db, market, 2, tickers=['SYNTH'], model=make_model())
+    assert any('SYNTH review: db hiccup' in e for e in summary['errors'])
+    [status] = status_rows(db, 2)
+    assert status['reason'] == '今日复查未完成（复查出错），按第 0 版继续持有'
+
+
+def test_previous_chain_block_ignores_a_sale_recorded_after_the_cutoff(db):
+    """M8 (integration, Review Focus 1): a sale executed earlier but recorded after the cutoff did not exist yet:
+    the chain is still held at the cutoff, so it is not the 「上一条链」; recorded before, it is."""
+    market = Market()
+    v0 = holding_chain(db, market)
+    cutoff = evening(day(8))
+    _sell(db, 'SYNTH', '10', '127', 3, recorded_at=cutoff + timedelta(hours=1))
+    with service._tx() as conn:
+        facts = service._previous_chain_facts(conn, 'SYNTH', day(8), now=cutoff)
+    assert timeline.previous_chain_block(facts, now=cutoff).endswith(timeline.PREVIOUS_CHAIN_NONE)
+    with service._tx() as conn:
+        late = service._previous_chain_facts(conn, 'SYNTH', day(8), now=cutoff + timedelta(hours=2))
+    block = timeline.previous_chain_block(late, now=cutoff + timedelta(hours=2))
+    assert f'- 链 SYNTH·{S1.isoformat()}（共 1 版），结束：已平仓（{day(3).isoformat()}，实际 ' in block
+    assert str(v0['plan']['id']) not in block

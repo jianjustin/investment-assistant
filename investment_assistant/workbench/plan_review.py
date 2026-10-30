@@ -946,7 +946,8 @@ def _commit(seen: dict, *, ticker: str, signal_date: date, session: date, now: d
 # ---------------------------------------------------------------- holding status (spec §7.3, D19)
 
 _WHY_TEXT = {'fresh_version': '当天刚生成', 'object_cap': '超出复查对象上限', 'max_attempts': '已达重试上限',
-             'review_in_progress': '正在复查', 'already_reviewed': '已复查', 'chain_not_active': '链不在复查状态'}
+             'review_in_progress': '正在复查', 'already_reviewed': '已复查', 'chain_not_active': '链不在复查状态',
+             'error': '复查出错'}
 _UNAVAILABLE_REASONS = ('disabled', 'not_configured', 'not_connected', 'model_unavailable')
 
 
@@ -1191,6 +1192,7 @@ def run_stage(session: date, *, now: datetime, deps, summary: dict[str, Any], st
             raise
         except Exception as exc:    # §13: one chain's surprise never stops the stage
             summary['errors'].append(f"{obj['ticker']} review: {families.sanitize_reason(exc)}")
+            detail['excluded'].append(_excluded(obj, 'error'))      # no row: say why in the holding status
             if acc is not None:
                 acc.fail(obj['ticker'], exc)
             continue
@@ -1626,6 +1628,14 @@ def _check_retriggers(conn, session: date, *, now: datetime, contexts: dict[str,
     return problems
 
 
+def _run_cutoff(conn, session: date) -> datetime | None:
+    """The cutoff the session's latest batch froze: the newest ``cutoff_at`` of its batch review rows, else the
+    ``created_at`` of its retrigger rows (the `plan` node stamps them with the cutoff). None when neither exists."""
+    found = [r['cutoff_at'] for r in repository.reviews_on(conn, session) if r['trigger'] == 'batch']
+    found += [r['created_at'] for r in repository.retriggers_on(conn, session)]
+    return max(found) if found else None
+
+
 def _check_holding_status(conn, session: date, *, cutoff: datetime, out: Callable[[str], None]) -> list[str]:
     """Check ③ (spec §9.2): every ticker with open lots on S has exactly one ``holding_status`` row for S (the
     unique key allows at most one; a missing one is the failure D19 exists to prevent)."""
@@ -1707,7 +1717,8 @@ def check(session: date, out: Callable[[str], None] = print, *, now: datetime | 
         new_versions, problems = _check_versions(conn, session, inputs_of)
         problems += _check_unique_active(conn, session, now=now, contexts=contexts, out=out)
         problems += _check_retriggers(conn, session, now=now, contexts=contexts, excluded=excluded, out=out)
-        problems += _check_holding_status(conn, session, cutoff=stage_start or now, out=out)
+        problems += _check_holding_status(conn, session, cutoff=_run_cutoff(conn, session) or stage_start or now,
+                                           out=out)
     for problem in problems:
         out(f'问题  {problem}')
     complete, missing, fresh = (verdicts.count(v) for v in ('complete', 'missing', 'fresh'))
