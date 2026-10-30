@@ -435,6 +435,7 @@ def test_store_plan_compares_execution_fields(workbench_db):
 
 def test_list_trades_cutoff_accepts_naive_datetime(workbench_db):
     conn = workbench_db
+    conn.execute("SET TIME ZONE 'UTC'")                       # a naive cutoff is read in the session time zone
     trade = _trade(conn)
     repository.mark_trade_voided(conn, trade['id'], 'typo', voided_at=T0 + timedelta(days=1))
     naive = (T0 + timedelta(hours=1)).replace(tzinfo=None)
