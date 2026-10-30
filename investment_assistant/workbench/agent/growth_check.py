@@ -16,7 +16,7 @@ from typing import Any
 
 from investment_assistant.data.identity import stock_id
 from investment_assistant.workbench.agent.citations import _FENCE, Rejected, _loads
-from investment_assistant.workbench.retro import FACT_KEYS, LESSONS_MAX
+from investment_assistant.workbench.retro import FACT_KEYS, FACT_KEYS_V2, LESSONS_MAX
 
 HEADLINE_MAX = 60
 NARRATIVE_RANGE = (1, 4)
@@ -149,9 +149,9 @@ def _sentence(item: Any) -> dict:
 
 def check_draft(text: str, *, refs: set[str], concept_ids: set[str], default_ticker: str) -> dict:
     """§4.4 in full. ``refs`` = this run's ``call:N``, the ``concept:`` / ``know:`` refs its tools returned;
-    the ten ``fact:<key>`` refs of the frozen facts are always allowed."""
+    the ``fact:<key>`` refs of the frozen facts (ten of a retro-1 card, eleven of a retro-2 one) are always allowed."""
     payload = _loads_object(text)
-    allowed = set(refs) | {f'fact:{key}' for key in FACT_KEYS}
+    allowed = set(refs) | {f'fact:{key}' for key in (*FACT_KEYS, *FACT_KEYS_V2)}      # retro-1 and retro-2 cards
     headline = _text(payload.get('headline'), HEADLINE_MAX)
     narrative_raw = payload.get('expected_vs_actual')
     if (not isinstance(narrative_raw, list)

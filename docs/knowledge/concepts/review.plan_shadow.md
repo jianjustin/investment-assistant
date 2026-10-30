@@ -3,8 +3,8 @@ id: review.plan_shadow
 title: "计划影子"
 group: review
 version: 1
-applies_to: [plan-shadow-1]
-summary: "不管你实际做了什么，按计划的价位逐日模拟入场和出场，得出这份计划本来会是几 R；先触止损、保本下限、跳空按开盘价。"
+applies_to: [plan-shadow-1, plan-shadow-2]
+summary: "不管你实际做了什么，按计划的价位逐日模拟入场和出场，得出这份计划本来会是几 R。v2.9 起带执行字段的计划按开盘情形与时间止损回放，并列旧口径作反事实。"
 related: [review.r_multiple, review.tracks, plan.trailing_stop, agent.version_chain]
 sources: [investment_assistant/workbench/plan_shadow.py]
 ---
@@ -21,6 +21,8 @@ sources: [investment_assistant/workbench/plan_shadow.py]
 - **T1 与移动止损**：最高价触及 T1，卖出一半（按 T1 与开盘价中较高者成交）；之后止损变为 max(入场以来最高收盘 − 3 ATR, 入场价)，也就是有保本下限，收盘后更新、次日生效。剩下一半按它出场。
 - **没成交**：有效期内一直没碰到入场区间，已过期记 `expired`，还没过期记 `pending`。
 - 价位按拆股换算到当前口径；结果同时给出同期 SPY 收益。
+
+**`plan-shadow-2`（v2.9）**用于带执行字段的计划（`plan-2`、`agent-3`、v2.9 起的自定计划），改三处：入场按计划的入场类型与开盘三种情形（开盘 ≤ 止损当天起作废，状态 `voided`，记 0R、不计入有 R 的份数、汇总单列；`next_open` 只看有效期第一根）；成交后持有满最长持有天数而仍没有一个收盘到过成交价加 1R，就在次一交易日开盘退出（`time_stop`，T1 触发后不再适用）；到期未成交同旧版。同一份计划**同时**算 `plan-shadow-1`（无时间止损、旧入场规则）作反事实列，所以你能看到时间止损在这一单上是帮了还是害了。没有执行字段的旧计划只算 `plan-shadow-1`；周度 / 月度复盘按两个口径分别汇总，不混算。
 
 每一版 Agent 计划（见[版本链](agent.version_chain.md)）各自独立模拟，修订版的有效期从复查日次一交易日开始，所以只可能在生成之后成交。
 

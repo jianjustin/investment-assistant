@@ -188,7 +188,7 @@ def test_summarize_by_pool_and_plan_kind():
 def test_status_text_covers_every_status():
     assert set(tracks.TRACK_STATUS_TEXT) == {'missing', 'not_executable', 'pending', 'expired',
                                              'open', 'closed', 'pass', 'not_executed', 'no_plan'}
-    assert tracks.TRACKS_VERSION == 'tracks-1'
+    assert tracks.TRACKS_VERSION == 'tracks-2'      # v2.9: the service builds tracks-2 rows; tracks-1 stays in old snapshots
 
 
 # --- v2.5 §9.2: which Agent version the agent track takes ---
@@ -199,7 +199,6 @@ def test_agent_track_carries_version_keys():
     base = tracks.agent_track(run, plan, _outcome('closed', 2.0))
     out = tracks.agent_track(run, plan, _outcome('closed', 2.0), version_no=1, version_basis='decision')
     assert out == {**base, 'version_no': 1, 'version_basis': 'decision'}
-    assert tracks.TRACKS_VERSION == 'tracks-1'
 
 
 # --- v2.9 tracks-2 (spec D27) ---
@@ -218,7 +217,7 @@ UNIT = {'ticker': 'NVDA', 'signal_date': S}
 
 def test_tracks_versions_and_text():
     assert (tracks.TRACKS_V1, tracks.TRACKS_V2) == ('tracks-1', 'tracks-2')
-    assert tracks.TRACKS_VERSION == tracks.TRACKS_V1               # service still builds tracks-1 rows; flips in Task 4
+    assert tracks.TRACKS_VERSION == tracks.TRACKS_V2
     assert tracks.TRACK_STATUS_TEXT_V2['merged'] == '并入其他链' and tracks.TRACK_STATUS_TEXT_V2['voided']
     assert {k: v for k, v in tracks.TRACK_STATUS_TEXT_V2.items() if k in tracks.TRACK_STATUS_TEXT} == \
         tracks.TRACK_STATUS_TEXT
@@ -483,6 +482,7 @@ def test_agent1_units_unchanged(workbench_db):
     assert rows['NVDA']['agent']['status'] == 'open' and rows['MU']['agent']['status'] == 'open'
     assert rows['AMD']['agent']['status'] == 'pass'
     assert rows['INTC']['agent']['run_status'] == 'error' and rows['INTC']['agent']['status'] == 'missing'
-    assert rows['NVDA']['actual']['plan_kind'] == 'agent' and rows['NVDA']['actual']['plan_id'] == str(nvda['id'])
+    # tracks-2 (D27): the actual track takes its plan from the fills' link; this decision has no fill yet
+    assert rows['NVDA']['actual']['plan_kind'] is None and rows['NVDA']['actual']['plan_id'] is None
     assert rows['MU']['actual']['status'] == 'pending'
     assert set(rows['NVDA']) == {'ticker', 'signal_date', 'pool', 'rule', 'agent', 'actual'}

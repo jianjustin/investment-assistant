@@ -3,7 +3,7 @@ id: review.first_latest
 title: "首版与最新版汇总"
 group: review
 version: 1
-applies_to: [review-6, monthly-3]
+applies_to: [review-6, monthly-3, review-8, monthly-4]
 summary: "汇总 Agent 计划的结果时，agent 口径每条链只算首版，agent_latest 只算最新版，避免样本被修订次数放大；有 R 的不足 5 份不给均值。"
 related: [review.weekly, review.version_basis, agent.version_chain, review.plan_shadow]
 sources: [investment_assistant/workbench/review.py, investment_assistant/workbench/monthly.py]

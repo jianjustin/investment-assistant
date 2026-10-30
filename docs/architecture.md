@@ -46,7 +46,7 @@ tasks/*           定时任务入口：tasks/daily.py 自带外壳（锁、检�
 
 | 模块 | 做什么 | 依赖 |
 | --- | --- | --- |
-| `workbench/service.py` | 各节点的阶段函数（采集、筛选、环境、规则、计划、Agent、每日复查、推送、复盘；`sec_monitor` 在 `tasks/filings.py`）、`run_batch` 薄壳（v2.7 的单进程批处理，供测试与旧调用）与全部用例（含 `rerun_agent`） | 下列模块、`repository` |
+| `workbench/service.py` | 各节点的阶段函数（采集、筛选、环境、规则、计划、Agent、每日复查、推送、复盘；`sec_monitor` 在 `tasks/filings.py`）、`run_batch` 薄壳（v2.7 的单进程批处理，供测试与旧调用）与全部用例（含 `rerun_agent`；v2.9 起 `decide` 抛 `Gone`（410），`today` 的单元卡退役、单元卡数据只剩推送用的 `unit_cards`，读视图按 `timeline-2` 取链状态） | 下列模块、`repository` |
 | `workbench/repository.py` | 工作台全部 SQL，只追加 | `db.py` |
 | `workbench/bars.py`、`news.py`、`earnings.py`、`macro.py` | 采集：日线、资讯标题、财报日、FRED | yfinance、SEC、FRED |
 | `workbench/universe.py`、`screen.py` | 纳指 100 范围文件；`screen-1` 过滤、排序、成员轮换（纯函数） | 纯函数 |
@@ -56,7 +56,7 @@ tasks/*           定时任务入口：tasks/daily.py 自带外壳（锁、检�
 | `workbench/families.py` | 六个数据族注册表：用途、状态判定、原因脱敏、覆盖口径、目标清单（目标清单读数据库与范围文件，其余为纯函数） | `repository`、`pool`、`universe` |
 | `workbench/pool.py`、`regime.py` | 观察池分层与来源；范围 ∪ 手动池的广度、区制、行业强弱 | 纯函数 |
 | `workbench/rules.py`、`synthesis.py` | 规则 v1 候选；合成每股每日一个决策单元 | 纯函数 |
-| `workbench/plans.py` | ATR、计划价位、有效期、财报提示、按风险定仓 | 纯函数 |
+| `workbench/plans.py` | ATR、计划价位、有效期、财报提示、按风险定仓；`plan-2`（价位同 `plan-1`，加 `entry_type`、`max_hold_sessions`） | 纯函数 |
 | `workbench/derivation.py` | 计划推导链（`derivation-1`）：按代入值独立重算 `plan-1` 规则计划的每一步（TR、ATR、价位、有效期、财报与环境提示、定仓、状态），与已存值逐项比对，给出 `consistent` / `mismatch` / `incomplete`；自定计划（价位为用户输入）与 Agent 计划（价位核对 `agent_runs.output.levels`）按入场区间中点定仓；触发段 `derive_trigger` / `derive_unit` 按 `CONDITIONS` 逐句复核候选冻结的取值（`holds` / `violated` / `not_frozen`，`violated` 计入不一致）；常量与 `plans.py` 分开声明、由测试对齐；不调用 `plans.py` 的计算函数 | 纯函数（只依赖交易日历） |
 | `workbench/derivation_view.py` | 推导与阶段证据的只读用例：`load_rows` 只按计划 `inputs` 里的 id 回读日线、财报日、快照、区制、Agent 运行与规则计划（都是只追加的表，读到的就是生成时那一行）；`plan_derivation`（推导 + `trigger_note` + 运行证据 `run`，运行证据取插入该计划的 `plan` / `agent` 阶段行）、`unit_derivation`（只有触发段 + 该单元计划 id）、`stage_runs_view`（按 `run_id` 分组、按注册表排序）、`check_plans`（批处理用，同一只读事务里批量推导）；全部在 `service.read_only_tx()` 里执行，不调用外部数据源，缺行如实标 `incomplete` | `derivation`、`stages`、`repository`、`service` |
 | `workbench/knowledge.py` | 版本化概念卡与「原理」页（v2.6，`knowledge-1`）：读 `docs/knowledge/` 的 Markdown 卡（YAML 头 + 正文），一次报出全部校验问题，用 `markdown-it-py` 渲染（关闭原始 HTML、卡内链接在 token 层改写），给 Agent 的纯文本，进程内缓存（失败不缓存）；知识接口、`get_concept` 与命令行 `check` / `show` 共用；纯文件读取，不碰数据库 | `markdown-it-py`、`PyYAML`、`stages`（阶段 id） |
@@ -70,22 +70,25 @@ tasks/*           定时任务入口：tasks/daily.py 自带外壳（锁、检�
 | `workbench/agent/` | Agent 轨道：工具层（十个工具，含不受截止时间约束的 `get_concept` 与按截止时间读的 `get_knowledge`）、LangGraph 图（提议 + 反方 / 解读 / 复盘卡起草 / 讨论回答）、引用校验、模型接入（`model.py`：`AgentSettings`、`chat_model`、`SiwcChatOpenAI`、`classify_error`） | LangGraph、`chatgpt`、`agent_connection`、PostgresSaver |
 | `workbench/agent/chatgpt.py` | Sign in with ChatGPT 协议（`siwc-1`，v2.8）：发现文档校验、授权 URL（PKCE、动态注册）、一次性回环回调监听、换令牌与刷新、撤销、模型清单、Responses 请求改写（`rewrite_payload`）、错误表；所有请求走 `fetch-1`，异常一律重建为只带安全码的 `ChatGPTError`，令牌不出这个模块的异常 | `data/fetch_policy` |
 | `workbench/agent_connection.py` | ChatGPT 连接用例（v2.8）：开始 / 取消登录、回调完成、`access_token`（剩余不足 300 秒时在 `FOR UPDATE` 事务里先写库后使用）、断开、选模型、状态视图 `status_view`（只返回状态、脱敏邮箱、到期时间、模型，不含令牌 / `client_id` / `host_id` / `subject`）、`first_failure_since_ok`（失效通知每次失效只发一次）；**唯一读写 `agent_connections` 与 `agent_connection_events` 的模块**（`repository` 不出现这两张表） | `chatgpt`、`service`（连接） |
-| `workbench/agent/conditions.py` | 失效条件与下次复查条件的注册表 `condition-1`：参数校验、按事实判定 `met` / `not_met` / `unknown`（数据缺失不当作成立）、条件文案 | 纯函数（只依赖交易日历） |
+| `workbench/agent/conditions.py` | 失效条件与下次复查条件的注册表 `condition-2`（`condition-1` 的判定不变，加 `held_sessions_reached`）：参数校验、按事实判定 `met` / `not_met` / `unknown`（数据缺失不当作成立）、条件文案 | 纯函数（只依赖交易日历） |
 | `workbench/agent/plan_check.py` | `agent-2` 计划、反证与复查结论的校验（论点条数、条件、修订 `changes` 与宿主差异、`user:<id>` 引用），宿主差异 `diff` | `citations`、`conditions` |
-| `workbench/timeline.py` | 计划时间线 `timeline-1`：链状态、版本有效期与版本计划行、「上次复查之后」窗口、七项系统信号、条件判定结果、宿主结论（失效作废 / 无事维持）、截止时间之前的有效用户输入、复查与修订提示词的证据块 | 纯函数（复用 `plans` 的计算函数） |
+| `workbench/entry_rules.py` | 入场规则 `entry-1`（v2.9）：三种入场类型、开盘三种情形的做法与逐字文案 `scenarios`、本计划何时作废 `void_when`、影子用的 `simulate_entry` | 纯函数 |
+| `workbench/execution.py` | 采纳由成交推导 `execution-1`（v2.9）：成交 → 计划 → 链的映射、链上买入 `chain_buys`、执行状态四种（`adopted` / `out_of_validity` / `pending` / `not_executed`）与链级 `executed`、计划外 | 纯函数 |
+| `workbench/plan_views.py`、`plan_table.py` | v2.9 只读视图：`plan_table`（「今日」计划表：入场期 / 持仓 / 已结束三组、其他触发）、`plan_history`（「标的」页计划历史）、`holding_status_view`、`linkable_plans`；迁移 029 未执行抛 `NotReady`（503）；持仓缺行时现算并标 `stale`；`plan_table.py` 是命令行薄壳（`python -m investment_assistant.workbench.plan_table show --session D`） | `plan_review`、`execution`、`entry_rules`、`repository` |
+| `workbench/timeline.py` | 计划时间线 `timeline-2`（`timeline-1` 保留给旧复查行）：九种链状态与每标的一条活跃链、版本有效期与版本计划行、「上次复查之后」窗口、八项系统信号（含 `retrigger`）、条件判定结果、宿主结论、持仓状态 `holding_status`、「同标的上一条链」证据块、复查与修订提示词的证据块 | 纯函数（复用 `plans` 的计算函数） |
 | `workbench/plan_review.py` | 每日复查阶段 `review`：复查对象与排序、链标的（只采集不跑规则）、逐链复查 `review_chain`（全程在一条不经连接池的专用连接（autocommit，用完即关）上持会话级锁 `review-run:<标的>:<信号日>`；短事务持锁读取 → 无事务调模型 → 一个写事务写入复查运行、修订运行、新版计划与版本、复查记录）、阶段记账（含逐链 `detail.excluded`）与新版推导核对；重新复查（`recheck_check` 同步前置检查、`recheck` 后台执行，截止时间 = 请求时刻）；只读视图（链视图 `chain_view`、某日复查 `reviews_view`、标的的链列表 `ticker_chains`）；命令行 `python -m investment_assistant.workbench.plan_review chain / recheck / check` | `service`、`timeline`、`user_inputs`、`agent/`、`repository` |
 | `workbench/user_inputs.py` | 用户输入（研报要点、新闻、你的判断、其他、撤回）：校验、按 `request_id` 幂等写入（只追加，更正与撤回指向旧行）、按标的 / 链列出并标记已更正 / 已撤回；只作为复查与修订提示词的证据 | `ledger`（`request_hash`）、`repository` |
 | `workbench/agent/growth_check.py` | 复盘卡草稿、教训、讨论回答的校验（`check_draft` / `check_lesson` / `check_answer`，引用允许 `fact:` / `call:N` / `concept:` / `know:` / `user:`）与 `knowledge_citations` 抽取（只取通过校验后保留下来的字段） | `retro`、`agent/citations` |
 | `workbench/agent/discuss_tools.py` | 就此计划讨论专用的三个只读工具（`get_plan_context`、`get_derivation`、`get_agent_run`）与 `DiscussContext`：只接受本单元的计划与运行，越界返回错误信封，不读任何草稿，不写任何表 | `reasoning`、`derivation_view`、`repository` |
-| `workbench/retro.py` | 复盘卡的纯函数（`retro-1`）：结束事件 `end_event`（含检测窗口 `window_start`、`event_key`、平仓方式）、参考计划、冻结事实 `build_facts`（十个键 `FACT_KEYS`）、决定文案、纪律摘要、起草用的事实文本与卡状态 | `discipline`、`tracks`（只复用判定） |
-| `workbench/retro_cards.py` | 复盘卡用例：阶段 `run_stage`（只读事务检测 → 一个写事务建卡 → 每张卡一个写事务起草）、`detect` / `draft_card` / `redraft`、审定 `verdict`（草稿全部出现，一个事务写审定、决定与知识第 1 版）、列表与卡页视图（含 `discipline_now`）、命令行 `retro_cards detect / draft / show / check` | `service`、`retro`、`knowledge_items`、`my_knowledge`、`agent/graph`、`repository` |
+| `workbench/retro.py` | 复盘卡的纯函数（`retro-2`，`retro-1` 的函数保留给旧卡）：结束事件 `end_event`（含检测窗口 `window_start`、`event_key`、平仓方式）、参考计划、冻结事实 `build_facts`（十个键 `FACT_KEYS`，`retro-2` 的 `build_facts_v2` 十一个键 `FACT_KEYS_V2`：`decision` 换成 `execution`，加 `holding`）、决定文案、纪律摘要、起草用的事实文本与卡状态 | `discipline`、`tracks`（只复用判定） |
+| `workbench/retro_cards.py` | 复盘卡用例（v2.9 起对象由 `repository.retro_subject_keys` 给出：有关联成交、或你写过备注的链 / 单元，加计划外成交）：阶段 `run_stage`（只读事务检测 → 一个写事务建卡 → 每张卡一个写事务起草）、`detect` / `draft_card` / `redraft`、审定 `verdict`（草稿全部出现，一个事务写审定、决定与知识第 1 版）、列表与卡页视图（含 `discipline_now`）、命令行 `retro_cards detect / draft / show / check` | `service`、`retro`、`knowledge_items`、`my_knowledge`、`agent/graph`、`repository` |
 | `workbench/knowledge_items.py` | 「我的知识」的纯函数（`my-knowledge-1`）：字段与挂靠校验、`know:` 引用解析、截止时间可见性 `visible`、改了哪些字段 | `knowledge`（概念 id 格式） |
 | `workbench/my_knowledge.py` | 「我的知识」用例：写 / 改版 / 归档恢复（`base_version` 与 advisory lock、`request_id` 幂等）、列表与条目视图、表现回看 `performance`、讨论草稿的审定、`refs_for_plans`（计划卡与链视图的「引用的知识」）、命令行 `my_knowledge show / check-cutoff` | `service`、`knowledge_items`、`knowledge_perf`、`plan_shadow`、`repository` |
 | `workbench/knowledge_perf.py` | 知识表现回看的纯函数（`knowledge-perf-1`）：每个单元取最早引用的一版，汇总复用 `review.shadow_block`，样本不足 5 个不给均值 | `review` |
 | `workbench/discussion.py` | 就此计划讨论用例（`agent-discuss-1`）：建讨论、提问的同步检查（前置检查与你的这一轮）、后台回答 `answer`（模型没有写工具，宿主只写你的一轮、回答、运行与工具调用、可选的一条经验草稿）、讨论视图（`pending` / `interrupted` 在读取时判定） | `service`、`agent/graph`、`discuss_tools`、`my_knowledge`、`repository` |
 | `workbench/briefs.py` | 由 Agent 运行构造决策单元的解读 | 纯函数 |
-| `workbench/ledger.py`、`positions.py`、`exits.py`、`account.py` | 决定与成交（只追加）、FIFO 持仓、持仓止损、资金快照与出入金 | 纯函数 + SQL |
-| `workbench/plan_shadow.py`、`review.py`、`discipline.py`、`tracks.py`、`monthly.py`、`backcheck.py` | 影子跟踪、周度复盘、纪律、三方对比、月度收益与敏感性、上线前检查 | 纯函数 |
+| `workbench/ledger.py`、`positions.py`、`exits.py`、`account.py` | 成交与备注（只追加）、FIFO 持仓、持仓止损、资金快照与出入金。v2.9 起 `ledger.record_trade` 接受 `plan_id` / `own_plan`（关联成交时刻的链头，自定计划与成交同一事务，R6 / R12）并拒绝 `decision_id`，`record_note` 写 `plan_notes`；决定的记录函数已删除，`signal_decisions` 只读 | 纯函数 + SQL |
+| `workbench/plan_shadow.py`、`review.py`、`discipline.py`、`tracks.py`、`monthly.py`、`backcheck.py` | 影子跟踪（`plan-shadow-2` 带反事实的 `simulate_both`）、周度复盘（`review-8`）、纪律（`discipline-2`）、三方对比（`tracks-2`）、月度收益与敏感性（`monthly-4`）、上线前检查 | 纯函数 |
 | `workbench/digest.py`、`review_digest.py` | 每日推送与周/月复盘推送的数据 | 纯函数 |
 | `workbench/data_view.py` | 「数据」菜单用例：总览 / 详情 / 浏览（只读事务）与单族手动拉取，写 `data_fetch_runs` | `families`、`collect`、`repository`、`runner` |
 | `tasks/daily.py` | 唯一的定时任务外壳（v2.8）：`daily:run` 会话级 advisory lock（定时 / 手动 / 续跑 / SEC 回补共用，`is_running()` 只看不取）、调 `workflow.run` / `resume`、每次执行追加一行 `job_reports`（`task = 'daily'`）、失败通知（每次执行至多一条）与连接失效通知（见下，每次失效只发一次）、命令行 `run / resume / show` | `workflow`、`service`、`notify/` |
@@ -120,14 +123,14 @@ flowchart TD
         A --> A2["② 筛选 screen<br/>screen-1：范围日线 + 财报日 → 过滤排序 → 成员自动进扩展池；新成员补采资讯与 SEC"]
         A2 --> B2["③ 市场环境 regime<br/>regime-2：范围 ∪ 手动池广度 → 区制；行业强弱"]
         B2 --> C["④ 信号 signals<br/>规则 v1：信号候选 → 决策单元"]
-        C --> D["⑤ 计划 plan<br/>plan-1：ATR 止损 · 2R 目标 · 按风险定仓 · 超限作废"]
+        C --> D["⑤ 计划 plan<br/>plan-2：ATR 止损 · 2R 目标 · 按风险定仓 · 超限作废 · 入场类型与最长持有；已有活跃链则并入"]
         D --> E["⑥ Agent 轨道 agent<br/>ChatGPT 订阅 · 提议 + 反方 · 引用校验 · 预算从本节点起算 25 分钟；解读"]
         E --> R["⑦ 每日复查 review<br/>每条有效 Agent 计划链：失效作废 / 无事维持（宿主）· 复查调用 · 修订出新版"]
         R --> F["⑧ 复核与推送 push<br/>今日视图 + 推送 Discord（核心池 + 持仓）"]
-        F --> RC["⑨ 复盘 retro<br/>交易日：结束事件 → 冻结十个事实建复盘卡 → Agent 起草；到期时生成并推送周 / 月复盘"]
+        F --> RC["⑨ 复盘 retro<br/>交易日：结束事件 → 冻结十一个事实建复盘卡 → Agent 起草；到期时生成并推送周 / 月复盘"]
     end
-    F --> G["你：「今日」采纳 / 否决 / 降级<br/>选执行依据：规则 / Agent / 自定"]
-    G --> H["你：录入成交 → 持仓与止损"]
+    F --> G["你：「今日」计划表<br/>按开盘三种情形在券商下单（无决定按钮）"]
+    G --> H["你：录入成交并关联照着做的计划 → 采纳由成交推出 → 持仓状态与止损"]
     RC --> V["你：审定复盘卡 → 我的知识（只追加、带版本）<br/>Agent 用 get_knowledge 读 · 引用记入 knowledge_citations · 表现回看"]
     subgraph weekly["retro 节点里到期时（原 08:00 workbench_review）"]
         I["影子跟踪：规则与 Agent 各按自己的价位"] --> J["三方对比：规则 / Agent / 实际"]
@@ -160,7 +163,8 @@ flowchart TD
 | 数据底座 | `data_fetch_runs`（迁移 024，只追加：每次拉取一行成败与目标级明细 `detail.targets`，每日工作流、`sec_backfill` 与「数据」菜单共用）、`stage_runs`（迁移 025，只追加：每次运行每节点一行证据，含计数、原因、产出引用与耗时；迁移 028 起有 `attempt`，唯一键 `(run_id, stage, attempt)`，`job` 可为 `daily`） |
 | 工作台 · 采集 | `price_bars`、`news_items`、`news_item_tickers`、`earnings_dates`、`macro_observations` |
 | 工作台 · 信号与筛选 | `signal_candidates`、`signal_briefs`、`pool_tiers`（含 `source`）、`market_regimes`、`screen_runs`、`screen_results` |
-| 工作台 · 计划与执行 | `trade_plans`、`signal_decisions`、`trades`、`account_snapshots`、`cash_flows` |
+| 工作台 · 计划与执行 | `trade_plans`（迁移 029 起有 `entry_type`、`max_hold_sessions`）、`signal_decisions`（v2.9 起只读，不再写入）、`trades`（迁移 029 起有 `plan_id`，与旧 `decision_id` 不并存）、`account_snapshots`、`cash_flows` |
+| 工作台 · 可执行的计划（迁移 029） | `chain_retriggers`（再次触发并入哪条链）、`holding_status`（每个持仓标的每个复查交易日一行）、`plan_notes`（给自己看的备注，可更正 / 撤回）——三张只追加的表，不在 `WORKBENCH_TABLES` 里，缺表时按 `repository.executable_ready` 判定、读视图返回 503、`daily` 拒绝运行 |
 | 工作台 · Agent | `agent_runs`、`agent_tool_calls`；LangGraph 检查点表由 `python -m investment_assistant.workbench.agent setup` 创建，不在迁移里（Agent 子图的 `thread_id` 是 `agent_runs.id`，每日工作流的是 `daily-…` 运行编号，两者共用同一组表） |
 | 每日工作流（迁移 028） | `agent_connections`（单行：ChatGPT 连接状态、**明文令牌**、`client_id`、`host_id`，是机密，进数据库备份时按机密处理）、`agent_connection_events`（只追加：登录、续期、失败、断开、选模型，只放安全码与到期时间，绝不放令牌）——两张表只由 `workbench/agent_connection.py` 读写；`agent_attempt_resets`（只追加：「重新运行 Agent」重置尝试次数闸，`repository` 对它只有 `INSERT` / `SELECT`，`request_id` 幂等）；三张新表都不在 `WORKBENCH_TABLES` 里；同一迁移给 `stage_runs` 加 `attempt`、把 `scheduled_jobs` 的三个任务换成 `daily` |
 | 工作台 · 计划时间线 | `agent_plan_versions`（每版 Agent 计划一行，链关系与截止时间）、`plan_reviews`（每次复查一行：信号、条件判定、结论、新版）、`user_inputs`（你贴入的材料，更正与撤回指向旧行）；迁移 026，只追加，不在 `WORKBENCH_TABLES` 里，缺表时按 `timeline_ready` 降级 |

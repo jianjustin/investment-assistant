@@ -47,9 +47,9 @@ REQUIRED_IDS = (
     'agent.knowledge_citation', 'system.discussion', 'review.weekly_learning',
     # v2.8 (3): the spec calls the first data.fetch_policy, but card ids must start with an existing group (knowledge.GROUPS)
     'system.fetch_policy', 'system.daily_workflow', 'system.agent_connection',
-    # v2.9 executable plans, Task 3 (6): review.execution_status joins in Task 4 (105 cards)
+    # v2.9 executable plans (7): six from Task 3, review.execution_status from Task 4
     'plan.entry_type', 'plan.open_scenarios', 'plan.max_hold', 'agent.retrigger', 'system.active_chain',
-    'review.holding_status',
+    'review.holding_status', 'review.execution_status',
 )
 
 STAGE_STATUSES = ('success', 'partial', 'degraded', 'failed', 'skipped')
@@ -106,7 +106,7 @@ def body_of(catalog, card_id: str) -> str:
 
 
 def test_catalog_loads_and_matches_required_ids(catalog):
-    assert len(REQUIRED_IDS) == 104 and len(set(REQUIRED_IDS)) == 104
+    assert len(REQUIRED_IDS) == 105 and len(set(REQUIRED_IDS)) == 105
     assert set(catalog.concepts) == set(REQUIRED_IDS)
 
 
@@ -165,7 +165,7 @@ def test_principles_structure(catalog):
     principles = catalog.principles
     assert principles is not None
     headings = [section.heading for section in principles.sections]
-    assert len(headings) == 14                                      # v2.8: intro, ten nodes, three closing sections
+    assert len(headings) == 15                       # v2.8: intro, ten nodes, three closing sections; v2.9 adds 「从计划到成交」
     assert headings[0] == '系统做什么、不做什么'
     assert headings[-1] == '怎么在系统里核对'
     staged = [section for section in principles.sections if section.stage]
@@ -173,7 +173,7 @@ def test_principles_structure(catalog):
     assert len({section.stage for section in staged}) == len(staged) == 10      # one section per node, sec_monitor included
     for section in staged:
         assert section.concepts, f'{section.heading}: 阶段小节没有链任何概念卡'
-    assert [section.heading for section in principles.sections[11:13]] == ['你做什么：决定与成交', '复盘口径']
+    assert [section.heading for section in principles.sections[11:14]] == ['你做什么：决定与成交', '从计划到成交', '复盘口径']
     first, last = principles.sections[1], principles.sections[10]
     assert first.stage == 'sec_monitor' and first.heading == '⓪ SEC 监控' and 'family.sec_filings' in first.concepts
     assert last.stage == 'retro' and last.heading == '⑨ 复盘'                    # after push, with the weekly / monthly part

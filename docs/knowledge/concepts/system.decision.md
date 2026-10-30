@@ -2,15 +2,17 @@
 id: system.decision
 title: "决定与执行依据"
 group: system
-version: 1
+version: 2
 applies_to: []
-summary: "你对每个决策单元做一次决定：采纳、否决或降级为观察，写一句理由；采纳买入时选执行依据（Agent 计划、规则计划或自定价位）。"
-related: [system.decision_unit, review.position, review.version_basis, review.tracks, plan.own]
+summary: "v2.9 起退役：不再有采纳 / 否决 / 降级按钮，采纳由成交推出；旧决定只读保留，旧链、旧复盘卡、旧周报仍按旧决定显示。"
+related: [system.decision_unit, review.position, review.version_basis, review.tracks, plan.own, review.execution_status]
 sources: [investment_assistant/workbench/ledger.py, investment_assistant/workbench/service.py]
 ---
 
 ## 是什么
-系统给出候选和计划，决定权在你。决定是你对一个[决策单元](system.decision_unit.md)的回应，也是后面复盘把"系统怎么建议"和"你怎么做"对上号的凭据。
+**v2.9 起退役。** 系统给出候选和计划，决定权在你，但你不再点按钮：录入成交时关联你照着做的计划，系统由成交推出采纳（见[执行状态与备注](review.execution_status.md)）。`POST /api/workbench/decisions` 返回 410 `decisions_retired`，新成交带 `decision_id` 返回 400 `decision_link_retired`。
+
+`signal_decisions` 表与旧行保留**只读**：旧决定在旧口径里照旧生效（链状态 `closed_by_decision`、三方对比的 `decision` 版本依据、旧复盘卡与旧周报的显示），新链不会进入这些状态。下面讲的是旧决定当时怎么记的。
 
 ## 怎么算 / 从哪来
 - **三种决定**：采纳（最终动作等于建议动作）、否决（最终动作为忽略）、降级为观察（最终动作为观察，建议动作本身是观察时不能再降级）。必须写一句理由。
@@ -19,7 +21,7 @@ sources: [investment_assistant/workbench/ledger.py, investment_assistant/workben
 - **更正**：再提交一条新的决定，指向旧决定；同一请求编号重复提交返回原决定。
 
 ## 在系统里哪里看到
-「今日」每个单元的决定区；录入成交时可关联决定；「复盘」按决定分组统计。
+只在旧数据里：「标的」页历史里的旧决定、旧复盘卡的「你的决定」、`review-7` 及更早的周报「按决定」。新数据看「今日」计划表的执行状态和复盘的「按执行」。
 
 ## 注意
 决定只是记录，不会替你下单。成交要你在券商自己下，再到「复盘 → 交易与持仓」录入（见[持仓与成交](review.position.md)）。

@@ -1,3 +1,4 @@
+import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -5,8 +6,8 @@ import psycopg.errors
 from fastapi import APIRouter, Body, HTTPException
 
 from investment_assistant.tasks import daily, runner
-from investment_assistant.workbench import (derivation_view, discussion, ledger, my_knowledge, plan_review, reasoning,
-                                            retro_cards, run_overview, service, user_inputs, workflow)
+from investment_assistant.workbench import (derivation_view, discussion, ledger, my_knowledge, plan_review, plan_views,
+                                            reasoning, retro_cards, run_overview, service, user_inputs, workflow)
 from investment_assistant.workbench.agent.chatgpt import ChatGPTError
 
 router = APIRouter()
@@ -16,16 +17,39 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+CHAIN_EXITING_TEXT = '这条链已发出退出指令，不再复查'      # spec R10 (409 chain_exiting)
+ACTIVE_CHAIN_TEXT = '{ticker} 已有进行中的计划链（{date} 第 {n} 版），这次触发已并入'      # spec §4.7 (409 active_chain)
+
+
+def _agent_conflict_text(exc: service.AgentConflict, ticker: Any) -> str:
+    """``active_chain`` carries its sentence: the ticker (the call's first argument), the chain's signal date (MM-DD)
+    and its newest version number, taken from the exception (Task 3 review M9)."""
+    text = str(exc)
+    if text == 'active_chain' and exc.chain_signal_date is not None:
+        number = '—' if exc.version_no is None else exc.version_no
+        return f'active_chain: ' + ACTIVE_CHAIN_TEXT.format(ticker=ticker, date=exc.chain_signal_date.strftime('%m-%d'),
+                                                            n=number)
+    return text
+
+
 def _call(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
     except service.Unavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except service.Gone as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
+    except service.AgentConflict as exc:
+        raise HTTPException(status_code=409, detail=_agent_conflict_text(exc, args[0] if args else '')) from exc
+    except plan_review.RecheckConflict as exc:
+        text = str(exc)
+        raise HTTPException(status_code=409,
+                            detail=f'chain_exiting: {CHAIN_EXITING_TEXT}' if text == 'chain_exiting' else text) from exc
     except daily.DailyBusy as exc:
         raise HTTPException(status_code=409, detail='daily_running') from exc
     except workflow.ResumeRejected as exc:
         raise HTTPException(status_code=409, detail=exc.code) from exc     # the code is the text: {"error": "<code>"}
-    except (ledger.Conflict, service.AgentConflict, plan_review.RecheckConflict) as exc:
+    except ledger.Conflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ChatGPTError as exc:
         raise HTTPException(status_code=502, detail=exc.code) from exc     # only the safe code, never a response text
@@ -47,6 +71,56 @@ def _date(value: Any, field: str) -> date | None:
 @router.get('/api/workbench/today')
 def today():
     return _call(service.today, now=_now())
+
+
+@router.get('/api/workbench/plan-table')
+def plan_table(session: str | None = None, include_extended: bool = False):
+    """v2.9 §9.1 「今日」 plan table: ``{session, groups: {entry, holding, ended}, other_units, counts, errors}``;
+    read-only, no outside source; 503 ``migration_029_missing``."""
+    return _call(plan_views.table_view, now=_now(), session=_date(session, 'session'),
+                 include_extended=include_extended)
+
+
+@router.get('/api/workbench/holding-status')
+def holding_status(session: str | None = None):
+    return _call(plan_views.holding_view, now=_now(), session=_date(session, 'session'))
+
+
+@router.get('/api/workbench/instruments/{ticker}/plan-history')
+def plan_history(ticker: str, include_reviews: bool = False, include_baselines: bool = False):
+    return _call(plan_views.history_view, ticker, now=_now(), include_reviews=include_reviews,
+                 include_baselines=include_baselines)
+
+
+@router.get('/api/workbench/trades/linkable-plans')
+def linkable_plans(ticker: str | None = None, executed_at: str | None = None):
+    if not ticker or not executed_at:
+        raise HTTPException(status_code=400, detail='ticker 与 executed_at 必填')
+    try:
+        moment = datetime.fromisoformat(executed_at.replace('Z', '+00:00'))
+    except ValueError:
+        raise HTTPException(status_code=400, detail='executed_at must be an ISO timestamp') from None
+    if moment.tzinfo is None:
+        raise HTTPException(status_code=400, detail='executed_at must include a timezone')
+    return _call(plan_views.linkable_view, ticker, moment)
+
+
+@router.post('/api/workbench/plan-notes')
+def add_plan_note(payload: dict[str, Any] = Body(default_factory=dict)):
+    return _call(service.add_plan_note, payload, now=_now())
+
+
+@router.get('/api/workbench/plan-notes')
+def plan_notes(ticker: str | None = None, chain_signal_date: str | None = None, plan_id: str | None = None):
+    if not ticker:
+        raise HTTPException(status_code=400, detail='ticker is required')
+    if plan_id:
+        try:
+            uuid.UUID(plan_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail='plan_id must be a UUID') from None
+    return _call(plan_views.notes_view, ticker=ticker.upper(), chain_signal_date=_date(chain_signal_date, 'chain_signal_date'),
+                 plan_id=plan_id or None)
 
 
 @router.get('/api/workbench/screen')

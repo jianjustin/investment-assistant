@@ -19,10 +19,10 @@ def bars_from(start, closes, opens=None, factor=1.0):
             for d, o, c in zip(days, opens, closes)]
 
 
-def unit(action='buy', decision='accept', final=None, rules=('trend_reclaim',), signal_date=T):
-    return {'id': uuid.uuid4(), 'ticker': 'NVDA', 'signal_date': signal_date, 'proposed_action': action,
-            'decision': decision, 'final_action': final or action, 'rule_ids': list(rules),
-            'decided_at': datetime(2026, 10, 2, 1, tzinfo=UTC)}
+def unit(action='buy', execution='adopted', rules=('trend_reclaim',), signal_date=T, uid=None):
+    """A review-8 unit: every ticker-day with candidates, with its execution-1 state (no decision any more)."""
+    return {'id': uid or f'NVDA:{uuid.uuid4()}', 'ticker': 'NVDA', 'signal_date': signal_date,
+            'proposed_action': action, 'execution': execution, 'rule_ids': list(rules)}
 
 
 # T at 100, then entry day opens at 100 and rises 1 per session.
@@ -85,33 +85,105 @@ def test_open_position_mark_to_latest_close():
     assert out['as_of'] == STOCK[-1]['price_date'].isoformat()
 
 
-def test_weekly_stats_groups_and_never_claims_significance():
+def _week_fixture():
     week = date(2026, 9, 28)
     accepted = unit(rules=('trend_reclaim', 'new_filing'))
-    rejected = unit(decision='reject', final='ignore')
+    ignored = unit(execution='not_executed')
+    late = unit(execution='out_of_validity', rules=('new_filing',))
     outcomes = {accepted['id']: review.shadow_outcome(accepted, STOCK, SPY),
-                rejected['id']: review.shadow_outcome(rejected, STOCK[:3], SPY)}
-    trades = [
-        {'id': 't1', 'ticker': 'NVDA', 'side': 'buy', 'price': D('101'), 'executed_at': datetime(2026, 10, 2, 14, tzinfo=UTC),
-         'decision_id': accepted['id'], 'voided_at': None},
-        {'id': 't2', 'ticker': 'MU', 'side': 'buy', 'price': D('50'), 'executed_at': datetime(2026, 10, 2, 15, tzinfo=UTC),
-         'decision_id': None, 'voided_at': None},
-        {'id': 't3', 'ticker': 'MU', 'side': 'buy', 'price': D('50'), 'executed_at': datetime(2026, 10, 2, 16, tzinfo=UTC),
-         'decision_id': None, 'voided_at': datetime(2026, 10, 3, tzinfo=UTC)},
-    ]
-    stats = review.weekly_stats(week, [accepted, rejected], outcomes, trades, segments=[], undecided=2,
-                                entry_opens={accepted['id']: 100.0})
-    assert stats['calc_version'] == review.CALC_VERSION
+                ignored['id']: review.shadow_outcome(ignored, STOCK[:3], SPY),
+                late['id']: review.shadow_outcome(late, STOCK, SPY)}
+    created = datetime(2026, 10, 1, 21, tzinfo=UTC)         # when the linked plan version was generated
+    t1 = {'id': 't1', 'ticker': 'NVDA', 'side': 'buy', 'price': D('101'),
+          'executed_at': datetime(2026, 10, 2, 14, tzinfo=UTC), 'voided_at': None}
+    t2 = {'id': 't2', 'ticker': 'MU', 'side': 'buy', 'price': D('50'),
+          'executed_at': datetime(2026, 10, 2, 15, tzinfo=UTC), 'voided_at': None}
+    t3 = {'id': 't3', 'ticker': 'MU', 'side': 'buy', 'price': D('50'),
+          'executed_at': datetime(2026, 10, 2, 16, tzinfo=UTC), 'voided_at': datetime(2026, 10, 3, tzinfo=UTC)}
+    return week, [accepted, ignored, late], outcomes, [t1, t2, t3], created
+
+
+def test_weekly_stats_groups_and_never_claims_significance():
+    week, units, outcomes, trades, created = _week_fixture()
+    stats = review.weekly_stats(week, units, outcomes, trades, segments=[], entry_opens={units[0]['id']: 100.0},
+                                fills=[{'trade': trades[0], 'unit_id': units[0]['id'], 'plan_created_at': created}],
+                                unplanned=[trades[1]])
+    assert stats['calc_version'] == review.CALC_VERSION == 'review-8'
     assert stats['week'] == {'start': '2026-09-28', 'end': '2026-10-04'}
-    assert stats['units'] == {'decided': 2, 'undecided': 2}
+    assert stats['units'] == {'executed': 2, 'not_executed': 1}
     tr = stats['by_rule']['trend_reclaim']['5']
     assert tr['count'] == 2 and tr['mature'] == 1 and tr['mean'] == pytest.approx(0.05)
-    assert stats['by_rule']['new_filing']['5']['count'] == 1
-    assert stats['by_decision']['reject']['5'] == {'count': 1, 'mature': 0, 'mean': None, 'median': None, 'values': []}
-    assert stats['execution'] == [{'trade_id': 't1', 'decision_id': str(accepted['id']), 'ticker': 'NVDA',
-                                   'slippage': pytest.approx(0.01), 'delay_hours': pytest.approx(13.0)}]
-    assert stats['unsignaled_trades'] == ['t2']
+    assert stats['by_rule']['new_filing']['5']['count'] == 2
+    assert 'by_decision' not in stats and 'unsignaled_trades' not in stats
     assert 'significant' not in str(stats) and 'p_value' not in str(stats)
+
+
+def test_review8_control_group_all_units():
+    """D26: the groups cover every unit of the week, not only the ones somebody decided on."""
+    week, units, outcomes, trades, _ = _week_fixture()
+    stats = review.weekly_stats(week, units, outcomes, trades, segments=[], entry_opens={})
+    assert sum(g['5']['count'] for g in stats['by_execution'].values() if g['5']['count'] and True) >= 3
+    assert stats['by_rule']['new_filing']['5']['count'] == 2        # the not-executed unit is in the control group too
+    assert stats['units']['executed'] + stats['units']['not_executed'] == len(units)
+
+
+def test_review8_by_execution():
+    week, units, outcomes, trades, _ = _week_fixture()
+    stats = review.weekly_stats(week, units, outcomes, trades, segments=[], entry_opens={}, unplanned=[trades[1]])
+    groups = stats['by_execution']
+    assert set(groups) == {'adopted', 'out_of_validity', 'not_executed', 'unplanned'}
+    assert groups['adopted']['5']['count'] == 1 and groups['adopted']['5']['mature'] == 1
+    assert groups['not_executed']['5'] == {'count': 1, 'mature': 0, 'mean': None, 'median': None, 'values': []}
+    assert groups['out_of_validity']['5']['count'] == 1
+    assert groups['unplanned']['5'] == {'count': 1, 'mature': 0, 'mean': None, 'median': None, 'values': []}
+
+
+def test_review8_execution_delay_from_version():
+    """The delay runs from the moment the linked plan version was generated, not from a decision."""
+    week, units, outcomes, trades, created = _week_fixture()
+    stats = review.weekly_stats(week, units, outcomes, trades, segments=[], entry_opens={units[0]['id']: 100.0},
+                                fills=[{'trade': trades[0], 'unit_id': units[0]['id'], 'plan_created_at': created}])
+    assert stats['execution'] == [{'trade_id': 't1', 'unit': units[0]['id'], 'ticker': 'NVDA',
+                                   'slippage': pytest.approx(0.01), 'delay_hours': pytest.approx(17.0)}]
+
+
+def test_review8_unplanned_trades():
+    week, units, outcomes, trades, _ = _week_fixture()
+    stats = review.weekly_stats(week, units, outcomes, trades, segments=[], entry_opens={}, unplanned=[trades[1]])
+    assert stats['unplanned_trades'] == ['t2']
+
+
+def test_review8_learning_execution_text():
+    cards = [_card(1, execution_text='采纳（照 Agent 第 2 版）'), _card(2, execution_text='计划外成交')]
+    out = review.learning_stats(week_start=WEEK, week_end=WEEK_END, cards=cards, perf_by_item={})
+    assert [c['execution_text'] for c in out['cards']] == ['采纳（照 Agent 第 2 版）', '计划外成交']
+    assert all('decision_text' not in c for c in out['cards'])
+
+
+def test_review8_plans_split_by_shadow_version():
+    """Plans are summarised per shadow version and never mixed (spec §5.6)."""
+    week = date(2026, 10, 19)
+    base = {'signal_date': date(2026, 10, 20), 'kind': 'rule'}
+    new = {**base, 'shadow_version': 'plan-shadow-2', 'outcome': {'status': 'voided', 'r': None},
+           'shadow_v1': {'status': 'closed', 'r': 1.0}}
+    old = {**base, 'kind': 'agent', 'shadow_version': 'plan-shadow-1', 'outcome': {'status': 'closed', 'r': 2.0},
+           'shadow_v1': None, 'chain': None}
+    stats = review.weekly_stats(week, [], {}, [], segments=[], entry_opens={}, plan_outcomes=[new, old])
+    assert stats['plans']['rule']['voided'] == 1 and 'agent' not in stats['plans']
+    assert stats['plans_v1']['agent']['count'] == 1
+    assert stats['plans_counterfactual']['rule']['r_mean'] == 1.0
+    assert stats['shadow_versions']['plans'] == 'plan-shadow-2'
+
+
+def test_old_snapshots_not_recomputed(workbench_db):
+    """Frozen review-7 (and older) snapshots are served as stored: nothing in this module rebuilds them."""
+    week = date(2026, 10, 12)
+    frozen = {'calc_version': 'review-7', 'units': {'decided': 3, 'undecided': 1}, 'by_decision': {'accept': {}},
+              'unsignaled_trades': ['x']}
+    first = review.save_weekly(workbench_db, week, frozen, notes='', supersedes_id=None)
+    assert review.CALC_VERSION == 'review-8'
+    [head] = review.list_weekly(workbench_db)
+    assert head['id'] == first['id'] and head['stats'] == frozen
 
 
 # --- weekly snapshot persistence (disposable schema) ---
@@ -146,11 +218,11 @@ def test_weekly_review2_has_plans_and_discipline():
     ]
     disc = {'trades': [], 'counts': {'chase': 0, 'early_take': 0, 'held_loser': 0, 'unplanned': 0},
             'immature': {'early_take': 0, 'held_loser': 0}, 'planned_buys': 1, 'compliance_rate': 1.0}
-    stats = review.weekly_stats(week, [], {}, [], segments=[], undecided=0, entry_opens={},
+    stats = review.weekly_stats(week, [], {}, [], segments=[], entry_opens={},
                                 plan_outcomes=plan_outcomes, discipline=disc)
-    assert stats['calc_version'] == 'review-7'   # P4 起带 tracks 键；v2.5 起 plans 分首版与最新版；v2.7 起可带 learning
-    assert stats['plans']['rule'] == {'count': 2, 'expired': 1, 'r_mean': 2.0, 'r_median': 2.0}
-    assert stats['plans']['own'] == {'count': 1, 'expired': 0, 'r_mean': 1.0, 'r_median': 1.0}
+    assert stats['calc_version'] == 'review-8'   # P4 起带 tracks 键；v2.5 起 plans 分首版与最新版；v2.7 起可带 learning
+    assert stats['plans']['rule'] == {'count': 2, 'expired': 1, 'voided': 0, 'r_mean': 2.0, 'r_median': 2.0}
+    assert stats['plans']['own'] == {'count': 1, 'expired': 0, 'voided': 0, 'r_mean': 1.0, 'r_median': 1.0}
     assert stats['discipline'] == disc
 
 
@@ -176,8 +248,8 @@ def test_pool_of_three_way():
     assert review.pool_of({'pool_tier': 'core', 'source': 'watchlist'}, None) == 'core'
 
 
-def test_calc_version_review_7():
-    assert review.CALC_VERSION == 'review-7'
+def test_calc_version_review_8():
+    assert review.CALC_VERSION == 'review-8'
 
 
 def test_pool_summary_groups_three_pools():
@@ -223,10 +295,10 @@ def test_pool_summary_counts_only_rule_plans():
 
 
 def test_weekly_stats_carries_by_pool():
-    stats = review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], undecided=0, entry_opens={},
+    stats = review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], entry_opens={},
                                 by_pool={'core': {'trend_reclaim': {'triggers': 1}}})
     assert stats['by_pool'] == {'core': {'trend_reclaim': {'triggers': 1}}}
-    assert review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], undecided=0, entry_opens={})['by_pool'] == {}
+    assert review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], entry_opens={})['by_pool'] == {}
 
 
 def test_weekly_plan_summary_has_agent_kind():
@@ -237,9 +309,9 @@ def test_weekly_plan_summary_has_agent_kind():
     ]
     disc = {'trades': [], 'counts': {'chase': 0, 'early_take': 0, 'held_loser': 0, 'unplanned': 0},
             'immature': {'early_take': 0, 'held_loser': 0}, 'planned_buys': 1, 'compliance_rate': 1.0}
-    stats = review.weekly_stats(week, [], {}, [], segments=[], undecided=0, entry_opens={},
+    stats = review.weekly_stats(week, [], {}, [], segments=[], entry_opens={},
                                 plan_outcomes=plan_outcomes, discipline=disc)
-    assert stats['plans']['agent'] == {'count': 1, 'expired': 0, 'r_mean': 1.5, 'r_median': 1.5}
+    assert stats['plans']['agent'] == {'count': 1, 'expired': 0, 'voided': 0, 'r_mean': 1.5, 'r_median': 1.5}
 
 
 def test_pool_summary_ignores_agent_plans():
@@ -255,8 +327,8 @@ def test_pool_summary_ignores_agent_plans():
 
 
 def test_weekly_stats_without_tracks_keeps_shape():
-    stats = review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], undecided=0, entry_opens={})
-    assert stats['calc_version'] == 'review-7'
+    stats = review.weekly_stats(date(2026, 10, 19), [], {}, [], segments=[], entry_opens={})
+    assert stats['calc_version'] == 'review-8'
     assert stats['tracks'] is None            # 旧调用方仍可用，无对比数据时为空
     assert 'learning' not in stats            # 没传 learning 的旧调用方，快照里没有这一键
     assert 'by_rule' in stats and 'plans' in stats and 'note' in stats
@@ -274,15 +346,15 @@ def test_three_version_chain_counts_once_in_agent():
     entries = [_agent_entry(1.0, 0, False), _agent_entry(2.0, 1, False), _agent_entry(3.0, 2, True),
                {'kind': 'rule', 'signal_date': date(2026, 9, 29), 'outcome': {'status': 'open', 'r': 0.5}}]
     out = review._plan_summary(entries, week, week + timedelta(days=6))
-    assert out['agent'] == {'count': 1, 'expired': 0, 'r_mean': 1.0, 'r_median': 1.0}
-    assert out['agent_latest'] == {'count': 1, 'expired': 0, 'r_mean': 3.0, 'r_median': 3.0}
+    assert out['agent'] == {'count': 1, 'expired': 0, 'voided': 0, 'r_mean': 1.0, 'r_median': 1.0}
+    assert out['agent_latest'] == {'count': 1, 'expired': 0, 'voided': 0, 'r_mean': 3.0, 'r_median': 3.0}
     assert out['rule']['count'] == 1
 
 
 def test_agent1_plan_is_its_own_first_and_latest():
     week = date(2026, 9, 28)
     out = review._plan_summary([_agent_entry(1.5, None, None)], week, week + timedelta(days=6))
-    assert out['agent'] == out['agent_latest'] == {'count': 1, 'expired': 0, 'r_mean': 1.5, 'r_median': 1.5}
+    assert out['agent'] == out['agent_latest'] == {'count': 1, 'expired': 0, 'voided': 0, 'r_mean': 1.5, 'r_median': 1.5}
 
 
 def test_generate_weekly_counts_first_and_latest(workbench_db, monkeypatch):
@@ -319,9 +391,11 @@ def test_generate_weekly_counts_first_and_latest(workbench_db, monkeypatch):
             'schema_version': 'agent-2'})
         previous = plan['id']
     out = service.generate_weekly(date(2026, 10, 19), now=NOW)
-    assert out['calc_version'] == 'review-7' and out['stats']['calc_version'] == 'review-7'
-    assert out['stats']['plans']['agent']['count'] == 1
-    assert out['stats']['plans']['agent_latest']['count'] == 1
+    assert out['calc_version'] == 'review-8' and out['stats']['calc_version'] == 'review-8'
+    # agent-2 versions carry no execution fields: plan-shadow-1, summarised apart from the plan-shadow-2 plans
+    assert out['stats']['plans'] == {} and out['stats']['shadow_versions']['plans_v1'] == 'plan-shadow-1'
+    assert out['stats']['plans_v1']['agent']['count'] == 1
+    assert out['stats']['plans_v1']['agent_latest']['count'] == 1
     agent = out['stats']['tracks']['units'][0]['agent']
     assert agent['version_no'] == 0 and agent['version_basis'] == 'first'
 
@@ -357,13 +431,13 @@ WEEK_END = date(2026, 10, 25)
 
 
 def _card(card_id, *, ticker='NVDA', end_session=date(2026, 10, 21), end_kind='position_closed', status='to_review',
-          flags=None, pending=0, actual_r=1.5, rule_r=2.0, agent_r=None, headline='一句话', decision_text='采纳（照规则计划）',
+          flags=None, pending=0, actual_r=1.5, rule_r=2.0, agent_r=None, headline='一句话', execution_text='采纳（照规则计划）',
           filled=False):
     totals = {'chase': 0, 'early_take': 0, 'held_loser': 0, 'unplanned': 0, 'pending': pending}
     for flag in flags or []:
         totals[flag] += 1
     return {'card_id': card_id, 'ticker': ticker, 'end_kind': end_kind, 'end_text': {'position_closed': '平仓',
-            'stop': '止损'}[end_kind], 'end_session': end_session, 'decision_text': decision_text,
+            'stop': '止损'}[end_kind], 'end_session': end_session, 'execution_text': execution_text,
             'actual_r': actual_r, 'filled': filled, 'rule_r': rule_r, 'agent_r': agent_r, 'status': status, 'headline': headline,
             'discipline': totals}
 
@@ -389,7 +463,7 @@ def test_learning_stats_three_keys():
     assert out['discipline'] == {'cards': 2, 'chase': 1, 'early_take': 1, 'held_loser': 0, 'unplanned': 1,
                                  'pending': 1}
     assert [c['card_id'] for c in out['cards']] == [1, 2]                  # 按结束日
-    assert set(out['cards'][0]) == {'card_id', 'ticker', 'end_kind', 'end_text', 'decision_text', 'actual_r',
+    assert set(out['cards'][0]) == {'card_id', 'ticker', 'end_kind', 'end_text', 'execution_text', 'actual_r',
                                     'filled', 'rule_r', 'agent_r', 'flags', 'status', 'headline'}
     assert [c['filled'] for c in out['cards']] == [False, True]          # card 2 was bought but has no R
     assert out['cards'][0]['flags'] == ['chase'] and out['cards'][1]['flags'] == ['early_take', 'unplanned']
@@ -413,5 +487,5 @@ def test_learning_stats_empty_and_json_safe():
 
 def test_weekly_stats_carries_learning_when_given():
     learning = review.learning_stats(week_start=WEEK, week_end=WEEK_END, cards=[], perf_by_item={})
-    stats = review.weekly_stats(WEEK, [], {}, [], segments=[], undecided=0, entry_opens={}, learning=learning)
-    assert stats['learning'] == learning and stats['calc_version'] == 'review-7'
+    stats = review.weekly_stats(WEEK, [], {}, [], segments=[], entry_opens={}, learning=learning)
+    assert stats['learning'] == learning and stats['calc_version'] == 'review-8'

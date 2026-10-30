@@ -276,7 +276,7 @@ def test_monthly_frozen_and_supersede(workbench_db, monkeypatch):
     monkeypatch.setattr(service, 'connection', connection)
     now = datetime(2026, 11, 1, 22, 30, tzinfo=UTC)
     first = service.generate_monthly(date(2026, 10, 1), notes='初版', now=now)
-    assert first['stats']['calc_version'] == 'monthly-3'   # P4 起带 review 明细与 tracks
+    assert first['stats']['calc_version'] == 'monthly-4'   # P4 起带 review 明细与 tracks
     assert first['stats']['return']['status'] == 'missing_snapshot'
     with pytest.raises(ledger.Conflict):
         service.generate_monthly(date(2026, 10, 1), notes='重复生成', now=now)
@@ -573,7 +573,7 @@ def test_weekly_review3_has_by_pool(workbench_db, monkeypatch):
                     tier_rows=[{'ticker': 'NVDA', 'tier': 'extended', 'sector_etf': None}],
                     candidate_days=[date(2026, 10, 20)], plan_days=[(date(2026, 10, 20), 'extended')])
     out = service.generate_weekly(date(2026, 10, 19), now=NOW + timedelta(days=2))
-    assert out['calc_version'] == 'review-7'
+    assert out['calc_version'] == 'review-8'
     row = out['stats']['by_pool']['extended']['trend_reclaim']
     assert (row['triggers'], row['plans']) == (1, 1)
 
@@ -612,7 +612,7 @@ def test_old_review2_snapshot_unchanged(workbench_db, monkeypatch):
                     tier_rows=[{'ticker': 'NVDA', 'tier': 'core', 'sector_etf': None}],
                     candidate_days=[date(2026, 10, 20)], plan_days=[(date(2026, 10, 20), 'core')])
     out = service.generate_weekly(date(2026, 10, 19), now=NOW + timedelta(days=2))
-    assert out['calc_version'] == 'review-7'
+    assert out['calc_version'] == 'review-8'
     again = repository.weekly_head(workbench_db, date(2026, 10, 12))
     assert again['id'] == old['id'] and again['calc_version'] == 'review-2' and again['stats'] == {'units': 7}
 
@@ -916,7 +916,7 @@ def test_monthly_snapshot_has_tracks_and_detail(workbench_db, monkeypatch):
     _mt_round_trip(workbench_db, 'NVDA', date(2026, 10, 1), plan['id'],
                    sell_day=date(2026, 10, 5), sell_price=D('110'))
     stats = service.generate_monthly(date(2026, 10, 1), now=datetime(2026, 11, 20, 22, 30, tzinfo=UTC))['stats']
-    assert stats['calc_version'] == 'monthly-3'
+    assert stats['calc_version'] == 'monthly-4'
     assert 'units' in stats['tracks'] and 'summary' in stats['tracks']
     assert set(stats['review']) >= {'flag', 'months', 'compound', 'spy_compound'}
 

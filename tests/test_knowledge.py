@@ -349,8 +349,8 @@ def test_known_versions_cover_code_constants():
                knowledge_perf.KNOWLEDGE_PERF_VERSION, graph.RETRO_AGENT_VERSION, graph.DISCUSS_AGENT_VERSION,
                fetch_policy.FETCH_POLICY_VERSION, workflow.DAILY_GRAPH_VERSION, chatgpt.CHATGPT_PROTOCOL_VERSION}
     assert current <= knowledge.KNOWN_VERSIONS
-    assert {'stages-4', 'daily-1', 'retro-1', 'agent-retro-1', 'agent-discuss-1', 'my-knowledge-1',
-            'knowledge-perf-1', 'review-7'} == {stages.STAGES_VERSION, workflow.DAILY_GRAPH_VERSION,
+    assert {'stages-4', 'daily-1', 'retro-2', 'agent-retro-2', 'agent-discuss-1', 'my-knowledge-1',
+            'knowledge-perf-1', 'review-8'} == {stages.STAGES_VERSION, workflow.DAILY_GRAPH_VERSION,
                                                  retro.RETRO_VERSION, graph.RETRO_AGENT_VERSION,
                                                  graph.DISCUSS_AGENT_VERSION, knowledge_items.MY_KNOWLEDGE_VERSION,
                                                  knowledge_perf.KNOWLEDGE_PERF_VERSION, review.CALC_VERSION}

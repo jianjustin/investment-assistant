@@ -1,6 +1,6 @@
 # 每日计划：规则 → 交易计划 → 推送
 
-每天中午前（北京时间周二至周六 11:30 开始运行）收到一份交易计划：价位能追溯到规则和数据，由你决定采纳还是否决、自己下单并录入成交。系统只给研究候选，不自动下单、不接券商；所有规则都**未经验证**（Phase 0 Gate HOLD），推送里会如实标注。
+每天中午前（北京时间周二至周六 11:30 开始运行）收到一份交易计划：价位能追溯到规则和数据，由你自己下单并录入成交（v2.9 起没有采纳 / 否决按钮，采纳由成交推出）。系统只给研究候选，不自动下单、不接券商；所有规则都**未经验证**（Phase 0 Gate HOLD），推送里会如实标注。
 
 设计：[工作台](../specs/2026-10-23-us-research-workbench-design.md)、[P1 规则计划与推送](../specs/2026-10-23-p1-rule-plans-and-push-design.md)。
 
@@ -9,8 +9,8 @@
 | 时间（北京） | 发生什么 | 你要做的 |
 |---|---|---|
 | 周二至周六 11:30 | 任务 `daily`（一张 LangGraph 图，十个节点，见下文[十个节点](#十个节点)）：SEC 监控 → 数据采集（含纳指 100 范围成分的日线与财报日）→ 筛选（成员自动进扩展池，为新成员补采资讯与 SEC，见[观察池](pool-and-context.md)）→ 市场环境 → 规则信号 → 规则计划 → Agent 轨道 → 每日复查（见下文[每日复查](#每日复查)）→ 推送 → 复盘（复盘卡检测与周 / 月复盘，见下文[复盘卡检测](#复盘卡检测)）。每个节点写一行证据（`stage_runs`，每次运行十条有效行；续跑追加 `attempt` 行，见[调度与通知](../operations/scheduling-and-notifications.md)）。纽约休市日 `push` 之前的八个节点跳过，推一行「纽约休市，未运行」，`retro` 仍判断周 / 月复盘 | 无；出错时会收到一条「每日工作流失败」通知 |
-| 早上 | 打开「今日」：每只股票每天一个决策单元，显示候选规则、输入值、Agent 计划（默认在前，见下文[「今日」：Agent 优先](#今日agent-优先)）、规则基线、解读（支持 / 反证 / 冲突，带引用）、近期财报与资讯；筛选来源的单元带「筛选」标记；单元列表之后是进行中的 Agent 计划 | 采纳 / 否决 / 降级为观察，写一句理由；采纳时选执行依据：Agent 计划（第 n 版）、规则计划或自定价位 |
-| 成交后 | 「复盘 → 交易与持仓」录入成交（本机时区），关联当时的决定 | 录错就「作废」并写理由，再重新录入 |
+| 早上 | 打开「今日」：一张计划表（入场期 / 持仓中 / 已结束三组，见下文[「今日」：计划表与 Agent 计划卡](#今日计划表与-agent-计划卡)），每行写明开盘落在区间内 / 高开 / 低开各做什么、本计划何时作废；展开一行看候选规则、输入值、Agent 计划（默认在前）、规则基线、解读（支持 / 反证 / 冲突，带引用）、近期财报与资讯；筛选来源的单元带「筛选」标记 | 照着计划在券商下单；想给自己留句话就写备注（备注不进 Agent）；想让 Agent 参考用「我的补充」 |
+| 成交后 | 「复盘 → 交易与持仓」录入成交（本机时区），关联当时照着做的计划（见[成交与备注](#成交与备注v29)） | 录错就「作废」并写理由，再重新录入 |
 | 交易结束后 | 「复盘 → 复盘卡」出现新卡（待审定），下一次每日推送概览写「复盘卡 上次推送后新增 a · 待审定 b」 | 逐条审定教训草稿（可改、可不采纳），采纳的进「知识 → 我的知识」 |
 
 「今日」右上可「立即运行批处理」（也就是手动运行 `daily`）：总是针对最近一个已收盘的交易日（纽约 17:00 后算当天收盘），**不推送**（`push` 记 `skipped: manual_run`），周 / 月复盘只生成不推送。另一次执行正在进行时返回「每日工作流正在运行」（409）。
@@ -95,7 +95,7 @@
 | 财报 | 有效期内有财报则计划作废；之后 10 个交易日内有财报，或日期未知、已过，则加提示 |
 | 市场环境 | 冻结进 `inputs.context`；防守区制、快照失败、行业弱势只加提示，不改价位 |
 
-价位四舍五入到 0.01。重跑结果相同就返回原计划；结果不同则记入运行报告的冲突列表，不覆盖原计划。采纳时提交自定价位，会另存一份 `own` 计划，和决定在同一事务里写入，建议股数按新价位重算。
+价位四舍五入到 0.01。重跑结果相同就返回原计划；结果不同则记入运行报告的冲突列表，不覆盖原计划。录入成交时选「自定」并提交自己的价位，会另存一份 `own` 计划，和成交在同一事务里写入，建议股数按新价位重算。
 
 ### `plan-2`：规则基线带执行字段（v2.9）
 
@@ -158,9 +158,23 @@
 - **每日推送**：概览字段末尾的「复盘卡 上次推送后新增 a · 待审定 b」（a 是上一次每日推送之后新建的卡数，b 是推送时的待审定数；a、b 都为 0 时不加），不新增消息。
 - **验证一次**：手动运行后 `stage_runs` 该 `run_id` 有 10 条有效行，`retro` 行计数与 `review_cards` / `review_card_drafts` 一致；`python -m investment_assistant.workbench.retro_cards check --since <首次批处理交易日 S 之前的第 4 个交易日（= S−4，检测窗口起点）>` 通过；「运行一览」最后一行读作「新结束 n 笔（平仓 a · 止损 b …），新建复盘卡 n 张；起草 x/y 张；待审定 z 张」。
 
-## 「今日」：Agent 优先
+## 「今日」：计划表与 Agent 计划卡
 
-「今日」的决策单元卡默认按「Agent 优先」排列（设计见 [v2.5 §10](../specs/2026-10-28-v2.5-plan-timeline-design.md#10-今日与推送)；链、版本与复查的含义见 [Agent 轨道 · 计划时间线](agent-track.md#计划时间线)）：
+### v2.9：计划表（`GET /api/workbench/plan-table`）
+
+v2.9 起「今日」不再有单元卡区、决定表单和「进行中的 Agent 计划」「持仓止损」两段，换成**一张计划表**（设计 [v2.9 §9.1、§10.1](../specs/2026-10-30-v2.9-executable-plans-design.md)）。页面顺序：运行一览 → 筛选 → 市场环境 → 计划表 → 其他触发（卖出 / 观察 / 冲突单元，一行一个只读解读）→ 扩展池（`include_extended` 开关，默认关）。**没有任何决定按钮**，采纳由成交推出（见下文[成交与备注](#成交与备注v29)）。
+
+- **只读、不调外部数据源**：`GET /api/workbench/plan-table?session=&include_extended=`，`session` 缺省 = 最近一个已收盘交易日（读更早的日子时，记录按那一天结束时已知的为准），返回 `{session, groups: {entry, holding, ended}, other_units, counts, errors}`；某个标的读不出来只进 `errors.<标的>`，其余行照常。迁移 029 未执行返回 503「migration_029_missing」（页面写「迁移 029 未执行」），不给空表。后端把文案全部拼好，前端只排版。
+- **入场期组**：每个处于入场期的链一行（再次触发并入的单元不单独成行，写在这一行的 `chain.retriggers`，每项带 `unit_signal_date`、`rule_ids` 与它产出的 `version_no`），加没有链的买入单元（Agent 出错 / 不可用 / `pass`，或所并入的链今日作废）——这类行以规则基线为计划、`chain = null`、`status.label` 写原因。行内容：`plan`（入场类型与区间、止损、T1、建议股数、有效期、最长持有；`agent-2` 旧版没有执行字段，按 `zone_limit` + 10 天显示并标 `defaults_applied`）、`baseline`（规则基线一行；并入了这条链的单元其基线 `active_chain` 记 `{ticker, signal_date}`）、`open_scenarios`（开盘区间内 / 高开 / 低开各做什么，`entry-1` 模板）、`void_when`（本计划何时作废：有效期、开盘情形、每条失效条件及最近一次判定、最长持有、止损）、`status`（`label`、链级 `execution` 与 `execution_basis`「照 Agent 第 n 版」、最近一次复查、今日触发的信号、相对上一版的 `diff` 与 `changes_text`）、`notes`（有效备注）、`links`。
+- **持仓组**：每个持仓一行，`holding` = 当天的[持仓状态](../knowledge/concepts/review.holding_status.md)行（距止损、距 T1、持有天数、现在几 R、指令与维持理由）；有链的取链的最新版，没有链的取成交关联的规则基线 / 自定计划（`chain = null`，写「无 Agent 链，按规则基线看护」）。当天没有 `holding_status` 行（`review` 节点整体失败）时现算一行并标 `holding.stale = true`，页面写「今日持仓状态未写入（每日复查失败），以下为现算」，现算的行不落库，持仓不会从「今日」消失（R18）。排序：指令 `exit` → `sell_half` → `hold` → `no_plan`，再按标的。
+- **已结束组**：最近 5 个交易日内（`ENDED_WINDOW_SESSIONS`）结束的链与规则基线，`status.label` 为「已过期（未执行）」「已作废：<理由>」「已平仓（+1.2R）」「被取代」「旧决定不买」，带 `ended_at`；更早的去「标的」页计划历史。默认收起、整组置灰。
+- **其他触发**：`other_units` 只带标的、信号日、建议动作、标签、规则与简报，不再有单元卡。
+- **排序**：入场期按池（核心 → 筛选 → 扩展）再按标的；已结束按结束日倒序。
+- **命令行**：`python -m investment_assistant.workbench.plan_table show [--session D]`（薄壳，转到 `plan_views.main`；只读）打印三组各一行与读取失败；退出码 0，数据库不可用或 029 未执行为 2。
+- **持仓状态接口**：`GET /api/workbench/holding-status?session=` → `{session, rows}`（当天全部持仓状态行，缺行的现算并标 `stale`）。
+- **`GET /api/workbench/today`**：`units` 与 `extended_units` 退役为空列表并带 `retired: true`；`holdings`、`chains`（按 `timeline-2` 判定，含退出期）、`market`、`screen`、`timeline_ready` 照旧。单元卡数据只剩推送在用（`service.unit_cards`）。
+
+下面各条描述的是行展开里的 Agent 计划卡（`AgentPlanCard`，去掉了决定表单）和计划页，设计见 [v2.5 §10](../specs/2026-10-28-v2.5-plan-timeline-design.md#10-今日与推送)；链、版本与复查的含义见 [Agent 轨道 · 计划时间线](agent-track.md#计划时间线)：
 
 - **Agent 计划块在前**：「Agent 计划 · 第 n 版 · 生成于 <北京时间> · 截止 <北京时间>」；动作与价位（每个价位带引用编号，点开看工具调用）、建议股数；论点 T1–T3（带引用，`user:<id>` 引用只显示、不可点）；每条论点下的关键反证，反方没有给出的标「反方未对此论点给出反证」；其他风险；失效条件，每条带最近一次复查的判定（成立 / 未成立 / 无法判定；还没复查过、或最近一次复查正是产生本版的那次时写「尚未复查」）；下次复查条件（空 = 「下一交易日」）；修订版显示「相对第 n−1 版」：宿主差异（如「止损 95.00 → 96.00」）与模型的变化说明并列；最近一次复查（结论、「Agent」/「系统规则」、理由、时间）；修订未通过时写「Agent 建议修订，但修订未通过校验（原因），当前仍为第 n 版」；持仓期的新版按仓位规则作废（如 `no_room`）时写「本版按仓位规则不能加仓（原因）」，不当作计划作废；「展开推导」；「证据：未验证」常驻。条件文案与后端 `agent/conditions.py` 的模板逐字一致（区制标签保留 `risk_on` / `neutral` / `risk_off` 原值），数字按后端字符串原样显示。
 - **看推理过程**：计划卡底部「看推理过程」（取生成这一版的 Agent 运行 id，「今日」与计划页共用，版本链里点开的每一版都有）展开 Agent 推理阅读视图，展开时才请求。按时间顺序一步一个小节，标题带概念：提议者读了什么（每次工具调用一行「call:N · 工具 · 参数 · 哈希前 8 位」，「看返回值」展开，列表默认只显示条数与首尾各 2 行，结果字段名旁可展开概念）→ 提议（动作、价位、论点、失效 / 复查条件）→ 校验结果 → 反方读了什么 → 反方（逐条反证、其他风险、丢弃数、无反证的论点）→「回应」（本版之后的复查记录；没有写「回应：本版之后还没有复查」）→ 生成的计划（状态与推导一致性）。论点、价位、反证里的 `call:N` 可点，滚动并高亮到那次调用；`user:<id>` 只显示。修订运行与复查运行前面多一步「触发这次运行的复查」（信号、条件判定、给模型的用户输入，并可再展开那次复查 / 修订自己的运行）。`get_concept` 调用标「概念卡随代码版本走，不受截止时间约束」；被作废的运行只保留已记录的工具调用，没存的步骤写「这次运行作废：<原因>，只保留工具调用」；校验项逐项列出，作废时只标「可能未通过」的范围，不推断哪些通过了；`agent-1` 旧运行按原样降级显示。`agent-1` 计划没有版本链与计划卡，计划页 `#plan/<id>` 另给一段「Agent 推理」（标「agent-1（旧版，不参与复查）」），「看推理过程」按生成它的运行展开同一个视图。后端接口与步骤定义见 [Agent 轨道 · 推理阅读视图](agent-track.md#推理阅读视图)。
@@ -168,15 +182,13 @@
 - **规则基线折叠为一行**：「规则基线 `plan-1`：入场 x–y · 止损 z · T1 w · 建议 N 股（有效 / 已作废）」+「展开」，展开后是原来的规则计划块（含「展开推导」）与「收起」。
 - **Agent 没有可用计划时规则基线自动展开、不能收起**，Agent 块只写原因：没有成功的运行 →「Agent 未给出计划：<原因>」+「重新运行 Agent」；`pass` →「Agent 不建议买入：<摘要>」；链已作废 →「Agent 已作废此计划（第 n 版）：<理由>」；Agent 计划行按规则作废时同样展开；`agent-1` 单元原样展示、标「agent-1（旧版，不参与复查）」，规则基线不折叠。没有 Agent 运行的单元（卖出、观察）只显示规则计划。
 - **解读不重复**：`agent-1` 与 `agent-2` 的解读只显示「解读见 Agent 建议」，摘要与首条反证已在 Agent 块里。
-- **执行依据**：顺序为「Agent 计划（第 n 版）/ 规则计划 / 自定价位」；Agent 计划可用时默认选 Agent，否则规则计划，再否则自定价位。
-- **提交决定**：迁移 026 就绪时带上页面显示的 `agent_plan_id` 与 `review_view`（当前布局；本次会话里该单元的规则基线是否展开过，自动展开与旧布局都算展开；Agent 版本号），字段含义见下文[决定记录看到的 Agent 版本](#决定记录看到的-agent-版本)；迁移 026 未执行（`today.timeline_ready = false`）时两项都不带。返回 409 `agent_plan_stale` 时只显示冒号后的文案「Agent 计划已更新到第 n 版，请刷新后再决定」并给「刷新」：刷新后保留草稿理由，换一个新的 `request_id`（页面换成新版后请求内容也变了）。
-- **布局开关**：页头「布局：Agent 优先 / 规则优先（旧）」，存在浏览器本地（`localStorage` 键 `workbench.today.layout`，值 `agent_first` / `legacy`）；读写失败（隐私模式、禁用存储）一律按默认「Agent 优先」，切换只在本页生效。旧布局 = v2.4 的顺序：规则计划块在前、Agent 块在后，都不折叠，结构化字段照样显示在 Agent 块里。
+- **布局开关**（行展开里，只影响展开内容的顺序）：「布局：Agent 优先 / 规则优先（旧）」，存在浏览器本地（`localStorage` 键 `workbench.today.layout`，值 `agent_first` / `legacy`）；读写失败（隐私模式、禁用存储）一律按默认「Agent 优先」，切换只在本页生效。旧布局 = v2.4 的顺序：规则计划块在前、Agent 块在后，都不折叠，结构化字段照样显示在 Agent 块里。
 - **运行一览**：「今日」最顶部（筛选、市场环境之前）一段，默认展开，自己取数（`GET /api/workbench/run-overview`），不依赖下面的批处理视图。页头：一行摘要（运行方式 · 开始时间 · 用时 · 各状态阶段数）· 日期选择 · 同日多次运行时的运行切换（定时 / 手动 / 休市 + 开始时间）·「原理」链接（`#knowledge/principles`）· 折叠按钮（折叠状态不保存）。下面九行，每行：阶段名 · 状态（成功 / 部分失败 / 降级 / 失败 / 跳过 / 缺证据 / 未记录）· 一句话 · 「输入 I · 产出 O」· 用时；有跳过 / 失败 / 降级时可「展开明细」看原因文案与样本标的。`stages-1` 运行的第 7 项（每日复查）与 `stages-1` / `stages-2` 运行的第 8 项（复盘卡）是「未记录」占位；没有阶段证据或迁移 025 未执行时只显示后端给的说明。日期改了只重新请求这一段。句子与原因文案由后端按模板拼好（见 [调度与通知](../operations/scheduling-and-notifications.md)）。
 - **引用的知识与讨论**（v2.7）：Agent 计划卡与版本链每一版多一段「引用的知识」（`knowledge_refs`：`know:<id>@<版本>` + 引用时那一版的标题 + 引用的字段，点开到引用时的版本，该条目之后有新版时附「当前已是第 n 版」），以及「就此讨论」按钮（新建一次讨论并跳到 `#discuss/<id>`，见 [Agent 轨道 · 就此计划讨论](agent-track.md#就此计划讨论)）；「看推理过程」里 `get_knowledge` 的调用与返回的 `know:` 引用也链到条目页，推理视图顶部同样列出这次运行引用的知识（提议 / 修订运行取它的计划的引用，复查运行取它的复查行的引用，形状同计划卡的 `knowledge_refs`；其余运行没有这个键）。
-- **进行中的 Agent 计划**：单元列表之后一段，列出已决定买入、等待成交的入场期链与持仓期链，每行：标的 · 入场期 / 持仓期 · 第 n 版 · 最近复查（结论、决定方、时间、理由前 40 字，没有写「尚未复查」）· 今日触发的信号 ·「查看」（`#plan/<最新版 id>`）·「重新复查」。
+- **进行中的 Agent 计划**：v2.9 起并入计划表的入场期组与持仓组（同一份 `timeline-2` 判定，退出期的链也在持仓组）。
 - **重新复查**（「今日」与计划页同一做法）：提交后轮询 `/api/runs/<run_id>`，最长 900 秒（复查加修订常超过 2 分钟）；完成显示「复查完成：<结论>」（跳过或出错时附原因，如「复查完成：跳过（超出 token 上限）」）并刷新；轮询到时限仍未结束时显示「复查仍在后台进行，稍后刷新查看」，按钮保持不可点，不当作失败；409 显示「不能重新复查：<原因>」（正在复查 / 这条链不在入场期或持仓期 / Agent 不可用：<原因>）。
-- **持仓止损**：没有 `agent-2` 链的持仓行尾标「此持仓无 Agent 计划，不参与复查」；链在持仓期间被复查作废的标「Agent 计划已作废，不再复查」。
-- **降级**：迁移 026 未执行（`timeline_ready = false`）时隐藏「进行中的 Agent 计划」、「重新复查」与无链持仓的标注，规则计划与 Agent 原有内容照旧显示。
+- **持仓**：没有 Agent 链的持仓行写「无 Agent 链，按规则基线 / 自定计划看护」，只有宿主的持仓状态；链在持仓期被作废进入退出期，行上写「退出期 · 退出指令自 <日期> 起」，不再复查，每天只写持仓状态。
+- **降级**：迁移 029 未执行时计划表返回 503；迁移 026 未执行（`timeline_ready = false`）时隐藏「重新复查」，规则计划与 Agent 原有内容照旧显示。
 
 ### 计划页与「标的」页
 
@@ -192,18 +204,19 @@
   - **接口新增的键**（`GET /api/workbench/instruments/{ticker}`，旧键不变，只有 `candidates` 的窗口变宽：读取起点由信号日前 120 天改为图上第一根日线，约 250 个交易日）：`holding`（持仓的当前止损与 T1：与「今日」持仓止损同一函数，字段 `quantity` / `avg_cost` / `plan_id` / `stop` / `mode` / `t1_reached` / `target1` / `last_close` / `to_stop_pct` / `to_target_pct`；没有持仓为 null，没有计划的持仓 `stop` 为 null）、`focus`、`key_data`、`context`、`plans`、`chart.annotations`，另有 `errors`：某个新键读取失败时该键为 null、原因写在 `errors.<键>` 里，页面在对应段落显示原因，其余段落照常。
 - **「标的」页的旧内容**：Agent 计划列表、「我的补充」、基本面、资讯与 SEC 时间线、K 线与成交量、候选 / 决定 / 成交时间线都在，只是归入上面四段。
 
-## 决定记录看到的 Agent 版本
+## 成交与备注（v2.9）
 
-决定（`signal_decisions`）另记两项（设计见 [v2.5 §9.3](../specs/2026-10-28-v2.5-plan-timeline-design.md#93-决定)），都进 `request_hash`（只在提交了才进，v2.5 之前的请求重放仍幂等），同一 `request_id` 重放照旧返回原决定：
+**取消决定按钮**（设计 [v2.9 §6](../specs/2026-10-30-v2.9-executable-plans-design.md)）：你的交易日志本身就是采纳的证据，由成交推出每份计划的执行状态（口径 `execution-1`，纯函数 `execution.status`，含义与四种状态见[执行状态与备注](../knowledge/concepts/review.execution_status.md)）。
 
-- `agent_plan_id`：决定时页面显示的 Agent 版本。单元有 `agent-2` 链时不填就由后端填为当时的最新版；填了但不是最新版 → 409，不写决定，返回 `{"error": "agent_plan_stale: Agent 计划已更新到第 n 版，请刷新后再决定"}`（n 为最新版的版本号）；不属于该单元 → 400。没有链的单元（`agent-1` 或只有规则计划）不自动填，填了必须是该单元自己的 Agent 计划。
-- `review_view`：`{layout: agent_first | legacy, baseline_expanded: bool, agent_version_no: int | null}`，页面如实上报，只用于验收统计，不影响校验；多余字段或取值不对 → 400。
-- 执行依据选「Agent 计划」时，`plan_id` 必须是链的最新版且 `status = ok`；指向链上的旧版同样按过期返回 409，最新版已作废（如持仓期 `no_room`）→ 400，改选规则计划或自定价位。
-- 迁移 026 未执行时，带这两个字段的决定返回 503「迁移 026 未执行」；不带的规则 / `agent-1` 决定照常写入（这时还不可能有 `agent-2` 链）。
+- **`POST /api/workbench/decisions`** 一律返回 **410** `{"error": "decisions_retired: v2.9 起不再记录决定，采纳由成交推出；可在计划上写备注"}`（`service.decide` 抛 `Gone`，不写任何记录）；`ledger.record_decision` 已删除，`repository` 里写决定的函数改为模块私有 `_insert_decision_for_tests`，只有 `tests/` 在用（`tests/legacy_decisions.py` 保留旧流程给需要旧数据的测试，有静态测试守护）。`signal_decisions` 表与旧行只读保留：旧链照旧按旧决定终止、旧复盘卡与旧周报照旧显示。
+- **`POST /api/workbench/trades`** body 加 `plan_id?` 与 `own_plan?`（`{entry_low, entry_high, stop, target1, max_hold_sessions?}`，最长持有 3–30、默认 10），**去掉** `decision_id`：给了返回 400 `decision_link_retired: v2.9 起成交不再关联决定，请改为关联计划`。三选一：关联计划（`plan_id`）、自定（`own_plan`，同一事务里写一行 `kind = own`、`plan-2` 的计划，有效期只有成交当天，`signal_date` 按顺序取：成交时刻活跃链所在单元 → 成交日前 20 个交易日内该标的最近一个有候选的单元 → 成交日本身）、都不给（无计划）。同一 `request_id` 重放返回原成交，`plan_id` / `own_plan` 只在给了才进 `request_hash`，v2.9 之前的请求重放仍幂等；卖出可不关联（平仓按先进先出配对，链状态由买入决定），`own_plan` 只用于买入。
+- **关联哪一版**（R6）：`plan_id` 必须是同一标的的计划；指向 Agent 链的版本时必须是**成交时刻的链头**——`agent_plan_versions.created_at ≤ executed_at` 且下一版不存在或晚于成交——比它旧的返回 409 `plan_stale: 成交时这条链已是第 n 版，请关联第 n 版`，生成于成交之后的返回 409 `plan_after_fill: 这一版生成于成交之后，不可能是你照着做的那一版`，所以补录昨天的成交时关联的仍是照着做时看到的那一版。迁移 029 未执行时带 `plan_id` / `own_plan` 返回 503「migration_029_missing」。
+- **`GET /api/workbench/trades/linkable-plans?ticker=&executed_at=`**（`executed_at` 为带时区的 ISO 时间）→ `{ticker, plans, default_plan_id}`：成交时刻活跃链的链头（默认选中；退出期的链不列，R10）、有效期覆盖成交日的规则基线、最近 5 个交易日内的自定计划，每项 `{plan_id, label, kind, chain_signal_date, version_no}`，标签形如「Agent MU·10-29 第 2 版（入场期，有效至 11-03）」。前端「复盘 → 交易与持仓」的「关联计划」下拉来自它，默认选中链头，没有时「无计划」。
+- **备注 `plan_notes`**：`POST /api/workbench/plan-notes` body `{request_id, ticker, body, chain_signal_date | plan_id, kind?, supersedes_id?}`——作用于一条链（`chain_signal_date`，该链必须存在）或一份非链计划（`plan_id`，规则基线 / 自定计划；链上的版本请用 `chain_signal_date`，否则 400），正文 1–1000 字（按字符码位），`request_id` 幂等（同 id 不同内容 409）；更正 = 带 `supersedes_id` 的新备注，撤回 = `kind: "retract"`；更正 / 撤回必须指向同一范围的备注。`GET /api/workbench/plan-notes?ticker=&chain_signal_date=&plan_id=` 只返回有效备注。备注显示在计划表、计划页、计划历史和复盘卡（`facts.execution.notes`，建卡时冻结）；**不进任何 Agent 提示词、不触发复查**（`test_notes_not_in_any_agent_input` 守护），页面在输入框下写明「备注只给你自己看；要让 Agent 参考，请用『我的补充』」。
 
 ## 持仓止损
 
-持仓的计划取「当前未平仓批次中最近一笔、且其决定关联了计划的买入」。有计划的持仓用 `plan_stop`（T 日最低价 ≤ 当前止损）和 `plan_target`（开仓以来首次触及 T1，卖出一半，只触发一次）；触及 T1 之后，当前止损 = max(开仓以来最高收盘 − 3 ATR, 持仓成本)，收盘后更新、次日生效。没有计划的持仓仍按 `position_drawdown` 判断。
+持仓的计划（v2.9，D20 / D22）：持仓属于某条持仓期 / 退出期的链时取**链的最新版**（持仓期修订上移的止损随之生效，1R 的风险取第一笔关联买入所关联那一版的止损）；否则取「当前未平仓批次中最近一笔、且其成交关联了计划（`trades.plan_id`，旧成交再看它的旧决定）的买入」的计划。有计划的持仓用 `plan_stop`（T 日最低价 ≤ 当前止损）和 `plan_target`（开仓以来首次触及 T1，卖出一半，只触发一次）；触及 T1 之后，当前止损 = max(开仓以来最高收盘 − 3 ATR, 持仓成本)，收盘后更新、次日生效。没有计划的持仓仍按 `position_drawdown` 判断。
 
 ## 推送
 
@@ -224,11 +237,11 @@
 
 ## 入口与验证
 
-- 页面：「今日」（决策单元、Agent 计划块与折叠的规则基线、布局开关、进行中的 Agent 计划与「重新复查」、持仓止损、市场环境、「重新推送今日计划」）；「标的」（单只股票的 K 线图（MA20/50/200 与成交量，最多 250 根日线）、日线、候选、计划与决定历史，页尾「Agent 计划」与「我的补充」）；计划页 `#plan/<id>`（`agent-2` 计划另有版本链、复查记录、「重新复查」与「我的补充」）。
-- API：`GET /api/runs/{run_id}/detail`（运行详情）、`POST /api/jobs/daily/run`（手动运行，等价于 `POST /api/workbench/run`，返回 `{run_id, daily_run_id, status}`）、`POST /api/jobs/daily/resume`（续跑，body `{run_id, node}`，202）、`POST /api/workbench/agent-runs/rerun`（重新运行 Agent）、`GET /api/workbench/today`、`POST /api/workbench/decisions`（`plan_id` 与 `own_plan` 二选一；可选 `agent_plan_id`、`review_view`，见上文）、`GET /api/workbench/instruments/{ticker}`、`GET/POST /api/workbench/trades`、`POST /api/workbench/trades/{id}/void`、`POST /api/workbench/push`。
+- 页面：「今日」（计划表三组、行展开里的 Agent 计划块与折叠的规则基线、布局开关、「重新复查」、市场环境、「重新推送今日计划」）；「标的」（单只股票的 K 线图（MA20/50/200 与成交量，最多 250 根日线）、日线、候选、计划历史与旧决定，页尾「Agent 计划」与「我的补充」）；计划页 `#plan/<id>`（`agent-2` 计划另有版本链、复查记录、「重新复查」与「我的补充」）。
+- API：`GET /api/runs/{run_id}/detail`（运行详情）、`POST /api/jobs/daily/run`（手动运行，等价于 `POST /api/workbench/run`，返回 `{run_id, daily_run_id, status}`）、`POST /api/jobs/daily/resume`（续跑，body `{run_id, node}`，202）、`POST /api/workbench/agent-runs/rerun`（重新运行 Agent）、`GET /api/workbench/today`、`GET /api/workbench/plan-table`、`GET /api/workbench/holding-status`、`GET /api/workbench/instruments/{ticker}/plan-history`（计划历史：`include_reviews`、`include_baselines`，返回 `{ticker, rows, chains}`）、`POST /api/workbench/decisions`（410，见上文）、`GET /api/workbench/instruments/{ticker}`、`GET/POST /api/workbench/trades`（`plan_id` / `own_plan`）、`GET /api/workbench/trades/linkable-plans`、`GET/POST /api/workbench/plan-notes`、`POST /api/workbench/trades/{id}/void`、`POST /api/workbench/push`。
 - 运行报告：`job_reports` 中 `daily` 的 `summary`（每次执行一行，续跑另追加 `trigger_source = resume` 的行；v2.7 及以前是 `workbench`），额外有 `graph_version`、`run_status`、`failed_node`、`resumed`、`stage_status`，以及 `retro`（`{new_cards, drafts, to_review}`，v2.7）、`tickers.<T>`（日线、资讯、候选、跳过原因）、`plans`（`inserted` / `existing` / `conflict` / `skip: 原因`）、`earnings`、`push`、`sources`（按数据源列出失败）、`timings`、`pool.chains`（只采集不跑规则的链标的数）、`review`（复查对象数、各结论条数、token）。
 - 验证一次：手动运行后，运行报告里 `plans.<T> == "inserted"`；「今日」显示「入场区间 x–y · 止损 z · T1 w · 建议 N 股」和「证据：未验证」；点「重新推送今日计划」，页面提示「已推送 N 条」，`push.sent == true`。
-- 验证 Agent 优先：有 `agent-2` 链的单元，「今日」先显示「Agent 计划 · 第 n 版」块，下面是一行「规则基线 plan-1：…」；点「展开」看到完整规则计划；页头切到「规则优先（旧）」后顺序反过来、都不折叠，刷新页面仍保持；提交决定后 `signal_decisions.review_view` 记下当时的布局与是否展开过。
+- 验证计划表：手动运行后 `GET /api/workbench/plan-table` 的入场期组有当天的链；展开一行先看到「Agent 计划 · 第 n 版」块，下面是一行规则基线；在展开里切到「规则优先（旧）」后顺序反过来，刷新仍保持；录一笔关联该链最新版的买入后，次日 `holding-status` 有这个标的一行，计划表把它放进持仓组。
 
 ## 数据与时点
 

@@ -196,6 +196,18 @@ describe('AgentReasoning', () => {
     expect(read).toHaveTextContent('2026-10-03')
   })
 
+  it('shows the previous-chain block before what the proposer read (v2.9 D9)', async () => {
+    const block = '同标的上一条链（只读背景，不可引用；价位与论点仍须引用本次工具调用）\n- 链 MU·2026-10-21（共 3 版），结束：已过期未执行'
+    vi.mocked(api.getReasoning).mockResolvedValue(reasoning({ steps: [
+      { kind: 'previous_chain', title: '同标的上一条链', concept: 'system.active_chain', text: block, sha256: 'ab',
+        note: '只读背景，不可引用' }, steps.readPropose, steps.proposal] as any }))
+    render(AgentReasoning, { runId: 'run-1' })
+    const chain = await screen.findByRole('region', { name: '同标的上一条链' })
+    expect(chain.querySelector('pre[data-previous-chain]')?.textContent).toContain('链 MU·2026-10-21')
+    const titles = screen.getAllByRole('heading', { level: 4 }).map(h => h.textContent?.trim())
+    expect(titles.indexOf('同标的上一条链')).toBeLessThan(titles.indexOf('提议者读了什么'))
+  })
+
   it('get_concept call shows cutoff exemption', async () => {
     vi.mocked(api.getReasoning).mockResolvedValue(reasoning({ steps: [{
       kind: 'read', title: '提议者读了什么', concept: 'agent.tool_calls',

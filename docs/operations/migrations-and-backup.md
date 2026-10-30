@@ -33,6 +33,7 @@
 | 026 | v2.5：计划时间线。新建只追加的 `agent_plan_versions`（版本链）、`plan_reviews`（每日复查记录，每条链每个交易日至多一条有效批处理复查）、`user_inputs`（用户输入）；`signal_decisions` 加可空列 `agent_plan_id`、`review_view`；放宽 `agent_runs.mode`（加 `review`、`revise`）及两条相关 CHECK、`agent_tool_calls.phase`（加 `review`）、`stage_runs.stage`（加 `review`）；`idx_trade_plans_agent_unique` 只管 `agent-1`。不改旧行、可重跑；三张新表不进 `WORKBENCH_TABLES`，就绪与否由 `repository.timeline_ready` 判定。对旧代码无害（只新增表 / 列、放宽约束）。必须先于重启执行（spec D19）；2026-10-28 已在真实库手动执行，见下文 | 主线 |
 | 027 | v2.7：我的成长闭环。新建十一张只追加的表：`review_cards`、`review_card_drafts`、`review_card_verdicts`（复盘卡及其起草与审定）、`discussions`、`discussion_turns`（就此计划讨论）、`knowledge_items`、`knowledge_versions`、`knowledge_status`（我的知识）、`knowledge_drafts`、`knowledge_draft_verdicts`（教训草稿及其决定）、`knowledge_citations`（计划与复查引用了哪一版知识）；放宽 `agent_runs.mode`（加 `retro`、`discuss`）、`agent_tool_calls.phase`（加 `retro`、`discuss`）、`stage_runs.stage`（加 `retro`）。约束名查不到时按定义找出后删除（同 026 的 `DO` 块），不改旧行、不加种子行、可重跑；十一张新表不进 `WORKBENCH_TABLES`，就绪与否由 `repository.growth_ready` 判定。对 v2.6 代码无害（只新增表、放宽约束）。必须先于重启执行（spec D29）；真实库执行需单独授权，见下文 | 主线 |
 | 028 | v2.8：每日工作流。`stage_runs` 增加 `attempt`（默认 1）与 `job` 取值 `daily`、`stage` 取值 `sec_monitor`，唯一键改为 `(run_id, stage, attempt)`（约束名查不到时按定义找出后删除，同 026 / 027 的 `DO` 块）；新建 `agent_connections`（单行，**含令牌**）、`agent_connection_events`、`agent_attempt_resets`；`scheduled_jobs` 删 `workbench`、`workbench_review`、`filings` 三行并插入 `daily`（北京 11:30、周二至周六，`enabled` 沿用原 `workbench` 行，`next_run_at` 直接写下一个 11:30）；加索引 `idx_job_reports_run_id`。不改任何证据行、可重跑；新表不进 `WORKBENCH_TABLES`，就绪与否由 `repository.daily_ready` 判定（`attempt` 列、重置记录表、`daily` 调度行都在）。**必须先于重启执行**：028 未执行时 v2.8 代码拒绝运行 `daily`（`job_reports` 记一行 `error / migration_028_missing`），不做半新半旧的降级；028 执行后、重启前旧代码的调度器只会对 `daily` 记一条「未注册」警告。真实库执行需单独授权，见下文 | 主线 |
+| 029 | v2.9：可执行的计划。`trades` 加可空 `plan_id`（指向 `trade_plans`）与 `trades_link_one_check`（`plan_id` 与 `decision_id` 不并存），建部分索引 `idx_trades_plan`；`trade_plans` 加 `entry_type`（`zone_limit` / `breakout_stop` / `next_open`）、`max_hold_sessions`（3–30）两列，两列同有同无，并把 017 内联的价位 CHECK 换成具名的 `trade_plans_levels_check`（持仓期 Agent 计划可以止损高于入场价，R3）；新建三张只追加的表：`chain_retriggers`（再次触发并入哪条链）、`holding_status`（每个持仓标的每个复查交易日一行，`stop_mode` 取 `initial` / `trailing`）、`plan_notes`（给自己看的备注，可更正 / 撤回）；放宽 `plan_reviews` 的 `decided_by` CHECK（再次触发的直接修订可以只带修订运行）。约束名查不到时按定义找出后删除（同 026 – 028 的 `DO` 块），不改旧行、不加种子行、可重跑；三张新表不进 `WORKBENCH_TABLES`，就绪与否由 `repository.executable_ready` 判定（三张表、`trades.plan_id`、两个执行字段都在）。对 v2.8 代码无害（只新增列 / 表、放宽约束）。**必须先于重启执行**：029 未执行时 v2.9 代码拒绝运行 `daily`（`job_reports` 记一行 `error / migration_029_missing`），`plan-table`、`plan-history`、`holding-status`、`plan-notes`、`linkable-plans` 与带 `plan_id` 的成交返回 503，不做半新半旧的降级。真实库执行需单独授权，见下文 | 主线 |
 
 另需一次：`python -m investment_assistant.workbench.agent setup` 由 LangGraph `PostgresSaver.setup()` 建检查点表，不进本项目迁移。
 
@@ -211,7 +212,22 @@ Unix socket 路径太长时启动会失败，所以用 `-k ''` 关掉 socket、�
 | 2. 全库备份 | `.local/us-workbench/backups/investment_assistant-before-028-20261030-093702.dump`（6,793,707 字节，sha256 `09fde910f1e2c6853b2b49e8fb2490987a8d9d944db05365dae6f32c4a83f6f3`）；`pg_restore --list` 可读，50 张表与线上一致 |
 | 3. 执行 | 09:37:12 +0800，`psql --single-transaction -v ON_ERROR_STOP=1 -f migrations/028_daily_workflow.sql`，退出码 0（12 个 `ALTER TABLE`、1 个 `DO` 块、3 个 `CREATE TABLE`、3 个 `CREATE INDEX`、`INSERT 0 1`、`DELETE 3`）；四条 `NOTICE` 是首次执行时 `DROP CONSTRAINT IF EXISTS` 找不到具名约束，属预期 |
 | 4. 核对 | `scheduled_jobs` 只剩 `daily`：`11:30`、`2-6`、`Asia/Shanghai`、`enabled = true`（沿用原 `workbench` 行）、`next_run_at = 2026-10-30 11:30 +08`；`stage_runs` 有 `stage_runs_attempt_check`、`stage_runs_job_check`（`workbench`、`daily`）、`stage_runs_stage_check`（十个阶段）、`stage_runs_run_stage_attempt_key`，旧唯一键 `(run_id, stage)` 已删，48 行旧行全部 `attempt = 1`；`agent_connections`、`agent_connection_events`、`agent_attempt_resets` 各 0 行，`idx_job_reports_run_id` 在；`repository.daily_ready` 为真；`public` 表数 50 → 53，`job_reports`、`stage_runs` 行数不变 |
-| 5. `.env` 与 plist | `.env` 删 `ZHIPU_API_KEY`（文件里本无 `WORKBENCH_AGENT_BASE_URL`、`WORKBENCH_AGENT_MODEL`），加 `WORKBENCH_AGENT_PROVIDER=chatgpt`；改前的 `.env` 另存于 `.local/us-workbench/backups/`（权限 600，含密钥，不入库）。LaunchAgent plist 的 `EnvironmentVariables` 只有代理变量与 `PATH`，没有这三个键，plist 未改 |
+| 5. `.env` 与 plist | `.env` 删旧模型层的密钥变量（文件里本无 `WORKBENCH_AGENT_BASE_URL`、`WORKBENCH_AGENT_MODEL`），加 `WORKBENCH_AGENT_PROVIDER=chatgpt`；改前的 `.env` 另存于 `.local/us-workbench/backups/`（权限 600，含密钥，不入库）。LaunchAgent plist 的 `EnvironmentVariables` 只有代理变量与 `PATH`，没有这三个键，plist 未改 |
 | 6. 重启服务 | 09:37:41 +0800 `launchctl kickstart -k`，新进程 pid 22589 启动于 09:38:11（v2.8 代码，`main@2e0bff2`）；`web/dist` 按 `main@2e0bff2` 重新构建（09:38）；`/api/health`：数据库、调度线程（轮询运行中）、Filings、SEC、Yahoo、Discord、FRED 均 up，3 项 `systemctl` 检查在 macOS 上为 down（与本版无关）；`/api/jobs/scheduled` 只有 `daily`（下次 2026-10-30 11:30 +08）与只手动的 `sec_backfill`；`/api/settings/agent-connection` 为 `disconnected`、`provider_setting = chatgpt`；`/api/workbench/today`、`/api/status`、`/api/jobs/reports?task=daily`、`/api/data/families` 均 200 |
 
 **测试库**：`tests/conftest.WORKBENCH_MIGRATIONS` 已含 028（v2.8 收尾时加入），`tests/_daily_db.py` 的 `daily_db` 直接用这个 schema。
+
+
+### 029 的真实库执行（逐步手动，每一步单独授权）
+
+029 给 `trades` 与 `trade_plans` 加列、换掉一条价位约束并新建三张表；新代码在 029 之前拒绝运行 `daily`，所以**先迁移、后重启，两步之间只差一次重启**，并排在 v2.8 的手动验收（手动运行 `daily`、失败续跑演练）完成之后（spec D37）：
+
+1. **确认状态**：当前库已到 028（`repository.daily_ready` 为真），服务在 v2.8 代码上运行，没有运行中的 `daily`。
+2. **全库备份**：`pg_dump -Fc "$INVESTMENT_ASSISTANT_DATABASE_URL" -f .local/us-workbench/backups/investment_assistant-before-029-<时间戳>.dump`，`shasum -a 256` 记下，`pg_restore --list` 确认可读。备份含 `agent_connections` 里的明文令牌，放 `.local/`（不入库），不要上传或共享。
+3. **执行**：`psql "$INVESTMENT_ASSISTANT_DATABASE_URL" --single-transaction -v ON_ERROR_STOP=1 -f migrations/029_executable_plans.sql`；首次执行时 `DROP CONSTRAINT IF EXISTS` 找不到具名约束的 `NOTICE` 属预期。
+4. **核对**：`repository.executable_ready` 为真；`trades` 有 `plan_id` 与 `trades_link_one_check`；`trade_plans` 有 `entry_type`、`max_hold_sessions` 与新的 `trade_plans_levels_check`，旧行两列全为空；三张新表各 0 行；`plan_reviews` 的 `decided_by` 约束已放宽；旧表行数不变。
+5. **重启服务**到 v2.9 代码，并核对 `web/dist` 是收尾 Task 之后构建的（`operations/local-service.md`）。
+
+回滚：`pg_restore --clean -d "$INVESTMENT_ASSISTANT_DATABASE_URL" <上面的 dump>`，再重启到 v2.8 代码（回滚会丢掉 029 之后的所有写入，包括成交与备注）。执行记录写进 `docs/roadmap/v2.9-acceptance.md`（验收开始时新建）。
+
+**测试库**：`tests/conftest.WORKBENCH_MIGRATIONS` 已含 029。

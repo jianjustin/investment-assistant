@@ -22,9 +22,9 @@ from investment_assistant.workbench.tracks import TRACK_STATUS_TEXT, TRACK_STATU
 
 RETRO_V1 = 'retro-1'
 RETRO_V2 = 'retro-2'
-# retro_cards.py still writes `retro_version = retro.RETRO_VERSION` on cards built by the retro-1 functions; spec
-# §2 fixes RETRO_VERSION = 'retro-2', which flips when it switches to build_facts_v2 (Task 4).
-RETRO_VERSION = RETRO_V1
+# retro_cards.py writes `retro_version = retro.RETRO_VERSION` on the cards it builds with `build_facts_v2`; the
+# retro-1 functions stay for the old cards (their facts are frozen and are never rebuilt).
+RETRO_VERSION = RETRO_V2
 RETRO_LOOKBACK_SESSIONS = 5        # D6: only end events within the last 5 sessions are detected
 RETRO_MAX_DRAFTS = 5               # drafts started per batch run (§4.4)
 RETRO_MAX_ATTEMPTS = 3             # rejected / error drafts before a card counts as failed

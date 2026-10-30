@@ -3,7 +3,7 @@ id: review.discipline_held_loser
 title: "死扛亏损"
 group: review
 version: 1
-applies_to: [review-6]
+applies_to: [review-6, discipline-2]
 summary: "持仓触及计划止损后，下一交易日仍未卖出，记为死扛亏损；还没到判定期限时显示未成熟。"
 related: [review.discipline_early_take, review.discipline_chase, rule.plan_stop, plan.stop, review.retro_card]
 sources: [investment_assistant/workbench/discipline.py, investment_assistant/workbench/exits.py]
@@ -22,7 +22,7 @@ sources: [investment_assistant/workbench/discipline.py, investment_assistant/wor
 ## 在系统里哪里看到
 「复盘」纪律明细的"死扛亏损"计数、未成熟计数与每笔成交的标记；「今日」的持仓行会在触发当天给出卖出候选。
 
-[复盘卡](review.retro_card.md)上的"你的决定与纪律"也显示这一项：卡页同时给出检测当时（冻结）和现在的判定，待定的项写明还要等什么；周度复盘的"你学到了什么"汇总本周结束的卡上的合计。
+[复盘卡](review.retro_card.md)上的"你的执行与纪律"也显示这一项：卡页同时给出检测当时（冻结）和现在的判定，待定的项写明还要等什么；周度复盘的"你学到了什么"汇总本周结束的卡上的合计。
 
 ## 注意
 该指标只看"卖没卖"，不看卖在什么价位；它不代表止损设置得合理。

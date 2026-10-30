@@ -131,9 +131,11 @@ def test_plan_context_shape(db, scripted_model):
     assert data['chain']['head_plan_id'] == str(plan['id']) and data['chain']['state']
     [only] = data['versions']
     assert only['version_no'] == 0 and set(only['levels']) == {'entry_low', 'entry_high', 'stop', 'target1'}
-    assert data['reviews'] == [] and data['decision'] is None and data['trades'] == []
+    assert data['reviews'] == [] and data['legacy_decision'] is None and data['trades'] == [] and 'decision' not in data
+    assert data['execution']['status'] == 'pending' and data['execution']['followed'] is None
     assert data['knowledge_refs'] == [{'ref': f'know:{item}@1', 'field': 'thesis', 'plan_id': str(plan['id'])}]
-    assert data['shadow']['version'] == 'plan-shadow-1' and 'error' not in data['shadow']
+    assert data['shadow']['version'] == 'plan-shadow-2' and 'error' not in data['shadow']      # the plan has execution fields
+    assert data['shadow']['shadow_v1']['status'] in ('expired', 'pending', 'open', 'closed')          # the counterfactual
     assert data['cutoff_at'] == NOW.isoformat()
 
 
@@ -157,8 +159,30 @@ def test_plan_context_includes_reviews_decision_and_trades(db, scripted_model):
     [r] = data['reviews']
     assert r['id'] == review['id'] and r['outcome'] == 'maintain' and r['reason'] == '维持'
     assert [s['kind'] for s in r['signals']] == ['new_8k']                 # only the fired signals
-    assert data['decision']['decision'] == 'accept' and data['decision']['reason'] == '照做'
+    assert data['legacy_decision']['decision'] == 'accept' and data['legacy_decision']['reason'] == '照做'      # old data
     assert [t['side'] for t in data['trades']] == ['buy']
+
+
+def test_plan_context_has_execution(db, scripted_model):
+    """v2.9: the discussion context carries what happened to the plan from the fills (`execution-1`), the old decision
+    under `legacy_decision`; a plan note of yours is never in it (D25)."""
+    from datetime import timedelta
+
+    plan, _ = run_chain(db, scripted_model)
+    fill_at = datetime(2026, 10, 23, 14, 0, tzinfo=UTC)
+    repository.insert_trade(db, {'request_id': uuid.uuid4(), 'ticker': 'AAA', 'side': 'buy', 'quantity': 10,
+                                 'price': 100, 'fee': 0, 'executed_at': fill_at, 'decision_id': None,
+                                 'plan_id': plan['id'], 'note': None}, 'h', recorded_at=fill_at + timedelta(hours=6))
+    db.execute('INSERT INTO plan_notes (request_id, request_hash, ticker, chain_signal_date, kind, body) '
+               "VALUES (%s, 'h', 'AAA', %s, 'note', '只给自己看的备注')", [uuid.uuid4(), SESSION])
+    db.commit()
+    ctx = dataclasses.replace(make_ctx(db, plan_id=plan['id']), cutoff_at=fill_at + timedelta(days=1))
+    data = get_plan_context(ctx)
+    assert data['execution']['status'] == 'adopted' and data['execution']['text'] == '已采纳（2026-10-23 成交 10 股）'
+    assert data['execution']['followed']['text'] == 'Agent 第 0 版' and data['execution']['chain_status'] == 'executed'
+    assert data['execution']['chain_text'] == '已执行'
+    assert [t['plan_id'] for t in data['trades']] == [str(plan['id'])] and data['legacy_decision'] is None
+    assert '只给自己看的备注' not in json.dumps(data, ensure_ascii=False)
 
 
 def test_card_context_excludes_drafts(db, scripted_model):
@@ -228,7 +252,7 @@ def test_get_agent_run_view_and_boundary(db, scripted_model):
     view = get_agent_run(ctx, str(run['id']))
     json.dumps(view, ensure_ascii=False)
     assert view['run']['id'] == str(run['id']) and view['run']['mode'] == 'propose'
-    assert [s['kind'] for s in view['steps']][:2] == ['read', 'proposal']
+    assert [s['kind'] for s in view['steps']][:3] == ['previous_chain', 'read', 'proposal']      # v2.9 D9
     retro_run = insert_run(db, mode='retro', status='ok', reason=None, output={'headline': 'x'})
     discuss_run = insert_run(db, mode='discuss', status='ok', reason=None, output={'answer': 'x'})
     ctx = make_ctx(db, plan_id=plan['id'])

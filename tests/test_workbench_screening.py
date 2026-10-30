@@ -161,7 +161,7 @@ def test_screen_selects_and_extends_pool(offline):
 def test_valid_screen_plan_is_decidable(offline):
     seed_watchlist(offline)
     service.run_batch(now=evening(S1), deps=make_deps())
-    view = service.today(now=evening(S1))
+    view = service.unit_cards(now=evening(S1))
     u00 = next(u for u in view['units'] if u['ticker'] == 'U00')
     assert u00['source'] == 'screen' and u00['plan'] is not None and u00['plan']['status'] == 'ok'
     ctx = u00['plan']['inputs']['context']
@@ -189,7 +189,7 @@ def test_invalid_screen_plan_stays_read_only(offline):
     seed_watchlist(offline)
     deps = make_deps(earnings=FlippingEarnings(add_trading_days(S1, 20), add_trading_days(S1, 2)))
     service.run_batch(now=evening(S1), deps=deps)
-    view = service.today(now=evening(S1))
+    view = service.unit_cards(now=evening(S1))
     assert not any(u['ticker'] == 'U01' for u in view['units'])
     u01 = next(u for u in view['extended_units'] if u['ticker'] == 'U01')
     assert u01['plan'] is not None and u01['plan']['status'] == 'invalid'

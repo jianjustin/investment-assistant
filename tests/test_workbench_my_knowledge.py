@@ -569,7 +569,7 @@ def test_generate_weekly_carries_learning(db, scripted_model):
 
     out = service.generate_weekly(WEEK, now=NOW)
     stats = out['stats']
-    assert out['calc_version'] == 'review-7' and set(stats['learning']) == {'discipline', 'cards', 'counts', 'knowledge'}
+    assert out['calc_version'] == 'review-8' and set(stats['learning']) == {'discipline', 'cards', 'counts', 'knowledge'}
     learning = stats['learning']
     assert [c['ticker'] for c in learning['cards']] == ['ZZZA'] and learning['cards'][0]['flags'] == ['chase']
     assert learning['cards'][0]['end_text'] == '平仓（自行卖出）' and learning['cards'][0]['status'] == 'to_review'

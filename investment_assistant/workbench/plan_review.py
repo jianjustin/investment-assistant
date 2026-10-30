@@ -1352,11 +1352,29 @@ def _review_row(row: dict, numbers: dict[str, int]) -> dict:
             'new_version_no': numbers.get(str(new)) if new is not None else None}
 
 
+def retrigger_rows(conn, ticker: str, signal_date: date, reviews: list[dict], numbers: dict[str, int], *,
+                   cutoff: datetime | None = None) -> list[dict]:
+    """The chain's ``chain_retriggers`` rows (oldest first, written by ``cutoff`` when given), each with the
+    ``version_no`` the merge produced: that of ``new_plan_id`` of the first review whose ``detail.retrigger`` names the
+    row's unit signal date (None for holding / exiting merges and for failed revisions). ``numbers`` maps plan id ->
+    version number."""
+    handled: dict[str, dict] = {}       # unit signal date (ISO) -> the first review that produced a version for it
+    for r in reviews:
+        if r['new_plan_id'] is not None:
+            for unit_day in ((r.get('detail') or {}).get('retrigger') or {}).get('unit_signal_dates') or []:
+                handled.setdefault(unit_day, r)
+    out = []
+    for row in repository.chain_retriggers_for(conn, ticker, chain_signal_date=signal_date, cutoff=cutoff):
+        found = handled.get(row['unit_signal_date'].isoformat())
+        out.append({**row, 'version_no': numbers.get(str(found['new_plan_id'])) if found else None})
+    return out
+
+
 def chain_view(ticker: str, signal_date: date, *, now: datetime) -> dict:
     """One chain read at S = the latest closed trading day at ``now`` (spec §12 GET chains): ``state``
     (``timeline.chain_state_v2``'s ``{state, mode, active, basis, basis_ref, timeline_version, renewable}``),
     every version (plan row, the generating run's output and counter, ``changes``, host ``diff``, the
-    ``plan-shadow-1`` simulation of that version's own levels), every review row, and the user inputs that apply
+    shadow simulation of that version's own levels: ``plan-shadow-2`` for a version with execution fields, with the ``plan-shadow-1`` result as ``shadow_v1``, else ``plan-shadow-1``), every review row, and the user inputs that apply
     to the chain. v2.7 adds ``knowledge_refs`` to each version: the knowledge versions it cited. v2.9 adds
     ``retriggers`` (the units merged into the chain, oldest first, each with the version it produced:
     ``version_no`` of the review that handled it), ``holding_status`` (the chain's rows) and ``notes`` (the chain's
@@ -1379,6 +1397,8 @@ def chain_view(ticker: str, signal_date: date, *, now: datetime) -> dict:
             plan = repository.plan_by_id(conn, version['plan_id'])
             run = repository.agent_run_by_id(conn, version['agent_run_id'])
             output = (run or {}).get('output') or {}
+            found = (service.shadow_outcomes(plan, ticker_bars, spy, splits=splits) if plan is not None
+                     else {'outcome': None, 'shadow_version': None, 'shadow_v1': None})
             versions.append({
                 'version_no': version['version_no'], 'plan_id': str(version['plan_id']),
                 'origin': version['origin'],
@@ -1388,8 +1408,8 @@ def chain_view(ticker: str, signal_date: date, *, now: datetime) -> dict:
                 'as_of_session': version['as_of_session'], 'created_at': version['created_at'],
                 'is_head': str(version['plan_id']) == head_id, 'diff': version['diff'],
                 'changes': output.get('changes') or [], 'plan': plan, 'run': _run_view(run),
-                'shadow': (plan_shadow_module.simulate(plan, ticker_bars, spy, splits=splits)
-                           if plan is not None else None)})
+                'shadow': found['outcome'], 'shadow_version': found['shadow_version'],
+                'shadow_v1': found['shadow_v1']})
         reviews = [_review_row(row, numbers) for row in status['reviews']]
         inputs = user_inputs.view(user_inputs.ticker_rows(conn, ticker), signal_date)
         refs = my_knowledge.refs_for_plans(conn, [v['plan_id'] for v in versions])      # v2.7 §6.2
@@ -1397,14 +1417,7 @@ def chain_view(ticker: str, signal_date: date, *, now: datetime) -> dict:
             version['knowledge_refs'] = refs.get(version['plan_id'], [])
         retriggers, holding, notes = [], [], []
         if repository.executable_ready(conn):
-            handled: dict[str, dict] = {}       # unit signal date (ISO) -> the first review that produced a version for it
-            for r in status['reviews']:
-                if r['new_plan_id'] is not None:
-                    for unit_day in ((r.get('detail') or {}).get('retrigger') or {}).get('unit_signal_dates') or []:
-                        handled.setdefault(unit_day, r)
-            for row in repository.chain_retriggers_for(conn, ticker, chain_signal_date=signal_date):
-                review = handled.get(row['unit_signal_date'].isoformat())
-                retriggers.append({**row, 'version_no': numbers.get(str(review['new_plan_id'])) if review else None})
+            retriggers = retrigger_rows(conn, ticker, signal_date, status['reviews'], numbers)
             holding = repository.holding_status_for(conn, ticker=ticker, chain_signal_date=signal_date)
             notes = repository.plan_notes_for(conn, ticker, chain_signal_date=signal_date)
     return {'ticker': ticker, 'signal_date': signal_date, 'session': session,

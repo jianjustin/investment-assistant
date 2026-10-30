@@ -237,7 +237,7 @@ export const ATTACH = {
   },
   // 「今日」计划表的执行状态列（v2.9 R20：决定退役，执行依据 basis 改指执行状态）
   today: {
-    basis: 'system.decision',  // Task 4 switches to review.execution_status together with that concept card (R8)
+    basis: 'review.execution_status',  // v2.9 R20: the execution basis is derived from the fills, not a decision
   },
   // 「标的」页（关键数据一段的概念由接口的 key_data.concepts 给出，规则名用 ruleConcept）
   instrument: {
@@ -296,6 +296,7 @@ const STEP_CONCEPT: Record<string, string> = {
   per_share_risk: 'plan.sizing', risk_amount: 'plan.sizing', equity: 'plan.sizing', ticker_value: 'plan.sizing',
   total_value: 'plan.sizing', shares: 'plan.sizing', applied_cap: 'plan.sizing', 'sizing.status': 'plan.sizing',
   invalid_reasons: 'plan.status', warnings: 'plan.status', status: 'plan.status', levels_ordered: 'plan.status',
+  entry_type: 'plan.entry_type', max_hold_sessions: 'plan.max_hold',
 }
 
 /** The concept of a derivation step by its `key` (spec §6.2 row「逐项计算的项目列」); unmapped steps get none. */

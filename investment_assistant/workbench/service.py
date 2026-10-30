@@ -32,6 +32,7 @@ from investment_assistant.workbench import universe as universe_module
 from investment_assistant.workbench import discipline as _discipline_module
 from investment_assistant.workbench import plan_shadow as _plan_shadow_module
 from investment_assistant.workbench import review_digest
+from investment_assistant.workbench import execution as execution_module
 from investment_assistant.workbench import timeline
 from investment_assistant.workbench import tracks as _tracks_module
 
@@ -50,6 +51,13 @@ SEC_EVIDENCE_DIR = Path(__file__).resolve().parents[2] / '.local/us-workbench/se
 
 class Unavailable(RuntimeError):
     """Database or schema not ready (HTTP 503). Never shown as an empty result."""
+
+
+class Gone(RuntimeError):
+    """The endpoint was retired (HTTP 410): ``decisions_retired`` since v2.9 (spec §6.4, D24)."""
+
+
+DECISIONS_RETIRED = 'decisions_retired: v2.9 起不再记录决定，采纳由成交推导；可在计划上写备注'
 
 
 @dataclass
@@ -1374,49 +1382,74 @@ def _attach_knowledge_refs(conn, agents: list[dict[str, Any] | None]) -> None:
         block['knowledge_refs'] = refs.get(str(plan_id), []) if plan_id is not None else []
 
 
-def today(*, now: datetime) -> dict[str, Any]:
-    session = bars.latest_closed_session(now)
-    with _tx() as conn:
-        ready = repository.timeline_ready(conn)      # once per request (v2.5 §6.5)
-        units = []
-        extended_units = []
-        for group in repository.open_candidate_groups(conn, since=session - timedelta(days=OPEN_UNIT_DAYS)):
-            ticker, signal_date = group['ticker'], group['signal_date']
-            book = _book(conn, ticker)
-            held = book['position'] is not None
-            unit = synthesis.synthesize(ticker, signal_date, group['candidates'], holding=held,
-                                        now=now)
-            since = signal_date - timedelta(days=NEWS_LOOKBACK_DAYS)
-            entry = repository.pool_entry_at(conn, ticker, signal_date, cutoff_at=now)
-            unit.update(
-                source=entry.get('source') if entry else None,
-                candidates=group['candidates'], position=book['position'],
-                brief=_brief_view(repository.latest_brief(conn, ticker, signal_date)),
-                plan=repository.rule_plan(conn, ticker, signal_date),
-                filings=repository.read_filings(conn, ticker, since=since, cutoff_at=now),
-                news=repository.read_news(conn, ticker, cutoff_at=now, since=_midnight(since), limit=20),
-                agent=_unit_agent(conn, ticker, signal_date, session=session, ready=ready, book=book))
-            # The tier as of the signal date decides the list, not today's tier.
-            if _unit_is_extended(conn, ticker, signal_date, held=held, now=now):
-                agent_run = repository.latest_agent_run(conn, ticker, signal_date)
-                extended_units.append({'ticker': ticker, 'signal_date': signal_date,
-                                       'proposed_action': unit['proposed_action'],
-                                       'rule_ids': unit['rule_ids'], 'plan': unit['plan'],
-                                       'agent_status': _agent_status_line(agent_run)})
-            else:
-                units.append(unit)
-        holdings = _holdings(conn, session, now=now)
-        chains = _active_chains(conn, session) if ready else []
-        held = held_chain_states(conn, session) if ready else {}
-        for holding in holdings:      # D7: a holding without an agent-2 chain is not reviewed
-            holding['has_chain'] = holding['ticker'] in held
-            holding['chain_state'] = held.get(holding['ticker'])
-        market = repository.latest_regime(conn, on_or_before=session, cutoff_at=now)
-        screen_report = screening.report(conn, session, now=now)
-        _attach_knowledge_refs(conn, [unit.get('agent') for unit in units])
-    return {'session': session, 'units': units, 'extended_units': extended_units,
+def _unit_cards(conn, session: date, *, now: datetime, ready: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The undecided units of the last ``OPEN_UNIT_DAYS`` days as unit cards: ``(main-list units, extended-pool
+    units)``. Since v2.9 「今日」 no longer shows them (the plan table does, D34); the push and the read helpers
+    below still build their entries from them."""
+    units: list[dict[str, Any]] = []
+    extended_units: list[dict[str, Any]] = []
+    for group in repository.open_candidate_groups(conn, since=session - timedelta(days=OPEN_UNIT_DAYS)):
+        ticker, signal_date = group['ticker'], group['signal_date']
+        book = _book(conn, ticker)
+        held = book['position'] is not None
+        unit = synthesis.synthesize(ticker, signal_date, group['candidates'], holding=held, now=now)
+        since = signal_date - timedelta(days=NEWS_LOOKBACK_DAYS)
+        entry = repository.pool_entry_at(conn, ticker, signal_date, cutoff_at=now)
+        unit.update(
+            source=entry.get('source') if entry else None,
+            candidates=group['candidates'], position=book['position'],
+            brief=_brief_view(repository.latest_brief(conn, ticker, signal_date)),
+            plan=repository.rule_plan(conn, ticker, signal_date),
+            filings=repository.read_filings(conn, ticker, since=since, cutoff_at=now),
+            news=repository.read_news(conn, ticker, cutoff_at=now, since=_midnight(since), limit=20),
+            agent=_unit_agent(conn, ticker, signal_date, session=session, ready=ready, book=book, now=now))
+        # The tier as of the signal date decides the list, not today's tier.
+        if _unit_is_extended(conn, ticker, signal_date, held=held, now=now):
+            agent_run = repository.latest_agent_run(conn, ticker, signal_date)
+            extended_units.append({'ticker': ticker, 'signal_date': signal_date,
+                                   'proposed_action': unit['proposed_action'],
+                                   'rule_ids': unit['rule_ids'], 'plan': unit['plan'],
+                                   'agent_status': _agent_status_line(agent_run)})
+        else:
+            units.append(unit)
+    _attach_knowledge_refs(conn, [unit.get('agent') for unit in units])
+    return units, extended_units
+
+
+def _today_view(conn, session: date, *, now: datetime, cards: bool) -> dict[str, Any]:
+    ready = repository.timeline_ready(conn)      # once per request (v2.5 §6.5)
+    units, extended_units = _unit_cards(conn, session, now=now, ready=ready) if cards else ([], [])
+    holdings = _holdings(conn, session, now=now)
+    chains = _active_chains(conn, session, now=now) if ready else []
+    held = held_chain_states(conn, session, now=now) if ready else {}
+    for holding in holdings:      # D7: a holding without an agent-2 chain is not reviewed
+        holding['has_chain'] = holding['ticker'] in held
+        holding['chain_state'] = held.get(holding['ticker'])
+    market = repository.latest_regime(conn, on_or_before=session, cutoff_at=now)
+    screen_report = screening.report(conn, session, now=now)
+    view = {'session': session, 'units': units, 'extended_units': extended_units,
             'holdings': holdings, 'market': market, 'screen': screen_report,
             'chains': chains, 'timeline_ready': ready}
+    if not cards:
+        view['retired'] = True
+    return view
+
+
+def today(*, now: datetime) -> dict[str, Any]:
+    """The 「今日」 payload. v2.9 D34 retires the unit cards: ``units`` and ``extended_units`` stay as empty lists with
+    ``retired: true`` (the page reads ``GET /plan-table`` instead); the holdings, the active chains, the market and the
+    screen report are as before, chains judged by `timeline-2`."""
+    session = bars.latest_closed_session(now)
+    with _tx() as conn:
+        return _today_view(conn, session, now=now, cards=False)
+
+
+def unit_cards(*, now: datetime) -> dict[str, Any]:
+    """The old 「今日」 payload with its unit cards (the undecided units of the last 14 days). Not an endpoint any more;
+    the push and the tests read the units through it."""
+    session = bars.latest_closed_session(now)
+    with _tx() as conn:
+        return _today_view(conn, session, now=now, cards=True)
 
 
 def run_backcheck(*, now: datetime, tickers: list[str] | None = None) -> dict[str, Any]:
@@ -1438,7 +1471,7 @@ def run_backcheck(*, now: datetime, tickers: list[str] | None = None) -> dict[st
                 spy_bars, splits=repository.split_events(conn, ticker)))
         stats = backcheck_module.summarize(replays)
         params = {'tickers': list(symbols), 'rule_version': rules.RULE_VERSION,
-                  'plan_version': plans.PLAN_VERSION, 'shadow_version': shadow_module.SHADOW_VERSION,
+                  'plan_version': plans.PLAN_V1, 'shadow_version': shadow_module.SHADOW_V1,
                   'bars': 'stored current revisions'}
         return repository.insert_backcheck(conn, backcheck_module.CALC_VERSION, params, stats)
 
@@ -1450,13 +1483,20 @@ def list_backchecks(limit: int = 10) -> list[dict[str, Any]]:
 
 
 def decide(payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:
-    with _tx() as conn:
-        return ledger.record_decision(conn, payload, now=now)
+    """v2.9 D24: there is no decision button any more; adoption comes from the fills. Always ``Gone`` (410), nothing is
+    written. ``signal_decisions`` keeps its old rows, read-only."""
+    raise Gone(DECISIONS_RETIRED)
 
 
 def add_trade(payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:
     with _tx() as conn:
         return ledger.record_trade(conn, payload, now=now)
+
+
+def add_plan_note(payload: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    """v2.9 §6.5: a note on a chain or a non-chain plan, a correction or a retraction. Never read by an Agent."""
+    with _tx() as conn:
+        return ledger.record_note(conn, payload, now=now)
 
 
 def list_trades() -> list[dict[str, Any]]:
@@ -1519,7 +1559,7 @@ def push(*, now: datetime, force: bool, summary: dict[str, Any] | None = None, n
             last = repository.last_push(conn, session=session)
             if last and last.get('sent') is True:
                 return {'session': session.isoformat(), 'sent': False, 'reason': 'already_pushed', 'messages': 0}
-        view = today(now=now)
+        view = unit_cards(now=now)
         plan_updates = None
         reviews_until = None
         units, holding_rows, merged = view['units'], None, set()
@@ -1676,16 +1716,18 @@ def _instrument_holding(conn, ticker: str, book: dict[str, Any], ticker_bars: li
     return _holding_fields(book, ticker_bars, plan, state)
 
 
-def _instrument_chains(conn, ticker: str, book: dict[str, Any], session: date) -> list[dict[str, Any]]:
-    """The ticker's agent-2 chains in state entry / holding, newest signal date first (empty without 026)."""
+def _instrument_chains(conn, ticker: str, book: dict[str, Any], session: date, *,
+                       now: datetime) -> list[dict[str, Any]]:
+    """The ticker's agent chains in state entry / holding / exiting at S (`timeline-2`), newest signal date first
+    (empty without 026)."""
     if not repository.timeline_ready(conn):
         return []
     rows = []
     for chain in repository.all_chains(conn):
         if chain['ticker'] != ticker:
             continue
-        status = chain_status(conn, ticker, chain['signal_date'], session=session, book=book)
-        if status is None or status['state']['state'] not in ('entry', 'holding'):
+        status = chain_status(conn, ticker, chain['signal_date'], session=session, now=now)
+        if status is None or status['state']['state'] not in timeline.ACTIVE_STATES:
             continue
         plan = status['head']['plan']
         rows.append({'signal_date': chain['signal_date'], 'state': status['state']['state'],
@@ -1758,7 +1800,7 @@ def instrument(ticker: str, *, now: datetime) -> dict[str, Any]:
             if book['position'] is not None and holding is None:
                 raise RuntimeError('持仓止损读取失败，见 errors.holding')
             return instrument_view.focus(
-                position=holding, chains=_instrument_chains(conn, ticker, book, session),
+                position=holding, chains=_instrument_chains(conn, ticker, book, session, now=now),
                 candidates_today=[c for c in candidates if c['signal_date'] == session],
                 earnings=earnings, session=session)
 
@@ -1817,10 +1859,21 @@ def _outcomes(conn, units, session: date, now: datetime) -> dict[Any, dict[str, 
 
 
 def shadow(*, now: datetime, since: date | None = None) -> dict[str, Any]:
+    """The control group (`review-8`, v2.9 D26): every unit since ``since`` — a ticker-day with candidates, whether or
+    not anybody decided on it or traded it — assumed entered at the next open, with its 5 / 10 / 20 session excess
+    return over SPY. Old decided-only snapshots keep their own `review-7` shape in the weekly review."""
     session = bars.latest_closed_session(now)
     since = since or session - timedelta(days=90)
     with _tx() as conn:
-        units = _decided_units(conn, repository.decision_heads(conn, since=since))
+        units = []
+        for group in sorted(repository.candidate_groups_since(conn, since), key=lambda g: (g['signal_date'], g['ticker'])):
+            if group['signal_date'] > session:
+                continue
+            shape = synthesis.synthesize(group['ticker'], group['signal_date'], group['candidates'], holding=False,
+                                         now=now)
+            units.append({'id': f"{group['ticker']}:{group['signal_date'].isoformat()}", 'ticker': group['ticker'],
+                          'signal_date': group['signal_date'], 'proposed_action': shape['proposed_action'],
+                          'rule_ids': shape['rule_ids']})
         outcomes = _outcomes(conn, units, session, now)
     return {'session': session, 'since': since, 'calc_version': review.CALC_VERSION,
             'units': [{**u, 'outcome': outcomes[u['id']]} for u in units]}
@@ -1849,11 +1902,25 @@ def _plan_chains(conn, plans: list[dict[str, Any]]) -> dict[Any, dict[str, Any]]
     return out
 
 
+def shadow_outcomes(plan: dict[str, Any], bars_: list[dict[str, Any]], spy: list[dict[str, Any]], *,
+                    splits: list[tuple[date, Decimal]]) -> dict[str, Any]:
+    """One plan's shadow outcomes (v2.9 D14): ``{'outcome', 'shadow_version', 'shadow_v1'}``. A plan with execution
+    fields (``plan-2``, ``agent-3``, own plans since v2.9) is replayed by `plan-shadow-2` and, as the counterfactual
+    「无时间止损、旧入场规则」, by `plan-shadow-1` (``shadow_v1``); an older plan only by `plan-shadow-1`
+    (``shadow_v1`` None, ``outcome`` is that result)."""
+    both = _plan_shadow_module.simulate_both(plan, bars_, spy, splits=splits)
+    if 'v2' in both:
+        return {'outcome': both['v2'], 'shadow_version': _plan_shadow_module.SHADOW_V2, 'shadow_v1': both['v1']}
+    return {'outcome': both['v1'], 'shadow_version': _plan_shadow_module.SHADOW_V1, 'shadow_v1': None}
+
+
 def plan_shadow(*, now: datetime, since: date | None = None) -> dict[str, Any]:
     """Simulated outcomes for rule, agent and own plans of the last 90 days; nothing frozen until a review.
 
-    v2.5 §9.1: every agent-2 version is its own row with ``chain`` (None for other plans), and
-    ``agent_summary`` sums each chain's first version and its current head."""
+    v2.5 §9.1: every agent version is its own row with ``chain`` (None for other plans), and ``agent_summary`` sums
+    each chain's first version and its current head. v2.9 §5.6: every row carries its ``shadow_version``; a plan
+    with execution fields is replayed by `plan-shadow-2` and its `plan-shadow-1` result rides along as ``shadow_v1``;
+    ``agent_summary.counterfactual`` sums the same agent rows under both."""
     session = bars.latest_closed_session(now)
     since = since or session - timedelta(days=90)
     with _tx() as conn:
@@ -1863,43 +1930,81 @@ def plan_shadow(*, now: datetime, since: date | None = None) -> dict[str, Any]:
         out = []
         for plan in plans:
             ticker_bars = repository.read_bars(conn, plan['ticker'], session, cutoff_at=now, limit=400)
-            outcome = _plan_shadow_module.simulate(plan, ticker_bars, spy,
-                                           splits=repository.split_events(conn, plan['ticker']))
-            out.append({**plan, 'chain': chains.get(plan['id']), 'outcome': outcome})
-    return {'session': session, 'since': since, 'calc_version': _plan_shadow_module.SHADOW_VERSION, 'plans': out,
-            'agent_summary': review.shadow_agent_summary(out)}
+            found = shadow_outcomes(plan, ticker_bars, spy, splits=repository.split_events(conn, plan['ticker']))
+            out.append({**plan, 'chain': chains.get(plan['id']), **found})
+    summary = review.shadow_agent_summary(out)
+    paired = [row for row in out if row.get('kind') == 'agent' and row['shadow_v1'] is not None]
+    v2_outcomes = [row['outcome'] for row in paired]
+    summary['counterfactual'] = {
+        'v1': review.shadow_block([row['shadow_v1'] for row in paired]),
+        'v2': {**review.shadow_block(v2_outcomes), 'voided': sum(1 for o in v2_outcomes if o.get('status') == 'voided')}}
+    return {'session': session, 'since': since, 'calc_version': _plan_shadow_module.SHADOW_VERSION,
+            'shadow_version': _plan_shadow_module.SHADOW_VERSION, 'plans': out, 'agent_summary': summary}
+
+
+def _discipline_v2(conn, *, trades: list[dict[str, Any]], segments: list[dict[str, Any]], tickers: list[str],
+                   session: date, now: datetime, since: date, until: date | None = None) -> dict[str, Any]:
+    """`discipline-2` over ``trades`` (v2.9 D28): every buy is judged against the plan its fill is linked to
+    (``trades.plan_id``; an old fill through its decision), the chain's newest version at the sale for the early take
+    and the daily holding status for the held loser. ``segments`` are the closed lots, ``tickers`` the ones whose
+    bars, stop events and holding rows are read (since ``since``; stop events up to ``until``)."""
+    from investment_assistant.workbench import plan_review     # imports this module
+
+    contexts: dict[str, dict[str, Any]] = {}
+    plans_by_trade: dict[Any, dict[str, Any]] = {}
+    chain_head_by_trade: dict[Any, list[dict[str, Any]]] = {}
+    legacy_decisions: dict[Any, dict[str, Any]] = {}
+    plans_by_id: dict[Any, dict[str, Any]] = {}
+    for t in trades:
+        if t['side'] != 'buy' or t['voided_at'] is not None:
+            continue
+        if t.get('plan_id') is not None:
+            plan = repository.plan_by_id(conn, t['plan_id'])
+            if plan is None:
+                continue
+            plans_by_trade[t['id']] = plan
+            context = contexts.get(t['ticker']) or contexts.setdefault(
+                t['ticker'], plan_review.ticker_context(conn, t['ticker'], now=now))
+            key = context['plan_chain'].get(t['plan_id'])
+            if key is not None:
+                chain_head_by_trade[t['id']] = [repository.plan_by_id(conn, v['plan_id'])
+                                                for v in repository.chain_versions(conn, key[0], key[1])]
+        elif t.get('decision_id') and t['decision_id'] not in legacy_decisions:
+            decision = repository.decision_by_id(conn, t['decision_id'])
+            if decision is not None:
+                legacy_decisions[t['decision_id']] = decision
+                if decision['plan_id'] and decision['plan_id'] not in plans_by_id:
+                    plan = repository.plan_by_id(conn, decision['plan_id'])
+                    if plan is not None:
+                        plans_by_id[decision['plan_id']] = plan
+    stop_events, holding_rows = [], []
+    for tk in tickers:
+        stop_events += [c for c in repository.read_candidates(conn, tk, since=since)
+                        if c['rule_id'] == 'plan_stop' and (until is None or c['signal_date'] <= until)]
+        if repository.executable_ready(conn):
+            holding_rows += [r for r in repository.holding_status_for(conn, ticker=tk) if r['session'] >= since]
+    out = _discipline_module.evaluate_v2(
+        trades=trades, plans_by_trade=plans_by_trade, chain_head_by_trade=chain_head_by_trade,
+        holding_rows=holding_rows, legacy_decisions=legacy_decisions,
+        bars_by_ticker={tk: repository.read_bars(conn, tk, session, cutoff_at=now, limit=400) for tk in tickers},
+        segments=segments, session=session, plans_by_id=plans_by_id, stop_events=stop_events)
+    return {**out, 'calc_version': _discipline_module.DISCIPLINE_VERSION}
 
 
 def discipline(*, now: datetime, since: date | None = None) -> dict[str, Any]:
-    """Execution discipline of recorded buys against their confirmed plans."""
+    """Execution discipline of recorded buys against the plans their fills follow (`discipline-2`)."""
     session = bars.latest_closed_session(now)
     since = since or session - timedelta(days=90)
     with _tx() as conn:
         # Buys and stop events share one window, or old buys see no stops and flag false early_takes.
         trades = [t for t in repository.list_trades(conn)
                   if t['voided_at'] is None and t['executed_at'].astimezone(NY).date() >= since]
-        decisions_by_id: dict[Any, dict[str, Any]] = {}
-        for t in trades:
-            if t['decision_id'] and t['decision_id'] not in decisions_by_id:
-                d = repository.decision_by_id(conn, t['decision_id'])
-                if d is not None:
-                    decisions_by_id[t['decision_id']] = d
-        plans_by_id = {}
-        for d in decisions_by_id.values():
-            if d['plan_id'] and d['plan_id'] not in plans_by_id:
-                p = repository.plan_by_id(conn, d['plan_id'])
-                if p is not None:
-                    plans_by_id[d['plan_id']] = p
         tickers = sorted({t['ticker'] for t in trades})
-        bars_by_ticker = {tk: repository.read_bars(conn, tk, session, cutoff_at=now, limit=400) for tk in tickers}
-        stop_events, segments = [], []
+        segments = []
         for tk in tickers:
-            stop_events += [c for c in repository.read_candidates(conn, tk, since=since)
-                            if c['rule_id'] == 'plan_stop']
             segments += _book(conn, tk)['closed']
-        out = _discipline_module.evaluate(trades=trades, decisions_by_id=decisions_by_id, plans_by_id=plans_by_id,
-                                  bars_by_ticker=bars_by_ticker, stop_events=stop_events, segments=segments,
-                                  session=session)
+        out = _discipline_v2(conn, trades=trades, segments=segments, tickers=tickers, session=session, now=now,
+                             since=since)
     return {'session': session, 'since': since, **out}
 
 
@@ -1922,28 +2027,12 @@ def _week_discipline(conn, session: date, now: datetime) -> dict[str, Any]:
     since = session - timedelta(days=90)
     trades = [t for t in repository.list_trades(conn)
               if t['voided_at'] is None and t['executed_at'].astimezone(NY).date() >= since]
-    decisions_by_id = {}
-    for t in trades:
-        if t['decision_id'] and t['decision_id'] not in decisions_by_id:
-            d = repository.decision_by_id(conn, t['decision_id'])
-            if d is not None:
-                decisions_by_id[t['decision_id']] = d
-    plans_by_id = {}
-    for d in decisions_by_id.values():
-        if d['plan_id'] and d['plan_id'] not in plans_by_id:
-            p = repository.plan_by_id(conn, d['plan_id'])
-            if p is not None:
-                plans_by_id[d['plan_id']] = p
     tickers = sorted({t['ticker'] for t in trades})
-    stop_events, segments = [], []
+    segments = []
     for tk in tickers:
-        stop_events += [c for c in repository.read_candidates(conn, tk, since=since)
-                        if c['rule_id'] == 'plan_stop']
         segments += _book(conn, tk)['closed']
-    return _discipline_module.evaluate(trades=trades, decisions_by_id=decisions_by_id, plans_by_id=plans_by_id,
-                               bars_by_ticker={tk: repository.read_bars(conn, tk, session, cutoff_at=now, limit=400)
-                                               for tk in tickers},
-                               stop_events=stop_events, segments=segments, session=session)
+    return _discipline_v2(conn, trades=trades, segments=segments, tickers=tickers, session=session, now=now,
+                          since=since)
 
 
 def _track_agent_pick(conn, ticker: str, signal_date: date, decision: dict[str, Any] | None, *,
@@ -1982,27 +2071,135 @@ def _track_agent_pick(conn, ticker: str, signal_date: date, decision: dict[str, 
             'basis': 'decision' if chosen_id is not None else 'first', 'latest': latest}
 
 
-def _track_rows(conn, since: date, until: date, *, session: date, now: datetime) -> list[dict[str, Any]]:
-    """§4.4: one row per unit in the window — rule, agent and actual side by side,
-    every id traceable. Bars and books are cached per ticker within the transaction;
-    ids and dates are stringified so the rows freeze into JSONB snapshots as-is."""
+def _track_rows(conn, since: date, until: date, *, session: date, now: datetime,
+                version: str = _tracks_module.TRACKS_V2) -> list[dict[str, Any]]:
+    """§4.4: one row per unit in the window — rule, agent and actual side by side, every id traceable. Bars and books
+    are cached per ticker within the transaction; ids and dates are stringified so the rows freeze into JSONB
+    snapshots as-is. ``version`` picks `tracks-2` (default, v2.9 D27) or the old `tracks-1` reading."""
     spy = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now, limit=400)
     bars_by_ticker: dict[str, list[dict[str, Any]]] = {}
     ready = repository.timeline_ready(conn)
-    return [_track_row(conn, unit['ticker'], unit['signal_date'], spy=spy, bars_by_ticker=bars_by_ticker, ready=ready,
-                       session=session, now=now)
+    contexts: dict[str, dict[str, Any]] = {}
+    builder = _track_row if version == _tracks_module.TRACKS_V2 else _track_row_v1
+    return [builder(conn, unit['ticker'], unit['signal_date'], spy=spy, bars_by_ticker=bars_by_ticker, ready=ready,
+                    session=session, now=now, **({'contexts': contexts} if builder is _track_row else {}))
             for unit in repository.track_units(conn, since, until)]
 
 
-def unit_track_row(conn, ticker: str, signal_date: date, *, session: date, now: datetime) -> dict[str, Any]:
-    """The ``tracks-1`` row of one unit, exactly the row ``_track_rows`` builds for it (the review card's frozen
-    ``facts.tracks`` takes its three tracks from here, v2.7 D7)."""
+def unit_track_row(conn, ticker: str, signal_date: date, *, session: date, now: datetime,
+                   version: str = _tracks_module.TRACKS_V2) -> dict[str, Any]:
+    """The track row of one unit, exactly the row ``_track_rows`` builds for it (the review card's frozen
+    ``facts.tracks`` takes its three tracks from here, v2.7 D7). ``version='tracks-1'`` reads the old way (the check
+    of a retro-1 card compares against it)."""
     spy = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now, limit=400)
-    return _track_row(conn, ticker, signal_date, spy=spy, bars_by_ticker={},
-                      ready=repository.timeline_ready(conn), session=session, now=now)
+    ready = repository.timeline_ready(conn)
+    if version == _tracks_module.TRACKS_V1:
+        return _track_row_v1(conn, ticker, signal_date, spy=spy, bars_by_ticker={}, ready=ready, session=session,
+                             now=now)
+    return _track_row(conn, ticker, signal_date, spy=spy, bars_by_ticker={}, ready=ready, session=session, now=now,
+                      contexts={})
+
+
+def unit_fills(conn, ticker: str, signal_date: date, context: dict[str, Any]) -> list[dict[str, Any]]:
+    """The live buys that belong to one unit, oldest first (D22, D27): the fills linked to any plan row of the unit
+    (rule baseline, own plan, Agent version), the fills of the unit's own chain (``execution.chain_buys``: also those
+    linked to a unit merged into it) and, for old data, the fills of the unit's decisions. ``context`` is
+    ``plan_review.ticker_context`` of the ticker."""
+    unit_plans = {p['id'] for p in repository.plans_for_unit(conn, ticker, signal_date)}
+    legacy = repository.unit_decision_ids(conn, ticker, signal_date)
+    chain = ({'ticker': ticker, 'signal_date': signal_date}
+             if any(c['signal_date'] == signal_date for c in context['chains']) else None)
+    owned = {str(b['id']): b for b in execution_module.chain_buys(
+        (ticker, signal_date), context['trades'], plan_chain=context['plan_chain'],
+        legacy_decision_ids=legacy)} if chain is not None else {}
+    found = dict(owned)
+    for t in context['trades']:
+        if t['side'] != 'buy' or t.get('voided_at') is not None:
+            continue
+        if (t.get('plan_id') is not None and t['plan_id'] in unit_plans) or \
+                (t.get('decision_id') is not None and t['decision_id'] in legacy):
+            found[str(t['id'])] = t
+    return sorted(found.values(), key=lambda t: (t['executed_at'], str(t['id'])))
 
 
 def _track_row(conn, ticker: str, signal_date: date, *, spy: list[dict[str, Any]],
+               bars_by_ticker: dict[str, list[dict[str, Any]]], ready: bool, session: date,
+               now: datetime, contexts: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """The `tracks-2` row of one unit (v2.9 D27): the Agent track takes the version the first fill was linked to
+    (`fill`), an old decision's version (`decision`) or the first version; a unit merged into another chain has
+    `merged` (no R); the actual track takes its plan from the fills' own plan link."""
+    from investment_assistant.workbench import plan_review     # imports this module
+
+    if ticker not in bars_by_ticker:
+        bars_by_ticker[ticker] = repository.read_bars(conn, ticker, session, cutoff_at=now, limit=400)
+    ticker_bars = bars_by_ticker[ticker]
+    splits = repository.split_events(conn, ticker)
+    context = contexts.get(ticker) or contexts.setdefault(ticker, plan_review.ticker_context(conn, ticker, now=now))
+    rule = repository.rule_plan(conn, ticker, signal_date)
+    legacy = repository.decision_head(conn, ticker, signal_date, timeline=ready)
+    versions = repository.chain_versions(conn, ticker, signal_date) if ready else []
+    fills = unit_fills(conn, ticker, signal_date, context)
+    merged = (not versions and repository.executable_ready(conn)
+              and repository.retrigger_for_unit(conn, ticker, signal_date) is not None)
+
+    def outcome_of(plan: dict[str, Any] | None) -> dict[str, Any] | None:
+        if plan is None or plan['status'] != 'ok':
+            return None
+        return shadow_outcomes(plan, ticker_bars, spy, splits=splits)['outcome']
+
+    if versions:
+        pick = _tracks_module.agent_pick({'ticker': ticker, 'signal_date': signal_date}, legacy_decision=legacy,
+                                         chain_buys=fills, versions=versions, merged=False)
+        plan = repository.plan_by_id(conn, pick['plan_id']) if pick['plan_id'] is not None else None
+        run = (repository.agent_run_by_id(conn, pick['plan']['agent_run_id']) if pick['plan'] is not None
+               else repository.latest_agent_run(conn, ticker, signal_date))
+        agent_plan = repository.plan_by_id(conn, versions[-1]['plan_id'])
+        agent_track = _tracks_module.agent_track(run, plan, outcome_of(plan), version_no=pick['version_no'],
+                                                 version_basis=pick['version_basis'])
+    elif merged:
+        agent_plan = None
+        agent_track = _tracks_module.merged_agent_track()
+    else:
+        old = _track_agent_pick(conn, ticker, signal_date, legacy, ready=ready)
+        agent_plan = old['latest']
+        agent_track = _tracks_module.agent_track(old['run'], old['plan'], outcome_of(old['plan']),
+                                                 version_no=old['version_no'], version_basis=old['basis'])
+
+    rule_track = _tracks_module.plan_track(rule, outcome_of(rule))
+    plans_by_trade = {}
+    for fill in fills:
+        linked = plan_review._plan_of_buy(conn, fill)
+        if linked is not None:
+            plans_by_trade[fill['id']] = linked
+    book = context['book']
+    buy_ids = {t['id'] for t in fills}
+    actual = _tracks_module.actual_track_v2(
+        legacy_decision=legacy, plans_by_trade=plans_by_trade, buys=fills,
+        segments=[sg for sg in book['closed'] if sg['buy_trade_id'] in buy_ids],
+        open_lots=[lot for lot in book['open'] if lot['buy_trade_id'] in buy_ids],
+        last_close=Decimal(str(ticker_bars[-1]['close'])) if ticker_bars else None,
+        splits=splits, session=session,
+        unit_valid_until=max((p['valid_until'] for p in (rule, agent_plan, *plans_by_trade.values())
+                              if p is not None), default=None))
+
+    def context_of(plan):
+        return (plan.get('inputs') or {}).get('context') if plan else None
+    pool = review.pool_of(context_of(rule) or context_of(agent_plan),
+                          repository.pool_entry_at(conn, ticker, signal_date, cutoff_at=now))
+    return {
+        'ticker': ticker, 'signal_date': signal_date.isoformat(), 'pool': pool,
+        'rule': {**rule_track, 'plan_id': str(rule_track['plan_id']) if rule_track['plan_id'] else None},
+        'agent': {**agent_track,
+                  'run_id': str(agent_track['run_id']) if agent_track['run_id'] else None,
+                  'plan_id': str(agent_track['plan_id']) if agent_track['plan_id'] else None},
+        'actual': {**actual,
+                   'decision_id': str(actual['decision_id']) if actual['decision_id'] else None,
+                   'plan_id': str(actual['plan_id']) if actual['plan_id'] else None,
+                   'buy_trade_ids': [str(tid) for tid in actual['buy_trade_ids']]},
+    }
+
+
+def _track_row_v1(conn, ticker: str, signal_date: date, *, spy: list[dict[str, Any]],
                bars_by_ticker: dict[str, list[dict[str, Any]]], ready: bool, session: date,
                now: datetime) -> dict[str, Any]:
     if ticker not in bars_by_ticker:
@@ -2064,7 +2261,7 @@ def tracks(*, now: datetime, since: date | None = None, until: date | None = Non
         rows = _track_rows(conn, since, until, session=session, now=now)
     return {'session': session.isoformat(), 'since': since.isoformat(), 'until': until.isoformat(),
             'calc_version': _tracks_module.TRACKS_VERSION, 'units': rows,
-            'summary': _tracks_module.summarize(rows)}
+            'summary': _tracks_module.summarize_v2(rows)}
 
 
 def _weekly_learning(conn, week_start: date, week_end: date, *, session: date, now: datetime) -> dict[str, Any]:
@@ -2081,17 +2278,63 @@ def _weekly_learning(conn, week_start: date, week_end: date, *, session: date, n
     return review.learning_stats(week_start=week_start, week_end=week_end, cards=cards, perf_by_item=perf)
 
 
+def _week_units(conn, week_start: date, week_end: date, *, now: datetime) -> dict[str, Any]:
+    """v2.9 D26 / D30: every unit of the week (a ticker-day with candidates, whatever became of it) with its
+    `execution-1` state, the week's linked fills and the buys that follow no plan.
+
+    ``units``: ``{id, ticker, signal_date, proposed_action, rule_ids, execution}``; ``fills``: ``{trade, unit_id,
+    plan_created_at}`` for the live buys of those units; ``unplanned``: the live buys executed in the week with no plan
+    link (and no plan through an old decision); ``groups``: the candidate groups the units come from."""
+    from investment_assistant.workbench import plan_review     # imports this module
+
+    groups = [g for g in repository.candidate_groups_since(conn, week_start) if g['signal_date'] <= week_end]
+    contexts: dict[str, dict[str, Any]] = {}
+
+    def context_of(ticker: str) -> dict[str, Any]:
+        return contexts.get(ticker) or contexts.setdefault(ticker, plan_review.ticker_context(conn, ticker, now=now))
+
+    units, fills = [], []
+    for group in sorted(groups, key=lambda g: (g['signal_date'], g['ticker'])):
+        ticker, signal_date = group['ticker'], group['signal_date']
+        shape = synthesis.synthesize(ticker, signal_date, group['candidates'], holding=False, now=now)
+        uid = f'{ticker}:{signal_date.isoformat()}'
+        mine = unit_fills(conn, ticker, signal_date, context_of(ticker))
+        state = 'not_executed'
+        for buy in mine:
+            plan = plan_review._plan_of_buy(conn, buy)
+            fills.append({'trade': buy, 'unit_id': uid, 'plan_created_at': plan['created_at'] if plan else None})
+            day = buy['executed_at'].astimezone(NY).date()
+            if plan is None or plan['valid_from'] <= day <= plan['valid_until']:
+                state = 'adopted'
+            elif state != 'adopted':
+                state = 'out_of_validity'
+        units.append({'id': uid, 'ticker': ticker, 'signal_date': signal_date,
+                      'proposed_action': shape['proposed_action'], 'rule_ids': shape['rule_ids'],
+                      'execution': state})
+    unplanned = []
+    for t in repository.list_trades(conn, cutoff=now):
+        if t['side'] != 'buy' or t['voided_at'] is not None or not week_start <= t['executed_at'].astimezone(NY).date() <= week_end:
+            continue
+        legacy_plan = None
+        if t.get('decision_id') is not None:
+            decision = repository.decision_by_id(conn, t['decision_id'])
+            legacy_plan = decision['plan_id'] if decision else None
+        if execution_module.unplanned(t, legacy_plan_id=legacy_plan if t.get('plan_id') is None else t['plan_id']):
+            unplanned.append(t)
+    return {'groups': groups, 'units': units, 'fills': fills, 'unplanned': unplanned}
+
+
 def generate_weekly(week_start: date, *, notes: str = '', supersedes_id=None, now: datetime) -> dict[str, Any]:
+    """The `review-8` weekly snapshot (v2.9 D30): executions instead of decisions, the control group is every unit of
+    the week, plans split by shadow version, tracks-2 and discipline-2 frozen."""
     if week_start.isoweekday() != 1:
         raise ledger.LedgerError('week_start must be a Monday')
     week_end = week_start + timedelta(days=6)
     session = bars.latest_closed_session(now)
     with _tx() as conn:
-        heads = [h for h in repository.decision_heads(conn, since=week_start) if h['signal_date'] <= week_end]
-        units = _decided_units(conn, heads)
+        week = _week_units(conn, week_start, week_end, now=now)
+        units = week['units']
         outcomes = _outcomes(conn, units, session, now)
-        undecided = sum(1 for g in repository.open_candidate_groups(conn, since=week_start)
-                        if g['signal_date'] <= week_end)
         spy = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now, limit=400)
         segments = []
         for ticker in sorted({t['ticker'] for t in repository.list_trades(conn)}):
@@ -2099,7 +2342,6 @@ def generate_weekly(week_start: date, *, notes: str = '', supersedes_id=None, no
             segments += [{'ticker': ticker, **review.trade_segment_review(s, ticker_bars, spy)}
                          for s in _book(conn, ticker)['closed']
                          if week_start <= s['closed_at'].astimezone(NY).date() <= week_end]
-        spy_bars = repository.read_bars(conn, BENCHMARK, session, cutoff_at=now, limit=400)
         plan_outcomes = []
         week_plans = [p for p in repository.plans_since(conn, week_start) if p['signal_date'] <= week_end]
         chains = _plan_chains(conn, week_plans)        # review-6: first versions vs heads at generation
@@ -2111,32 +2353,22 @@ def generate_weekly(week_start: date, *, notes: str = '', supersedes_id=None, no
                 repository.pool_entry_at(conn, plan['ticker'], plan['signal_date'], cutoff_at=now)),
                 'rule_ids': [c['rule_id'] for c in repository.unit_candidates(conn, plan['ticker'], plan['signal_date'])
                              if c['action'] == 'buy'],
-                'outcome': _plan_shadow_module.simulate(
-                    plan, ticker_bars, spy_bars, splits=repository.split_events(conn, plan['ticker']))})
+                **shadow_outcomes(plan, ticker_bars, spy, splits=repository.split_events(conn, plan['ticker']))})
         triggers = []
-        for group in repository.open_candidate_groups(conn, since=week_start):
-            if group['signal_date'] > week_end:
-                continue
+        for group in week['groups']:
             for cand in group['candidates']:
                 if cand['action'] != 'buy':
                     continue
                 triggers.append({'pool': review.pool_of(
                     None, repository.pool_entry_at(conn, group['ticker'], group['signal_date'], cutoff_at=now)),
                     'rule_id': cand['rule_id']})
-        for head in [h for h in heads if h['signal_date'] <= week_end]:
-            for cand in repository.unit_candidates(conn, head['ticker'], head['signal_date']):
-                if cand['action'] != 'buy':
-                    continue
-                triggers.append({'pool': review.pool_of(
-                    None, repository.pool_entry_at(conn, head['ticker'], head['signal_date'], cutoff_at=now)),
-                    'rule_id': cand['rule_id']})
         track_rows = _track_rows(conn, week_start, week_end, session=session, now=now)
         stats = review.weekly_stats(week_start, units, outcomes, repository.list_trades(conn), segments=segments,
-                                    undecided=undecided,
+                                    fills=week['fills'], unplanned=week['unplanned'],
                                     entry_opens={k: v.get('entry_price') for k, v in outcomes.items()},
                                     plan_outcomes=plan_outcomes, by_pool=review.pool_summary(triggers, plan_outcomes),
                                     discipline=_week_discipline(conn, session, now),
-                                    tracks={'units': track_rows, 'summary': _tracks_module.summarize(track_rows)},
+                                    tracks={'units': track_rows, 'summary': _tracks_module.summarize_v2(track_rows)},
                                     learning=_weekly_learning(conn, week_start, week_end, session=session, now=now))
         stats['generated_at'] = now.isoformat()
         return review.save_weekly(conn, week_start, stats, notes=notes, supersedes_id=supersedes_id)
@@ -2185,10 +2417,11 @@ def generate_monthly(month: date, *, notes: str = '', supersedes_id=None, now: d
                 spy_ret = spy_r
         ret = monthly.month_return(month, snapshots, flows)
 
+        from investment_assistant.workbench import plan_review     # imports this module
+
         trades = repository.list_trades(conn)
         trades_by_id = {t['id']: t for t in trades}
         tickers = sorted({t['ticker'] for t in trades})
-        plans_by_trade = repository.plan_for_buy_trades(conn, list(trades_by_id))
         rs, segments_month, plan_outcomes = [], [], []   # rs: (closed_at, r), sorted below
         for ticker in tickers:
             book = _book(conn, ticker)
@@ -2197,10 +2430,10 @@ def generate_monthly(month: date, *, notes: str = '', supersedes_id=None, now: d
                 if not month <= seg['closed_at'].astimezone(NY).date() <= month_end:
                     continue
                 segments_month.append({'ticker': ticker, **seg})
-                plan = plans_by_trade.get(seg['buy_trade_id'])
+                buy_trade = trades_by_id.get(seg['buy_trade_id'])
+                plan = plan_review._plan_of_buy(conn, buy_trade) if buy_trade is not None else None   # plan_id, else old decision
                 if plan is None:
                     continue
-                buy_trade = trades_by_id.get(seg['buy_trade_id'])
                 buy_day = buy_trade['executed_at'].astimezone(NY).date()
                 stop = _discipline_module._at_basis(plan['stop'], plan['signal_date'], buy_day, splits)
                 entry, exit_ = seg['entry_cost_per_share'], seg['exit_price']
@@ -2213,33 +2446,16 @@ def generate_monthly(month: date, *, notes: str = '', supersedes_id=None, now: d
         for plan in month_plans:
             ticker_bars = repository.read_bars(conn, plan['ticker'], bars.latest_closed_session(now),
                                                cutoff_at=now, limit=400)
-            plan_outcomes.append({**plan, 'chain': chains.get(plan['id']), 'outcome': _plan_shadow_module.simulate(
+            plan_outcomes.append({**plan, 'chain': chains.get(plan['id']), **shadow_outcomes(
                 plan, ticker_bars, spy_bars, splits=repository.split_events(conn, plan['ticker']))})
-        decisions_by_id = {}
-        for t in trades:
-            if t['decision_id'] and t['decision_id'] not in decisions_by_id:
-                d = repository.decision_by_id(conn, t['decision_id'])
-                if d is not None:
-                    decisions_by_id[t['decision_id']] = d
-        plans_by_id = {}
-        for d in decisions_by_id.values():
-            if d['plan_id'] and d['plan_id'] not in plans_by_id:
-                p = repository.plan_by_id(conn, d['plan_id'])
-                if p is not None:
-                    plans_by_id[d['plan_id']] = p
-        stop_events_month = []
-        for ticker in tickers:
-            stop_events_month += [c for c in repository.read_candidates(conn, ticker, since=month)
-                                  if c['rule_id'] == 'plan_stop' and c['signal_date'] <= month_end]
-        disc = _discipline_module.evaluate(
-            trades=[t for t in trades if month <= t['executed_at'].astimezone(NY).date() <= month_end],
-            decisions_by_id=decisions_by_id, plans_by_id=plans_by_id,
-            bars_by_ticker={tk: repository.read_bars(conn, tk, bars.latest_closed_session(now), cutoff_at=now,
-                                                     limit=400) for tk in tickers},
-            stop_events=stop_events_month, segments=segments_month,
-            session=bars.latest_closed_session(now))
+        disc = _discipline_v2(
+            conn, trades=[t for t in trades if month <= t['executed_at'].astimezone(NY).date() <= month_end],
+            segments=segments_month, tickers=tickers, session=bars.latest_closed_session(now), now=now,
+            since=month, until=month_end)
 
         rs = [r for _, r in sorted(rs, key=lambda item: item[0])]
+        v2_plans = [p for p in plan_outcomes if p['shadow_version'] == _plan_shadow_module.SHADOW_V2]
+        v1_plans = [p for p in plan_outcomes if p['shadow_version'] != _plan_shadow_module.SHADOW_V2]
         track_rows = _track_rows(conn, month, month_end, session=bars.latest_closed_session(now), now=now)
         stats = {
             'calc_version': monthly.MONTHLY_VERSION, 'month': month.isoformat(), 'return': ret,
@@ -2250,8 +2466,13 @@ def generate_monthly(month: date, *, notes: str = '', supersedes_id=None, now: d
             'review': monthly.review_detail(per_month),
             'sensitivity': {'approximate': True, 'count': len(rs), 'rows': monthly.sensitivity(rs)},
             'discipline': disc,
-            'plans': review._plan_summary(plan_outcomes, month, month_end),
-            'tracks': {'units': track_rows, 'summary': _tracks_module.summarize(track_rows)},
+            'plans': review._plan_summary(v2_plans, month, month_end),
+            'plans_v1': review._plan_summary(v1_plans, month, month_end),
+            'plans_counterfactual': review._plan_summary(
+                [{**p, 'outcome': p['shadow_v1']} for p in v2_plans if p.get('shadow_v1') is not None], month, month_end),
+            'shadow_versions': {'plans': 'plan-shadow-2', 'plans_v1': 'plan-shadow-1',
+                                'plans_counterfactual': 'plan-shadow-1'},
+            'tracks': {'units': track_rows, 'summary': _tracks_module.summarize_v2(track_rows)},
             'generated_at': now.isoformat(),
         }
         return repository.insert_monthly_review(conn, month, monthly.MONTHLY_VERSION, stats, notes, supersedes_id)
@@ -2333,15 +2554,15 @@ def _agent_run_row(unit: dict, *, settings, attempt: int, now: datetime, status:
                    run_id: str | None = None, reason: str | None = None, detail: str | None = None,
                    output: dict | None = None,
                    counter: dict | None = None, plan_id=None, input_tokens: int = 0,
-                   output_tokens: int = 0, mode: str = 'propose') -> dict:
+                   output_tokens: int = 0, mode: str = 'propose', agent_version: str | None = None) -> dict:
     return {'id': run_id or str(uuid.uuid4()), 'ticker': unit['ticker'],
             'signal_date': unit['signal_date'], 'pool': unit['pool'], 'attempt': attempt,
             'mode': mode,
             # v2.5 §5.1 / v2.9 §5.5: first versions, revisions (and the skips standing in for them) are agent-3 runs
-            'agent_version': {'interpret': agent_graph.INTERPRET_VERSION,
-                              'review': agent_graph.REVIEW_VERSION,
-                              'retro': agent_graph.RETRO_AGENT_VERSION,
-                              'discuss': agent_graph.DISCUSS_AGENT_VERSION}.get(mode, agent_graph.AGENT_V3),
+            'agent_version': agent_version or {'interpret': agent_graph.INTERPRET_VERSION,
+                                               'review': agent_graph.REVIEW_VERSION,
+                                               'retro': agent_graph.RETRO_AGENT_VERSION,
+                                               'discuss': agent_graph.DISCUSS_AGENT_VERSION}.get(mode, agent_graph.AGENT_V3),
             'provider': settings.provider,
             'model': settings.model, 'cutoff_at': now, 'status': status, 'reason': reason, 'detail': detail,
             'output': output, 'counter': counter, 'plan_id': plan_id,
@@ -3024,11 +3245,11 @@ def _chain_view(status: dict[str, Any]) -> dict[str, Any]:
 
 
 def _unit_agent(conn, ticker: str, signal_date: date, *, session: date, ready: bool,
-                book: dict[str, Any] | None = None) -> dict[str, Any] | None:
+                book: dict[str, Any] | None = None, now: datetime | None = None) -> dict[str, Any] | None:
     """The unit's agent block: the chain head's run and plan when there is an agent-2 chain, else the latest
     propose run and the unit's agent plan as before (agent-1 units, units without an ok run, migration 026
-    missing)."""
-    status = chain_status(conn, ticker, signal_date, session=session, book=book) if ready else None
+    missing). With ``now`` the chain is judged by `timeline-2`."""
+    status = chain_status(conn, ticker, signal_date, session=session, book=book, now=now) if ready else None
     if status is None:
         return _agent_view(repository.latest_agent_run(conn, ticker, signal_date),
                            repository.agent_plan(conn, ticker, signal_date))
@@ -3036,17 +3257,17 @@ def _unit_agent(conn, ticker: str, signal_date: date, *, session: date, ready: b
     return _agent_view(run, status['head']['plan'], _chain_view(status))
 
 
-def _active_chains(conn, session: date) -> list[dict[str, Any]]:
-    """§10.2 进行中的 Agent 计划: chains decided as buy and waiting for a fill (entry) or holding."""
+def _active_chains(conn, session: date, *, now: datetime) -> list[dict[str, Any]]:
+    """§10.2 进行中的 Agent 计划: the chains in the entry, holding or exiting phase at S (`timeline-2`, no decision
+    needed any more)."""
     rows: list[dict[str, Any]] = []
     for chain in repository.all_chains(conn):
         ticker, signal_date = chain['ticker'], chain['signal_date']
-        status = chain_status(conn, ticker, signal_date, session=session)
+        status = chain_status(conn, ticker, signal_date, session=session, now=now)
         if status is None:
             continue
         state = status['state']['state']
-        decision = repository.decision_head(conn, ticker, signal_date)
-        if not (state == 'holding' or (state == 'entry' and decision is not None)):
+        if state not in timeline.ACTIVE_STATES:
             continue
         latest = status['latest_review']
         today_rows = [r for r in status['reviews'] if r['session'] == session]
@@ -3065,35 +3286,51 @@ def _active_chains(conn, session: date) -> list[dict[str, Any]]:
     return rows
 
 
-def _unit_held(conn, ticker: str, signal_date: date, book: dict[str, Any]) -> bool:
-    """Whether a live buy on the unit's decision chain still has an open lot (§5.3's reading)."""
-    buy_ids = {str(b['id']) for b in unit_buys(conn, ticker, signal_date) if b.get('voided_at') is None}
-    return any(str(lot.get('buy_trade_id')) in buy_ids and Decimal(str(lot.get('quantity') or 0)) > 0
-               for lot in book['open'])
-
-
-def held_chain_states(conn, session: date, *, tickers: set[str] | None = None) -> dict[str, str]:
-    """D7: held ticker -> state at S of the agent-2 chain on the unit that holds the position: a chain in
-    state holding, or one that ended while its unit's buys still have open lots (invalidated by a review,
-    closed by a later decision) — such a holding has a chain, it just is no longer reviewed. ``holding``
-    wins when a ticker has several. A held ticker absent from the result has no agent-2 chain at all.
-    ``tickers`` limits the read to those tickers."""
+def held_chain_states(conn, session: date, *, tickers: set[str] | None = None,
+                      now: datetime | None = None) -> dict[str, str]:
+    """D7: held ticker -> state at S of the agent chain that holds the position: a chain in state holding or
+    exiting, or one that ended while its buys still have open lots (invalidated by a review, closed by an old
+    decision) — such a holding has a chain, it just is no longer reviewed. ``holding`` / ``exiting`` win over an ended
+    state when a ticker has several. A held ticker absent from the result has no agent chain at all. ``tickers`` limits
+    the read to those tickers. With ``now`` the chains are judged by `timeline-2` and their buys are the fills linked
+    through ``plan_id`` or an old decision (``execution.chain_buys``); without it the `timeline-1` reading stays."""
     out: dict[str, str] = {}
     books: dict[str, dict[str, Any]] = {}
+    contexts: dict[str, dict[str, Any]] = {}
+    held_now: set[str] | None = None
     for chain in repository.all_chains(conn):
         ticker, signal_date = chain['ticker'], chain['signal_date']
         if tickers is not None and ticker not in tickers:
             continue
-        book = books.get(ticker) or books.setdefault(ticker, _book(conn, ticker))
-        if book['position'] is None:
-            continue
-        status = chain_status(conn, ticker, signal_date, session=session, book=book)
-        if status is None:
-            continue
+        if now is not None:
+            from investment_assistant.workbench import plan_review     # imports this module
+
+            if held_now is None:
+                held_now = repository.open_position_tickers(conn)
+            if ticker not in held_now:
+                continue
+            context = contexts.get(ticker) or contexts.setdefault(ticker, plan_review.ticker_context(conn, ticker, now=now))
+            book = context['book']
+            if book['position'] is None:
+                continue
+            status = chain_status(conn, ticker, signal_date, session=session, now=now, context=context)
+            if status is None:
+                continue
+            buy_ids = {str(b['id']) for b in status['buys']}
+        else:
+            book = books.get(ticker) or books.setdefault(ticker, _book(conn, ticker))
+            if book['position'] is None:
+                continue
+            status = chain_status(conn, ticker, signal_date, session=session, book=book)
+            if status is None:
+                continue
+            buy_ids = {str(b['id']) for b in unit_buys(conn, ticker, signal_date) if b.get('voided_at') is None}
         state = status['state']['state']
-        if state != 'holding' and not _unit_held(conn, ticker, signal_date, book):
+        owns_lots = any(str(lot.get('buy_trade_id')) in buy_ids and Decimal(str(lot.get('quantity') or 0)) > 0
+                        for lot in book['open'])
+        if state not in ('holding', 'exiting') and not owns_lots:
             continue
-        if out.get(ticker) != 'holding':
+        if out.get(ticker) not in ('holding', 'exiting'):
             out[ticker] = state
     return out
 

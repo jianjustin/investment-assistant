@@ -70,14 +70,23 @@ def make_decision(db, ticker, signal_date, plan_id, *, decision='accept', decide
         'h', decided_at=decided_at or evening(signal_date))
 
 
-def make_trade(db, ticker, side, price, when, decision_id=None, quantity=10):
+def make_trade(db, ticker, side, price, when, decision_id=None, quantity=10, plan_id=None):
     return repository.insert_trade(db, {
         'request_id': uuid.uuid4(), 'ticker': ticker, 'side': side, 'quantity': quantity, 'price': price, 'fee': 0,
-        'executed_at': when, 'decision_id': decision_id, 'note': None}, 'h', recorded_at=NOW)
+        'executed_at': when, 'decision_id': decision_id, 'plan_id': plan_id, 'note': None}, 'h', recorded_at=NOW)
+
+
+def make_note(db, plan_id, ticker, body='先观察，不急着做'):
+    """A note of yours on a rule baseline (v2.9 D29): the only thing that makes an unfilled unit a card subject."""
+    out = ledger.record_note(db, {'request_id': str(uuid.uuid4()), 'ticker': ticker, 'plan_id': str(plan_id),
+                                  'body': body}, now=NOW)
+    db.execute('UPDATE plan_notes SET created_at = %s WHERE id = %s', (NOW - timedelta(days=1), out['record']['id']))
+    return out['record']
 
 
 def scenario(db, ticker: str, kind: str = 'closed', *, shift: int = 0) -> dict:
-    """One decision unit (signal D(-3+shift)); ``kind`` picks how it ends at (or before) the batch session.
+    """One unit (signal D(-3+shift)); ``kind`` picks how it ends at (or before) the batch session. The unfilled
+    kinds carry a note of yours on the baseline, the retro-2 condition for a card (D29).
 
     closed:    accepted, bought 103 (above the entry zone: chase) on D(-2), sold 106 on D(0)
     stop:      rejected, never bought; the shadow fills on D(-2) and stops out on D(-1)
@@ -119,18 +128,20 @@ def scenario(db, ticker: str, kind: str = 'closed', *, shift: int = 0) -> dict:
     else:
         raise ValueError(kind)
     out['decision'] = decision
+    if kind in ('stop', 'expired', 'invalid'):
+        out['note'] = make_note(db, plan['id'], ticker)
     put_bars(db, ticker, path)
     return out
 
 
-def draft_reply(*, lessons: int = 1, refs=('fact:plans', 'fact:bars_after')) -> AIMessage:
+def draft_reply(*, lessons: int = 1, refs=('fact:plans', 'fact:bars_after'), review_ref='fact:execution') -> AIMessage:
     lesson = {'title': '追高的代价', 'body': '买价高于入场区上沿时，止损距离被放大，同样的仓位承担了更大的风险。',
               'scope': '趋势回踩类入场，买价高于计划入场区上沿时', 'counter_examples': '放量突破当天的追入不适用',
               'concepts': ['review.discipline_chase'], 'tickers': [], 'refs': ['fact:discipline']}
     return AIMessage(content=json.dumps({
         'headline': '一句话：这笔平仓合计盈利，但买得偏高',
         'expected_vs_actual': [{'text': '计划价位与之后的日线对照：价格没有触及止损。', 'refs': list(refs)}],
-        'decision_review': {'text': '你采纳了规则计划。', 'refs': ['fact:decision']},
+        'decision_review': {'text': '你采纳了规则计划。', 'refs': [review_ref]},
         'lessons': [{**lesson, 'title': f"{lesson['title']}{n}"} for n in range(lessons)]}, ensure_ascii=False))
 
 
@@ -177,11 +188,12 @@ def test_close_creates_card_and_drafts(db, scripted_model):
     card = only_card(db)
     assert card['event_key'] == f"unit:ZZZA:{s['signal_date']}:closed:{s['sell']['id']}"
     assert (card['subject'], card['end_kind'], card['end_session']) == ('unit', 'position_closed', D(0))
-    assert card['retro_version'] == 'retro-1' and card['detected_run_id'] == 'run-test'
+    assert card['retro_version'] == 'retro-2' and card['detected_run_id'] == 'run-test'
     facts = card['facts']
-    assert tuple(facts) != () and set(facts) == set(retro.FACT_KEYS)
+    assert tuple(facts) != () and set(facts) == set(retro.FACT_KEYS_V2)
     assert facts['subject']['end_text'] == '平仓（自行卖出）' and facts['subject']['exit_basis'] == 'other'
-    assert facts['decision']['text'] == '采纳（照规则计划）'
+    assert facts['execution']['text'] == '采纳（照规则基线）' and facts['execution']['status'] == 'adopted'
+    assert facts['execution']['legacy_decision']['decision'] == 'accept'      # the old decision is kept as it was
     assert [p['roles'] for p in facts['plans']] == [['reference', 'executed']]
     assert facts['trades']['actual_r'] is not None and len(facts['trades']['segments']) == 1
     assert facts['discipline']['totals'] == {'chase': 1, 'early_take': 0, 'held_loser': 0, 'unplanned': 0,
@@ -192,7 +204,7 @@ def test_close_creates_card_and_drafts(db, scripted_model):
     lessons = repository.knowledge_drafts(db, open_only=True)
     assert [(x['origin'], x['lesson_index']) for x in lessons] == [('review_card', 0), ('review_card', 1)]
     run = repository.agent_run_by_id(db, drafts[0]['agent_run_id'])
-    assert (run['mode'], run['agent_version'], run['status'], run['plan_id']) == ('retro', 'agent-retro-1', 'ok', None)
+    assert (run['mode'], run['agent_version'], run['status'], run['plan_id']) == ('retro', 'agent-retro-2', 'ok', None)
     assert run['signal_date'] == s['signal_date'] and run['pool'] == 'main'
     assert summary['retro'] == {'new_cards': 1, 'drafts': 1, 'to_review': 1}
 
@@ -256,7 +268,8 @@ def test_unplanned_trade_card(db, scripted_model):
     assert card['subject'] == 'trade' and card['signal_date'] is None and card['buy_trade_id'] == s['buy']['id']
     assert card['event_key'] == f"trade:{s['buy']['id']}"
     facts = card['facts']
-    assert facts['decision']['text'] == '未决定（计划外成交）' and facts['plans'] == []
+    assert facts['execution']['text'] == '计划外成交' and facts['execution']['status'] == 'unplanned'
+    assert facts['plans'] == [] and facts['holding'] is None
     assert facts['tracks'] == {'actual': {'status': 'no_plan', 'status_text': '无计划成交', 'r': None,
                                           'plan_id': None, 'plan_kind': None}}
     assert facts['discipline']['totals']['unplanned'] == 1 and facts['subject']['buy_trade_id'] == str(s['buy']['id'])
@@ -281,7 +294,8 @@ def test_held_unit_whose_latest_decision_is_a_reject_keeps_the_accepted_plan(db,
     assert (card['end_kind'], card['end_session']) == ('position_closed', D(0))
     facts = card['facts']
     assert [(p['key'], p['roles']) for p in facts['plans']] == [(f"plan:{plan['id']}", ['reference', 'executed'])]
-    assert facts['decision']['text'] == '否决' and facts['decision']['plan_id'] is None
+    assert facts['execution']['text'] == '采纳（照规则基线）'          # the buy's own decision carried the plan
+    assert facts['execution']['legacy_decision']['decision'] == 'reject'      # the head decision, kept as it was
     assert acc.detail['events'] == 1 and acc.detail['no_plan'] == 0
 
 
@@ -337,7 +351,7 @@ def test_facts_tracks_equal_track_rows(db, scripted_model):
         assert tracks[name]['plan_id'] == row[name]['plan_id']
     assert tracks['actual']['status'] == 'closed' and tracks['actual']['plan_kind'] == 'rule'
     assert tracks['rule']['status'] == 'open' and tracks['agent']['status'] == 'missing'    # the shadow never sold
-    assert retro_cards._fresh_tracks(row) == tracks                      # the check command's comparison
+    assert retro_cards._fresh_tracks(row, modern=True) == tracks         # the check command's comparison
 
 
 def test_facts_discipline_equals_evaluate(db, scripted_model):
@@ -373,7 +387,7 @@ def test_card_view_discipline_now_differs(db, scripted_model):
     assert now_['trades'][0]['flags'] == ['chase', 'early_take'] and now_['trades'][0]['immature'] == []
     assert now_['totals'] == {'chase': 1, 'early_take': 1, 'held_loser': 0, 'unplanned': 0, 'pending': 0}
     assert view['facts']['discipline']['as_of'] == SESSION.isoformat() and now_['as_of'] == later.isoformat()
-    assert list(view['facts']) == list(retro.FACT_KEYS)                  # JSONB order restored
+    assert list(view['facts']) == list(retro.FACT_KEYS_V2)               # JSONB order restored
     assert set(view) == {'card', 'facts', 'status', 'drafts', 'lesson_drafts', 'verdict', 'discipline_now',
                          'discussions'}
     assert view['status'] == 'to_review' and view['verdict'] is None and view['discussions'] == []
@@ -386,7 +400,7 @@ def _copies(db, card, n):
         repository.insert_review_card(db, {
             'event_key': f"copy:{card['id']}:{i}", 'subject': 'unit', 'ticker': card['ticker'],
             'signal_date': card['signal_date'], 'buy_trade_id': None, 'end_kind': card['end_kind'],
-            'end_session': card['end_session'] - timedelta(days=0), 'retro_version': 'retro-1',
+            'end_session': card['end_session'] - timedelta(days=0), 'retro_version': card['retro_version'],
             'facts': card['facts'], 'detected_run_id': 'copy'})
     db.commit()
 
@@ -838,12 +852,14 @@ def test_list_view_rows_and_counts(db, scripted_model):
     assert view['counts'] == {'reviewed': 0, 'to_review': 2, 'draft_failed': 0, 'drafting': 0}
     row = next(r for r in view['cards'] if r['ticker'] == 'ZZZA')
     assert set(row) >= {'id', 'ticker', 'subject', 'signal_date', 'end_kind', 'exit_basis', 'end_session',
-                        'decision_text', 'actual_r', 'rule_r', 'agent_r', 'flags', 'immature', 'status', 'headline'}
+                        'decision_text', 'execution_text', 'actual_r', 'rule_r', 'agent_r', 'flags', 'immature', 'status',
+                        'headline'}
     assert row['flags'] == ['chase'] and row['immature'] == ['early_take'] and row['status'] == 'to_review'
-    assert row['decision_text'] == '采纳（照规则计划）' and row['headline'].startswith('一句话')
+    assert row['execution_text'] == '采纳（照规则基线）' and row['decision_text'] is None
+    assert row['headline'].startswith('一句话')
     assert row['actual_r'] is not None and row['agent_r'] is None
     stop = next(r for r in view['cards'] if r['ticker'] == 'ZZZB')
-    assert stop['actual_r'] is None and stop['decision_text'] == '否决' and stop['flags'] == []
+    assert stop['actual_r'] is None and stop['execution_text'] == '未执行' and stop['flags'] == []
     assert [r['ticker'] for r in retro_cards.list_view(status='to_review', ticker='ZZZB', since=None)['cards']] == ['ZZZB']
     assert retro_cards.list_view(status='reviewed', ticker=None, since=None)['cards'] == []
     assert retro_cards.list_view(status='reviewed', ticker=None, since=None)['counts']['to_review'] == 2
@@ -956,7 +972,7 @@ def test_detect_show_and_draft_commands(db, scripted_model, capsys, monkeypatch)
     assert code == 0 and '新建 0 张' in out
     card = only_card(db)
     code, out = _run(capsys, 'show', '--card', str(card['id']))
-    assert code == 0 and 'ZZZA' in out and '平仓（自行卖出）' in out and '采纳（照规则计划）' in out
+    assert code == 0 and 'ZZZA' in out and '平仓（自行卖出）' in out and '执行 采纳（照规则基线）' in out
     assert _run(capsys, 'show', '--card', '999999')[0] == 1
     built = stage_deps(scripted_model, [draft_reply()])
     monkeypatch.setattr(retro_cards.service, 'Deps', lambda: built)
@@ -980,3 +996,150 @@ def test_retro_read_paths_are_read_only(db, scripted_model, monkeypatch):
     retro_cards.list_view(status=None, ticker=None, since=None)
     retro_cards.card_view(only_card(db)['id'], now=NOW)
     assert len(opened) == 2
+
+
+# ---------------------------------------------------------------- retro-2 (v2.9 spec D29)
+
+def plan_linked_unit(db, ticker, *, sell=True, notes=()):
+    """A rule baseline bought and (optionally) sold through ``trades.plan_id`` only: no decision anywhere."""
+    signal = D(-3)
+    plan = make_plan(db, ticker, signal)
+    buy = make_trade(db, ticker, 'buy', 103, at(D(-2)), plan_id=plan['id'])
+    out = {'plan': plan, 'buy': buy, 'signal_date': signal}
+    path = flat(D(-8), D(0))
+    path[D(-2)] = (101.0, 104.0, 99.0, 103.0)
+    if sell:
+        out['sell'] = make_trade(db, ticker, 'sell', 106, at(D(0)))
+        path[D(0)] = (103.0, 107.0, 102.0, 106.0)
+    put_bars(db, ticker, path)
+    for body in notes:
+        out.setdefault('notes', []).append(make_note(db, plan['id'], ticker, body))
+    return out
+
+
+def test_retro2_subjects(db, scripted_model):
+    """A unit with fills linked to a plan, a plan-less buy, and an unfilled unit you wrote a note on earn a card; an
+    unfilled unit without a note does not."""
+    linked = plan_linked_unit(db, 'ZZZL')
+    plain = scenario(db, 'ZZZU', 'unplanned')
+    noted = scenario(db, 'ZZZN', 'expired')                         # the helper wrote a note on its baseline
+    quiet = scenario(db, 'ZZZQ', 'expired')
+    db.execute('DELETE FROM plan_notes WHERE ticker = %s', ['ZZZQ'])              # ... except this one: no note, no card
+    out, summary, acc = run_stage(db, stage_deps(scripted_model, [draft_reply() for _ in range(3)]))
+    found = {c['ticker']: c for c in cards(db)}
+    assert set(found) == {'ZZZL', 'ZZZU', 'ZZZN'}
+    assert (found['ZZZL']['subject'], found['ZZZL']['end_kind']) == ('unit', 'position_closed')
+    assert found['ZZZL']['facts']['execution']['text'] == '采纳（照规则基线）'
+    assert found['ZZZL']['facts']['execution']['legacy_decision'] is None
+    assert (found['ZZZU']['subject'], found['ZZZU']['buy_trade_id']) == ('trade', plain['buy']['id'])
+    assert (found['ZZZN']['subject'], found['ZZZN']['end_kind']) == ('unit', 'expired')
+    assert found['ZZZN']['facts']['execution']['status'] == 'not_executed'
+    assert [n['body'] for n in found['ZZZN']['facts']['execution']['notes']] == ['先观察，不急着做']
+    assert all(c['retro_version'] == 'retro-2' for c in found.values())
+    assert linked['plan'] is not None and noted['note'] is not None and quiet['plan'] is not None
+
+
+def test_retro2_subject_for_a_fill_linked_to_a_merged_units_baseline(db, scripted_model):
+    """D22: a fill linked to the baseline of a unit merged into a chain belongs to the chain's card."""
+    signal_chain, signal_merged = D(-4), D(-3)
+    chain_plan = make_plan(db, 'ZZZM', signal_chain)
+    db.execute("UPDATE trade_plans SET kind = 'agent', plan_version = 'agent-3', entry_type = 'zone_limit', "
+               'max_hold_sessions = 10 WHERE id = %s', [chain_plan['id']])
+    run_id = uuid.uuid4()
+    repository.insert_agent_run(db, {
+        'id': run_id, 'ticker': 'ZZZM', 'signal_date': signal_chain, 'pool': 'main', 'attempt': 1, 'mode': 'propose',
+        'agent_version': 'agent-3', 'provider': 'chatgpt', 'model': 'gpt-test', 'cutoff_at': at(D(-4)),
+        'status': 'ok', 'reason': None, 'output': {'action': 'buy'}, 'counter': None, 'plan_id': chain_plan['id'],
+        'input_tokens': 0, 'output_tokens': 0, 'started_at': at(D(-4)), 'finished_at': at(D(-4))}, [])
+    repository.insert_plan_version(db, {
+        'plan_id': chain_plan['id'], 'ticker': 'ZZZM', 'signal_date': signal_chain, 'version_no': 0,
+        'supersedes_plan_id': None, 'origin': 'signal', 'agent_run_id': run_id, 'cutoff_at': at(D(-4)),
+        'as_of_session': signal_chain, 'diff': None, 'schema_version': 'agent-3'})
+    db.execute('UPDATE agent_plan_versions SET created_at = %s', [at(D(-4))])
+    merged_plan = make_plan(db, 'ZZZM', signal_merged)
+    repository.insert_chain_retrigger(db, {
+        'ticker': 'ZZZM', 'unit_signal_date': signal_merged, 'chain_signal_date': signal_chain, 'chain_state': 'entry',
+        'rule_ids': ['volume_breakout'], 'baseline_plan_id': merged_plan['id'], 'entry_cap': D(6), 'run_id': 'r',
+        'timeline_version': 'timeline-2', 'created_at': at(D(-3))})
+    make_trade(db, 'ZZZM', 'buy', 103, at(D(-2)), plan_id=merged_plan['id'])
+    make_trade(db, 'ZZZM', 'sell', 106, at(D(0)))
+    put_bars(db, 'ZZZM', flat(D(-8), D(0)))
+    run_stage(db, stage_deps(scripted_model, [draft_reply()]))
+    card = only_card(db)
+    assert (card['ticker'], card['signal_date'], card['end_kind']) == ('ZZZM', signal_chain, 'position_closed')
+    assert card['facts']['execution']['status'] == 'adopted' and card['facts']['execution']['plan_kind'] == 'rule'
+
+
+def test_retro2_facts_execution_holding(db, scripted_model):
+    """The eleven facts: `execution` (status, what you followed, the notes of the time, an old decision as is) and
+    `holding` (the daily status rows summarised: the exit instruction and how long the sale took)."""
+    s = plan_linked_unit(db, 'ZZZH', notes=('这笔想拿到 T1',))
+    for index, (offset, instruction, reason) in enumerate(((-1, 'hold', None), (-0, 'exit', 'time_stop'))):
+        repository.insert_holding_status(db, {
+            'ticker': 'ZZZH', 'session': D(offset), 'run_id': 'r', 'quantity': 10, 'avg_cost': 103, 'held_sessions': index + 2,
+            'max_hold_sessions': 10, 'instruction': instruction, 'exit_reason': reason, 'reason': '维持',
+            'timeline_version': 'timeline-2'})
+    out, summary, acc = run_stage(db, stage_deps(scripted_model, [draft_reply()]))
+    facts = only_card(db)['facts']
+    assert list(facts) == list(retro.FACT_KEYS_V2) or set(facts) == set(retro.FACT_KEYS_V2)
+    execution = facts['execution']
+    assert (execution['status'], execution['follow'], execution['text']) == ('adopted', 'rule', '采纳（照规则基线）')
+    assert execution['plan_id'] == str(s['plan']['id']) and execution['trade_ids'] == [str(s['buy']['id'])]
+    assert [n['body'] for n in execution['notes']] == ['这笔想拿到 T1'] and execution['legacy_decision'] is None
+    assert execution['first_fill']['quantity'] == '10'
+    holding = facts['holding']
+    assert holding['rows'] == 2 and holding['exit'] == {'session': D(0).isoformat(), 'reason': 'time_stop'}
+    assert holding['sell_date'] == D(0).isoformat() and holding['sessions_to_sell'] == 0
+    assert holding['sold_before_exit'] is False
+    assert [p['roles'] for p in facts['plans']] == [['reference', 'executed']]
+    assert facts['tracks']['actual']['plan_kind'] == 'rule' and facts['tracks']['agent']['status'] != 'merged'
+    # the prompt never carries a note body (D25)
+    text = retro.facts_text_v2(facts)
+    assert '这笔想拿到 T1' not in text and '[fact:execution]' in text and '[fact:holding]' in text
+
+
+def test_retro1_cards_render_unchanged(db, scripted_model, capsys):
+    """An old card (retro-1, the ten facts with `decision`) is shown, listed, checked and re-drafted exactly as it was:
+    the card's own version picks its keys, its facts text and its prompt."""
+    s = scenario(db, 'ZZZA')
+    cache = retro_cards._Cache(db, SESSION, NOW)
+    [subject] = [x for x in repository.retro_subjects(db, since=D(-4), until=SESSION) if x['ticker'] == 'ZZZA']
+    item = retro_cards._evaluate(subject, cache, window_start=D(-4), known=lambda key: False)
+    assert item['state'] == 'event' and not subject.get('v2')
+    facts = retro_cards._freeze(db, {**item, 'subject': subject}, cache, session=SESSION, now=NOW)
+    assert set(facts) == set(retro.FACT_KEYS) and facts['decision']['text'] == '采纳（照规则计划）'
+    card_id = repository.insert_review_card(db, {
+        'event_key': item['event']['event_key'], 'subject': 'unit', 'ticker': 'ZZZA', 'signal_date': s['signal_date'],
+        'buy_trade_id': None, 'end_kind': item['event']['end_kind'], 'end_session': item['event']['end_session'],
+        'retro_version': 'retro-1', 'facts': facts, 'detected_run_id': 'old'})
+    db.commit()
+    view = retro_cards.card_view(card_id, now=NOW)
+    assert list(view['facts']) == list(retro.FACT_KEYS) and view['facts']['decision']['text'] == '采纳（照规则计划）'
+    [row] = retro_cards.list_view(status=None, ticker=None, since=None)['cards']
+    assert row['decision_text'] == '采纳（照规则计划）' and row['execution_text'] == '采纳（照规则计划）'
+    assert retro_cards.main(['check', '--since', D(-4).isoformat()]) in (0, 1)
+    assert '齐全' in capsys.readouterr().out
+    # a re-draft of the old card still speaks the retro-1 language
+    built = agent_deps(scripted_model, [draft_reply(review_ref='fact:decision')], settings=_agent_settings())
+    result = retro_cards.draft_card(card_id, now=NOW, deps=built, trigger='manual')
+    assert result['status'] == 'ok'
+    run = repository.agent_run_by_id(db, result['agent_run_id'])
+    assert run['agent_version'] == 'agent-retro-1'
+
+
+def test_retro2_check_cli(db, scripted_model, capsys):
+    """`check` knows a retro-2 card's eleven keys: complete cards pass, and one missing `holding` is reported."""
+    plan_linked_unit(db, 'ZZZC')
+    run_stage(db, stage_deps(scripted_model, [draft_reply()]))
+    since = D(-4).isoformat()
+    code, out = _run(capsys, 'check', '--since', since)
+    assert code == 0 and '齐全' in out and '事实不全 0' in out
+    card = only_card(db)
+    broken = {k: v for k, v in card['facts'].items() if k != 'holding'}
+    repository.insert_review_card(db, {
+        'event_key': 'copy:broken', 'subject': 'unit', 'ticker': 'ZZZC', 'signal_date': card['signal_date'],
+        'buy_trade_id': None, 'end_kind': 'position_closed', 'end_session': card['end_session'],
+        'retro_version': 'retro-2', 'facts': broken, 'detected_run_id': 'x'})
+    db.commit()
+    code, out = _run(capsys, 'check', '--since', since)
+    assert code == 1 and '事实不全  copy:broken  缺 holding' in out

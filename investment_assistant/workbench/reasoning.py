@@ -171,6 +171,17 @@ def _read(calls: list[dict], phase: str, title: str, empty_note: str) -> dict:
 
 # ---------------------------------------------------------------- other steps
 
+def _previous_chain(run: dict) -> dict | None:
+    """v2.9 D9: the 「同标的上一条链」 block the first version's proposer was given, kept in the run's
+    ``output.input_digest.previous_chain`` (text + sha256, Task 3 D1); None for any other run."""
+    digest = ((run.get('output') or {}).get('input_digest') or {}).get('previous_chain')
+    if not isinstance(digest, dict) or not digest.get('text'):
+        return None
+    return {'kind': 'previous_chain', 'title': '同标的上一条链', 'concept': 'system.active_chain',
+            'text': digest['text'], 'sha256': digest.get('sha256'),
+            'note': '只读背景，不可引用；提议者的价位与论点仍须引用本次工具调用'}
+
+
 def _void_text(run: dict) -> str:
     return f"这次运行作废：{_reason_text(run.get('reason')) or '未记录原因'}，只保留工具调用"
 
@@ -318,8 +329,9 @@ def _retro_evidence(card: dict | None) -> dict:
         end = retro.end_text(card['end_kind'], basis)
     except KeyError:
         end = str(card.get('end_kind'))
+    keys = retro.FACT_KEYS_V2 if card.get('retro_version') == retro.RETRO_V2 else retro.FACT_KEYS
     return {**base, 'text': f"{end} · 结束日 {card.get('end_session')}",
-            'fact_keys': [key for key in retro.FACT_KEYS if key in facts]}
+            'fact_keys': [key for key in keys if key in facts]}
 
 
 def _draft(run: dict) -> dict:
@@ -435,6 +447,8 @@ def build(*, run: dict, calls: list[dict], version: dict | None, trigger_review:
         steps.append(_interpretation(run))
         steps.append(_check(run, _check_key(run, legacy)))
     else:
+        if mode == 'propose' and (previous := _previous_chain(run)) is not None:        # first versions only (D9)
+            steps.append(previous)
         steps.append(_read(calls, 'propose', '提议者读了什么', NO_CALLS_NOTE))
         steps.append(_proposal(run, revise=mode == 'revise', legacy=legacy))
         steps.append(_check(run, _check_key(run, legacy)))

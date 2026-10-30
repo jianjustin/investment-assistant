@@ -267,7 +267,7 @@ def test_decision_text_six():
 
 def test_constants():
     assert retro.RETRO_V1 == 'retro-1' and retro.RETRO_V2 == 'retro-2'
-    assert retro.RETRO_VERSION == retro.RETRO_V1       # retro_cards.py still builds retro-1 cards; flips in Task 4
+    assert retro.RETRO_VERSION == retro.RETRO_V2       # retro_cards.py builds retro-2 cards; retro-1 ones stay as frozen
     assert retro.END_KINDS == ('position_closed', 'stop', 'target', 'expired', 'invalidated')
     assert retro.END_TEXT == {'position_closed': '平仓', 'stop': '止损', 'target': '到 T1', 'expired': '过期未成交',
                               'invalidated': '作废'}

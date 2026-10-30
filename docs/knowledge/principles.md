@@ -152,9 +152,9 @@ version: 2
 
 ## ⑨ 复盘
 
-**做什么**：推送之后收尾，做两件事，哪件到期做哪件。其一，交易日检测最近 5 个交易日内结束的交易：持仓全部平掉，或你做过决定的计划止损、到 T1、过期未成交、作废（有持仓的计划不因过期或作废而结束，只看平仓），见[结束事件](concepts/review.retro_end.md)。每个结束事件只建一张[复盘卡](concepts/review.retro_card.md)：程序把当时各版本的价位、之后的日线、三条轨道的 R、你的决定和纪律判定冻结成十个事实，Agent 只负责把这些事实讲成一段话并起草 0–3 条教训，数字它不能改。每次最多起草 5 张，起草不出来的卡之后再试，最多三次，起草有自己独立的 1500 秒时限。其二，任何日子都判断[周度复盘](concepts/review.weekly.md)和月度复盘是否到期：到期就生成冻结快照并推送（手动运行只生成不推送）。两件都没做时这一步记"今天没有到期的复盘"。
+**做什么**：推送之后收尾，做两件事，哪件到期做哪件。其一，交易日检测最近 5 个交易日内结束的交易：持仓全部平掉，或你写过备注的未成交计划止损、到 T1、过期未成交、作废（有持仓的计划不因过期或作废而结束，只看平仓），见[结束事件](concepts/review.retro_end.md)。每个结束事件只建一张[复盘卡](concepts/review.retro_card.md)：程序把当时各版本的价位、之后的日线、三条轨道的 R、你的执行（成交关联了哪份计划、当时的备注）、持仓期的每日状态和纪律判定冻结成十一个事实（v2.9 之前的旧卡是十个，讲的是你的决定），Agent 只负责把这些事实讲成一段话并起草 0–3 条教训，数字它不能改。每次最多起草 5 张，起草不出来的卡之后再试，最多三次，起草有自己独立的 1500 秒时限。其二，任何日子都判断[周度复盘](concepts/review.weekly.md)和月度复盘是否到期：到期就生成冻结快照并推送（手动运行只生成不推送）。两件都没做时这一步记"今天没有到期的复盘"。
 
-**读什么、写什么**：读决定、成交、计划、日线和复查记录；写复盘卡、起草记录、周 / 月复盘快照和复盘推送记录。教训草稿要你在卡页审定后才进入「我的知识」，审定之前任何 Agent 都读不到。
+**读什么、写什么**：读成交、计划、备注、日线、持仓状态和复查记录（旧决定只读）；写复盘卡、起草记录、周 / 月复盘快照和复盘推送记录。教训草稿要你在卡页审定后才进入「我的知识」，审定之前任何 Agent 都读不到。
 
 **怎么失败与降级**：这一步出错不会影响已经发出的计划推送。Agent 不可用、超出时限、额度或 token 上限时，卡照常建好，起草留到下一次；周 / 月复盘两部分各自独立，一个出错不拦另一个；某个标的读数出错只影响它自己，下次再试。
 
@@ -162,18 +162,28 @@ version: 2
 
 ## 你做什么：决定与成交
 
-早上打开「今日」，对每个决策单元做一次[决定](concepts/system.decision.md)：采纳、否决，或降级为观察，并写一句理由。采纳买入时选执行依据：Agent 计划（第 n 版）、规则计划或自定价位；Agent 在复查后改到更新的一版时，系统会提示你刷新再决定，避免基于过期版本。你自己在券商下单，然后到「复盘 → 交易与持仓」录入成交，并关联当时的决定，见[持仓与成交](concepts/review.position.md)。
+早上打开「今日」，只看计划表（[一只股票一条活跃链](concepts/system.active_chain.md)，每份计划写成[执行指令](concepts/plan.open_scenarios.md)）：入场期、持仓中、已结束三组，每行写明明早开盘落在区间内 / 高开 / 低开各做什么、本计划何时作废。**没有任何按钮**：你自己在券商下单，然后到「复盘 → 交易与持仓」录入成交，并关联当时照着做的那份计划（默认选中活跃链的最新版，也可以选规则基线、自定价位或「无计划」），见[持仓与成交](concepts/review.position.md)。v2.9 之前的采纳 / 否决 / 降级[决定](concepts/system.decision.md)已退役，旧决定只读保留。
 
 有计划的持仓会按[计划止损](concepts/rule.plan_stop.md)和[计划目标](concepts/rule.plan_target.md)每天判断：触及 T1 之后，止损变为 开仓以来最高收盘 − 3 ATR 与持仓成本中较高者，收盘后更新、次日生效，见[移动止损](concepts/plan.trailing_stop.md)。如果你自己调整价位，会另存一份[自定计划](concepts/plan.own.md)。
+
+## 从计划到成交
+
+系统给的是一份份「可以照着做」的计划；你做没做、照哪一份做，由你的成交说话。
+
+- **关联计划**：录入成交时选当时照着做的那一版；只能关联成交那一刻的链头——补录昨天的成交，关联的仍是当时看到的那一版（比它旧的版本被拒 `plan_stale`，成交之后才生成的版本被拒 `plan_after_fill`），退出期的链不再提供。选「自定」会在同一个事务里写一份[自定计划](concepts/plan.own.md)；不选就是「无计划」。
+- **执行状态**：由成交推出，不用点按钮——[已采纳 / 有效期外成交 / 等待成交 / 未执行，没有关联计划的买入是计划外](concepts/review.execution_status.md)。链上有任一关联买入就是「已执行」，同时写明照什么执行（Agent 第 n 版、规则基线或自定）。
+- **为什么没有决定按钮**：交易日志本身就是采纳的证据，再点一次按钮只会多出两份可能互相矛盾的记录；否决和降级也没有对应的行为——不买就是未执行。旧决定表保留只读，让旧复盘卡和旧周报照旧可读。
+- **备注**：想给自己留句话，可以给一条链或一份计划写备注（可更正、撤回）。备注只给你自己看，不进任何 Agent 提示词、不触发复查；想让 Agent 参考，请用「我的补充」。
+- **持仓之后**：每个持仓每天有一行[持仓状态](concepts/review.holding_status.md)（距止损、距 T1、持有天数、指令和维持理由），到最长持有仍没到 1R 会给出退出指令；这些指令进入纪律的「死扛亏损」判定，也进入复盘卡的「持仓」事实。
 
 ## 复盘口径
 
 复盘不评价你"对不对"，只把"计划怎么说、系统怎么算、你怎么做"并排放好：
 
 - **计划影子**：按计划的价位逐日独立模拟，结果用 [R](concepts/review.r_multiple.md) 计，详见[计划影子](concepts/review.plan_shadow.md)；
-- **对照组**：所有已决定的单元假设下一交易日开盘入场，看 5、10、20 个交易日的超额，见[对照组](concepts/review.control_group.md)；
+- **对照组**：全部单元（v2.9 起不再只看已决定的）假设下一交易日开盘入场，看 5、10、20 个交易日的超额，见[对照组](concepts/review.control_group.md)；
 - **纪律四项**：[追高进场](concepts/review.discipline_chase.md)、[过早止盈](concepts/review.discipline_early_take.md)、[死扛亏损](concepts/review.discipline_held_loser.md)、[计划外交易](concepts/review.discipline_unplanned.md)；
-- **三方对比**：规则、Agent、实际三条轨道并列，见[三方对比](concepts/review.tracks.md)与[状态含义](concepts/review.track_status.md)；Agent 轨道取你[决定时看到的那一版](concepts/review.version_basis.md)，不拿事后修订美化；
+- **三方对比**：规则、Agent、实际三条轨道并列，见[三方对比](concepts/review.tracks.md)与[状态含义](concepts/review.track_status.md)；Agent 轨道取你照着做时看到的那一版（成交关联的版本，旧决定则取它记下的版本，见[依据](concepts/review.version_basis.md)），不拿事后修订美化；
 - **首版与最新版**：每条 Agent 链分别只算首版和只算最新版，避免样本被修订次数放大，见[首版与最新版汇总](concepts/review.first_latest.md)；
 - **周度与月度复盘**：[周度复盘](concepts/review.weekly.md)冻结当期快照，其中"[你学到了什么](concepts/review.weekly_learning.md)"汇总本周的复盘卡和被检验的知识；[月度收益与分档](concepts/review.monthly_return.md)、[流程复查触发](concepts/review.process_check.md)和[风险敏感性表](concepts/review.sensitivity.md)看账户层面；
 - **复盘卡与我的知识**：每笔结束的交易有一张[复盘卡](concepts/review.retro_card.md)，你审定的教训进入[我的知识](concepts/system.my_knowledge.md)，被引用后可以按计划影子回看[表现](concepts/review.knowledge_performance.md)；

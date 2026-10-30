@@ -133,8 +133,7 @@ def sim2(plan_dict, bars, splits=()):
 
 def test_shadow_versions():
     assert (plan_shadow.SHADOW_V1, plan_shadow.SHADOW_V2) == ('plan-shadow-1', 'plan-shadow-2')
-    # callers that have not been rewired keep the plan-shadow-1 label beside simulate() until Task 3 / 4 flip it
-    assert plan_shadow.SHADOW_VERSION == plan_shadow.SHADOW_V1
+    assert plan_shadow.SHADOW_VERSION == plan_shadow.SHADOW_V2        # the read views label each outcome with its own version
 
 
 def test_shadow_v1_unchanged():

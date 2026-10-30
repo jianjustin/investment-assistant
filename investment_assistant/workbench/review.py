@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from investment_assistant.data.calendar import add_trading_days, trading_days_between
 from investment_assistant.workbench import ledger, repository
 
-CALC_VERSION = 'review-7'          # v2.7 D28: stats.learning (review-6: plans.agent = first versions, agent_latest = heads)
+CALC_VERSION = 'review-8'          # v2.9 D30: executions instead of decisions, control group = all units (review-7: stats.learning)
 SHADOW_MIN_SAMPLE = 5              # v2.5 §9.1: agent_summary gives no mean / median below this
 WINDOWS = (5, 10, 20)
 NY = ZoneInfo('America/New_York')
@@ -143,6 +143,7 @@ def _plan_summary(plan_outcomes: list[dict[str, Any]], week_start: date, week_en
     for kind, outcomes in by_kind.items():
         rs = [o['r'] for o in outcomes if o.get('r') is not None]
         out[kind] = {'count': len(outcomes), 'expired': sum(1 for o in outcomes if o['status'] == 'expired'),
+                     'voided': sum(1 for o in outcomes if o['status'] == 'voided'),
                      'r_mean': statistics.fmean(rs) if rs else None,
                      'r_median': statistics.median(rs) if rs else None}
     return out
@@ -222,45 +223,65 @@ def pool_summary(triggers: list[dict], plan_outcomes: list[dict]) -> dict:
     return out
 
 
+EXECUTION_GROUPS = ('adopted', 'out_of_validity', 'not_executed')
+
+
 def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[Any, dict[str, Any]],
-                 trades: list[dict[str, Any]], *, segments: list[dict[str, Any]], undecided: int,
-                 entry_opens: dict[Any, float], plan_outcomes: list[dict[str, Any]] | None = None,
-                 discipline: dict[str, Any] | None = None, by_pool: dict | None = None,
-                 tracks: dict[str, Any] | None = None,
+                 trades: list[dict[str, Any]], *, segments: list[dict[str, Any]], entry_opens: dict[Any, float],
+                 fills: list[dict[str, Any]] | None = None, unplanned: list[dict[str, Any]] | None = None,
+                 plan_outcomes: list[dict[str, Any]] | None = None, discipline: dict[str, Any] | None = None,
+                 by_pool: dict | None = None, tracks: dict[str, Any] | None = None,
                  learning: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Snapshot for units whose signal_date falls in the week; values are excess returns vs SPY.
-    ``learning`` (review-7, ``learning_stats``) is frozen under ``stats['learning']``; without it the key is absent."""
+    """`review-8` snapshot (v2.9 D30) for the units whose signal_date falls in the week; values are excess returns
+    vs SPY.
+
+    ``units`` are ALL the week's units (the control group, D26: every ticker-day with candidates, not only the
+    decided ones), each ``{id, ticker, signal_date, proposed_action, rule_ids, execution}`` with ``execution`` one of
+    ``adopted`` / ``out_of_validity`` / ``not_executed`` (`execution-1`). ``units.executed`` / ``not_executed``
+    count them; ``by_execution`` groups the excess returns by it, plus an ``unplanned`` group that only counts the
+    week's plan-less buys (they have no signal to replay). ``fills`` are the week's linked buys
+    ``{trade, unit_id, plan_created_at}``: the execution list prices each against the unit's T+1 open and measures
+    the delay from the moment the linked plan version was generated (not from a decision). ``unplanned`` are the
+    buys without any plan link, ``unplanned_trades`` their ids. ``learning`` (``learning_stats``) is frozen under
+    ``stats['learning']``; without it the key is absent."""
     week_end = week_start + timedelta(days=6)
+    fills, unplanned = fills or [], unplanned or []
     by_rule: dict[str, list] = {}
-    by_decision: dict[str, list] = {}
+    by_execution: dict[str, list] = {}
     for u in units:
         for rule_id in dict.fromkeys(u['rule_ids']):
             by_rule.setdefault(rule_id, []).append(u)
-        by_decision.setdefault(u['decision'], []).append(u)
+        by_execution.setdefault(u['execution'], []).append(u)
+    executed = sum(len(by_execution.get(name, [])) for name in ('adopted', 'out_of_validity'))
 
-    unit_ids = {u['id']: u for u in units}
-    live = [t for t in trades if t.get('voided_at') is None]
     execution = []
-    for t in live:
-        u = unit_ids.get(t.get('decision_id'))
-        if u is None:
-            continue
-        entry = entry_opens.get(u['id']) or outcomes.get(u['id'], {}).get('entry_price')
-        execution.append({'trade_id': str(t['id']), 'decision_id': str(u['id']), 'ticker': t['ticker'],
-                          'slippage': float(t['price']) / entry - 1 if entry else None,
-                          'delay_hours': (t['executed_at'] - u['decided_at']).total_seconds() / 3600})
-    unsignaled = [str(t['id']) for t in live
-                  if t.get('decision_id') is None and week_start <= _session(t['executed_at']) <= week_end]
+    for fill in fills:
+        trade = fill['trade']
+        entry = entry_opens.get(fill['unit_id']) or outcomes.get(fill['unit_id'], {}).get('entry_price')
+        created = fill.get('plan_created_at')
+        execution.append({'trade_id': str(trade['id']), 'unit': str(fill['unit_id']), 'ticker': trade['ticker'],
+                          'slippage': float(trade['price']) / entry - 1 if entry else None,
+                          'delay_hours': ((trade['executed_at'] - created).total_seconds() / 3600
+                                          if created is not None else None)})
+    grouped = {name: by for name, by in _grouped(by_execution, outcomes).items()}
+    grouped['unplanned'] = {str(n): _summary([], len(unplanned)) for n in WINDOWS}
+    v2_plans = [p for p in plan_outcomes or [] if p.get('shadow_version', 'plan-shadow-2') == 'plan-shadow-2']
+    v1_plans = [p for p in plan_outcomes or [] if p.get('shadow_version', 'plan-shadow-2') != 'plan-shadow-2']
+    counterfactual = [{**p, 'outcome': p['shadow_v1']} for p in v2_plans if p.get('shadow_v1') is not None]
     stats = {
         'calc_version': CALC_VERSION,
         'week': {'start': week_start.isoformat(), 'end': week_end.isoformat()},
-        'units': {'decided': len(units), 'undecided': undecided},
+        'units': {'executed': executed, 'not_executed': len(by_execution.get('not_executed', []))},
         'by_rule': _grouped(by_rule, outcomes),
-        'by_decision': _grouped(by_decision, outcomes),
+        'by_execution': grouped,
         'execution': execution,
-        'unsignaled_trades': unsignaled,
+        'unplanned_trades': [str(t['id']) for t in unplanned],
         'closed_trades': segments,
-        'plans': _plan_summary(plan_outcomes or [], week_start, week_start + timedelta(days=6)),
+        'plans': _plan_summary(v2_plans, week_start, week_end),
+        'plans_v1': _plan_summary(v1_plans, week_start, week_end),
+        'plans_counterfactual': _plan_summary(counterfactual, week_start, week_end),
+        'shadow_versions': {'plans': 'plan-shadow-2', 'plans_v1': 'plan-shadow-1',
+                            'plans_counterfactual': 'plan-shadow-1'},
         'by_pool': by_pool or {},
         'discipline': discipline or {},
         'tracks': tracks,
@@ -273,10 +294,11 @@ def weekly_stats(week_start: date, units: list[dict[str, Any]], outcomes: dict[A
 
 def learning_stats(*, week_start: date, week_end: date, cards: list[dict[str, Any]],
                    perf_by_item: dict[int, dict[str, Any]]) -> dict[str, Any]:
-    """The weekly 「你学到了什么」 (v2.7 spec §10, ``review-7``), pure.
+    """The weekly 「你学到了什么」 (v2.7 spec §10, since ``review-7``; ``review-8`` names the card line ``execution_text``), pure.
 
-    ``cards``: one dict per review card with ``card_id, ticker, end_kind, end_text, end_session, decision_text,
+    ``cards``: one dict per review card with ``card_id, ticker, end_kind, end_text, end_session, execution_text,
     actual_r, filled, rule_r, agent_r, status, headline`` and ``discipline`` (the frozen ``facts.discipline`` totals);
+    ``execution_text`` is a retro-2 card's 「你的执行」 wording, a retro-1 card's old decision wording (review-8);
     only those whose ``end_session`` falls in the week count, ordered by end day. ``perf_by_item``: knowledge
     id -> ``{ref (newest version), title, summary}`` where ``summary`` is ``knowledge_perf.summarize`` over all of
     the item's samples; an item is "tested this week" when at least one sample row's ``outcome_date`` lies in the
@@ -292,7 +314,7 @@ def learning_stats(*, week_start: date, week_end: date, cards: list[dict[str, An
             discipline[flag] += int(totals.get(flag) or 0)
         discipline['pending'] += int(totals.get('pending') or 0)
         out_cards.append({'card_id': card['card_id'], 'ticker': card['ticker'], 'end_kind': card['end_kind'],
-                          'end_text': card['end_text'], 'decision_text': card['decision_text'],
+                          'end_text': card['end_text'], 'execution_text': card['execution_text'],
                           'actual_r': card.get('actual_r'), 'filled': bool(card.get('filled')),
                           'rule_r': card.get('rule_r'),
                           'agent_r': card.get('agent_r'),

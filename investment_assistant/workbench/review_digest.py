@@ -75,15 +75,24 @@ def _discipline_of(stats):
             'compliance_rate': discipline.get('compliance_rate')}
 
 
+def _overview_of(stats):
+    """The weekly overview line's numbers. A `review-8` snapshot (v2.9 D30) counts executed / not executed units and
+    the plan-less buys (`unplanned_trades`); older snapshots keep decided / undecided / `unsignaled_trades`."""
+    units = stats.get('units') or {}
+    closed = len(stats.get('closed_trades') or [])
+    if 'executed' in units:
+        return {'execution': True, 'executed': units.get('executed', 0), 'not_executed': units.get('not_executed', 0),
+                'unplanned': len(stats.get('unplanned_trades') or []), 'closed': closed}
+    return {'decided': units.get('decided', 0), 'undecided': units.get('undecided', 0),
+            'unsignaled': len(stats.get('unsignaled_trades') or []), 'closed': closed}
+
+
 def weekly(review: dict[str, Any], *, public_url: str) -> dict[str, Any]:
     stats = review['stats']
     start = review['week_start']
     return {'kind': 'weekly', 'period': start, 'start': start.isoformat(),
             'end': (start + timedelta(days=6)).isoformat(),
-            'overview': {'decided': (stats.get('units') or {}).get('decided', 0),
-                         'undecided': (stats.get('units') or {}).get('undecided', 0),
-                         'unsignaled': len(stats.get('unsignaled_trades') or []),
-                         'closed': len(stats.get('closed_trades') or [])},
+            'overview': _overview_of(stats),
             'tracks': _tracks_of(stats), 'rules': _rules_of(stats),
             'discipline': _discipline_of(stats), 'learning': stats.get('learning'),
             'note': NOTE_TEXT, 'evidence': EVIDENCE_TEXT,

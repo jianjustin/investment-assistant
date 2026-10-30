@@ -6,6 +6,8 @@ for unrelated watch units never eat a reply meant for the review. `now` advances
 """
 import json
 import uuid
+
+import legacy_decisions
 from contextlib import nullcontext
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -522,7 +524,7 @@ def test_review_tool_context_uses_review_session(db):
 
 def _decide(db, ticker, final, *, plan_id=None, now):
     cands = repository.unit_candidates(db, ticker, S1)
-    return service.decide({'request_id': str(uuid.uuid4()), 'ticker': ticker, 'signal_date': S1.isoformat(),
+    return legacy_decisions.decide({'request_id': str(uuid.uuid4()), 'ticker': ticker, 'signal_date': S1.isoformat(),
                            'candidate_ids': [str(c['id']) for c in cands], 'proposed_action': 'buy',
                            'final_action': final, 'decision': 'accept' if final == 'buy' else 'reject',
                            'reason': '合成样例', 'plan_id': str(plan_id) if plan_id else None}, now=now)['record']
@@ -538,7 +540,7 @@ def test_holding_chain_reviewed_after_invalid_version(db):
     market = Market()
     v0 = signal_day(db, market, ['SYNTH'])[0]['SYNTH']
     decision = _decide(db, 'SYNTH', 'buy', plan_id=v0['plan']['id'], now=evening(S1))
-    service.add_trade(_trade('SYNTH', 'buy', '10', '125', day(1), decision['id']), now=evening(day(1)))
+    legacy_decisions.add_trade(_trade('SYNTH', 'buy', '10', '125', day(1), decision['id']), now=evening(day(1)))
     service.add_snapshot({'request_id': str(uuid.uuid4()), 'as_of': day(1).isoformat(), 'equity': '1000'},
                          now=evening(day(1)) - timedelta(hours=1))   # 已持有 1250 > 单票上限 → 修订版 no_room
     model = make_model(review=verdict('SYNTH', 'revise', '止损应上移'), revise=revision('SYNTH'), counter=counter())
@@ -563,8 +565,8 @@ def test_chain_ends(db):
     heads = signal_day(db, market, ['SYNA', 'SYNB', 'SYNC'])[0]
     _decide(db, 'SYNA', 'ignore', now=evening(S1))                                         # 否决
     decision = _decide(db, 'SYNC', 'buy', plan_id=heads['SYNC']['plan']['id'], now=evening(S1))
-    service.add_trade(_trade('SYNC', 'buy', '10', '125', day(1), decision['id']), now=evening(day(1)))
-    service.add_trade(_trade('SYNC', 'sell', '10', '126', day(2)), now=evening(day(2)))    # 平仓
+    legacy_decisions.add_trade(_trade('SYNC', 'buy', '10', '125', day(1), decision['id']), now=evening(day(1)))
+    legacy_decisions.add_trade(_trade('SYNC', 'sell', '10', '126', day(2)), now=evening(day(2)))    # 平仓
     summary, rows, model = run(db, market, 3, tickers=['SYNA', 'SYNB', 'SYNC'])            # SYNB 已到截止日
     stage = rows['review']
     assert stage['input_count'] == 0 and summary['review']['objects'] == 0
@@ -580,8 +582,8 @@ def test_invalidated_holding_chain_is_not_a_holding_without_chain(db):
     market = Market()
     v0 = signal_day(db, market, ['SYNTH'])[0]['SYNTH']
     decision = _decide(db, 'SYNTH', 'buy', plan_id=v0['plan']['id'], now=evening(S1))
-    service.add_trade(_trade('SYNTH', 'buy', '10', '125', day(1), decision['id']), now=evening(day(1)))
-    service.add_trade(_trade('SYNB', 'buy', '5', '90', day(1)), now=evening(day(1)))      # 无链的持仓
+    legacy_decisions.add_trade(_trade('SYNTH', 'buy', '10', '125', day(1), decision['id']), now=evening(day(1)))
+    legacy_decisions.add_trade(_trade('SYNB', 'buy', '5', '90', day(1)), now=evening(day(1)))      # 无链的持仓
     repository.insert_plan_review(db, {
         'ticker': 'SYNTH', 'signal_date': S1, 'head_plan_id': v0['plan']['id'], 'session': day(1),
         'trigger': 'batch', 'run_id': 'run-x', 'mode': 'holding', 'timeline_version': 'timeline-1',

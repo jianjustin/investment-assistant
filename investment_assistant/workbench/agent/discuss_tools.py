@@ -69,19 +69,51 @@ def _version_summary(version: dict, plan: dict | None) -> dict:
 
 
 def _shadow(conn, ctx: DiscussContext, plan: dict) -> Any:
-    from investment_assistant.workbench import plan_shadow, service
+    from investment_assistant.workbench import service
 
     try:
         bars = repository.read_bars(conn, ctx.ticker, ctx.session, cutoff_at=ctx.cutoff_at, limit=400)
         spy = repository.read_bars(conn, service.BENCHMARK, ctx.session, cutoff_at=ctx.cutoff_at, limit=400)
         splits = repository.split_events(conn, ctx.ticker)
-        return {'version': plan_shadow.SHADOW_VERSION, **plan_shadow.simulate(plan, bars, spy, splits=splits)}
+        found = service.shadow_outcomes(plan, bars, spy, splits=splits)
+        out = {'version': found['shadow_version'], **found['outcome']}
+        if found['shadow_v1'] is not None:
+            out['shadow_v1'] = found['shadow_v1']        # the counterfactual: no time stop, the old entry rule
+        return out
     except Exception as exc:    # noqa: BLE001 - the context is still useful without the replay
         return {'error': (str(exc).splitlines() or [''])[0][:200] or type(exc).__name__}
 
 
+def _execution(conn, ctx: DiscussContext, plan: dict, status: dict | None, fills: list[dict]) -> dict:
+    """What happened to the discussed plan (v2.9 `execution-1`): its own state, the chain's state and what the first
+    fill followed. Plan notes are the user's log and are deliberately not read here (spec D25)."""
+    from investment_assistant.workbench import execution, timeline
+
+    buys = status['buys'] if status is not None else fills
+    state = status['state']['state'] if status is not None else None
+    ended = state is not None and state not in timeline.ACTIVE_STATES
+    code = execution.status(plan, buys, session=ctx.session, chain_ended=ended, chain_in_entry=state in (None, 'entry'))
+    plans_by_id, version_no = {}, {}
+    for buy in buys:
+        linked = repository.plan_by_id(conn, buy['plan_id']) if buy.get('plan_id') is not None else None
+        if linked is not None:
+            plans_by_id[linked['id']] = linked
+            found = repository.version_by_plan(conn, linked['id'])
+            if found is not None:
+                version_no[linked['id']] = found['version_no']
+    followed = execution.followed(buys, plans_by_id=plans_by_id, version_no_by_plan=version_no)
+    out = {'status': code, 'text': execution.status_text(code, buys=buys, version_plan=plan), 'followed': followed}
+    if status is not None:
+        versions = [repository.plan_by_id(conn, v['plan_id']) for v in status['versions']]
+        chain_code = execution.chain_status(versions, buys, session=ctx.session, chain_ended=ended,
+                                            chain_in_entry=state == 'entry')
+        out['chain_status'] = chain_code
+        out['chain_text'] = execution.EXECUTION_TEXT[chain_code]
+    return out
+
+
 def _plan_context(conn, ctx: DiscussContext) -> dict:
-    from investment_assistant.workbench import knowledge_items, service
+    from investment_assistant.workbench import knowledge_items, plan_review, service
 
     plan_id = str(ctx.plan_id)
     plan = repository.plan_by_id(conn, plan_id)
@@ -100,7 +132,9 @@ def _plan_context(conn, ctx: DiscussContext) -> dict:
     out['run'] = None if run is None else {
         k: run.get(k) for k in ('id', 'mode', 'agent_version', 'status', 'reason', 'cutoff_at', 'output', 'counter')}
     out['conditions'] = {'invalidation': output.get('invalidation') or [], 'review_when': output.get('review_when') or []}
-    status = service.chain_status(conn, ctx.ticker, ctx.signal_date, session=ctx.session) if ready else None
+    context = plan_review.ticker_context(conn, ctx.ticker, now=ctx.cutoff_at)      # the fills as the cutoff knew them
+    status = (service.chain_status(conn, ctx.ticker, ctx.signal_date, session=ctx.session, now=ctx.cutoff_at,
+                                   context=context) if ready else None)
     if status is None:
         out.update(chain=None, versions=[], reviews=[])
     else:
@@ -114,11 +148,14 @@ def _plan_context(conn, ctx: DiscussContext) -> dict:
             'created_at': r['created_at'],
             'signals': [s for s in r.get('signals') or [] if isinstance(s, dict) and s.get('fired')]}
             for r in status['reviews']]
-    decision = repository.decision_head(conn, ctx.ticker, ctx.signal_date)
-    out['decision'] = None if decision is None else {
+    fills = service.unit_fills(conn, ctx.ticker, ctx.signal_date, context)
+    out['execution'] = _execution(conn, ctx, plan, status, fills)
+    decision = repository.decision_head(conn, ctx.ticker, ctx.signal_date)      # old data only (v2.9 retired decisions)
+    out['legacy_decision'] = None if decision is None else {
         k: decision.get(k) for k in ('decision', 'final_action', 'reason', 'decided_at', 'plan_id')}
-    out['trades'] = [{k: t.get(k) for k in ('id', 'side', 'quantity', 'price', 'fee', 'executed_at', 'voided_at')}
-                     for t in service.unit_buys(conn, ctx.ticker, ctx.signal_date)]
+    out['trades'] = [{k: t.get(k) for k in ('id', 'side', 'quantity', 'price', 'fee', 'executed_at', 'voided_at',
+                                            'plan_id')}
+                     for t in fills]
     cited = repository.citations_for_plans(conn, [str(p) for p in ctx.unit_plan_ids]) if repository.growth_ready(conn) else []
     out['knowledge_refs'] = [{'ref': knowledge_items.ref(c['knowledge_id'], c['version']), 'field': c['field'],
                               'plan_id': c['plan_id']} for c in cited]

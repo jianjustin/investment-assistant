@@ -681,7 +681,7 @@ def test_prompts_carry_knowledge_note():
         assert graph.KNOWLEDGE_NOTE in prompt
     for prompt in (graph.PROPOSE_PROMPT, graph.COUNTER_PROMPT, graph.INTERPRET_PROMPT):     # agent-1 and interpret
         assert 'get_knowledge' not in prompt and 'know:' not in prompt
-    assert graph.RETRO_AGENT_VERSION == 'agent-retro-1' and graph.DISCUSS_AGENT_VERSION == 'agent-discuss-1'
+    assert graph.RETRO_AGENT_VERSION == 'agent-retro-2' and graph.DISCUSS_AGENT_VERSION == 'agent-discuss-1'
 
 
 def _spy_tools(monkeypatch):

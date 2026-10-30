@@ -3,7 +3,7 @@ id: review.monthly_return
 title: "月度收益与分档"
 group: review
 version: 2
-applies_to: [monthly-3]
+applies_to: [monthly-3, monthly-4]
 summary: "月度收益 =（本月末资金快照 − 上月末资金快照 − 区间净出入金）÷ 上月末资金快照，按 20%、10%、0% 分四档并对比 SPY；缺快照不算。"
 related: [review.process_check, review.sensitivity, review.weekly, review.position]
 sources: [investment_assistant/workbench/monthly.py, investment_assistant/config.py]

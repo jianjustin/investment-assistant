@@ -3,8 +3,8 @@ id: review.track_status
 title: "三方对比状态"
 group: review
 version: 1
-applies_to: [tracks-1]
-summary: "三方对比里每条轨道的结果状态共九种，如缺失、计划作废、待定、已平仓；它们决定该轨道是记 0R、记具体 R，还是暂不计入。"
+applies_to: [tracks-1, tracks-2]
+summary: "三方对比里每条轨道的结果状态共九种（tracks-2 另加开盘作废、并入其他链），如缺失、计划作废、待定、已平仓；它们决定该轨道是记 0R、记具体 R，还是暂不计入。"
 related: [review.tracks, review.r_multiple, review.version_basis, review.plan_shadow]
 sources: [investment_assistant/workbench/tracks.py]
 ---
@@ -23,6 +23,8 @@ sources: [investment_assistant/workbench/tracks.py]
 | `pass` | 不建议 | Agent 给出的是不建议买 | 0R |
 | `not_executed` | 未执行 | 你的决定不是买，或有效期已过仍没买 | 0R |
 | `no_plan` | 无计划成交 | 你买了，但决定没有关联计划，没法按计划算 R | 空 |
+
+`tracks-2`（v2.9）另有两种：`voided`（开盘作废）——`plan-shadow-2` 里开盘落到止损以下等情形，本计划作废，记 0R；`merged`（并入其他链）——Agent 轨道的单元被并入同标的另一条活跃链，没有自己的 Agent 轨道，不计入均值、单列计数。
 
 ## 怎么算 / 从哪来
 规则轨道和 Agent 轨道的状态来自计划影子的结果（`pending`、`expired`、`open`、`closed`）加上"计划作废"和"缺失"两种情形；Agent 轨道还有 `pass`；实际轨道有 `not_executed`、`pending`、`open`、`closed` 和 `no_plan`。汇总时，`pending` 单独计数，`missing` 与 `no_plan` 合并计为"缺失"；均值只用 R 不为空的格子。

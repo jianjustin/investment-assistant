@@ -554,7 +554,7 @@ def _learning_text(learning: dict) -> str:
             actual = _r(card['actual_r'])
         else:                                     # bought but no R (unplanned: no stop to price the risk) vs not filled
             actual = '无 R（计划外）' if card.get('filled') else '未成交'
-        lines.append(f"{card['ticker']} {card['end_text']} · 实际 {actual} · {card['decision_text']}")
+        lines.append(f"{card['ticker']} {card['end_text']} · 实际 {actual} · {card.get('execution_text') or card.get('decision_text')}")
     if len(cards) > LEARNING_CARD_LINES:
         lines.append(f'…另有 {len(cards) - LEARNING_CARD_LINES} 张')
     lines.append(f'被检验的知识 {len(knowledge)} 条')
@@ -571,8 +571,13 @@ def _review_footer(payload):
 
 def workbench_weekly(payload):
     overview = payload["overview"]
-    fields = [NotifyField("概览", f"""已决定 {overview["decided"]} · 未处理 {overview["undecided"]}"""
-                                  f""" · 计划外交易 {overview["unsignaled"]} · 已平仓 {overview["closed"]}"""),
+    if overview.get("execution"):                       # review-8 (v2.9): executions, not decisions
+        overview_text = (f"""已执行 {overview["executed"]} · 未执行 {overview["not_executed"]}"""
+                         f""" · 计划外成交 {overview["unplanned"]} · 已平仓 {overview["closed"]}""")
+    else:
+        overview_text = (f"""已决定 {overview["decided"]} · 未处理 {overview["undecided"]}"""
+                         f""" · 计划外交易 {overview["unsignaled"]} · 已平仓 {overview["closed"]}""")
+    fields = [NotifyField("概览", overview_text),
               NotifyField("轨道对比", _track_lines(payload.get("tracks")))]
     rules = payload.get("rules") or []
     rule_lines = []

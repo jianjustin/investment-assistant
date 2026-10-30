@@ -561,7 +561,7 @@ def test_reasoning_reads_version_and_reviews(db, scripted_model):
     view = reasoning.reasoning(str(first['id']))
     assert view['run']['id'] == str(first['id']) and view['run']['mode'] == 'propose'
     assert view['version']['version_no'] == 0 and view['version']['plan_id'] == str(plan_a['id'])
-    assert kinds(view) == ['read', 'proposal', 'check', 'read', 'counter', 'response', 'outcome']
+    assert kinds(view) == ['previous_chain', 'read', 'proposal', 'check', 'read', 'counter', 'response', 'outcome']
     [item] = step(view, 'response')['items']
     assert item['new_version_no'] == 1 and item['new_plan_id'] == str(plan_b['id'])
     assert item['outcome'] == 'revise' and item['changes'] == [{'field': 'stop', 'before': '95.00', 'after': '96.00'}]

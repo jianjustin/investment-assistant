@@ -41,9 +41,9 @@ from investment_assistant.workbench.timeline import AGENT_V2, AGENT_V3
 REVIEW_VERSION = 'agent-review-2'        # v2.9: the evidence block gains 「再次触发」 and 「持仓状态」 (D32)
 RETRO_AGENT_V1 = 'agent-retro-1'
 RETRO_AGENT_V2 = 'agent-retro-2'         # v2.9 D29: 「你的决定」 -> 「你的执行」
-# The label retro runs carry follows the retro facts (retro-1 / retro-2) that `retro_cards` builds; Task 4 flips it
-# to RETRO_AGENT_V2 together with `retro.RETRO_VERSION`. Until then `run_retro` defaults to the retro-1 prompt.
-RETRO_AGENT_VERSION = RETRO_AGENT_V1
+# The label retro runs carry follows the retro facts (retro-1 / retro-2) that `retro_cards` builds: new cards are
+# retro-2, drafted by agent-retro-2 (`run_retro(agent_version=RETRO_AGENT_V1)` keeps the retro-1 prompt).
+RETRO_AGENT_VERSION = RETRO_AGENT_V2
 DISCUSS_AGENT_VERSION = 'agent-discuss-1'
 
 MAX_TOOL_ROUNDS = 8

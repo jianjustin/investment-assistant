@@ -23,8 +23,9 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 
-from investment_assistant.workbench import (bars as bars_module, discipline as discipline_module, families,
+from investment_assistant.workbench import (bars as bars_module, families,
                                             knowledge_items, ledger, my_knowledge, plan_shadow, repository, retro, service)
+from investment_assistant.workbench import tracks as tracks_module
 from investment_assistant.workbench import stages as stages_module
 from investment_assistant.workbench.agent import graph as agent_graph
 from investment_assistant.workbench.agent import model as agent_model
@@ -73,6 +74,16 @@ class _Cache:
         self.conn, self.session, self.now = conn, session, now
         self.spy = repository.read_bars(conn, service.BENCHMARK, session, cutoff_at=now, limit=400)
         self._by_ticker: dict[str, dict[str, Any]] = {}
+        self._contexts: dict[str, dict[str, Any]] = {}
+
+    def context(self, ticker: str) -> dict[str, Any]:
+        """``plan_review.ticker_context`` of the ticker at the scan's cutoff (the fills as it knew them)."""
+        found = self._contexts.get(ticker)
+        if found is None:
+            from investment_assistant.workbench import plan_review     # imports service
+
+            found = self._contexts[ticker] = plan_review.ticker_context(self.conn, ticker, now=self.now)
+        return found
 
     def ticker(self, ticker: str) -> dict[str, Any]:
         found = self._by_ticker.get(ticker)
@@ -118,8 +129,14 @@ def _evaluate(subject: dict[str, Any], cache: _Cache, *, window_start: date, kno
     open_lots = [lot for lot in data['book']['open'] if lot['buy_trade_id'] in buy_ids]
     decision = subject['decision']
     if subject['kind'] == 'unit':
-        ref_plan = retro.reference_plan(decision=decision, plans=subject['plans'], has_buys=bool(buys), buys=buys,
-                                        chain=subject['decisions'])
+        if subject.get('v2'):
+            ref_plan = retro.reference_plan_v2(decision=decision, plans=subject['plans'], has_buys=bool(buys),
+                                               buys=buys, chain=subject['decisions'])
+            if ref_plan is None:        # a chain opened without a rule baseline: its first Agent version
+                ref_plan = next((p for p in subject['plans'] if p['kind'] == 'agent'), None)
+        else:
+            ref_plan = retro.reference_plan(decision=decision, plans=subject['plans'], has_buys=bool(buys),
+                                            buys=buys, chain=subject['decisions'])
         if ref_plan is None:
             # decide the end first: a held unit counts as "no plan" only when its close falls inside the window
             closed = retro.close_session(segments=segments, open_lots=open_lots) if buys else None
@@ -150,7 +167,8 @@ def _plans_with_versions(conn, plans: list[dict[str, Any]], ready: bool) -> list
     out = []
     for plan in plans:
         version = (repository.version_by_plan(conn, plan['id'])
-                   if ready and plan['kind'] == 'agent' and plan['plan_version'] == agent_graph.AGENT_V2 else None)
+                   if ready and plan['kind'] == 'agent' and plan['plan_version'] in (agent_graph.AGENT_V2, agent_graph.AGENT_V3)
+                   else None)
         out.append({**plan, 'version_no': version['version_no'] if version else None,
                     'origin': version['origin'] if version else None,
                     'cutoff_at': version['cutoff_at'] if version else None})
@@ -186,32 +204,20 @@ def _reviews_fact(reviews: list[dict[str, Any]], has_chain: bool) -> dict[str, A
 
 
 def discipline_of(conn, cache: _Cache, ticker: str, buy_ids: set, *, session: date) -> dict[str, Any]:
-    """The card's buys judged by ``discipline.evaluate`` as of ``session`` — the same call ``service.discipline``
-    makes, narrowed to this ticker; ``retro.discipline_summary`` keeps only the card's buys (§4.3)."""
+    """The card's buys judged by `discipline-2` as of ``session`` — the same call ``service.discipline`` makes,
+    narrowed to this ticker; ``retro.discipline_summary`` keeps only the card's buys (§4.3)."""
     data = cache.ticker(ticker)
     live = [t for t in data['trades'] if t['voided_at'] is None]
-    decisions_by_id: dict[Any, dict[str, Any]] = {}
-    for trade in live:
-        if trade['side'] == 'buy' and trade['decision_id'] and trade['decision_id'] not in decisions_by_id:
-            decision = repository.decision_by_id(conn, trade['decision_id'])
-            if decision is not None:
-                decisions_by_id[trade['decision_id']] = decision
-    plans_by_id: dict[Any, dict[str, Any]] = {}
-    for decision in decisions_by_id.values():
-        if decision['plan_id'] and decision['plan_id'] not in plans_by_id:
-            plan = repository.plan_by_id(conn, decision['plan_id'])
-            if plan is not None:
-                plans_by_id[decision['plan_id']] = plan
-    evaluated = discipline_module.evaluate(
-        trades=live, decisions_by_id=decisions_by_id, plans_by_id=plans_by_id,
-        bars_by_ticker={ticker: data['bars']},
-        stop_events=[c for c in data['candidates'] if c['rule_id'] == 'plan_stop'],
-        segments=data['book']['closed'], session=session)
+    evaluated = service._discipline_v2(conn, trades=live, segments=data['book']['closed'], tickers=[ticker],
+                                       session=session, now=cache.now, since=_EPOCH)
     return retro.discipline_summary(evaluated, buy_ids, as_of=session)
 
 
 def _freeze(conn, item: dict[str, Any], cache: _Cache, *, session: date, now: datetime) -> dict[str, Any]:
-    """The ten frozen facts of one event (§4.2), from rows read in this transaction."""
+    """The frozen facts of one event (§4.2), from rows read in this transaction: the ten `retro-1` facts, or — for the
+    subjects `_subjects_v2` builds — the eleven `retro-2` ones."""
+    if item['subject'].get('v2'):
+        return _freeze_v2(conn, item, cache, session=session, now=now)
     sub, event, subject = item['sub'], item['event'], item['subject']
     ticker, buys = sub['ticker'], subject['buys']
     data = cache.ticker(ticker)
@@ -268,6 +274,132 @@ def _freeze(conn, item: dict[str, Any], cache: _Cache, *, session: date, now: da
         knowledge=_knowledge_fact(conn, [p['id'] for p in plans]) if sub['kind'] == 'unit' else [])
 
 
+def _subjects_v2(conn, cache: _Cache, *, since: date, until: date) -> list[dict[str, Any]]:
+    """The `retro-2` subjects (v2.9 D29): a unit or chain that has fills (through ``plan_id``, a merged unit's baseline
+    included, or an old decision) or carries a live note of yours, and the plan-less buys. A chain or unit with no
+    fill and no note earns no card. Pruned like `retro-1`: a unit whose fills are all before ``since`` and whose
+    ticker was flat before it ended long ago."""
+    keys = repository.retro_subject_keys(conn, until=until)
+    flat: dict[str, bool] = {}
+
+    def closed_before(ticker: str) -> bool:
+        if ticker not in flat:
+            flat[ticker] = not repository._open_before(conn, ticker, since)
+        return flat[ticker]
+
+    out: list[dict[str, Any]] = []
+    for ticker, signal_date in keys['units']:
+        context = cache.context(ticker)
+        buys = service.unit_fills(conn, ticker, signal_date, context)
+        versions = repository.chain_versions(conn, ticker, signal_date)
+        plans = repository.plans_for_unit(conn, ticker, signal_date)
+        known = {p['id'] for p in plans}
+        for buy in buys:
+            if buy.get('plan_id') is not None and buy['plan_id'] not in known:
+                linked = repository.plan_by_id(conn, buy['plan_id'])      # a merged unit's baseline, an own plan
+                if linked is not None:
+                    plans.append(linked)
+                    known.add(linked['id'])
+        notes = (repository.plan_notes_for(conn, ticker, chain_signal_date=signal_date, cutoff=cache.now) if versions
+                 else [n for p in plans if p['kind'] in ('rule', 'own')
+                       for n in repository.plan_notes_for(conn, ticker, plan_id=p['id'], cutoff=cache.now)])
+        notes = [n for n in notes if n['status'] == 'active']
+        if not buys and not notes:
+            continue
+        if buys and all(_ny_day(b['executed_at']) < since for b in buys) and closed_before(ticker):
+            continue
+        decisions = repository.unit_decision_chain(conn, ticker, signal_date)
+        out.append({'kind': 'unit', 'v2': True, 'ticker': ticker, 'signal_date': signal_date, 'buy_trade_id': None,
+                    'decision': repository.decision_head(conn, ticker, signal_date, timeline=True),
+                    'decision_ids': [d['id'] for d in decisions], 'decisions': decisions, 'buys': buys, 'plans': plans,
+                    'reviews': repository.chain_reviews(conn, ticker, signal_date), 'notes': notes,
+                    'has_chain': bool(versions)})
+    for buy in keys['trades']:
+        if _ny_day(buy['executed_at']) < since and closed_before(buy['ticker']):
+            continue
+        out.append({'kind': 'trade', 'v2': True, 'ticker': buy['ticker'], 'signal_date': None,
+                    'buy_trade_id': buy['id'], 'decision': None, 'decision_ids': [], 'decisions': [], 'buys': [buy],
+                    'plans': [], 'reviews': [], 'notes': [], 'has_chain': False})
+    return out
+
+
+def _freeze_v2(conn, item: dict[str, Any], cache: _Cache, *, session: date, now: datetime) -> dict[str, Any]:
+    """The eleven frozen `retro-2` facts of one event (v2.9 D29): `retro-1`'s ten with the decision replaced by what
+    you executed (`execution`, with the notes of the time and an old decision under `legacy_decision`) and the daily
+    holding status of the position (`holding`)."""
+    sub, event, subject = item['sub'], item['event'], item['subject']
+    ticker, buys = sub['ticker'], subject['buys']
+    data = cache.ticker(ticker)
+    ready = repository.timeline_ready(conn)
+    plans = _plans_with_versions(conn, subject['plans'], ready)
+    plan_by_id = {str(p['id']): p for p in plans}
+    decision = subject['decision']
+    versions = repository.chain_versions(conn, ticker, sub['signal_date']) if (ready and sub['kind'] == 'unit') else []
+
+    from investment_assistant.workbench import plan_review     # imports service
+
+    plans_by_trade: dict[Any, dict[str, Any]] = {}
+    for buy in buys:
+        linked = plan_review._plan_of_buy(conn, buy)          # its own plan_id, else the plan of its old decision
+        if linked is not None:
+            plans_by_trade[buy['id']] = plan_by_id.get(str(linked['id']), linked)
+
+    roles: dict[str, list[str]] = {}
+
+    def role(plan_id: Any, name: str) -> None:
+        if plan_id is not None and str(plan_id) in plan_by_id:
+            roles.setdefault(str(plan_id), []).append(name)
+
+    role(item['ref_plan']['id'] if item['ref_plan'] else None, 'reference')
+    for plan in plans_by_trade.values():
+        if 'executed' not in roles.get(str(plan['id']), []):
+            role(plan['id'], 'executed')
+    role(decision.get('agent_plan_id') if decision else None, 'seen_at_decision')
+    if versions:
+        role(versions[0]['plan_id'], 'first')
+        role(versions[-1]['plan_id'], 'head')
+
+    shadow_by_plan: dict[str, Any] = {}
+    for plan in plans:
+        known_shadow = item.get('shadow') if item['ref_plan'] and plan['id'] == item['ref_plan']['id'] else None
+        if plan['status'] == 'ok':
+            shadow_by_plan[str(plan['id'])] = service.shadow_outcomes(plan, data['bars'], cache.spy,
+                                                                      splits=data['splits'])['outcome']
+        else:
+            shadow_by_plan[str(plan['id'])] = known_shadow
+
+    track_row = (service.unit_track_row(conn, ticker, sub['signal_date'], session=session, now=now)
+                 if sub['kind'] == 'unit' else None)
+    legacy = None if decision is None else {k: decision.get(k) for k in (
+        'decision', 'final_action', 'reason', 'decided_at', 'plan_id', 'agent_plan_id')}
+    version_no_by_plan = {v['plan_id']: v['version_no'] for v in versions}
+    for plan in plans:
+        if plan.get('version_no') is not None:
+            version_no_by_plan.setdefault(plan['id'], plan['version_no'])
+    execution_fact = retro.execution_fact(buys=buys, plans_by_trade=plans_by_trade,
+                                          version_no_by_plan=version_no_by_plan, notes=subject['notes'],
+                                          legacy_decision=legacy)
+    segments = item.get('segments') or []
+    sell_ids = {s['sell_trade_id'] for s in segments}
+    trades = [*buys, *[t for t in data['trades'] if t['id'] in sell_ids and t.get('voided_at') is None]]
+    actual = (track_row or {}).get('actual') or {}
+    actual_r = actual.get('r') if actual.get('status') in ('closed', 'open') else None
+    pool = (track_row or {}).get('pool')
+    first_buy = min((_ny_day(b['executed_at']) for b in buys), default=None)
+    holding_rows = ([r for r in repository.holding_status_for(conn, ticker=ticker)
+                     if first_buy <= r['session'] <= event['end_session']]
+                    if first_buy is not None and repository.executable_ready(conn) else [])
+    holding = retro.holding_fact(holding_rows, sell_date=event['end_session'] if event['end_kind'] == 'position_closed'
+                                 else None)
+    return retro.build_facts_v2(
+        execution=execution_fact, holding=holding, subject={**sub, 'pool': pool}, end=event, plans=plans,
+        roles=roles, bars=data['bars'], splits=data['splits'], shadow_by_plan=shadow_by_plan, track_row=track_row,
+        trades=trades, segments=segments, actual_r=actual_r,
+        discipline=discipline_of(conn, cache, ticker, {b['id'] for b in buys}, session=session),
+        reviews=_reviews_fact(subject['reviews'], bool(versions)),
+        knowledge=_knowledge_fact(conn, [p['id'] for p in plans]) if sub['kind'] == 'unit' else [])
+
+
 def _scan(conn, *, session: date, now: datetime, window_start: date, with_facts: bool,
           include_known: bool = False) -> dict[str, Any]:
     """Every subject that could end in ``[window_start, session]``, judged by ``retro.end_event``.
@@ -283,7 +415,7 @@ def _scan(conn, *, session: date, now: datetime, window_start: date, with_facts:
     def known(key: str) -> bool:
         return repository.review_card_by_key(conn, key) is not None
 
-    for subject in repository.retro_subjects(conn, since=window_start, until=session):
+    for subject in _subjects_v2(conn, cache, since=window_start, until=session):
         target = subject['ticker']
         try:
             with conn.transaction():                   # a savepoint: a failed statement must not poison the scan
@@ -312,11 +444,15 @@ def _scan(conn, *, session: date, now: datetime, window_start: date, with_facts:
     return {'items': items, 'stats': stats}
 
 
-def _fresh_tracks(row: dict[str, Any]) -> dict[str, Any]:
-    """The ``facts.tracks`` shape of a ``tracks-1`` row, mapped by the same ``retro`` helper the freeze uses."""
-    return retro._jsonable({'rule': retro._track(row['rule']),
-                            'agent': retro._track(row['agent'], 'version_no', 'version_basis'),
-                            'actual': retro._track(row['actual'], 'plan_kind')})
+def _fresh_tracks(row: dict[str, Any], *, modern: bool = False) -> dict[str, Any]:
+    """The ``facts.tracks`` shape of a track row, mapped by the same ``retro`` helper the freeze uses; ``modern`` (a
+    retro-2 card, `tracks-2` rows) words the statuses from the tracks-2 table."""
+    parts = {'rule': retro._track(row['rule']), 'agent': retro._track(row['agent'], 'version_no', 'version_basis'),
+             'actual': retro._track(row['actual'], 'plan_kind')}
+    if modern:
+        for part in parts.values():
+            part['status_text'] = retro.TRACK_STATUS_TEXT_V2.get(part['status'], part['status'])
+    return retro._jsonable(parts)
 
 
 def _card_row(item: dict[str, Any], *, run_id: str | None) -> dict[str, Any]:
@@ -402,7 +538,7 @@ def _record_skip(card_id: int, reason: str, trigger: str) -> None:
 
 def draft_card(card_id: int, *, now: datetime, deps: service.Deps | None = None, trigger: str = 'manual',
                attempt_cap: bool = False, session: date | None = None) -> dict[str, Any]:
-    """Draft one card once (spec §4.4): read the card, run ``agent-retro-1`` on its frozen facts, and write the run,
+    """Draft one card once (spec §4.4): read the card, run ``agent-retro-2`` (``agent-retro-1`` for a retro-1 card) on its frozen facts, and write the run,
     its tool calls, the ``review_card_drafts`` row and (on ``ok``) one ``knowledge_drafts`` row per lesson in one
     transaction. ``attempt_cap`` (the batch) refuses a card that already failed ``RETRO_MAX_ATTEMPTS`` times;
     a manual redraft is not capped. Returns ``{status, reason, draft_id, agent_run_id, input_tokens,
@@ -449,10 +585,13 @@ def draft_card(card_id: int, *, now: datetime, deps: service.Deps | None = None,
             else:
                 model_obj = deps.agent_model if deps.agent_model is not None else agent_model.chat_model(settings)
                 try:
+                    modern = card['retro_version'] == retro.RETRO_V2
                     out = agent_graph.run_retro(card={**card, 'end_session': card['end_session']}, ctx=ctx,
                                                 model=model_obj, checkpointer=checkpointer, run_id=run_id,
-                                                now=lambda: now, facts_text=retro.facts_text(card['facts']),
-                                                concept_ids=_concept_ids())
+                                                now=lambda: now, concept_ids=_concept_ids(),
+                                                facts_text=(retro.facts_text_v2 if modern else retro.facts_text)(card['facts']),
+                                                agent_version=agent_graph.RETRO_AGENT_V2 if modern
+                                                else agent_graph.RETRO_AGENT_V1)
                     result.update(out, detail=None)
                 except service.Unavailable:
                     raise
@@ -472,7 +611,9 @@ def draft_card(card_id: int, *, now: datetime, deps: service.Deps | None = None,
         unit, settings=settings, attempt=attempt, now=now, status=status, run_id=run_id,
         reason=None if status == 'ok' else result['reason'], detail=result.get('detail'),
         output=result['output'] if status == 'ok' else None, input_tokens=result['input_tokens'],
-        output_tokens=result['output_tokens'], mode='retro')
+        output_tokens=result['output_tokens'], mode='retro',
+        agent_version=agent_graph.RETRO_AGENT_V2 if card['retro_version'] == retro.RETRO_V2
+        else agent_graph.RETRO_AGENT_V1)
     try:
         with service._tx() as conn:
             repository.lock(conn, f'{CARD_LOCK}:{card_id}')
@@ -808,6 +949,11 @@ def _filled(facts: dict[str, Any]) -> bool:
     return any(t.get('side') == 'buy' for t in (facts.get('trades') or {}).get('trades') or [])
 
 
+def facts_keys(card: dict[str, Any]) -> tuple[str, ...]:
+    """The fact keys of the card's own version, in order (JSONB does not keep key order)."""
+    return retro.FACT_KEYS_V2 if card['retro_version'] == retro.RETRO_V2 else retro.FACT_KEYS
+
+
 def _row(card: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     facts = card['facts'] or {}
     tracks = facts.get('tracks') or {}
@@ -818,6 +964,7 @@ def _row(card: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
             'exit_basis': (facts.get('subject') or {}).get('exit_basis'), 'end_session': card['end_session'],
             'end_text': (facts.get('subject') or {}).get('end_text') or retro.end_text(card['end_kind'], None),
             'decision_text': (facts.get('decision') or {}).get('text'),
+            'execution_text': (facts.get('execution') or {}).get('text') or (facts.get('decision') or {}).get('text'),
             'actual_r': (facts.get('trades') or {}).get('actual_r'), 'filled': _filled(facts),
             'rule_r': (tracks.get('rule') or {}).get('r'), 'agent_r': (tracks.get('agent') or {}).get('r'),
             'flags': flags, 'immature': immature, 'status': state['status'],
@@ -878,7 +1025,7 @@ def card_view(card_id: int, *, now: datetime) -> dict[str, Any]:
         if card is None:
             raise LookupError(f'复盘卡 {card_id} 不存在')
         state = card_state(conn, card_id)
-        facts = {name: card['facts'][name] for name in retro.FACT_KEYS if name in (card['facts'] or {})}
+        facts = {name: card['facts'][name] for name in facts_keys(card) if name in (card['facts'] or {})}
         frozen_buys = {x['id'] for x in (facts.get('trades') or {}).get('trades', []) if x['side'] == 'buy'}
         buy_ids = {t['id'] for t in repository.list_trades(conn, card['ticker']) if str(t['id']) in frozen_buys}
         now_discipline = discipline_of(conn, _Cache(conn, session, now), card['ticker'], buy_ids, session=session)
@@ -900,7 +1047,7 @@ def card_view(card_id: int, *, now: datetime) -> dict[str, Any]:
 def check(since: date, until: date | None = None, out: Callable[[str], None] = print) -> int:
     """``check --since D [--until D]`` (spec §12): every end event in the window, judged again by §4.1, must have
     exactly one card (the same ``event_key``; an event without one is 「缺卡」), and every card that ended in the
-    window must carry all ten fact keys. A closed unit whose chain never carried a ``plan_id`` has no reference plan,
+    window must carry all its fact keys (ten for a retro-1 card, eleven for a retro-2 one). A closed unit whose chain never carried a ``plan_id`` has no reference plan,
     so no card can exist: it is listed on its own 「无参考计划」 line and fails the check. The card's frozen
     ``facts.tracks`` is compared with the ``tracks-1`` row recomputed as of the freeze (the card's session, bars
     known when it was created), so a shadow that kept moving is not a change; a difference is listed as 「事实已变化」
@@ -927,7 +1074,8 @@ def check(since: date, until: date | None = None, out: Callable[[str], None] = p
                 f"平仓 {unit['end_session']}  决定链上没有任何计划")
         for card in sorted(present, key=lambda c: (c['end_session'], c['id'])):
             facts = card['facts'] or {}
-            absent = [name for name in retro.FACT_KEYS if name not in facts]
+            modern = card['retro_version'] == retro.RETRO_V2
+            absent = [name for name in facts_keys(card) if name not in facts]
             if absent:
                 incomplete += 1
                 out(f"事实不全  {card['event_key']}  缺 {', '.join(absent)}")
@@ -938,10 +1086,11 @@ def check(since: date, until: date | None = None, out: Callable[[str], None] = p
                 as_of = (facts.get('discipline') or {}).get('as_of')
                 frozen_session = date.fromisoformat(as_of) if as_of else card['end_session']
                 row = service.unit_track_row(conn, card['ticker'], card['signal_date'], session=frozen_session,
-                                             now=card['created_at'])
-                if _fresh_tracks(row) != (facts.get('tracks') or {}):
+                                             now=card['created_at'],
+                                             version=tracks_module.TRACKS_V2 if modern else tracks_module.TRACKS_V1)
+                if _fresh_tracks(row, modern=modern) != (facts.get('tracks') or {}):
                     changed += 1
-                    note = '  事实已变化：tracks 与现在的 tracks-1 行不同'
+                    note = f"  事实已变化：tracks 与现在的 {'tracks-2' if modern else 'tracks-1'} 行不同"
             out(f"齐全  {card['event_key']}  #{card['id']}{note}")
     for target, reason in scanned['stats']['failures']:
         out(f'读取失败  {target}  {reason}')
@@ -979,8 +1128,13 @@ def _show(card_id: int, out: Callable[[str], None]) -> int:
     subject = facts.get('subject') or {}
     out(f"复盘卡 #{card['id']}  {card['ticker']}  {subject.get('end_text')}  结束 {card['end_session']}  状态 {view['status']}")
     out(f"事件 {card['event_key']}  建于 {_beijing(card['created_at'])}")
-    decision = facts.get('decision') or {}
-    out(f"决定 {decision.get('text')}")
+    if 'execution' in facts:
+        out(f"执行 {facts['execution'].get('text')}")
+        holding = facts.get('holding')
+        if holding:
+            out(f"持仓 状态 {holding.get('rows')} 天，最多持有 {holding.get('held_sessions')} 个交易日")
+    else:
+        out(f"决定 {(facts.get('decision') or {}).get('text')}")
     tracks = facts.get('tracks') or {}
     for name in ('rule', 'agent', 'actual'):
         if name in tracks:

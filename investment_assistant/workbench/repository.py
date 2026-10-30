@@ -286,7 +286,7 @@ def brief_in_unit(conn, brief_id, ticker: str, signal_date: date) -> bool:
 def _insert_decision_for_tests(conn, rec: dict[str, Any], digest: str, *,
                                decided_at: datetime) -> dict[str, Any]:
     """Test fixtures only (v2.9 D5): production code no longer records decisions, `signal_decisions` is read-only
-    there. `ledger.record_decision` still calls this until it is deleted (Task 4).
+    there. `tests/legacy_decisions.py` calls it (`ledger.record_decision` is gone).
 
     `agent_plan_id` / `review_view` (migration 026) are written, and returned, only when one is
     set; without them the statement is the pre-026 one, so old callers and an unmigrated database
@@ -2200,3 +2200,45 @@ def retriggers_on(conn, unit_signal_date: date) -> list[dict[str, Any]]:
     day's `plan` node made (`plan_review check`, ② of spec §9.2)."""
     return _all(conn, f'SELECT {_RETRIGGER_COLUMNS} FROM chain_retriggers WHERE unit_signal_date = %s '
                       'ORDER BY created_at, id', (unit_signal_date,))
+
+
+def retro_subject_keys(conn, *, until: date) -> dict[str, Any]:
+    """The subjects a `retro-2` card may be about (v2.9 spec D29), as keys; the caller reads the rest.
+
+    ``units``: ``(ticker, signal_date)`` of every unit or chain that has a live buy executed (New York date) on or
+    before ``until`` — linked through ``trades.plan_id`` (a fill linked to the baseline of a unit merged into a chain
+    counts for the chain) or, for old data, through a decision of the unit — or that carries a live plan note (a note
+    on a chain, or on a rule / own plan, which counts for the plan's unit). ``trades``: the live buys with neither a
+    plan nor a decision, oldest first (the plan-less trades)."""
+    day = "(t.executed_at AT TIME ZONE 'America/New_York')::date"
+    linked = _all(conn,
+                  'SELECT DISTINCT t.ticker, CASE '
+                  'WHEN EXISTS (SELECT 1 FROM agent_plan_versions v WHERE v.ticker = p.ticker '
+                  'AND v.signal_date = p.signal_date) THEN p.signal_date '
+                  'ELSE COALESCE((SELECT r.chain_signal_date FROM chain_retriggers r WHERE r.ticker = p.ticker '
+                  'AND r.unit_signal_date = p.signal_date), p.signal_date) END AS signal_date '
+                  'FROM trades t JOIN trade_plans p ON p.id = t.plan_id '
+                  f"WHERE t.side = 'buy' AND t.voided_at IS NULL AND {day} <= %s", (until,))
+    legacy = _all(conn,
+                  'SELECT DISTINCT d.ticker, d.signal_date FROM signal_decisions d JOIN trades t '
+                  "ON t.decision_id IN (SELECT x.id FROM signal_decisions x WHERE x.ticker = d.ticker "
+                  "AND x.signal_date = d.signal_date) WHERE t.side = 'buy' AND t.voided_at IS NULL "
+                  f"AND d.signal_date <= %s AND {day} <= %s", (until, until))
+    noted = _all(conn,
+                 'SELECT DISTINCT n.ticker, COALESCE(n.chain_signal_date, p.signal_date) AS signal_date '
+                 'FROM plan_notes n LEFT JOIN trade_plans p ON p.id = n.plan_id '
+                 "WHERE n.kind = 'note' AND NOT EXISTS (SELECT 1 FROM plan_notes s WHERE s.supersedes_id = n.id "
+                 "AND s.kind = 'retract') AND COALESCE(n.chain_signal_date, p.signal_date) <= %s", (until,))
+    plan_less = _all(conn, f"SELECT {_TRADE_COLUMNS} FROM trades t WHERE t.side = 'buy' AND t.voided_at IS NULL "
+                           f'AND t.decision_id IS NULL AND t.plan_id IS NULL AND {day} <= %s '
+                           'ORDER BY t.executed_at, t.id', (until,))
+    keys = sorted({(r['ticker'], r['signal_date']) for r in (*linked, *legacy, *noted)},
+                  key=lambda k: (k[1], k[0]))
+    return {'units': keys, 'trades': plan_less}
+
+
+def unit_decision_chain(conn, ticker: str, signal_date: date) -> list[dict[str, Any]]:
+    """The old decisions of one unit, oldest first, as ``{id, plan_id, decided_at}`` (a retro-2 card needs the plan of
+    the decision a fill was attached to, not only the head decision)."""
+    return _all(conn, 'SELECT id, plan_id, decided_at FROM signal_decisions WHERE ticker = %s AND signal_date = %s '
+                      'ORDER BY decided_at, id', (ticker.upper(), signal_date))

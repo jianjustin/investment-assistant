@@ -118,10 +118,10 @@ def test_review_detail_missing_month_nulls():
                                         'supersedes_id': None}], date(2026, 10, 1))['id'] == 1
 
 
-# --- v2.5 D17: monthly-3 counts each chain's first version in plans.agent, its head in agent_latest ---
+# --- v2.5 D17: first versions in plans.agent, heads in agent_latest; v2.9 D30: monthly-4 ---
 
-def test_monthly_version_is_monthly_3():
-    assert monthly.MONTHLY_VERSION == 'monthly-3'
+def test_monthly_version_is_monthly_4():
+    assert monthly.MONTHLY_VERSION == 'monthly-4'
 
 
 def test_generate_monthly_counts_first_and_latest(workbench_db, monkeypatch):
@@ -160,7 +160,46 @@ def test_generate_monthly_counts_first_and_latest(workbench_db, monkeypatch):
             'schema_version': 'agent-2'})
         previous = plan['id']
     stats = service.generate_monthly(date(2026, 10, 1), now=now)['stats']
-    assert stats['calc_version'] == 'monthly-3'
-    assert stats['plans']['agent']['count'] == 1
-    assert stats['plans']['agent_latest']['count'] == 1
+    assert stats['calc_version'] == 'monthly-4'
+    # agent-2 versions have no execution fields: summarised under plan-shadow-1, apart from plan-shadow-2 plans
+    assert stats['plans'] == {} and stats['shadow_versions']['plans_v1'] == 'plan-shadow-1'
+    assert stats['plans_v1']['agent']['count'] == 1
+    assert stats['plans_v1']['agent_latest']['count'] == 1
     assert stats['tracks']['units'][0]['agent']['version_basis'] == 'first'
+
+
+def test_monthly4_freezes_tracks2_discipline2_two_shadows(workbench_db, monkeypatch):
+    """monthly-4: the snapshot carries `tracks-2` rows (with the merged count), `discipline-2` and both shadow
+    versions: a plan with execution fields is summarised under plan-shadow-2 and again, as the counterfactual, under
+    plan-shadow-1; an older plan only under plan-shadow-1."""
+    from contextlib import contextmanager
+
+    from investment_assistant.workbench import repository, service
+
+    @contextmanager
+    def connection():
+        yield workbench_db
+    monkeypatch.setattr(service, 'connection', connection)
+    now = datetime(2026, 11, 20, 22, 30, tzinfo=UTC)
+    day = date(2026, 10, 21)
+
+    def plan(version, **extra):
+        return repository.insert_plan(workbench_db, {
+            'ticker': 'NVDA', 'signal_date': day, 'kind': 'rule', 'based_on_id': None, 'plan_version': version,
+            'ref_price': D('100'), 'atr': D('2'), 'entry_low': D('99'), 'entry_high': D('101'), 'stop': D('94'),
+            'target1': D('108'), 'trail_atr_multiple': D('3'), 'valid_from': date(2026, 10, 22),
+            'valid_until': date(2026, 10, 26), 'sizing': {'status': 'no_equity'}, 'status': 'ok',
+            'invalid_reasons': [], 'warnings': [], 'inputs': {'bar_ids': [1]}, 'request_id': None,
+            'request_hash': None, **extra})
+
+    plan('plan-1')
+    plan('plan-2', entry_type='zone_limit', max_hold_sessions=10)
+    stats = service.generate_monthly(date(2026, 10, 1), now=now)['stats']
+    assert stats['calc_version'] == 'monthly-4'
+    assert stats['shadow_versions'] == {'plans': 'plan-shadow-2', 'plans_v1': 'plan-shadow-1',
+                                        'plans_counterfactual': 'plan-shadow-1'}
+    assert stats['plans']['rule']['count'] == 1 and stats['plans_v1']['rule']['count'] == 1
+    assert 'rule' not in stats['plans_counterfactual'] or stats['plans_counterfactual']['rule']['count'] == 1
+    assert stats['discipline']['calc_version'] == 'discipline-2'
+    assert 'merged' in stats['tracks']['summary']['all']['agent']
+    assert stats['tracks']['units'][0]['rule']['plan_id'] is not None

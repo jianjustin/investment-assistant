@@ -3,7 +3,7 @@ id: review.sensitivity
 title: "风险敏感性表"
 group: review
 version: 1
-applies_to: [monthly-3]
+applies_to: [monthly-3, monthly-4]
 summary: "用当月已平仓交易的实际 R，按单笔风险 0.5%、1%、1.5%、2% 重算近似月度收益和最大回撤，看仓位大小对结果的影响。"
 related: [review.r_multiple, review.monthly_return, plan.sizing]
 sources: [investment_assistant/workbench/monthly.py]

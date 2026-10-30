@@ -1,6 +1,8 @@
 """Batch + read model against a disposable schema; all market data below is synthetic."""
 import json
 import uuid
+
+import legacy_decisions
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 
@@ -137,7 +139,7 @@ def test_scheduled_run_skips_when_new_york_day_was_not_a_session(db):
 
 def test_today_lists_open_units_with_brief_and_context(db):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
-    view = service.today(now=NOW)
+    view = service.unit_cards(now=NOW)
     unit = view['units'][0]
     assert unit['ticker'] == 'NVDA' and unit['signal_date'] == SESSION
     assert unit['proposed_action'] == 'buy' and unit['entry_passed'] is False
@@ -148,20 +150,20 @@ def test_today_lists_open_units_with_brief_and_context(db):
 
 def test_decide_then_unit_leaves_today(db):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
-    unit = service.today(now=NOW)['units'][0]
-    out = service.decide({'request_id': '6f1d1c1e-1111-4444-8888-000000000001', 'ticker': 'NVDA',
+    unit = service.unit_cards(now=NOW)['units'][0]
+    out = legacy_decisions.decide({'request_id': '6f1d1c1e-1111-4444-8888-000000000001', 'ticker': 'NVDA',
                           'signal_date': SESSION.isoformat(), 'candidate_ids': [str(c['id']) for c in unit['candidates']],
                           'brief_id': str(unit['brief']['id']), 'proposed_action': 'buy', 'final_action': 'buy',
                           'decision': 'accept', 'reason': '合成样例：趋势修复',
                           'plan_id': str(unit['plan']['id'])}, now=NOW)
     assert out['status'] == 'created'
-    assert service.today(now=NOW)['units'] == []
+    assert service.unit_cards(now=NOW)['units'] == []
 
 
 def test_unavailable_database_is_reported(monkeypatch):
     monkeypatch.delenv('INVESTMENT_ASSISTANT_DATABASE_URL', raising=False)
     with pytest.raises(service.Unavailable):
-        service.today(now=NOW)
+        service.unit_cards(now=NOW)
 
 
 def test_missing_schema_is_unavailable_not_empty(workbench_db, monkeypatch):
@@ -172,7 +174,7 @@ def test_missing_schema_is_unavailable_not_empty(workbench_db, monkeypatch):
         yield workbench_db
     monkeypatch.setattr(service, 'connection', connection)
     with pytest.raises(service.Unavailable):
-        service.today(now=NOW)
+        service.unit_cards(now=NOW)
 
 
 def test_sec_listing_fills_unknown_filing_acceptance_without_overwriting(db):
@@ -218,7 +220,7 @@ class BreakdownSources(Sources):
 def test_batch_writes_rule_plan_for_buy_unit(db):
     summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
     assert summary['plans']['NVDA'] == 'inserted'
-    unit = service.today(now=NOW)['units'][0]
+    unit = service.unit_cards(now=NOW)['units'][0]
     plan = unit['plan']
     assert plan['kind'] == 'rule' and plan['plan_version'] == 'plan-2' and plan['status'] == 'ok'
     assert plan['sizing']['status'] == 'no_equity'
@@ -232,7 +234,7 @@ def test_batch_writes_rule_plan_for_buy_unit(db):
 
 def test_no_plan_for_conflict_or_sell_units(db):
     # 冲突单元：趋势修复（buy）+ 持仓回撤（sell）
-    service.add_trade({'request_id': '6f1d1c1e-2222-4444-8888-000000000001', 'ticker': 'NVDA', 'side': 'buy',
+    legacy_decisions.add_trade({'request_id': '6f1d1c1e-2222-4444-8888-000000000001', 'ticker': 'NVDA', 'side': 'buy',
                        'quantity': '10', 'price': '137.00', 'executed_at': '2026-10-10T15:00:00+00:00'}, now=NOW)
     conflict = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
     assert 'plans' not in conflict or 'NVDA' not in conflict['plans']
@@ -251,7 +253,7 @@ def test_rerun_returns_existing_plan(db):
 
 def test_changed_inputs_record_conflict_without_overwrite(db):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
-    original = service.today(now=NOW)['units'][0]['plan']
+    original = service.unit_cards(now=NOW)['units'][0]['plan']
 
     class Shifted(Sources):
         def bars(self, ticker, start, end_exclusive):
@@ -264,12 +266,12 @@ def test_changed_inputs_record_conflict_without_overwrite(db):
     assert again['plans']['NVDA'] == 'conflict'
     assert any(c.get('rule_id') == 'rule_plan' for c in again['conflicts'])
     assert db.execute('SELECT count(*) FROM trade_plans').fetchone()[0] == 1
-    assert service.today(now=NOW)['units'][0]['plan']['ref_price'] == original['ref_price']
+    assert service.unit_cards(now=NOW)['units'][0]['plan']['ref_price'] == original['ref_price']
 
 
 def test_backdated_snapshot_recorded_after_cutoff_ignored(db):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
-    plan = service.today(now=NOW)['units'][0]['plan']
+    plan = service.unit_cards(now=NOW)['units'][0]['plan']
     assert plan['sizing']['status'] == 'no_equity'
     # 补录一笔 as_of 在信号日之前、recorded_at 晚于本次运行截止时间的快照
     account.record_snapshot(db, {'request_id': '6f1d1c1e-3333-4444-8888-000000000001',
@@ -286,13 +288,13 @@ def test_earnings_fetch_failure_not_stored(db):
     summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources(), earnings=boom))
     assert summary['earnings']['NVDA'].startswith('error:')
     assert db.execute('SELECT count(*) FROM earnings_dates').fetchone()[0] == 0
-    plan = service.today(now=NOW)['units'][0]['plan']
+    plan = service.unit_cards(now=NOW)['units'][0]['plan']
     assert 'earnings_unknown' in plan['warnings']
 
 
 def test_holding_outside_watchlist_is_collected(db):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
-    service.add_trade({'request_id': '6f1d1c1e-4444-4444-8888-000000000001', 'ticker': 'AMD', 'side': 'buy',
+    legacy_decisions.add_trade({'request_id': '6f1d1c1e-4444-4444-8888-000000000001', 'ticker': 'AMD', 'side': 'buy',
                        'quantity': '10', 'price': '100.00', 'executed_at': '2026-10-20T15:00:00+00:00'}, now=NOW)
     summary = service.run_batch(tickers=['NVDA'], now=NOW + timedelta(minutes=10), deps=deps(Sources()))
     assert 'AMD' in summary['tickers']
@@ -301,9 +303,9 @@ def test_holding_outside_watchlist_is_collected(db):
 
 def test_today_includes_holdings(db):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=deps(Sources()))
-    service.add_trade({'request_id': '6f1d1c1e-5555-4444-8888-000000000001', 'ticker': 'NVDA', 'side': 'buy',
+    legacy_decisions.add_trade({'request_id': '6f1d1c1e-5555-4444-8888-000000000001', 'ticker': 'NVDA', 'side': 'buy',
                        'quantity': '10', 'price': '110.00', 'executed_at': '2026-10-22T20:00:00+00:00'}, now=NOW)
-    view = service.today(now=NOW)
+    view = service.unit_cards(now=NOW)
     holding = view['holdings'][0]
     assert holding['ticker'] == 'NVDA'
     assert holding['plan_id'] is None and holding['stop'] is None and holding['t1_reached'] is False
@@ -322,10 +324,10 @@ def test_plan_shadow_view(db):
 
 
 def test_discipline_since_filters_trades(db):
-    service.add_trade({'request_id': '6f1d1c1e-8888-4444-8888-000000000001', 'ticker': 'NVDA', 'side': 'buy',
+    legacy_decisions.add_trade({'request_id': '6f1d1c1e-8888-4444-8888-000000000001', 'ticker': 'NVDA', 'side': 'buy',
                        'quantity': '10', 'price': '100.00',
                        'executed_at': '2026-06-15T15:00:00+00:00'}, now=NOW)
-    service.add_trade({'request_id': '6f1d1c1e-9999-4444-8888-000000000002', 'ticker': 'AMD', 'side': 'buy',
+    legacy_decisions.add_trade({'request_id': '6f1d1c1e-9999-4444-8888-000000000002', 'ticker': 'AMD', 'side': 'buy',
                        'quantity': '10', 'price': '100.00',
                        'executed_at': '2026-10-20T15:00:00+00:00'}, now=NOW)
     view = service.discipline(now=NOW, since=date(2026, 10, 1))
@@ -608,7 +610,7 @@ def test_rerun_with_context_returns_existing_p1_plan(db):
 def test_today_splits_extended_units(db):
     seed_watchlist(db, [('AAA', ['core']), ('NVDA', [])])
     service.run_batch(now=NOW, deps=deps(Sources()))
-    view = service.today(now=NOW)
+    view = service.unit_cards(now=NOW)
     assert [u['ticker'] for u in view['units']] == ['AAA']
     assert [u['ticker'] for u in view['extended_units']] == ['NVDA']
     ext = view['extended_units'][0]
@@ -623,7 +625,7 @@ def test_held_extended_stays_in_main_list(db):
                              'price': '101.5', 'fee': '1', 'executed_at': '2026-10-10T14:00:00+00:00'},
                         now=datetime(2026, 10, 10, 15, tzinfo=UTC))
     service.run_batch(now=NOW, deps=deps(Sources()))
-    view = service.today(now=NOW)
+    view = service.unit_cards(now=NOW)
     assert 'NVDA' in [u['ticker'] for u in view['units']]
     assert 'NVDA' not in [u['ticker'] for u in view['extended_units']]
 
@@ -631,7 +633,7 @@ def test_held_extended_stays_in_main_list(db):
 def test_today_market_block(db):
     seed_watchlist(db, [(f'T{i:02d}', []) for i in range(25)])
     service.run_batch(now=NOW, deps=deps(Sources()))
-    view = service.today(now=NOW)
+    view = service.unit_cards(now=NOW)
     assert view['market']['session'] == SESSION
     assert view['market']['calc_version'] == 'regime-2'
     assert view['market']['label'] in ('risk_on', 'neutral', 'risk_off', 'insufficient')
@@ -712,7 +714,7 @@ def test_agent_order_main_before_extended(db, scripted_model):
     for ticker in ('CCC', 'DDD'):   # 分层记录：扩展池；DDD 另有持仓 → 主列表
         db.execute("INSERT INTO pool_tiers (ticker, tier, effective_session, recorded_at) "
                    "VALUES (%s, 'extended', %s, %s)", [ticker, SESSION - timedelta(days=1), NOW])
-    service.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'DDD', 'side': 'buy', 'quantity': '10',
+    legacy_decisions.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'DDD', 'side': 'buy', 'quantity': '10',
                        'price': '100.00', 'executed_at': '2026-09-20T15:00:00+00:00'}, now=NOW)
     bad = json.dumps({'action': 'buy', 'summary': 'x',
                       'levels': {k: {'value': v, 'refs': ['call:99']} for k, v in
@@ -1008,7 +1010,7 @@ def test_manual_run_conflict_and_not_buy(db, scripted_model):
 
 def test_today_unit_has_agent_ok_view(db, scripted_model):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
-    unit = service.today(now=NOW)['units'][0]
+    unit = service.unit_cards(now=NOW)['units'][0]
     assert set(unit['agent']) == {'id', 'status', 'model', 'agent_version', 'output', 'counter', 'plan',
                                   'input_tokens', 'output_tokens', 'created_at', 'chain', 'knowledge_refs'}
     assert unit['agent']['knowledge_refs'] == []                       # v2.7 §6.2: nothing cited by this plan
@@ -1030,7 +1032,7 @@ def test_today_hides_rejected_output(db, scripted_model):
                       'thesis': [{'text': 't', 'refs': ['call:99']}]})
     service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, [
         _tool_msg('get_indicators', {'ticker': 'NVDA'}), AIMessage(content=bad)]))
-    unit = service.today(now=NOW)['units'][0]
+    unit = service.unit_cards(now=NOW)['units'][0]
     assert set(unit['agent']) == {'id', 'status', 'reason', 'created_at'}
     assert unit['agent']['reason'] == 'invalid_citation'
 
@@ -1046,7 +1048,7 @@ def test_extended_unit_agent_status(db):
                "VALUES ('XNO', 'extended', %s, %s)", [SESSION - timedelta(days=1), NOW])
     db.execute("INSERT INTO signal_candidates (ticker, signal_date, action, rule_id, rule_version, inputs) "
                "VALUES ('XNO', %s, 'buy', 'trend_reclaim', '1', '{}')", [SESSION])
-    ext = {e['ticker']: e for e in service.today(now=NOW)['extended_units']}
+    ext = {e['ticker']: e for e in service.unit_cards(now=NOW)['extended_units']}
     assert ext['CCC']['agent_status'] == 'skipped: disabled'
     assert ext['XNO']['agent_status'] is None      # 从未运行
 
@@ -1166,7 +1168,7 @@ def test_sell_and_watch_units_get_interpretations(db, scripted_model):
 
 
 def test_conflict_buy_unit_is_interpreted_not_proposed(db, scripted_model):
-    service.add_trade({'request_id': '6f1d1c1e-2222-4444-8888-000000000042', 'ticker': 'NVDA', 'side': 'buy',
+    legacy_decisions.add_trade({'request_id': '6f1d1c1e-2222-4444-8888-000000000042', 'ticker': 'NVDA', 'side': 'buy',
                        'quantity': '10', 'price': '137.00', 'executed_at': '2026-10-10T15:00:00+00:00'}, now=NOW)
     summary = service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _interpret_reply()))
     runs = repository.agent_runs_for(db, 'NVDA', SESSION, mode='interpret')
@@ -1234,7 +1236,7 @@ def test_interpret_ok_does_not_skip_propose(db, scripted_model):
     service.run_batch(tickers=['WTCH'], now=later, deps=again)
     propose = repository.agent_runs_for(db, 'WTCH', SESSION)          # 默认只看 propose
     assert [r['status'] for r in propose] == ['ok']
-    unit = next(u for u in service.today(now=later)['units'] if u['ticker'] == 'WTCH')
+    unit = next(u for u in service.unit_cards(now=later)['units'] if u['ticker'] == 'WTCH')
     assert unit['agent']['status'] == 'ok'
 
 
@@ -1264,7 +1266,7 @@ def test_agent_runs_coverage_ignores_interpret(db, scripted_model):
 # --- three-track rows and the live view (P4 §4) ---
 
 def _decide(unit, final, *, plan_id=None, now=NOW):
-    return service.decide({
+    return legacy_decisions.decide({
         'request_id': str(uuid.uuid4()), 'ticker': unit['ticker'],
         'signal_date': unit['signal_date'].isoformat(),
         'candidate_ids': [str(c) for c in unit['candidate_ids']],
@@ -1277,13 +1279,13 @@ def test_track_rows_trace_ids(db, scripted_model):
     service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
     off = agent_deps(scripted_model, [], settings=_agent_settings(provider='off'))
     service.run_batch(tickers=['MU'], now=NOW, deps=off)
-    view = service.today(now=NOW)
+    view = service.unit_cards(now=NOW)
     nvda_unit = next(u for u in view['units'] if u['ticker'] == 'NVDA')
     mu_unit = next(u for u in view['units'] if u['ticker'] == 'MU')
     agent_plan = repository.agent_plan(db, 'NVDA', SESSION)
     nvda_decision = _decide(nvda_unit, 'buy', plan_id=agent_plan['id'])
     _decide(mu_unit, 'ignore')
-    trade = service.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'NVDA', 'side': 'buy',
+    trade = legacy_decisions.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'NVDA', 'side': 'buy',
                                'quantity': '10', 'price': '100.00', 'fee': '1',
                                'executed_at': '2026-10-22T15:00:00+00:00',
                                'decision_id': str(nvda_decision['id'])}, now=NOW)['record']
@@ -1302,14 +1304,14 @@ def test_track_rows_trace_ids(db, scripted_model):
 def test_track_rows_keep_buys_after_decision_correction(db, scripted_model):
     """A buy linked to an earlier decision in the chain still belongs to the unit."""
     service.run_batch(tickers=['NVDA'], now=NOW, deps=agent_deps(scripted_model, _ok_responses()))
-    nvda_unit = next(u for u in service.today(now=NOW)['units'] if u['ticker'] == 'NVDA')
+    nvda_unit = next(u for u in service.unit_cards(now=NOW)['units'] if u['ticker'] == 'NVDA')
     agent_plan = repository.agent_plan(db, 'NVDA', SESSION)
     first = _decide(nvda_unit, 'buy', plan_id=agent_plan['id'])
-    trade = service.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'NVDA', 'side': 'buy',
+    trade = legacy_decisions.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'NVDA', 'side': 'buy',
                                'quantity': '10', 'price': '100.00', 'fee': '1',
                                'executed_at': '2026-10-22T15:00:00+00:00',
                                'decision_id': str(first['id'])}, now=NOW)['record']
-    corrected = service.decide({
+    corrected = legacy_decisions.decide({
         'request_id': str(uuid.uuid4()), 'ticker': 'NVDA', 'signal_date': SESSION.isoformat(),
         'candidate_ids': [str(c) for c in nvda_unit['candidate_ids']],
         'proposed_action': nvda_unit['proposed_action'], 'final_action': 'buy', 'decision': 'accept',
@@ -1343,7 +1345,7 @@ def test_weekly_snapshot_has_tracks(db, scripted_model):
     off = agent_deps(scripted_model, [], settings=_agent_settings(provider='off'))
     service.run_batch(tickers=['NVDA', 'MU'], now=NOW, deps=off)
     record = service.generate_weekly(SESSION - timedelta(days=SESSION.weekday()), now=NOW)
-    assert record['calc_version'] == 'review-7'
+    assert record['calc_version'] == 'review-8'
     stats = record['stats']
     assert stats['tracks']['summary']['all']['actual']['units'] == 2
     assert all('ticker' in row and row['rule'] and row['agent'] and row['actual']
@@ -1600,7 +1602,7 @@ def test_agent_stage_without_migration_026(db, scripted_model):
         [('migration_026_missing', ['AAA', 'CCC'])]
 
     # 「今日」不崩：按 agent-1 的方式读，没有链
-    view = service.today(now=NOW)
+    view = service.unit_cards(now=NOW)
     assert view['timeline_ready'] is False and view['chains'] == []
     aaa = next(u for u in view['units'] if u['ticker'] == 'AAA')
     assert aaa['agent']['status'] == 'skipped' and aaa['agent']['reason'] == 'migration_026_missing'
@@ -1624,7 +1626,7 @@ def test_today_agent_view_uses_head_not_latest_run(db, scripted_model):
     _insert_run(db, mode='revise', status='rejected', reason='changes_mismatch', at=later)
     _insert_run(db, mode='propose', status='error', reason='model_error', at=later)   # 比首版更晚的运行
     db.commit()
-    unit = service.today(now=later)['units'][0]
+    unit = service.unit_cards(now=later)['units'][0]
     agent = unit['agent']
     assert agent['id'] == str(v0['id']) and agent['status'] == 'ok'            # 内容取最新版的运行
     assert agent['output'] == v0['output'] and agent['counter'] == v0['counter']
@@ -1656,7 +1658,7 @@ def test_today_marks_agent1_legacy(db, scripted_model):
         'reason': None, 'detail': None, 'output': output, 'counter': {'status': 'ok', 'risks': [], 'dropped': 0},
         'plan_id': plan['id'], 'input_tokens': 1, 'output_tokens': 1, 'started_at': later, 'finished_at': later}, [])
     db.commit()
-    view = service.today(now=later)
+    view = service.unit_cards(now=later)
     agent = view['units'][0]['agent']
     assert agent['legacy'] is True and agent['chain'] is None
     assert agent['agent_version'] == 'agent-1' and agent['plan']['id'] == plan['id']
@@ -1666,14 +1668,14 @@ def test_today_marks_agent1_legacy(db, scripted_model):
 def test_today_chains_and_has_chain(db, scripted_model):
     service.run_batch(tickers=['MU', 'NVDA'], now=NOW,
                       deps=agent_deps(scripted_model, _ok_responses('MU') + _ok_responses('NVDA')))
-    units = {u['ticker']: u for u in service.today(now=NOW)['units']}
+    units = {u['ticker']: u for u in service.unit_cards(now=NOW)['units']}
     heads = {t: repository.chain_head(db, t, SESSION) for t in ('MU', 'NVDA')}
     _decide(units['MU'], 'buy', plan_id=heads['MU']['plan']['id'])            # 决定买入、未成交 → 入场期
     nvda_decision = _decide(units['NVDA'], 'buy', plan_id=heads['NVDA']['plan']['id'])
-    service.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'NVDA', 'side': 'buy', 'quantity': '10',
+    legacy_decisions.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'NVDA', 'side': 'buy', 'quantity': '10',
                        'price': '100.00', 'executed_at': '2026-10-22T15:00:00+00:00',
                        'decision_id': str(nvda_decision['id'])}, now=NOW)       # 成交 → 持仓期
-    service.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'AMD', 'side': 'buy', 'quantity': '5',
+    legacy_decisions.add_trade({'request_id': str(uuid.uuid4()), 'ticker': 'AMD', 'side': 'buy', 'quantity': '5',
                        'price': '90.00', 'executed_at': '2026-10-20T15:00:00+00:00'}, now=NOW)   # 无链的持仓
     reason = '无新信号，复查条件未满足（下一交易日）；' + '补充说明' * 10
     repository.insert_plan_review(db, {
@@ -1684,7 +1686,7 @@ def test_today_chains_and_has_chain(db, scripted_model):
         'outcome': 'maintain', 'decided_by': 'host', 'reason': reason, 'attempt': 1, 'cutoff_at': NOW})
     db.commit()
 
-    view = service.today(now=NOW)
+    view = service.unit_cards(now=NOW)
     assert view['units'] == []                                     # 两个单元都已决定
     chains = {c['ticker']: c for c in view['chains']}
     assert set(chains) == {'MU', 'NVDA'}
@@ -1707,7 +1709,7 @@ def test_today_chains_and_has_chain(db, scripted_model):
         'trigger': 'batch', 'mode': 'holding', 'timeline_version': 'timeline-1', 'outcome': 'invalidate',
         'decided_by': 'host', 'reason': '失效条件成立', 'attempt': 1, 'cutoff_at': NOW})
     db.commit()
-    view = service.today(now=NOW)
+    view = service.unit_cards(now=NOW)
     assert {c['ticker'] for c in view['chains']} == {'MU'}
     holdings = {h['ticker']: h for h in view['holdings']}
     assert (holdings['NVDA']['has_chain'], holdings['NVDA']['chain_state']) == (True, 'invalidated')
@@ -1862,7 +1864,7 @@ def test_today_chain_carries_head_cutoff_diff_and_review_conditions(db, scripted
         'attempt': 1, 'cutoff_at': datetime.now(UTC)})
     db.commit()
     head = repository.chain_head(db, 'NVDA', SESSION)['version']
-    chain = service.today(now=NOW)['units'][0]['agent']['chain']
+    chain = service.unit_cards(now=NOW)['units'][0]['agent']['chain']
     assert chain['version_no'] == 1 and chain['head_plan_id'] == str(v1['id'])
     assert chain['cutoff_at'] == head['cutoff_at']
     assert chain['diff'] == [{'field': 'stop', 'before': str(v0['stop']), 'after': '95.5'}]

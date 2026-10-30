@@ -124,7 +124,9 @@
         </h4>
         {#if step.note && step.kind !== 'check'}<p class="text-xs text-muted">{step.note}</p>{/if}
 
-        {#if step.kind === 'read'}
+        {#if step.kind === 'previous_chain'}
+          <pre class="text-xs whitespace-pre-wrap rounded border border-border p-2" data-previous-chain>{step.text}</pre>
+        {:else if step.kind === 'read'}
           <ul class="space-y-1">
             {#each step.calls ?? [] as call (call.seq)}
               <li data-call={`${runId}-${call.seq}`} data-highlighted={highlighted === call.seq ? 'true' : undefined}

@@ -8,6 +8,8 @@ with an UPDATE (test data only; the code never updates these rows).
 import os
 import re
 import uuid
+
+import legacy_decisions
 from contextlib import contextmanager, nullcontext
 from datetime import timedelta
 
@@ -329,12 +331,12 @@ def test_recheck_on_a_held_chain_reviews_in_holding_mode(db):
     market = Market()
     v0 = signal_day(db, market, ['SYNTH'], review_when={'SYNTH': QUIET})[0]['SYNTH']
     cands = repository.unit_candidates(db, 'SYNTH', S1)
-    decision = service.decide({'request_id': str(uuid.uuid4()), 'ticker': 'SYNTH', 'signal_date': S1.isoformat(),
+    decision = legacy_decisions.decide({'request_id': str(uuid.uuid4()), 'ticker': 'SYNTH', 'signal_date': S1.isoformat(),
                                'candidate_ids': [str(c['id']) for c in cands], 'proposed_action': 'buy',
                                'final_action': 'buy', 'decision': 'accept', 'reason': '合成样例',
                                'plan_id': str(v0['plan']['id'])}, now=evening(S1))['record']
     from test_workbench_plan_review import _trade
-    service.add_trade(_trade('SYNTH', 'buy', '10', '125', day(1), decision['id']), now=evening(day(1)))
+    legacy_decisions.add_trade(_trade('SYNTH', 'buy', '10', '125', day(1), decision['id']), now=evening(day(1)))
     run(db, market, 1, tickers=['SYNTH'])
     model = make_model(review=verdict('SYNTH', 'maintain', '持仓照常', first=tool('get_trigger', {}, 'r1')))
     row = plan_review.recheck('SYNTH', S1, now=evening(day(1)) + timedelta(minutes=30), deps=deps_for(model))

@@ -21,9 +21,9 @@ from investment_assistant.workbench.discipline import _at_basis, _current_basis
 
 TRACKS_V1 = 'tracks-1'
 TRACKS_V2 = 'tracks-2'
-# service.tracks / the weekly snapshot still build `tracks-1` rows and label them with TRACKS_VERSION; spec §2
-# fixes TRACKS_VERSION = 'tracks-2', which flips when they switch to agent_pick / actual_track_v2 (Task 4).
-TRACKS_VERSION = TRACKS_V1
+# service.tracks and the weekly / monthly snapshots build `tracks-2` rows (spec §2); `tracks-1` rows stay readable
+# in the old snapshots and old review cards.
+TRACKS_VERSION = TRACKS_V2
 
 TRACK_STATUS_TEXT = {
     'missing': '缺失',

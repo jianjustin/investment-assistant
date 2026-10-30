@@ -20,10 +20,9 @@ from investment_assistant.workbench.plans import MAX_HOLD_DEFAULT
 
 SHADOW_V1 = 'plan-shadow-1'
 SHADOW_V2 = 'plan-shadow-2'
-# The label the unrewired callers (service.shadow, plan_review, discuss_tools) put beside `simulate` output.
-# Spec §2 fixes SHADOW_VERSION = 'plan-shadow-2'; it flips when those callers switch to simulate_both /
-# simulate_v2 (Task 3 / 4). Until then a plan-shadow-1 result must keep carrying the plan-shadow-1 label.
-SHADOW_VERSION = SHADOW_V1
+# The current shadow version (spec §2). The read views run `simulate_both` and label each outcome with the version
+# that produced it (`service.shadow_outcomes`); `plan-shadow-1` stays for plans without execution fields.
+SHADOW_VERSION = SHADOW_V2
 
 
 def _basis_factor(day: date, splits: list[tuple[date, Decimal]]) -> Decimal:

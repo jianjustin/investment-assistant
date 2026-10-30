@@ -1,6 +1,8 @@
 import re
 from datetime import UTC, date, datetime
 
+import legacy_decisions
+
 import pytest
 
 from investment_assistant.workbench import derivation_view, ledger, service
@@ -26,13 +28,36 @@ def test_unavailable_database_is_503_not_empty(client, monkeypatch, method, path
 
 
 @pytest.mark.parametrize('exc, code', [
-    (ledger.LedgerError('reason is required'), 400),
-    (ledger.Conflict('newer decision'), 409),
+    (ledger.LedgerError('quantity must be > 0'), 400),
+    (ledger.Conflict('plan_stale: 成交时这条链已是第 2 版，请关联第 2 版'), 409),
     (service.Unavailable('down'), 503),
 ])
-def test_decision_errors_map_to_status(client, monkeypatch, exc, code):
-    monkeypatch.setattr(service, 'decide', raiser(exc))
-    assert client.post('/api/workbench/decisions', json={}).status_code == code
+def test_trade_errors_map_to_status(client, monkeypatch, exc, code):
+    monkeypatch.setattr(service, 'add_trade', raiser(exc))
+    assert client.post('/api/workbench/trades', json={}).status_code == code
+
+
+def test_decisions_post_410(client):
+    """v2.9 D24: the decision button is gone; the answer is 410 with the reason code and the sentence, and nothing is
+    written (the service raises before it opens a transaction)."""
+    resp = client.post('/api/workbench/decisions', json={'reason': 'r'})
+    assert resp.status_code == 410
+    assert resp.json() == {'error': 'decisions_retired: v2.9 起不再记录决定，采纳由成交推导；可在计划上写备注'}
+
+
+def test_trade_with_decision_id_is_400_decision_link_retired(client, monkeypatch):
+    seen = {}
+
+    def add_trade(payload, *, now):
+        seen['payload'] = payload
+        return ledger_module.record_trade(None, payload, now=now)
+    from investment_assistant.workbench import ledger as ledger_module
+    monkeypatch.setattr(service, 'add_trade', add_trade)
+    resp = client.post('/api/workbench/trades', json={
+        'request_id': '6f1d1c1e-6666-4444-8888-000000000001', 'ticker': 'NVDA', 'side': 'buy', 'quantity': '1',
+        'price': '1', 'executed_at': '2026-10-23T14:00:00+00:00', 'decision_id': '6f1d1c1e-6666-4444-8888-000000000002'})
+    assert resp.status_code == 400
+    assert resp.json()['error'] == 'decision_link_retired: v2.9 起成交不再关联决定，请改为关联计划'
 
 
 def test_void_unknown_trade_is_404(client, monkeypatch):
@@ -40,16 +65,16 @@ def test_void_unknown_trade_is_404(client, monkeypatch):
     assert client.post('/api/workbench/trades/abc/void', json={'reason': 'x'}).status_code == 404
 
 
-def test_decision_passes_payload_and_server_time(client, monkeypatch):
+def test_trade_passes_payload_and_server_time(client, monkeypatch):
     seen = {}
 
-    def decide(payload, *, now):
+    def add_trade(payload, *, now):
         seen.update(payload=payload, now=now)
-        return {'status': 'created', 'record': {'id': 'd1'}}
-    monkeypatch.setattr(service, 'decide', decide)
-    resp = client.post('/api/workbench/decisions', json={'reason': 'r', 'decided_at': '2000-01-01T00:00:00Z'})
+        return {'status': 'created', 'record': {'id': 't1'}}
+    monkeypatch.setattr(service, 'add_trade', add_trade)
+    resp = client.post('/api/workbench/trades', json={'ticker': 'MU', 'plan_id': 'p1', 'executed_at': '2000-01-01T00:00:00Z'})
     assert resp.status_code == 200 and resp.json()['status'] == 'created'
-    assert seen['payload'] == {'reason': 'r', 'decided_at': '2000-01-01T00:00:00Z'}  # ignored by the ledger
+    assert seen['payload'] == {'ticker': 'MU', 'plan_id': 'p1', 'executed_at': '2000-01-01T00:00:00Z'}
     assert seen['now'].tzinfo is not None and seen['now'].year >= 2026
 
 
@@ -179,16 +204,13 @@ def test_bad_own_levels_400_and_nothing_written(client, workbench_db, monkeypatc
         'valid_from': date(2026, 10, 23), 'valid_until': date(2026, 10, 27), 'sizing': {}, 'status': 'ok',
         'invalid_reasons': [], 'warnings': [], 'inputs': {}, 'request_id': None, 'request_hash': None})
 
-    cid = workbench_db.execute('SELECT id FROM signal_candidates').fetchone()[0]
-    resp = client.post('/api/workbench/decisions', json={
-        'request_id': '6f1d1c1e-6666-4444-8888-000000000001', 'ticker': 'NVDA', 'signal_date': unit_day.isoformat(),
-        'candidate_ids': [str(cid)], 'proposed_action': 'buy', 'final_action': 'buy', 'decision': 'accept',
-        'reason': '自定价位', 'own_plan': {'request_id': '6f1d1c1e-7777-4444-8888-000000000002',
-                                            'entry_low': 'abc', 'entry_high': '101.5', 'stop': '94',
-                                            'target1': '112'}})
+    resp = client.post('/api/workbench/trades', json={
+        'request_id': '6f1d1c1e-6666-4444-8888-000000000001', 'ticker': 'NVDA', 'side': 'buy', 'quantity': '5',
+        'price': '100.5', 'executed_at': '2026-10-23T14:00:00+00:00',
+        'own_plan': {'entry_low': 'abc', 'entry_high': '101.5', 'stop': '94', 'target1': '112'}})
     assert resp.status_code == 400
     assert workbench_db.execute("SELECT count(*) FROM trade_plans WHERE kind = 'own'").fetchone()[0] == 0
-    assert workbench_db.execute('SELECT count(*) FROM signal_decisions').fetchone()[0] == 0
+    assert workbench_db.execute('SELECT count(*) FROM trades').fetchone()[0] == 0
 
 
 def test_plan_shadow_503_without_db(client, monkeypatch):
@@ -750,17 +772,17 @@ def test_instrument_holding_key(seeded, client):
     body = client.get('/api/workbench/instruments/AAA').json()
     assert body['holding'] is None and body['position'] is None
 
-    unit = next(u for u in service_module.today(now=BATCH_NOW)['units'] if u['ticker'] == 'AAA')
+    unit = next(u for u in service_module.unit_cards(now=BATCH_NOW)['units'] if u['ticker'] == 'AAA')
     head = repo.chain_head(seeded, 'AAA', BATCH_SESSION)
     decision = _decide(unit, 'buy', plan_id=head['plan']['id'], now=BATCH_NOW)
-    service_module.add_trade({'request_id': '6f1d1c1e-9999-4444-8888-000000000001', 'ticker': 'AAA', 'side': 'buy',
+    legacy_decisions.add_trade({'request_id': '6f1d1c1e-9999-4444-8888-000000000001', 'ticker': 'AAA', 'side': 'buy',
                               'quantity': '10', 'price': '100.00', 'executed_at': '2026-10-22T15:00:00+00:00',
                               'decision_id': str(decision['id'])}, now=BATCH_NOW)
     seeded.commit()
 
     body = client.get('/api/workbench/instruments/AAA').json()
     holding = body['holding']
-    today_row = next(h for h in client_json(service_module.today(now=BATCH_NOW))['holdings'] if h['ticker'] == 'AAA')
+    today_row = next(h for h in client_json(service.unit_cards(now=BATCH_NOW))['holdings'] if h['ticker'] == 'AAA')
     assert set(holding) == {'quantity', 'avg_cost', 'plan_id', 'stop', 'mode', 't1_reached', 'target1', 'last_close',
                             'to_stop_pct', 'to_target_pct'}
     assert holding == {k: today_row[k] for k in holding}            # same row as 「今日」, field by field
@@ -784,9 +806,9 @@ def test_instrument_holding_failure_is_isolated(seeded, client, monkeypatch):
     from investment_assistant.workbench import service as service_module
     from investment_assistant.workbench import repository as repo
 
-    unit = next(u for u in service_module.today(now=BATCH_NOW)['units'] if u['ticker'] == 'AAA')
+    unit = next(u for u in service_module.unit_cards(now=BATCH_NOW)['units'] if u['ticker'] == 'AAA')
     decision = _decide(unit, 'buy', plan_id=repo.chain_head(seeded, 'AAA', BATCH_SESSION)['plan']['id'], now=BATCH_NOW)
-    service_module.add_trade({'request_id': '6f1d1c1e-9999-4444-8888-000000000002', 'ticker': 'AAA', 'side': 'buy',
+    legacy_decisions.add_trade({'request_id': '6f1d1c1e-9999-4444-8888-000000000002', 'ticker': 'AAA', 'side': 'buy',
                               'quantity': '10', 'price': '100.00', 'executed_at': '2026-10-22T15:00:00+00:00',
                               'decision_id': str(decision['id'])}, now=BATCH_NOW)
     seeded.commit()
@@ -1064,7 +1086,7 @@ def test_growth_routes_503_without_migration_027(seeded, client):
     body = client.get('/api/workbench/instruments/AAA').json()
     assert body['knowledge'] is None and body['errors'] == {'knowledge': '迁移 027 未执行'}
     assert client.get('/api/workbench/today').status_code == 200
-    unit = next(u for u in client.get('/api/workbench/today').json()['units'] if u['ticker'] == 'AAA')
+    unit = next(u for u in client_json(service.unit_cards(now=BATCH_NOW))['units'] if u['ticker'] == 'AAA')
     assert unit['agent']['knowledge_refs'] == []
     chain = client.get(f'/api/workbench/chains/AAA/{BATCH_SESSION.isoformat()}').json()
     assert [v['knowledge_refs'] for v in chain['versions']] == [[]]
@@ -1086,7 +1108,7 @@ def _cite_head_plan(seeded, title='引用过的经验'):
 
 
 def test_today_and_chain_knowledge_refs(seeded, client):
-    body = client.get('/api/workbench/today').json()
+    body = client_json(service.unit_cards(now=BATCH_NOW))        # 「今日」 itself no longer carries unit cards (D34)
     unit = next(u for u in body['units'] if u['ticker'] == 'AAA')
     assert unit['agent']['knowledge_refs'] == []                       # a plan that cited nothing
     kid, plan_id = _cite_head_plan(seeded)
@@ -1094,7 +1116,7 @@ def test_today_and_chain_knowledge_refs(seeded, client):
                               'title': '第二版标题', 'body': '正文', 'scope': '范围', 'tickers': ['AAA']},
                         now=BATCH_NOW)
     expected = [{'ref': f'know:{kid}@1', 'title': '引用过的经验', 'fields': ['thesis', 'counter'], 'current_version': 2}]
-    unit = next(u for u in client.get('/api/workbench/today').json()['units'] if u['ticker'] == 'AAA')
+    unit = next(u for u in client_json(service.unit_cards(now=BATCH_NOW))['units'] if u['ticker'] == 'AAA')
     assert unit['agent']['knowledge_refs'] == expected
     chain = client.get(f'/api/workbench/chains/AAA/{BATCH_SESSION.isoformat()}').json()
     assert [v['knowledge_refs'] for v in chain['versions']] == [expected]
@@ -1103,7 +1125,7 @@ def test_today_and_chain_knowledge_refs(seeded, client):
             'shadow_version', 'versions', 'reviews', 'inputs', 'retriggers', 'holding_status', 'notes'} == set(chain)
     # every block that shows a plan carries the key; status-only blocks (error, skipped, rejected) keep their shape
     assert all(('knowledge_refs' in u['agent']) == ('plan' in u['agent'])
-               for u in client.get('/api/workbench/today').json()['units'] if u.get('agent'))
+               for u in client_json(service.unit_cards(now=BATCH_NOW))['units'] if u.get('agent'))
 
 
 def test_instrument_knowledge_key(seeded, client):
@@ -1135,9 +1157,51 @@ def test_existing_keys_unchanged(seeded, client):
     instrument = client.get('/api/workbench/instruments/AAA').json()
     assert OLD_KEYS | NEW_KEYS <= set(instrument) and set(instrument) == OLD_KEYS | NEW_KEYS | {'knowledge'}
     today = client.get('/api/workbench/today').json()
-    assert {'session', 'units', 'extended_units', 'holdings', 'market', 'screen', 'chains', 'timeline_ready'} == set(today)
-    unit = next(u for u in today['units'] if u['ticker'] == 'AAA')
+    assert {'session', 'units', 'extended_units', 'holdings', 'market', 'screen', 'chains', 'timeline_ready',
+            'retired'} == set(today)
+    assert today['units'] == [] and today['extended_units'] == [] and today['retired'] is True      # D34
+    unit = next(u for u in client_json(service.unit_cards(now=BATCH_NOW))['units'] if u['ticker'] == 'AAA')
     assert {'id', 'status', 'model', 'agent_version', 'output', 'counter', 'plan', 'input_tokens', 'output_tokens',
             'created_at', 'chain'} <= set(unit['agent'])
     assert set(unit['agent']) - {'id', 'status', 'model', 'agent_version', 'output', 'counter', 'plan', 'input_tokens',
                                  'output_tokens', 'created_at', 'chain', 'legacy'} == {'knowledge_refs'}
+
+
+def test_plan_table_history_and_linkable_endpoints(seeded, client):
+    """v2.9 §9.1 over a real chain: the table row, the history, the link list and the holding status."""
+    table = client.get('/api/workbench/plan-table').json()
+    assert set(table) == {'session', 'groups', 'other_units', 'counts', 'errors'}
+    [row] = table['groups']['entry']
+    assert row['ticker'] == 'AAA' and row['chain']['state'] == 'entry' and row['plan']['plan_version'] == 'agent-3'
+    assert table['session'] == BATCH_SESSION.isoformat() and table['counts']['entry'] == 1
+    history = client.get('/api/workbench/instruments/AAA/plan-history').json()
+    assert [r['kind'] for r in history['rows']] == ['chain_open', 'version'] and history['chains'][0]['state'] == 'entry'
+    assert client.get('/api/workbench/holding-status').json() == {'session': BATCH_SESSION.isoformat(), 'rows': []}
+    when = '2026-10-23T14:00:00+00:00'
+    linkable = client.get('/api/workbench/trades/linkable-plans', params={'ticker': 'aaa', 'executed_at': when}).json()
+    assert linkable['ticker'] == 'AAA'            # the version was written "now" (the real clock): none existed then
+    assert linkable['default_plan_id'] is None
+
+
+def test_trade_link_errors_and_the_note_endpoint(seeded, client):
+    head = next(r for r in client.get('/api/workbench/plan-table').json()['groups']['entry'])['plan']['plan_id']
+    body = {'request_id': '6f1d1c1e-6666-4444-8888-0000000000a1', 'ticker': 'AAA', 'side': 'buy', 'quantity': '5',
+            'price': '100', 'fee': '0', 'executed_at': '2026-10-22T15:00:00+00:00', 'plan_id': head}
+    resp = client.post('/api/workbench/trades', json=body)
+    assert resp.status_code == 409 and resp.json()['error'].startswith('plan_after_fill: ')
+    seeded.execute('UPDATE agent_plan_versions SET created_at = %s', ['2026-10-22T10:00:00+00:00'])
+    seeded.commit()
+    done = client.post('/api/workbench/trades', json=body)
+    assert done.status_code == 200 and done.json()['record']['plan_id'] == head
+    assert client.post('/api/workbench/trades', json={**body, 'request_id': '6f1d1c1e-6666-4444-8888-0000000000a2',
+                                                      'decision_id': head}).status_code == 400
+    note = {'request_id': '6f1d1c1e-6666-4444-8888-0000000000b1', 'ticker': 'AAA',
+            'chain_signal_date': BATCH_SESSION.isoformat(), 'body': '等回踩'}
+    created = client.post('/api/workbench/plan-notes', json=note)
+    assert created.status_code == 200 and created.json()['status'] == 'created'
+    assert client.post('/api/workbench/plan-notes', json=note).json()['status'] == 'existing'
+    assert client.post('/api/workbench/plan-notes', json={**note, 'body': '改了'}).status_code == 409
+    listed = client.get('/api/workbench/plan-notes', params={'ticker': 'AAA',
+                                                              'chain_signal_date': BATCH_SESSION.isoformat()}).json()
+    assert [n['body'] for n in listed['notes']] == ['等回踩']
+    assert client.post('/api/workbench/plan-notes', json={**note, 'request_id': 'x'}).status_code == 400

@@ -376,3 +376,147 @@ def test_job_reports_task_filter_accepts_the_new_names(client, monkeypatch):
     for name in ("daily", "sec_backfill", "workbench", "workbench_review", "filings"):
         assert client.get(f"/api/jobs/reports?task={name}").status_code == 200
     assert seen == ["daily", "sec_backfill", "workbench", "workbench_review", "filings"]
+
+
+V29_ROUTES = {
+    "/api/workbench/plan-table": {"get"},
+    "/api/workbench/holding-status": {"get"},
+    "/api/workbench/instruments/{ticker}/plan-history": {"get"},
+    "/api/workbench/trades/linkable-plans": {"get"},
+    "/api/workbench/plan-notes": {"get", "post"},
+    "/api/workbench/decisions": {"post"},
+}
+V29_PLAN = "6f1d1c1e-6666-4444-8888-000000000009"
+
+
+def test_v29_routes_in_openapi(client):
+    spec = client.get("/openapi.json").json()
+    for path, methods in V29_ROUTES.items():
+        assert path in spec["paths"], path
+        assert methods <= set(spec["paths"][path]), path
+    assert set(spec["paths"]["/api/workbench/plan-table"]) == {"get"}              # read-only
+    assert set(spec["paths"]["/api/workbench/trades/linkable-plans"]) == {"get"}
+
+
+V29_WITHOUT_DB = [
+    ("get", "/api/workbench/plan-table", None),
+    ("get", "/api/workbench/plan-table?session=2026-10-30&include_extended=true", None),
+    ("get", "/api/workbench/holding-status?session=2026-10-30", None),
+    ("get", "/api/workbench/instruments/MU/plan-history?include_reviews=true&include_baselines=true", None),
+    ("get", "/api/workbench/trades/linkable-plans?ticker=MU&executed_at=2026-10-30T14:00:00Z", None),
+    ("get", "/api/workbench/plan-notes?ticker=MU&chain_signal_date=2026-10-29", None),
+    ("post", "/api/workbench/plan-notes", {"request_id": REQUEST_ID, "ticker": "MU", "chain_signal_date": "2026-10-29",
+                                           "body": "等回踩"}),
+]
+
+
+def test_v29_routes_without_db_are_503(client):
+    for method, path, body in V29_WITHOUT_DB:
+        resp = getattr(client, method)(path, **({} if body is None else {"json": body}))
+        assert resp.status_code == 503, path
+        assert set(resp.json()) == {"error"} and resp.json()["error"], path
+
+
+def test_v29_request_errors_use_the_error_envelope(client):
+    cases = [("get", "/api/workbench/plan-table?session=not-a-date", None, 400),
+             ("get", "/api/workbench/holding-status?session=2026-13-01", None, 400),
+             ("get", "/api/workbench/trades/linkable-plans", None, 400),
+             ("get", "/api/workbench/trades/linkable-plans?ticker=MU&executed_at=yesterday", None, 400),
+             ("get", "/api/workbench/trades/linkable-plans?ticker=MU&executed_at=2026-10-30T14:00:00", None, 400),
+             ("get", "/api/workbench/plan-notes", None, 400),
+             ("get", "/api/workbench/plan-notes?ticker=MU&plan_id=not-a-uuid", None, 400),
+             ("post", "/api/workbench/decisions", {}, 410)]
+    for method, path, body, status in cases:
+        resp = getattr(client, method)(path, **({} if body is None else {"json": body}))
+        assert resp.status_code == status and set(resp.json()) == {"error"} and resp.json()["error"], path
+
+
+def test_decisions_post_410(client):
+    """The decision endpoint is gone for good (D24): 410 with the code and the sentence, whatever the body."""
+    for body in ({}, {"request_id": REQUEST_ID, "ticker": "MU", "decision": "accept"}):
+        resp = client.post("/api/workbench/decisions", json=body)
+        assert resp.status_code == 410
+        assert resp.json() == {"error": "decisions_retired: v2.9 起不再记录决定，采纳由成交推导；可在计划上写备注"}
+
+
+def test_v29_response_shapes(client, monkeypatch):
+    from investment_assistant.workbench import plan_views, service
+
+    table = {"session": "2026-10-30", "groups": {"entry": [], "holding": [], "ended": []}, "other_units": [],
+             "counts": {"entry": 0, "holding": 0, "ended": 0}, "errors": {}}
+    seen = {}
+
+    def table_view(*, now, session, include_extended):
+        seen.update(session=session, include_extended=include_extended)
+        return table
+    monkeypatch.setattr(plan_views, "table_view", table_view)
+    body = client.get("/api/workbench/plan-table?session=2026-10-29&include_extended=true").json()
+    assert set(body) == {"session", "groups", "other_units", "counts", "errors"}
+    assert set(body["groups"]) == {"entry", "holding", "ended"}
+    assert seen == {"session": __import__("datetime").date(2026, 10, 29), "include_extended": True}
+    client.get("/api/workbench/plan-table")
+    assert seen == {"session": None, "include_extended": False}                         # both default
+
+    monkeypatch.setattr(plan_views, "history_view", lambda ticker, *, now, include_reviews, include_baselines: {
+        "ticker": ticker, "rows": [], "chains": [], "flags": (include_reviews, include_baselines)})
+    body = client.get("/api/workbench/instruments/MU/plan-history?include_reviews=true").json()
+    assert body["flags"] == [True, False] and set(body) >= {"ticker", "rows", "chains"}
+
+    monkeypatch.setattr(plan_views, "holding_view", lambda *, now, session: {"session": "2026-10-30", "rows": []})
+    assert set(client.get("/api/workbench/holding-status").json()) == {"session", "rows"}
+
+    monkeypatch.setattr(plan_views, "linkable_view", lambda ticker, executed_at: {
+        "ticker": ticker, "plans": [], "default_plan_id": None, "at": executed_at.isoformat()})
+    body = client.get("/api/workbench/trades/linkable-plans?ticker=mu&executed_at=2026-10-30T14:00:00Z").json()
+    assert set(body) >= {"plans", "default_plan_id"} and body["at"] == "2026-10-30T14:00:00+00:00"
+
+    monkeypatch.setattr(service, "add_plan_note", lambda payload, *, now: {"status": "created", "record": {"id": 3}})
+    assert client.post("/api/workbench/plan-notes", json={"body": "x"}).json() == {
+        "status": "created", "record": {"id": 3}}
+    monkeypatch.setattr(plan_views, "notes_view", lambda *, ticker, chain_signal_date, plan_id: {"notes": []})
+    assert client.get("/api/workbench/plan-notes?ticker=mu").json() == {"notes": []}
+
+
+def test_v29_error_codes_reach_the_page(client, monkeypatch):
+    """409 / 400 / 503 bodies carry `code: sentence` the page splits on (spec §6.1, §6.4, §21.4)."""
+    from datetime import date
+
+    from investment_assistant.workbench import ledger, plan_review, plan_views, service
+
+    def raises(exc):
+        def fn(*args, **kwargs):
+            raise exc
+        return fn
+    monkeypatch.setattr(service, "add_trade", raises(ledger.Conflict("plan_stale: 成交时这条链已是第 3 版，请关联第 3 版")))
+    resp = client.post("/api/workbench/trades", json={})
+    assert resp.status_code == 409 and resp.json() == {"error": "plan_stale: 成交时这条链已是第 3 版，请关联第 3 版"}
+    monkeypatch.setattr(service, "add_trade", raises(ledger.LedgerError(ledger.DECISION_LINK_RETIRED)))
+    resp = client.post("/api/workbench/trades", json={})
+    assert resp.status_code == 400
+    assert resp.json() == {"error": "decision_link_retired: v2.9 起成交不再关联决定，请改为关联计划"}
+    monkeypatch.setattr(service, "add_trade", raises(service.Unavailable("migration_029_missing")))
+    assert client.post("/api/workbench/trades", json={}).json() == {"error": "migration_029_missing"}
+    monkeypatch.setattr(plan_views, "table_view", raises(plan_views.NotReady()))
+    resp = client.get("/api/workbench/plan-table")
+    assert resp.status_code == 503 and resp.json() == {"error": "migration_029_missing"}
+    # a manual run on a ticker that already has an active chain: the sentence is filled from the exception
+    monkeypatch.setattr(service, "run_agent", raises(service.AgentConflict(
+        "active_chain", chain_signal_date=date(2026, 10, 29), version_no=2)))
+    resp = client.post("/api/workbench/agent-runs", json={"ticker": "mu", "signal_date": "2026-10-30"})
+    assert resp.status_code == 409
+    assert resp.json() == {"error": "active_chain: MU 已有进行中的计划链（10-29 第 2 版），这次触发已并入"}
+    monkeypatch.setattr(service, "rerun_agent", raises(service.AgentConflict(
+        "active_chain", chain_signal_date=date(2026, 10, 29), version_no=2)))
+    resp = client.post("/api/workbench/agent-runs/rerun", json={"ticker": "mu", "signal_date": "2026-10-30",
+                                                                 "mode": "propose", "request_id": REQUEST_ID})
+    assert resp.json() == {"error": "active_chain: MU 已有进行中的计划链（10-29 第 2 版），这次触发已并入"}
+    # the other conflict keeps its plain reason
+    monkeypatch.setattr(service, "run_agent", raises(service.AgentConflict("already_completed")))
+    assert client.post("/api/workbench/agent-runs", json={"ticker": "mu", "signal_date": "2026-10-30"}).json() == {
+        "error": "already_completed"}
+    # a recheck of an exiting chain
+    monkeypatch.setattr(plan_review, "recheck_check", raises(plan_review.RecheckConflict("chain_exiting")))
+    resp = client.post("/api/workbench/chains/MU/2026-10-29/recheck")
+    assert resp.status_code == 409 and resp.json() == {"error": "chain_exiting: 这条链已发出退出指令，不再复查"}
+    monkeypatch.setattr(plan_review, "recheck_check", raises(plan_review.RecheckConflict("chain_not_active")))
+    assert client.post("/api/workbench/chains/MU/2026-10-29/recheck").json() == {"error": "chain_not_active"}
