@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { Alert, AlertDescription } from '$lib/ui/alert/index'
+  import { Button } from '$lib/ui/button/index'
   import * as api from '../api'
   import { growthError, idempotentRequests, unwrapRecord } from '../growth'
   import type { Discussion, DiscussionContext } from '../growth'
@@ -30,7 +32,6 @@
 </script>
 
 <span class="inline-flex flex-wrap items-center gap-2">
-  <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted disabled:opacity-50"
-          disabled={busy} onclick={start}>{text}</button>
-  {#if error}<span role="alert" class="text-xs text-red-600">{error}</span>{/if}
+  <Button size="sm" {busy} onclick={start}>{text}</Button>
+  {#if error}<Alert variant="danger" class="w-auto py-1"><AlertDescription>{error}</AlertDescription></Alert>{/if}
 </span>

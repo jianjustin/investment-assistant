@@ -19,6 +19,11 @@
 </script>
 
 <script lang="ts">
+  import { Button } from '$lib/ui/button/index'
+  import * as Card from '$lib/ui/card/index'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import StatusPill from '$lib/ui/domain/StatusPill.svelte'
+  import { Input } from '$lib/ui/input/index'
   import ConceptTerm from './ConceptTerm.svelte'
   import { ATTACH, type StageLine } from '../knowledge'
   import { fmtBeijing } from '../format'
@@ -76,69 +81,73 @@
   const hasDetail = (s: StageLine) => s.skips.length > 0 || s.failures.length > 0 || s.degradations.length > 0
   const runLabel = (r: { trigger_text: string; started_at: string | null }) =>
     `${r.trigger_text} · ${r.started_at ? fmtBeijing(r.started_at).slice(11, 16) + ' 北京' : '时间未知'}`
-  const STATUS_CLASS: Record<string, string> = {
-    success: 'bg-success/20 text-success', partial: 'bg-warn/20 text-warn', degraded: 'bg-warn/20 text-warn',
-    failed: 'bg-destructive/20 text-destructive', skipped: 'bg-muted text-muted-foreground', missing: 'bg-destructive/20 text-destructive',
-    not_recorded: 'bg-muted text-muted-foreground',
-  }
+  // Stage statuses the vocabulary does not have (missing / not_recorded) borrow the tone of the nearest node status;
+  // the label stays the backend's status_text.
+  const NODE_KEYS = ['success', 'partial', 'degraded', 'failed', 'skipped', 'pending', 'running']
+  const NODE_ALIAS: Record<string, string> = { missing: 'failed', not_recorded: 'skipped' }
+  const nodeKey = (status: string) => NODE_KEYS.includes(status) ? status : (NODE_ALIAS[status] ?? 'skipped')
 </script>
 
-<section aria-label="运行一览" class="border border-border rounded-sm p-3 bg-card text-sm space-y-2">
+<Card.Root size="sm" role="region" aria-label="运行一览" class="gap-2 px-3 text-sm">
   {#if !compact && !onlyStage}
     <header class="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <h2 class="font-semibold">运行一览</h2>
+      <h2 class="text-base font-medium">运行一览</h2>
       {#if ov?.selected_run_id && RUN_ID_RE.test(ov.selected_run_id)}
         <a class="text-xs text-primary underline" href={runHref(ov.selected_run_id)}>运行详情</a>
       {/if}
       {#if ov?.headline}<span class="text-xs text-muted-foreground">{ov.headline}</span>{/if}
-      <input type="date" aria-label="日期" class="text-xs border border-border rounded-sm px-1 py-0.5 bg-background"
-             value={ov?.session ?? picked} onchange={pickDay} />
+      <Input type="date" aria-label="日期" class="h-7 w-auto text-xs" value={ov?.session ?? picked} onchange={pickDay} />
       {#if ov && ov.runs.length > 1}
-        <select aria-label="运行" class="text-xs border border-border rounded-sm px-1 py-0.5 bg-background"
+        <select aria-label="运行" class="h-7 rounded-md border border-input bg-card px-2 text-xs text-foreground"
                 value={ov.selected_run_id ?? ''} onchange={pickRun}>
           {#each ov.runs as r (r.run_id)}<option value={r.run_id}>{runLabel(r)}</option>{/each}
         </select>
       {/if}
       <a class="text-xs text-primary underline" href="#knowledge/principles">原理</a>
-      <button type="button" class="text-xs px-2 py-0.5 border border-border rounded-sm hover:bg-muted"
-              aria-expanded={!folded} onclick={() => folded = !folded}>{folded ? '展开运行一览' : '收起运行一览'}</button>
+      <Button size="sm" aria-expanded={!folded} onclick={() => folded = !folded}>{folded ? '展开运行一览' : '收起运行一览'}</Button>
     </header>
   {:else if onlyStage && ov}
     <p class="text-xs text-muted-foreground">当天这一步（{ov.session}）</p>
   {/if}
 
   {#if error}
-    <p role="alert" class="text-xs text-red-600">{error}</p>
+    <DataBlock state="error" message={error} />
   {:else if loading && !ov}
-    <p class="text-xs text-muted-foreground">加载中…</p>
+    <DataBlock state="loading" skeleton="block" />
   {:else if ov}
-    {#if ov.note}<p class="text-xs text-muted-foreground">{ov.note}</p>{/if}
+    {#if ov.note && !ov.ready}
+      <DataBlock state="not_computed" message={ov.note} />
+    {:else if ov.note && !ov.stages.length}
+      <DataBlock state="empty" message={ov.note} />
+    {:else if ov.note}
+      <p class="text-xs text-muted-foreground">{ov.note}</p>
+    {/if}
     {#if !folded || compact || onlyStage}
-      <ul class="space-y-1">
+      <ul class="grid gap-1">
         {#each lines as s (s.id)}
-          <li class="space-y-0.5">
+          <li class="grid gap-0.5">
             <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
               <span class="font-medium"><ConceptTerm id={ATTACH.overview.stages}>{s.title}</ConceptTerm></span>
-              <span class="text-xs px-1.5 py-0.5 rounded-sm {STATUS_CLASS[s.status] ?? 'bg-muted text-muted-foreground'}"><ConceptTerm id={ATTACH.overview.status}>{s.status_text}</ConceptTerm></span>
+              <ConceptTerm id={ATTACH.overview.status}><StatusPill domain="node" value={nodeKey(s.status)} text={s.status_text} /></ConceptTerm>
               <span>{s.sentence}</span>
               {#each s.concepts as concept, i (i)}<span class="text-xs"><ConceptTerm id={concept} /></span>{/each}
               <span class="text-xs text-muted-foreground">输入 {count(s.input_count)} · 产出 {count(s.output_count)}</span>
               {#if s.duration_ms != null}<span class="text-xs text-muted-foreground">{duration(s.duration_ms)}</span>{/if}
               {#if hasDetail(s)}
-                <button type="button" class="text-xs text-primary underline" aria-expanded={!!expanded[s.id]}
-                        onclick={() => expanded[s.id] = !expanded[s.id]}>{expanded[s.id] ? '收起明细' : '展开明细'}</button>
+                <Button variant="link" size="sm" class="text-xs" aria-expanded={!!expanded[s.id]}
+                        onclick={() => expanded[s.id] = !expanded[s.id]}>{expanded[s.id] ? '收起明细' : '展开明细'}</Button>
               {/if}
             </div>
             {#if expanded[s.id]}
-              <div class="ml-4 text-xs space-y-0.5">
+              <div class="ml-4 grid gap-0.5 text-xs">
                 {#each s.skips as skip, i (i)}
                   <p>{skip.text} × {skip.count}{skip.samples.length ? `（样本：${skip.samples.join('、')}）` : ''}</p>
                 {/each}
                 {#each s.failures as failure, i (i)}
-                  <p class="text-red-600">{failure.target}：{failure.reason}</p>
+                  <p class="text-destructive">{failure.target}：{failure.reason}</p>
                 {/each}
                 {#each s.degradations as d, i (i)}
-                  <p class="text-amber-700">{d.text}{d.detail ? `：${d.detail}` : ''}</p>
+                  <p class="text-warn">{d.text}{d.detail ? `：${d.detail}` : ''}</p>
                 {/each}
               </div>
             {/if}
@@ -149,4 +158,4 @@
       </ul>
     {/if}
   {/if}
-</section>
+</Card.Root>

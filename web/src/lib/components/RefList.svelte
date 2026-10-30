@@ -1,7 +1,7 @@
 <script lang="ts">
-  import ConceptTerm from './ConceptTerm.svelte'
+  import RefLink from '$lib/ui/domain/RefLink.svelte'
   import * as wb from '../workbench'
-  import { conceptId, knowHref, refKind } from '../growth'
+  import { refKind } from '../growth'
 
   // 引用列表（复盘叙述与讨论回答共用）：fact: 回调页面去滚动，call: 就地展开那次工具调用，know: 链到那一版知识，
   // concept: 就地展开概念卡，其余（user: 等）是纯文本。call 只有给了 runId 才能展开；展开时才取一次运行详情。
@@ -37,16 +37,12 @@
   const openSeqs = $derived(refs.filter(r => refKind(r) === 'call').map(seqOf).filter(seq => open[seq]))
 </script>
 
-<span class="refs">（{#each refs as ref, i (i)}{#if i}、{/if}{#if refKind(ref) === 'fact' && onFact}<button type="button" class="underline"
-        onclick={() => onFact?.(ref.slice('fact:'.length))}>{ref}</button>{:else if refKind(ref) === 'call' && runId}<button
-        type="button" class="underline" aria-expanded={!!open[seqOf(ref)]} onclick={() => toggle(ref)}>{ref}</button>{:else if refKind(ref) === 'know'}<a
-        class="text-primary underline" href={knowHref(ref)}>{ref}</a>{:else if refKind(ref) === 'concept'}<ConceptTerm
-        id={conceptId(ref)}>{ref}</ConceptTerm>{:else}<span>{ref}</span>{/if}{/each}）</span>
+<span class="refs">（{#each refs as ref, i (i)}{#if i}、{/if}<RefLink {ref} {onFact} onCall={runId ? toggle : undefined} expanded={refKind(ref) === 'call' && !!open[seqOf(ref)]} />{/each}）</span>
 {#each openSeqs as seq (seq)}
   {@const call = calls?.get(seq)}
   <div role="region" aria-label={`工具调用 call:${seq}`} class="my-1 p-2 border border-border rounded-sm bg-card text-xs space-y-1">
     {#if error}
-      <p class="text-red-600">{error}</p>
+      <p class="text-destructive">{error}</p>
     {:else if !calls}
       <p class="text-muted-foreground">加载中…</p>
     {:else if call}

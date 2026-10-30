@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { Button } from '$lib/ui/button/index'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
   import AgentReasoning from './AgentReasoning.svelte'
   import ConceptTerm from './ConceptTerm.svelte'
   import KnowledgeRefs from './KnowledgeRefs.svelte'
@@ -40,7 +42,7 @@
     pass: '通过', implicated: '可能未通过', not_recorded: '未单独记录', not_run: '未运行',
   }
   const CHECK_CLASS: Record<string, string> = {
-    pass: 'text-muted-foreground', implicated: 'text-amber-700', not_recorded: 'text-muted-foreground', not_run: 'text-muted-foreground',
+    pass: 'text-muted-foreground', implicated: 'text-warn', not_recorded: 'text-muted-foreground', not_run: 'text-muted-foreground',
   }
   const ACTION_TEXT: Record<string, string> = { buy: '买入', pass: '不建议买入' }
 
@@ -83,7 +85,7 @@
   const listKey = (seq: number, key: string) => `${seq}|${key}`
 </script>
 
-{#snippet refList(list: string[] | undefined)}{#if list?.length}（{#each list as ref, i}{#if i}、{/if}{#if tl.isCallRef(ref)}<button type="button" class="underline" onclick={() => jump(ref)}>{ref}</button>{:else if isKnowRef(ref)}<a class="text-primary underline" href={knowHref(ref)}>{ref}</a>{:else}<span>{ref}</span>{/if}{/each}）{/if}{/snippet}
+{#snippet refList(list: string[] | undefined)}{#if list?.length}（{#each list as ref, i}{#if i}、{/if}{#if tl.isCallRef(ref)}<Button variant="link" size="sm" class="select-text text-[length:inherit] font-normal" onclick={() => jump(ref)}>{ref}</Button>{:else if isKnowRef(ref)}<a class="text-primary underline" href={knowHref(ref)}>{ref}</a>{:else}<span>{ref}</span>{/if}{/each}）{/if}{/snippet}
 
 {#snippet conditionList(label: string, list: any[] | undefined)}
   {#if list?.length}
@@ -95,9 +97,9 @@
 
 <section bind:this={root} aria-label="推理过程" class="text-sm border-l-2 border-border pl-2 space-y-3">
   {#if error}
-    <p role="alert" class="text-xs text-red-600">{error}</p>
+    <DataBlock state="error" message={error} />
   {:else if !data}
-    <p class="text-xs text-muted-foreground">推理过程加载中…</p>
+    <DataBlock state="loading" skeleton="block" />
   {:else}
     {@const run = data.run}
     <p class="text-xs text-muted-foreground">
@@ -108,10 +110,10 @@
       <p class="text-xs text-muted-foreground">这次运行产出第 {data.version.version_no} 版 · {tl.ORIGIN_TEXT[data.version.origin as tl.Origin] ?? data.version.origin}
         · <a class="text-primary underline" href={`#plan/${data.version.plan_id}`}>看计划页</a></p>
     {/if}
-    {#each data.notes as note}<p class="text-xs text-amber-700">{note}</p>{/each}
+    {#each data.notes as note}<p class="text-xs text-warn">{note}</p>{/each}
     {#if data.knowledge_refs?.length}<KnowledgeRefs refs={data.knowledge_refs} />{/if}
     {#if !['ok', 'pass'].includes(run.status)}
-      <p class="text-xs text-amber-700">本次运行状态：{RUN_STATUS_TEXT[run.status] ?? run.status}（{run.reason_text ?? run.reason ?? '未知原因'}）</p>
+      <p class="text-xs text-warn">本次运行状态：{RUN_STATUS_TEXT[run.status] ?? run.status}（{run.reason_text ?? run.reason ?? '未知原因'}）</p>
     {/if}
     {#if rejectedWithoutContent}
       <p class="text-xs">这次运行作废：{run.reason_text ?? run.reason ?? '未知原因'}，只保留工具调用</p>
@@ -130,19 +132,19 @@
           <ul class="space-y-1">
             {#each step.calls ?? [] as call (call.seq)}
               <li data-call={`${runId}-${call.seq}`} data-highlighted={highlighted === call.seq ? 'true' : undefined}
-                  class="text-xs rounded-sm px-1 {highlighted === call.seq ? 'bg-amber-100 ring-1 ring-amber-400' : ''}">
+                  class="text-xs rounded-sm px-1 {highlighted === call.seq ? 'bg-warn/10 ring-1 ring-warn' : ''}">
                 <p class="break-all">
                   <span class="font-medium">{call.ref}</span> ·
                   {#if call.concept}<ConceptTerm id={call.concept}>{toolName(call)}</ConceptTerm>{:else}{toolName(call)}{/if}
                   · <code>{text(call.args)}</code> · 哈希 {call.result_sha256_8}
-                  <button type="button" class="text-primary underline" aria-expanded={!!shownResult[call.seq]}
-                          onclick={() => shownResult[call.seq] = !shownResult[call.seq]}>{shownResult[call.seq] ? '收起返回值' : '看返回值'}</button>
+                  <Button variant="link" size="sm" class="text-[length:inherit] font-normal" aria-expanded={!!shownResult[call.seq]}
+                          onclick={() => shownResult[call.seq] = !shownResult[call.seq]}>{shownResult[call.seq] ? '收起返回值' : '看返回值'}</Button>
                 </p>
                 {#if call.cutoff_exempt}
-                  <p class="text-amber-700">{call.cutoff_note ?? '概念卡随代码版本走，不受截止时间约束'}</p>
+                  <p class="text-warn">{call.cutoff_note ?? '概念卡随代码版本走，不受截止时间约束'}</p>
                 {/if}
-                {#if call.tool === 'get_knowledge'}<p class="text-amber-700">{KNOWLEDGE_CALL_NOTE}</p>{/if}
-                {#if call.error}<p class="text-red-600">工具返回错误：{text(call.error)}</p>{/if}
+                {#if call.tool === 'get_knowledge'}<p class="text-warn">{KNOWLEDGE_CALL_NOTE}</p>{/if}
+                {#if call.error}<p class="text-destructive">工具返回错误：{text(call.error)}</p>{/if}
                 {#if shownResult[call.seq]}
                   <div class="ml-3 space-y-0.5">
                     {#if extraFields(call).length}
@@ -155,8 +157,8 @@
                         <p>
                           {#if call.fields[key]}<ConceptTerm id={call.fields[key]}>{key}</ConceptTerm>{:else}{key}{/if}（{value.length} 条）
                           {#if value.length > 4}
-                            <button type="button" class="text-primary underline"
-                                    onclick={() => fullList[listKey(call.seq, key)] = !all}>{all ? '只看首尾' : '展开全部'}</button>
+                            <Button variant="link" size="sm" class="text-[length:inherit] font-normal"
+                                    onclick={() => fullList[listKey(call.seq, key)] = !all}>{all ? '只看首尾' : '展开全部'}</Button>
                           {/if}
                         </p>
                         <ul class="ml-3 break-all">
@@ -224,7 +226,7 @@
               <li>{item.text} · <span class={CHECK_CLASS[item.result] ?? 'text-muted-foreground'}>{CHECK_TEXT[item.result] ?? item.result}</span></li>
             {/each}
           </ul>
-          {#if implicatedNote(step)}<p class="text-xs text-amber-700">{implicatedNote(step)}</p>{/if}
+          {#if implicatedNote(step)}<p class="text-xs text-warn">{implicatedNote(step)}</p>{/if}
           {#if step.reason_text && (step.items ?? []).some(item => item.result === 'not_run')}
             <p class="text-xs text-muted-foreground">{step.reason_text}</p>
           {/if}
@@ -288,13 +290,13 @@
             {/if}
             {#if step.user_input_ids?.length}<p>给模型的用户输入：{step.user_input_ids.map(i => `user:${i}`).join('、')}</p>{/if}
             {#if step.review_agent_run_id && step.review_agent_run_id !== runId}
-              <button type="button" class="text-primary underline" aria-expanded={!!nested[step.review_agent_run_id]}
-                      onclick={() => nested[step.review_agent_run_id!] = !nested[step.review_agent_run_id!]}>看复查推理</button>
+              <Button variant="link" size="sm" class="text-[length:inherit] font-normal" aria-expanded={!!nested[step.review_agent_run_id]}
+                      onclick={() => nested[step.review_agent_run_id!] = !nested[step.review_agent_run_id!]}>看复查推理</Button>
               {#if nested[step.review_agent_run_id]}<AgentReasoning runId={step.review_agent_run_id} />{/if}
             {/if}
             {#if step.revision_agent_run_id && step.revision_agent_run_id !== runId}
-              <button type="button" class="text-primary underline" aria-expanded={!!nested[step.revision_agent_run_id]}
-                      onclick={() => nested[step.revision_agent_run_id!] = !nested[step.revision_agent_run_id!]}>看修订推理</button>
+              <Button variant="link" size="sm" class="text-[length:inherit] font-normal" aria-expanded={!!nested[step.revision_agent_run_id]}
+                      onclick={() => nested[step.revision_agent_run_id!] = !nested[step.revision_agent_run_id!]}>看修订推理</Button>
               {#if nested[step.revision_agent_run_id]}<AgentReasoning runId={step.revision_agent_run_id} />{/if}
             {/if}
           </div>

@@ -3,6 +3,10 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/sve
 import Today from './Today.svelte'
 import * as api from '../lib/api'
 import { row as planRow } from '../lib/plan-table-fixtures'
+import { notify } from '$lib/ui/toast'
+
+// Toaster is not mounted in page tests: results are asserted on the call to notify.
+vi.mock('$lib/ui/toast', () => ({ notify: { success: vi.fn(), info: vi.fn(), error: vi.fn() } }))
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
@@ -35,7 +39,11 @@ beforeEach(() => {
   vi.stubGlobal('crypto', { randomUUID: vi.fn(() => 'req-today') })
   try { localStorage.removeItem('workbench.today.ended_open'); localStorage.removeItem('workbench.today.layout') } catch { /* */ }
 })
-afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.clearAllMocks() })
+
+// A row opens with the 展开详情 button of its own row (the ticker button toggles it too).
+const expandRow = async (ticker: string) =>
+  within((await screen.findByRole('button', { name: ticker })).closest('tr')!).getByRole('button', { name: '展开详情' })
 
 const tableCalls = () => calls.filter(c => c.url.startsWith('/api/workbench/plan-table')).map(c => c.url)
 
@@ -85,10 +93,11 @@ describe('plan table page', () => {
       { ticker: 'AMD', signal_date: '2026-10-30', proposed_action: 'watch', labels: ['conflict'], rule_ids: ['volume_breakout'], brief: null }] }))
     render(Today)
     const section = await screen.findByRole('region', { name: '其他触发' })
-    const items = within(section).getAllByRole('listitem')
-    expect(items).toHaveLength(2)
-    expect(items[0]).toHaveTextContent('RKLB · 2026-10-30 · 建议卖出 · 回避 · 跌破 MA50 · 跌破 MA50')
-    expect(items[1]).toHaveTextContent('AMD · 2026-10-30 · 建议观察 · 冲突 · 放量突破')
+    const rows = within(section).getAllByRole('row').slice(1)              // [0] is the header
+    expect(rows).toHaveLength(2)
+    for (const text of ['RKLB · 2026-10-30', '建议卖出', '回避', '跌破 MA50']) expect(rows[0]).toHaveTextContent(text)
+    expect(rows[0].querySelectorAll('td')[4]).toHaveTextContent('跌破 MA50')           // the brief summary
+    for (const text of ['AMD · 2026-10-30', '建议观察', '冲突', '放量突破', '无简报']) expect(rows[1]).toHaveTextContent(text)
     expect(within(section).queryByRole('button')).toBeNull()
   })
 
@@ -135,8 +144,57 @@ describe('plan table page', () => {
     render(Today)
     await screen.findByRole('heading', { name: '入场期（可执行）1' })
     await fireEvent.click(screen.getByRole('button', { name: '重新推送今日计划' }))
-    await waitFor(() => expect(screen.getByText(/已推送 4 条/)).toBeInTheDocument())
+    await waitFor(() => expect(notify.success).toHaveBeenCalledWith('已推送 4 条'))
     expect(calls.find(c => c.url.includes('/api/workbench/push'))!.init?.method).toBe('POST')
+  })
+})
+
+describe('empty vs not_computed vs error', () => {
+  it('empty: a group with nothing says why, with no 没算 badge and no alert', async () => {
+    respondTable = async () => json(tableView({ groups: emptyGroups }))
+    render(Today)
+    expect(await screen.findByText('入场期暂无可执行的计划')).toBeInTheDocument()
+    expect(screen.getByText('当前无持仓')).toBeInTheDocument()
+    const section = screen.getByRole('region', { name: '计划表' })
+    expect(within(section).queryByText('没算')).toBeNull()
+    expect(within(section).queryByRole('alert')).toBeNull()
+  })
+
+  it('not_computed: a market / screen that was never produced carries the 没算 badge and its missing part', async () => {
+    render(Today)                                              // todayView(): market null, screen null
+    const market = await screen.findByRole('region', { name: '市场环境' })
+    expect(market).toHaveTextContent('市场环境未生成')
+    expect(within(market).getByText('没算')).toBeInTheDocument()
+    expect(within(market).queryByRole('alert')).toBeNull()
+    const screening = screen.getByRole('region', { name: '筛选' })
+    expect(screening).toHaveTextContent('今日无筛选记录')
+    expect(within(screening).getByText('没算')).toBeInTheDocument()
+  })
+
+  it('error: a failed table is an alert with the Chinese reason and a retry, not an empty table', async () => {
+    respondTable = async () => json({ error: 'migration_029_missing' }, 503)
+    render(Today)
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('迁移 029 未执行')
+    expect(screen.queryByText('入场期暂无可执行的计划')).toBeNull()
+    expect(within(screen.getByRole('region', { name: '计划表' })).getByRole('button', { name: '重试' })).toBeInTheDocument()
+    respondTable = async () => json(tableView())
+    await fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    expect(await screen.findByRole('heading', { name: '入场期（可执行）1' })).toBeInTheDocument()
+  })
+
+  it('the batch view failing is its own alert; the plan table still loads', async () => {
+    respond = async () => json({ error: 'boom' }, 500)
+    render(Today)
+    expect(await screen.findByRole('heading', { name: '入场期（可执行）1' })).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent('请求失败：boom')
+  })
+
+  it('the header has no actions beyond the two buttons and the page title keeps its level', async () => {
+    render(Today)
+    expect(await screen.findByRole('heading', { level: 1, name: '今日' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '立即运行批处理' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重新推送今日计划' })).toBeInTheDocument()
   })
 })
 
@@ -154,7 +212,7 @@ describe('row actions', () => {
       return json({ inputs: [] })
     }
     render(Today)
-    await fireEvent.click(await screen.findByRole('button', { name: '展开 MU' }))
+    await fireEvent.click(await expandRow('MU'))
     await fireEvent.click(await screen.findByRole('button', { name: '重新复查' }))
     expect(await screen.findByText('复查完成：维持')).toBeInTheDocument()
     expect(calls.some(c => c.url === '/api/workbench/chains/MU/2026-10-29/recheck' && c.init?.method === 'POST')).toBe(true)
@@ -168,7 +226,7 @@ describe('row actions', () => {
       return json({ inputs: [] })
     }
     render(Today)
-    await fireEvent.click(await screen.findByRole('button', { name: '展开 MU' }))
+    await fireEvent.click(await expandRow('MU'))
     await fireEvent.click(await screen.findByRole('button', { name: '重新复查' }))
     expect(await screen.findByText('不能重新复查：这条链已发出退出指令，不再复查')).toBeInTheDocument()
   })
@@ -179,7 +237,7 @@ describe('row actions', () => {
       : url.startsWith('/api/workbench/chains/') ? json(chainView()) : json({ inputs: [] })
     const poll = vi.spyOn(api, 'pollRun').mockRejectedValue(new Error('run timeout'))
     render(Today)
-    await fireEvent.click(await screen.findByRole('button', { name: '展开 MU' }))
+    await fireEvent.click(await expandRow('MU'))
     await fireEvent.click(await screen.findByRole('button', { name: '重新复查' }))
     expect(await screen.findByText('复查仍在后台进行，稍后刷新查看')).toBeInTheDocument()
     expect(poll).toHaveBeenCalledWith('plan_recheck-1', { timeoutMs: 900_000 })
@@ -193,7 +251,7 @@ describe('row actions', () => {
       return json({ inputs: [] })
     }
     render(Today)
-    await fireEvent.click(await screen.findByRole('button', { name: '展开 MU' }))
+    await fireEvent.click(await expandRow('MU'))
     const notes = await screen.findByRole('region', { name: '备注' })
     await fireEvent.input(within(notes).getByLabelText('备注正文'), { target: { value: '等回踩' } })
     await fireEvent.click(within(notes).getByRole('button', { name: '保存备注' }))
@@ -210,7 +268,7 @@ describe('row actions', () => {
     respondOther = async (url, init) => url === '/api/workbench/plan-notes' && init?.method === 'POST'
       ? json({ status: 'created', record: { id: 9 } }) : json({ inputs: [] })
     render(Today)
-    await fireEvent.click(await screen.findByRole('button', { name: '展开 X01' }))
+    await fireEvent.click(await expandRow('X01'))
     const notes = await screen.findByRole('region', { name: '备注' })
     await fireEvent.input(within(notes).getByLabelText('备注正文'), { target: { value: '规则基线备注' } })
     await fireEvent.click(within(notes).getByRole('button', { name: '保存备注' }))

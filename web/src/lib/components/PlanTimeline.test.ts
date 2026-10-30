@@ -86,19 +86,30 @@ beforeEach(() => {
 beforeEach(() => resetConceptIndex())
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
+// The version chain is a DataTable now: one <tr> per version (the old <ol aria-label="版本"> lines became cells).
+const versionRows = async () => {
+  const tables = await screen.findAllByRole('table')
+  return [...tables[0].querySelectorAll('tbody > tr')] as HTMLElement[]
+}
+
 describe('PlanTimeline', () => {
   it('lists versions with origin, cutoff and diff', async () => {
     render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
-    const list = await screen.findByRole('list', { name: '版本' })
+    const rows = await versionRows()
     expect(calls[0].url).toBe('/api/workbench/chains/NVDA/2026-10-22')
-    const rows = list.querySelectorAll(':scope > li')
-    expect(rows[0]).toHaveTextContent('第 0 版 · 信号日 · 生成 2026-10-23 06:31:00 北京 · 截止 2026-10-23 06:30:00 北京')
-    expect(rows[0]).toHaveTextContent('入场 98.50–101.50 · 止损 95.00 · T1 108.00 · 有效期至 2026-10-27 · 影子 到期未成交')
-    expect(rows[1]).toHaveTextContent('第 1 版 · 每日复查')
+    expect(rows[0]).toHaveTextContent('第 0 版')
+    expect(rows[0]).toHaveTextContent('信号日')
+    expect(rows[0]).toHaveTextContent('生成 2026-10-23 06:31:00 北京')
+    expect(rows[0]).toHaveTextContent('截止 2026-10-23 06:30:00 北京')
+    expect(rows[0]).toHaveTextContent('入场 98.50–101.50 · 止损 95.00 · T1 108.00')
+    expect(rows[0]).toHaveTextContent('有效期至 2026-10-27')
+    expect(rows[0]).toHaveTextContent('影子 到期未成交')
+    expect(rows[1]).toHaveTextContent('第 1 版')
+    expect(rows[1]).toHaveTextContent('每日复查')
     expect(rows[1]).toHaveTextContent('最新')
     expect(rows[1]).toHaveTextContent('差异：止损 95.00 → 96.00')
     // 点开即该版的 Agent 计划卡
-    await fireEvent.click(screen.getByRole('button', { name: '第 0 版' }))
+    await fireEvent.click(within(rows[0]).getByRole('button', { name: '展开详情' }))
     expect(await screen.findByText(/^Agent 计划 · 第 0 版/)).toBeInTheDocument()
   })
 
@@ -128,7 +139,7 @@ describe('PlanTimeline', () => {
 
   it('no banner on the head version', async () => {
     render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
-    await screen.findByRole('list', { name: '版本' })
+    await versionRows()
     expect(screen.queryByText(/最新为第/)).toBeNull()
   })
 
@@ -185,6 +196,21 @@ describe('PlanTimeline', () => {
     expect(await screen.findByText('不能重新复查：正在复查')).toBeInTheDocument()
   })
 
+  it('a recheck in flight shows the running pill and the waited time, and the button is busy', async () => {
+    respond = async (url, init) => url.endsWith('/recheck') && init?.method === 'POST'
+      ? json({ run_id: 'plan_recheck-1', status: 'pending' }) : json(chain())
+    vi.spyOn(api, 'pollRun').mockReturnValue(new Promise(() => {}))
+    render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
+    const button = await screen.findByRole('button', { name: '重新复查' })
+    await fireEvent.click(button)
+    const pill = (await screen.findByText('复查中…')).closest('[data-slot="badge"]')!
+    expect(pill).toHaveAttribute('data-domain', 'run')
+    expect(pill).toHaveAttribute('data-status', 'running')
+    expect(screen.getByText(/已等待 \d+ 秒/)).toBeInTheDocument()
+    expect(button).toHaveAttribute('aria-busy', 'true')
+    expect(button).toBeDisabled()
+  })
+
   it('shows the backend reason when the chain view is unavailable', async () => {
     respond = async () => json({ error: '迁移 026 未执行' }, 503)
     render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
@@ -239,7 +265,8 @@ describe('PlanTimeline', () => {
     respond = async () => json(chain({ versions: [base.versions[0], { ...base.versions[1],
       knowledge_refs: [{ ref: 'know:3@1', title: '回踩别追', fields: ['thesis'], current_version: 2 }] }] }))
     render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
-    await fireEvent.click(await screen.findByRole('button', { name: '第 1 版' }))
+    const rows = await versionRows()
+    await fireEvent.click(within(rows[1]).getByRole('button', { name: '展开详情' }))
     const refs = await screen.findByRole('region', { name: '引用的知识' })
     expect(within(refs).getByRole('link', { name: 'know:3@1' })).toHaveAttribute('href', '#knowledge/mine/3@1')
     expect(refs).toHaveTextContent('当前已是第 2 版')
@@ -256,7 +283,7 @@ describe('PlanTimeline', () => {
       { ...base.versions[0], plan: planRow('p0') },
       { ...base.versions[1], plan: v3Plan('p1'), execution: { status: 'adopted', date: '10-24', quantity: 120 } }] }))
     render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
-    const rows = (await screen.findByRole('list', { name: '版本' })).querySelectorAll(':scope > li')
+    const rows = await versionRows()
     expect(rows[0]).toHaveTextContent('入场类型 区间限价 · 最长持有 10 个交易日 · 执行 — · 旧版计划，执行字段按默认值显示')
     expect(rows[1]).toHaveTextContent('入场类型 突破买入 · 最长持有 12 个交易日 · 执行 已采纳（10-24 成交 120 股）')
     expect(rows[1]).not.toHaveTextContent('旧版计划')
@@ -268,7 +295,7 @@ describe('PlanTimeline', () => {
       { ...base.versions[0], plan: v3Plan('p0', { entry_type: 'next_open' }), execution: { status: 'not_executed' } },
       { ...base.versions[1], plan: v3Plan('p1'), execution: { status: 'pending' } }] }))
     render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
-    const rows = (await screen.findByRole('list', { name: '版本' })).querySelectorAll(':scope > li')
+    const rows = await versionRows()
     expect(rows[0]).toHaveTextContent('入场类型 次日开盘')
     expect(rows[0]).toHaveTextContent('执行 未执行')
     expect(rows[1]).toHaveTextContent('执行 入场期，未成交')
@@ -314,7 +341,7 @@ describe('PlanTimeline', () => {
       h({}), h({ session: '2026-10-28', held_sessions: 3, instruction: 'sell_half', t1_reached: true, to_t1_pct: null, stop_mode: 'trailing', reached_1r: true }),
       h({ session: '2026-10-29', instruction: 'exit', exit_reason: 'time_stop', reason: '时间止损' })] }))
     render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
-    const table = await screen.findByRole('table', { name: '持仓状态' })
+    const table = within(await screen.findByRole('region', { name: '持仓状态' })).getByRole('table')
     const rows = table.querySelectorAll('tbody tr')
     expect(rows).toHaveLength(3)
     expect(rows[0]).toHaveTextContent('2026-10-27')
@@ -329,13 +356,13 @@ describe('PlanTimeline', () => {
     expect(rows[1]).toHaveTextContent('已到 1R，时间止损解除')
     expect(rows[1]).toHaveTextContent('到 T1：卖出一半，余下按移动止损')
     expect(rows[2]).toHaveTextContent('次一交易日开盘卖出（时间止损）')
-    expect(rows[2].querySelector('td.text-red-600')).not.toBeNull()
+    expect(rows[2].querySelector('[data-domain="instruction"][data-status="exit"]')).toHaveAttribute('data-tone', 'warn')
   })
 
   it('has no holding status section while the chain is in its entry period', async () => {
     render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
-    await screen.findByRole('list', { name: '版本' })
-    expect(screen.queryByRole('table', { name: '持仓状态' })).toBeNull()
+    await versionRows()
+    expect(screen.queryByRole('region', { name: '持仓状态' })).toBeNull()
   })
 
   it('reads a gap-voided plan-shadow-2 version as 开盘作废, not the raw code', async () => {
@@ -343,7 +370,7 @@ describe('PlanTimeline', () => {
     respond = async () => json(chain({ versions: [{ ...base.versions[0], plan: v3Plan('p0'),
       shadow: { status: 'voided', fill_date: null, fill_price: null, legs: [], r: 0, return: null, spy_return: null } }, base.versions[1]] }))
     render(PlanTimeline, { ticker: 'NVDA', signalDate: '2026-10-22', currentPlanId: 'p1' })
-    const rows = (await screen.findByRole('list', { name: '版本' })).querySelectorAll(':scope > li')
+    const rows = await versionRows()
     expect(rows[0]).toHaveTextContent('影子 开盘作废')
     expect(rows[0]).not.toHaveTextContent('voided')
   })

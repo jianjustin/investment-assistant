@@ -172,6 +172,46 @@ describe('Discussion · unmounted while a read is in flight', () => {
   })
 })
 
+describe('Discussion · running state', () => {
+  it('pending shows running pill, with how long we have been waiting', async () => {
+    vi.useFakeTimers()
+    vi.mocked(api.getDiscussion).mockResolvedValue(pending())
+    render(Discussion, { id: 5 })
+    await vi.advanceTimersByTimeAsync(0)
+    const pill = screen.getByText('回答中…').closest('[data-slot="badge"]')!
+    expect(pill).toHaveAttribute('data-domain', 'run')
+    expect(pill).toHaveAttribute('data-status', 'running')
+    expect(pill).toHaveAttribute('data-tone', 'running')
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(screen.getByText(/已等待 [4-8] 秒/)).toBeInTheDocument()
+  })
+
+  it('the timeout text stays a plain status note, not a running pill', async () => {
+    vi.useFakeTimers()
+    vi.mocked(api.getDiscussion).mockResolvedValue(pending())
+    render(Discussion, { id: 5 })
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(DISCUSS_POLL_MS + 2000)
+    expect(screen.getByText('回答仍在后台生成，稍后刷新查看')).toBeInTheDocument()
+    expect(screen.queryByText('回答中…')).toBeNull()
+  })
+
+  it('the load failure is an alert on the whole page', async () => {
+    vi.mocked(api.getDiscussion).mockRejectedValue(new WorkbenchError('迁移 027 未执行', 503))
+    render(Discussion, { id: 5 })
+    expect(await screen.findByRole('alert')).toHaveTextContent('讨论加载失败：迁移 027 未执行')
+  })
+
+  it('the question field has its validation error under it', async () => {
+    vi.mocked(api.getDiscussion).mockResolvedValue(discussion([]))
+    render(Discussion, { id: 5 })
+    await screen.findByLabelText('你的问题')
+    await fireEvent.click(screen.getByRole('button', { name: '提问' }))
+    const alert = await screen.findByRole('alert')
+    expect(screen.getByLabelText('你的问题').getAttribute('aria-describedby')!.split(' ')).toContain(alert.id)
+  })
+})
+
 describe('Discussion · asking and polling', () => {
   it('polls every 2s until reply', async () => {
     vi.useFakeTimers()

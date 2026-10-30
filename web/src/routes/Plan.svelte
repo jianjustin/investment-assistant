@@ -1,4 +1,10 @@
 <script lang="ts">
+  import { Button } from '$lib/ui/button/index'
+  import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '$lib/ui/collapsible/index'
+  import ConfirmDialog from '$lib/ui/confirm-dialog/ConfirmDialog.svelte'
+  import CalcVersion from '$lib/ui/domain/CalcVersion.svelte'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import PageHeader from '$lib/ui/domain/PageHeader.svelte'
   import AgentReasoning from '../lib/components/AgentReasoning.svelte'
   import ConceptTerm from '../lib/components/ConceptTerm.svelte'
   import DiscussButton from '../lib/components/DiscussButton.svelte'
@@ -21,6 +27,7 @@
   // agent-1 计划没有版本链与计划卡，另给一段「看推理过程」，按生成它的运行取推理视图（v2.6 spec §8.5）。
   let { sub }: { sub: string } = $props()
   let title = $state('')
+  let calcVersion = $state('')
   let ticker = $state('')
   let unit = $state<{ ticker: string; signal_date: string } | null>(null)
   let legacyRunId = $state<string | null>(null)
@@ -35,6 +42,8 @@
   let rerunBusy = $state<Record<string, boolean>>({})
   let rerunText = $state<Record<string, string>>({})
   let rerunDone = $state<Record<string, boolean>>({})
+  let rerunAsk = $state<RerunRow | null>(null)          // the row waiting for the confirm dialog
+  let rerunOpen = $state(false)
   const rerunIds: Record<string, string> = {}
   const RERUN_MODE_TEXT: Record<string, string> = { propose: 'Agent 建议', interpret: 'Agent 简报解读' }
   const RERUN_STATUS_TEXT: Record<string, string> = { error: '出错', skipped: '跳过' }
@@ -70,6 +79,7 @@
     let alive = true
     unit = null
     ticker = ''
+    calcVersion = ''
     legacyRunId = null
     reasoningOpen = false
     discussions = null
@@ -90,6 +100,7 @@
         if (!alive) return
         title = `${d.plan.ticker ?? '—'} · ${d.plan.signal_date ?? '—'}`
         ticker = d.plan.ticker ?? ''
+        calcVersion = d.plan.plan_version ?? ''
         unit = isChainVersion(d.plan.plan_version) && d.plan.ticker && d.plan.signal_date
           ? { ticker: d.plan.ticker, signal_date: d.plan.signal_date } : null
         const target: NoteTarget | null = unit ? { ticker: unit.ticker, chain_signal_date: unit.signal_date }
@@ -138,7 +149,10 @@
     } catch (e) {
       rerunText[row.mode] = e instanceof api.ApiError && e.status === 409
         ? (e.code === 'not_needed' ? '这个单元不需要重跑' : e.message) : describeError(e)
-    } finally { rerunBusy[row.mode] = false }
+    } finally {
+      rerunBusy[row.mode] = false
+      rerunOpen = false
+    }
   }
 
   // 有历史就后退；没有历史（直链打开）时不拦截，沿 href 落到「今日」。
@@ -147,24 +161,27 @@
   }
 </script>
 
-<section class="space-y-4">
-  <header class="flex items-center gap-3">
-    <a href="#today" onclick={goBack} class="text-sm text-primary underline">返回</a>
-    <h1 class="text-lg font-semibold">{title || '加载中…'}</h1>
-    {#if ticker}<a href={`#instrument/${encodeURIComponent(ticker)}`} class="text-sm text-primary underline">标的页</a>{/if}
-    {#if ticker}<DiscussButton context={{ kind: 'plan', plan_id: sub }} />{/if}
-  </header>
+<div class="grid gap-4">
+  <PageHeader level={1} title={title || '加载中…'}>
+    {#snippet meta()}
+      <a href="#today" onclick={goBack} class="text-primary underline">返回</a>
+      {#if ticker}<a href={`#instrument/${encodeURIComponent(ticker)}`} class="text-primary underline">标的页</a>{/if}
+      {#if calcVersion}<CalcVersion version={calcVersion} />{/if}
+    {/snippet}
+    {#snippet actions()}
+      {#if ticker}<DiscussButton context={{ kind: 'plan', plan_id: sub }} />{/if}
+    {/snippet}
+  </PageHeader>
   {#key sub}
     {#if rerunRows.length}
-      <section aria-label="Agent 重新运行" class="space-y-1 text-sm">
+      <section aria-label="Agent 重新运行" class="grid gap-1 text-sm">
         {#each rerunRows as row (row.mode)}
           <p class="flex flex-wrap items-center gap-2">
             <span>{RERUN_MODE_TEXT[row.mode]}：最近一次{RERUN_STATUS_TEXT[row.status] ?? row.status}{row.reason ? `（${AGENT_REASON_TEXT[row.reason] ?? row.reason}）` : ''}</span>
             {#if !rerunDone[row.mode]}
-              <button type="button" class="rounded-sm border border-primary/40 px-2 py-0.5 text-xs text-primary disabled:opacity-50"
-                      disabled={rerunBusy[row.mode]} onclick={() => rerun(row)}>重新运行 Agent</button>
+              <Button size="sm" busy={rerunBusy[row.mode]} onclick={() => { rerunAsk = row; rerunOpen = true }}>重新运行 Agent</Button>
             {/if}
-            {#if rerunText[row.mode]}<span class="text-xs text-muted-foreground">{rerunText[row.mode]}</span>{/if}
+            {#if rerunText[row.mode]}<span class="text-xs {rerunDone[row.mode] ? 'text-muted-foreground' : 'text-destructive'}">{rerunText[row.mode]}</span>{/if}
           </p>
         {/each}
       </section>
@@ -173,11 +190,18 @@
       <PlanTimeline ticker={unit.ticker} signalDate={unit.signal_date} currentPlanId={sub} />
     {/if}
     {#if legacyRunId}
-      <section aria-label="Agent 推理" class="space-y-2">
-        <p class="text-xs text-amber-700">agent-1（旧版，不参与复查） <ConceptTerm id={ATTACH.agentCard.legacy}>旧版说明</ConceptTerm></p>
-        <button type="button" class="text-xs text-primary underline" aria-expanded={reasoningOpen}
-                onclick={() => reasoningOpen = !reasoningOpen}>看推理过程</button>
-        {#if reasoningOpen}<AgentReasoning runId={legacyRunId} />{/if}
+      <section aria-label="Agent 推理" class="grid gap-2">
+        <p class="text-xs text-warn">agent-1（旧版，不参与复查） <ConceptTerm id={ATTACH.agentCard.legacy}>旧版说明</ConceptTerm></p>
+        <Collapsible bind:open={reasoningOpen} class="grid gap-2">
+          <div>
+            <CollapsibleTrigger>
+              {#snippet child({ props })}<Button variant="link" size="sm" class="text-xs" {...props}>看推理过程</Button>{/snippet}
+            </CollapsibleTrigger>
+          </div>
+          <CollapsibleContent forceMount>
+            {#if reasoningOpen}<AgentReasoning runId={legacyRunId} />{/if}
+          </CollapsibleContent>
+        </Collapsible>
       </section>
     {/if}
     <PlanDerivation planId={sub} />
@@ -186,7 +210,7 @@
     {/if}
     {#if noteTarget}
       {#if notesError}
-        <section aria-label="备注" class="space-y-1 text-sm">
+        <section aria-label="备注" class="grid gap-1 text-sm">
           <p class="font-medium">备注</p>
           <p class="text-xs text-muted-foreground">备注暂不可用：{notesError}</p>
         </section>
@@ -195,16 +219,16 @@
       {/if}
     {/if}
     {#if ticker}
-      <section aria-label="讨论" class="space-y-1 text-sm">
+      <section aria-label="讨论" class="grid gap-1 text-sm">
         <p class="font-medium">讨论 <span class="text-xs font-normal"><ConceptTerm id={ATTACH.discussion.about}>说明</ConceptTerm></span></p>
         {#if discussionsError}
           <p class="text-xs text-muted-foreground">{`讨论不可用：${discussionsError}`}</p>
         {:else if discussions === null}
-          <p class="text-xs text-muted-foreground">加载中…</p>
+          <DataBlock state="loading" skeleton="row" />
         {:else if discussions.length === 0}
-          <p class="text-xs text-muted-foreground">还没有讨论</p>
+          <DataBlock state="empty" message="还没有讨论" />
         {:else}
-          <ul class="text-xs space-y-0.5">
+          <ul class="grid gap-0.5 text-xs">
             {#each discussions as d (d.id)}
               <li><a class="text-primary underline" href={`#discuss/${d.id}`}>{fmtBeijing(d.created_at)} · {d.turn_count} 轮{d.first_question ? ` · ${truncate(d.first_question, 40)}` : ''}</a></li>
             {/each}
@@ -213,4 +237,8 @@
       </section>
     {/if}
   {/key}
-</section>
+</div>
+
+<ConfirmDialog bind:open={rerunOpen} title="重新运行 Agent" busy={!!rerunAsk && !!rerunBusy[rerunAsk.mode]}
+               consequence={`将重置「${rerunAsk ? RERUN_MODE_TEXT[rerunAsk.mode] : ''}」的尝试次数，并重新运行一次 Agent。`}
+               actionLabel="重新运行 Agent" onConfirm={async () => { if (rerunAsk) await rerun(rerunAsk) }} />

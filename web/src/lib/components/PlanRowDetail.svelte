@@ -1,8 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { Alert, AlertDescription } from '$lib/ui/alert/index'
+  import { Button } from '$lib/ui/button/index'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import PlanLevels from '$lib/ui/domain/PlanLevels.svelte'
+  import StatusPill from '$lib/ui/domain/StatusPill.svelte'
+  import * as Sheet from '$lib/ui/sheet/index'
   import AgentPlanCard from './AgentPlanCard.svelte'
   import DiscussButton from './DiscussButton.svelte'
-  import Drawer from './Drawer.svelte'
   import PlanDerivation from './PlanDerivation.svelte'
   import PlanNotes from './PlanNotes.svelte'
   import UserInputs from './UserInputs.svelte'
@@ -13,7 +18,7 @@
   // 「今日」计划表的行展开（spec §10.1）：AgentPlanCard（没有决定表单）、规则基线一行、「我的补充」、备注输入、
   // 「重新复查」、「就此讨论」；版本号链接到计划页。布局开关只影响这里的顺序，键 workbench.today.layout 沿用。
   let { row, recheck, onRecheck, onNote }: {
-    row: wb.PlanTableRow; recheck?: { busy: boolean; text: string }
+    row: wb.PlanTableRow; recheck?: { busy: boolean; text: string; since?: number }
     onRecheck: () => void; onNote: (body: string, requestId: string) => Promise<void>
   } = $props()
 
@@ -32,8 +37,19 @@
   let chain = $state<tl.Chain | null>(null)
   let chainError = $state('')
   let derivationOpen = $state(false)
-  let callDrawer = $state<{ open: boolean; call: wb.AgentToolCall | null }>({ open: false, call: null })
+  let callOpen = $state(false)
+  let callDrawer = $state<{ seq: number | null; call: wb.AgentToolCall | null }>({ seq: null, call: null })
   let callError = $state('')
+
+  // How long the recheck has been running (the page hands in when it started); ticks only while it runs.
+  let tick = $state(Date.now())
+  $effect(() => {
+    if (!recheck?.busy || recheck.since == null) return
+    tick = Date.now()
+    const timer = setInterval(() => { tick = Date.now() }, 1000)
+    return () => clearInterval(timer)
+  })
+  const waited = $derived(recheck?.since == null ? null : Math.max(0, Math.floor((tick - recheck.since) / 1000)))
 
   onMount(async () => {
     if (!row.chain) return
@@ -57,31 +73,32 @@
     try {
       const detail = await wb.getAgentRun(head.run.id)
       const seq = Number(ref.split(':')[1])
-      callDrawer = { open: true, call: detail.tool_calls.find(c => c.seq === seq) ?? null }
+      callDrawer = { seq, call: detail.tool_calls.find(c => c.seq === seq) ?? null }
+      callOpen = true
     } catch (e) {
       callError = wb.describeError(e)
     }
   }
 </script>
 
-<div data-testid="row-detail" class="space-y-3 text-sm">
+<div data-testid="row-detail" class="grid gap-3 text-sm">
   <div role="group" aria-label="布局" class="flex items-center gap-1 text-xs">
     <span class="text-muted-foreground">布局：</span>
     {#each [['agent_first', 'Agent 优先'], ['legacy', '规则优先（旧）']] as [value, label]}
-      <button type="button" class="px-2 py-1 border border-border rounded-sm {layout === value ? 'bg-primary/10 text-primary' : 'hover:bg-muted'}"
-              aria-pressed={layout === value} onclick={() => setLayout(value as Layout)}>{label}</button>
+      <Button size="sm" class={layout === value ? 'border-primary/40 bg-primary/10 text-primary' : ''}
+              aria-pressed={layout === value} onclick={() => setLayout(value as Layout)}>{label}</Button>
     {/each}
   </div>
 
   {#snippet agentBlock()}
     {#if row.chain}
       {#if chainError}
-        <p class="text-xs text-red-600">Agent 计划加载失败：{chainError}</p>
+        <Alert variant="danger"><AlertDescription>Agent 计划加载失败：{chainError}</AlertDescription></Alert>
       {:else if agent}
         <AgentPlanCard {agent} onCall={showCall} />
-        {#if callError}<p class="text-xs text-red-600">{callError}</p>{/if}
+        {#if callError}<Alert variant="danger"><AlertDescription>{callError}</AlertDescription></Alert>{/if}
       {:else}
-        <p class="text-xs text-muted-foreground">加载中…</p>
+        <DataBlock state="loading" skeleton="block" />
       {/if}
     {:else}
       <p class="text-xs text-muted-foreground">这一行没有 Agent 计划链。</p>
@@ -89,12 +106,13 @@
   {/snippet}
   {#snippet baselineBlock()}
     {#if b}
-      <div data-testid="rule-baseline" class="border-l-2 border-primary/40 pl-2 space-y-1">
-        <p>规则基线 {b.plan_version}：入场 {b.entry_low}–{b.entry_high} · 止损 {b.stop} · T1 {b.target1}{b.shares != null ? ` · 建议 ${b.shares} 股` : ''}（{b.status === 'invalid' ? '已作废' : '有效'}）
+      <div data-testid="rule-baseline" class="grid gap-1 border-l-2 border-primary/40 pl-2">
+        <p class="flex flex-wrap items-center gap-x-2">
+          <span>规则基线 {b.plan_version}：<PlanLevels low={Number(b.entry_low)} high={Number(b.entry_high)} stop={Number(b.stop)} target1={Number(b.target1)} shares={b.shares ?? null} />（{b.status === 'invalid' ? '已作废' : '有效'}）</span>
           <a class="text-xs text-primary underline" href={`#plan/${b.plan_id}`}>查看</a>
-          <button type="button" class="text-xs text-primary underline" aria-expanded={derivationOpen}
-                  onclick={() => derivationOpen = !derivationOpen}>展开推导</button></p>
-        {#if wb.activeChainText(row)}<p class="text-xs text-amber-700">{wb.activeChainText(row)}</p>{/if}
+          <Button variant="link" size="sm" class="text-xs" aria-expanded={derivationOpen}
+                  onclick={() => derivationOpen = !derivationOpen}>展开推导</Button></p>
+        {#if wb.activeChainText(row)}<p class="text-xs text-warn">{wb.activeChainText(row)}</p>{/if}
         {#if derivationOpen}<PlanDerivation planId={b.plan_id} />{/if}
       </div>
     {/if}
@@ -114,11 +132,15 @@
       <a class="text-xs text-primary underline" href={`#plan/${row.plan.plan_id}`}>{row.plan.plan_version} 计划页</a>
     {/if}
     {#if row.chain}
-      <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted disabled:opacity-50"
-              disabled={!reviewable || recheck?.busy}
+      <Button size="sm" disabled={!reviewable} busy={recheck?.busy}
               title={exiting ? wb.CHAIN_EXITING_TEXT : reviewable ? '' : '只有入场期或持仓期的链可以重新复查'}
-              onclick={onRecheck}>重新复查</button>
-      {#if recheck?.text}<span class="text-xs">{recheck.text}</span>{/if}
+              onclick={onRecheck}>重新复查</Button>
+      {#if recheck?.busy}
+        <StatusPill domain="run" value="running" text={recheck.text} />
+        {#if waited != null}<span class="text-xs text-muted-foreground">已等待 {waited} 秒</span>{/if}
+      {:else if recheck?.text}
+        <span class="text-xs">{recheck.text}</span>
+      {/if}
     {/if}
     <!-- 有链时「就此计划讨论」在 Agent 计划卡里；这里只补没有链的行（规则基线 / 自定） -->
     {#if !row.chain && discussPlanId}<DiscussButton context={{ kind: 'plan', plan_id: discussPlanId }} />{/if}
@@ -131,16 +153,23 @@
   {/if}
   <PlanNotes notes={row.notes ?? []} {onNote} />
 
-  <Drawer open={callDrawer.open} onclose={() => callDrawer = { open: false, call: null }}>
-    {#if callDrawer.call}
-      {@const c = callDrawer.call}
-      <h2 class="font-semibold">工具调用 call:{c.seq}</h2>
-      <p class="text-xs text-muted-foreground">工具 {c.tool} · 阶段 {c.phase === 'propose' ? '建议' : '反方'} · {wb.dateTime(c.called_at)}</p>
-      <p class="text-xs break-all">参数 {JSON.stringify(c.args)}</p>
-      <p class="text-xs break-all">哈希 {c.result_sha256.slice(0, 8)}</p>
-      <pre class="text-xs mt-2 whitespace-pre-wrap break-all">{JSON.stringify(c.result, null, 2)}</pre>
-    {:else}
-      <p class="text-sm text-muted-foreground">未找到该编号的工具调用</p>
-    {/if}
-  </Drawer>
+  <Sheet.Root bind:open={callOpen}>
+    <Sheet.Content side="right" width="sm">
+      <Sheet.Header>
+        <Sheet.Title>工具调用 call:{callDrawer.seq}</Sheet.Title>
+        <Sheet.Description class="sr-only">这次 Agent 运行里的一次工具调用</Sheet.Description>
+      </Sheet.Header>
+      <div class="grid gap-1 px-4 pb-4">
+        {#if callDrawer.call}
+          {@const c = callDrawer.call}
+          <p class="text-xs text-muted-foreground">工具 {c.tool} · 阶段 {c.phase === 'propose' ? '建议' : '反方'} · {wb.dateTime(c.called_at)}</p>
+          <p class="break-all text-xs">参数 {JSON.stringify(c.args)}</p>
+          <p class="break-all text-xs">哈希 {c.result_sha256.slice(0, 8)}</p>
+          <pre class="mt-2 whitespace-pre-wrap break-all text-xs">{JSON.stringify(c.result, null, 2)}</pre>
+        {:else}
+          <p class="text-sm text-muted-foreground">未找到该编号的工具调用</p>
+        {/if}
+      </div>
+    </Sheet.Content>
+  </Sheet.Root>
 </div>

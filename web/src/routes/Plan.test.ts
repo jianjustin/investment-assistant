@@ -37,6 +37,36 @@ describe('Plan', () => {
     expect(screen.getByText('输入快照')).toBeInTheDocument()
   })
 
+  it('narrow version chain as cards: below 768px the version chain folds each version into a card', async () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: q.includes('max-width: 767px'), media: q,
+      addEventListener: () => {}, removeEventListener: () => {} }))
+    vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation({
+      plan: { id: 'p1', ticker: 'NVDA', signal_date: '2026-10-22', kind: 'agent', plan_version: 'agent-2', status: 'ok' },
+    }))
+    const plan = (id: string) => ({ id, ticker: 'NVDA', signal_date: '2026-10-22', kind: 'agent', plan_version: 'agent-2', status: 'ok',
+      entry_low: '98.50', entry_high: '101.50', stop: '95.00', target1: '108.00', valid_from: '2026-10-23', valid_until: '2026-10-27',
+      sizing: null, invalid_reasons: [], warnings: [] })
+    const version = (n: number, id: string, head: boolean) => ({ version_no: n, plan_id: id, origin: n ? 'review' : 'signal',
+      supersedes_plan_id: null, agent_run_id: `run-${n}`, cutoff_at: '2026-10-22T22:30:00Z', as_of_session: '2026-10-22',
+      created_at: '2026-10-22T22:31:00Z', is_head: head, diff: null, changes: [], plan: plan(id), run: { id: `run-${n}`, status: 'ok' }, shadow: null })
+    vi.spyOn(api, 'getChain').mockResolvedValue({
+      ticker: 'NVDA', signal_date: '2026-10-22', session: '2026-10-24', state: { state: 'entry', mode: 'entry', basis: '尚未成交' },
+      head_plan_id: 'p1', version_no: 1, latest_review: null, shadow_version: 'plan-shadow-1', reviews: [], inputs: [],
+      versions: [version(0, 'p0', false), version(1, 'p1', true)] } as any)
+    vi.spyOn(api, 'getUserInputs').mockResolvedValue({ inputs: [] })
+    render(Plan, { sub: 'p1' })
+    const chain = await screen.findByRole('region', { name: '版本链' })
+    const cards = await within(chain).findAllByRole('listitem')
+    expect(within(chain).queryByRole('table')).toBeNull()                  // no horizontal table
+    expect(cards).toHaveLength(2)
+    const field = (card: HTMLElement, label: string) => [...card.querySelectorAll('dt')].find(dt => dt.textContent === label)!.nextElementSibling!
+    expect(field(cards[0], '版本')).toHaveTextContent('第 0 版')
+    expect(field(cards[0], '价位')).toHaveTextContent('入场 98.50–101.50 · 止损 95.00 · T1 108.00')
+    expect(field(cards[1], '版本')).toHaveTextContent('第 1 版')
+    expect(field(cards[1], '版本')).toHaveTextContent('最新')
+    vi.unstubAllGlobals()
+  })
+
   it('agent-2 plan shows PlanTimeline and UserInputs', async () => {
     vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation({
       plan: { id: 'p1', ticker: 'NVDA', signal_date: '2026-10-22', kind: 'agent', plan_version: 'agent-2', status: 'ok' },
@@ -157,6 +187,29 @@ describe('Plan', () => {
       created_at: '2026-10-22T22:00:00Z', ...over,
     })
 
+    // 「重新运行 Agent」是不可逆动作：按钮只打开确认框，确认框里的同名按钮才真正提交
+    const confirmRerun = async () => fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '重新运行 Agent' }))
+
+    it('rerun agent needs confirm: the page button only opens the dialog; Cancel posts nothing', async () => {
+      vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation())
+      vi.spyOn(api, 'getAgentRuns').mockResolvedValue({ runs: [run({ status: 'error', reason: 'model_error' })] })
+      const rerun = vi.spyOn(api, 'rerunAgent').mockResolvedValue({ reset_id: 3, run_id: 'run-new', replayed: false })
+      render(Plan, { sub: 'p1' })
+      const section = await screen.findByRole('region', { name: 'Agent 重新运行' })
+      await fireEvent.click(within(section).getByRole('button', { name: '重新运行 Agent' }))
+      const dialog = await screen.findByRole('dialog')
+      expect(dialog).toHaveAccessibleName('重新运行 Agent')
+      expect(dialog).toHaveTextContent('Agent 建议')
+      expect(rerun).not.toHaveBeenCalled()
+      await fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+      expect(rerun).not.toHaveBeenCalled()
+      await fireEvent.click(within(section).getByRole('button', { name: '重新运行 Agent' }))
+      await confirmRerun()
+      await waitFor(() => expect(rerun).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    })
+
     it('rerun agent button for max_attempts and error runs', async () => {
       vi.spyOn(api, 'getPlanDerivation').mockResolvedValue(derivation())
       const list = vi.spyOn(api, 'getAgentRuns').mockResolvedValue({ runs: [
@@ -173,6 +226,8 @@ describe('Plan', () => {
       const button = within(section).getByRole('button', { name: '重新运行 Agent' })
       expect(within(section).getAllByRole('button')).toHaveLength(1)
       await fireEvent.click(button)
+      await confirmRerun()
+      await waitFor(() => expect(rerun).toHaveBeenCalled())
       expect(rerun).toHaveBeenCalledWith({
         ticker: 'NVDA', signal_date: '2026-10-22', mode: 'propose',
         request_id: expect.stringMatching(/^[0-9a-f-]{36}$/), origin: 'plan_page',
@@ -189,7 +244,9 @@ describe('Plan', () => {
       vi.spyOn(api, 'rerunAgent').mockRejectedValue(new api.ApiError('这个单元不需要重跑（后端原文）', 409))
       render(Plan, { sub: 'p1' })
       await fireEvent.click(await screen.findByRole('button', { name: '重新运行 Agent' }))
+      await confirmRerun()
       expect(await screen.findByText('这个单元不需要重跑（后端原文）')).toBeInTheDocument()
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
       expect(screen.getByRole('button', { name: '重新运行 Agent' })).toBeEnabled()     // 失败：按钮留着，可重试
     })
 
@@ -201,6 +258,7 @@ describe('Plan', () => {
       const section = await screen.findByRole('region', { name: 'Agent 重新运行' })
       expect(section).toHaveTextContent('Agent 简报解读：最近一次出错（ChatGPT 未连接）')
       await fireEvent.click(within(section).getByRole('button', { name: '重新运行 Agent' }))
+      await confirmRerun()
       expect(await screen.findByText('这个单元不需要重跑')).toBeInTheDocument()
     })
 

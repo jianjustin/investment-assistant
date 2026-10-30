@@ -77,6 +77,37 @@ describe('RunOverview', () => {
     expect(screen.queryByRole('link', { name: '运行详情' })).toBeNull()
   })
 
+  it('each stage status is a node StatusPill with the backend wording; missing / not_recorded borrow a tone', async () => {
+    vi.mocked(api.getRunOverview).mockResolvedValue(overview({ stages: IDS.map(id =>
+      id === 'collect' ? line(id, { status: 'partial', status_text: '部分失败' })
+      : id === 'review' ? line(id, { status: 'not_recorded', status_text: '未记录' })
+      : id === 'agent' ? line(id, { status: 'missing', status_text: '缺失' }) : line(id)) }))
+    render(RunOverview, {})
+    const rows = await screen.findAllByRole('listitem')
+    const pill = (row: HTMLElement) => row.querySelector('[data-domain="node"]')!
+    expect(pill(rows[0])).toHaveAttribute('data-tone', 'warn')
+    expect(pill(rows[0])).toHaveTextContent('部分失败')
+    expect(pill(rows[1])).toHaveAttribute('data-tone', 'success')
+    expect(pill(rows[6])).toHaveAttribute('data-tone', 'neutral')
+    expect(pill(rows[6])).toHaveTextContent('未记录')
+    expect(pill(rows[5])).toHaveAttribute('data-tone', 'danger')
+    expect(pill(rows[5])).toHaveTextContent('缺失')
+  })
+
+  it('a missing table is 没算 with its reason, an empty day is plain empty text (no badge)', async () => {
+    vi.mocked(api.getRunOverview).mockResolvedValue(overview({
+      ready: false, note: '迁移 025 未执行，暂无阶段证据', stages: [], runs: [], selected_run_id: null, headline: '' }))
+    const first = render(RunOverview, {})
+    expect(await screen.findByText('迁移 025 未执行，暂无阶段证据')).toBeInTheDocument()
+    expect(screen.getByText('没算')).toBeInTheDocument()
+    first.unmount()
+    vi.mocked(api.getRunOverview).mockResolvedValue(overview({
+      note: '这一天没有阶段证据：当天没有运行', stages: [], runs: [], selected_run_id: null, headline: '' }))
+    render(RunOverview, {})
+    expect(await screen.findByText('这一天没有阶段证据：当天没有运行')).toBeInTheDocument()
+    expect(screen.queryByText('没算')).toBeNull()
+  })
+
   it('stages-1 placeholder line', async () => {
     vi.mocked(api.getRunOverview).mockResolvedValue(overview({ stages: IDS.map(id => id === 'review'
       ? line(id, { status: 'not_recorded', status_text: '未记录', input_count: null, output_count: null,

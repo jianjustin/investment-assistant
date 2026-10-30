@@ -1,10 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import StatusPill from '$lib/ui/domain/StatusPill.svelte'
+  import { DataTable } from '$lib/ui/data-table/index'
+  import type { Column } from '$lib/ui/data-table/types'
   import * as api from '../api'
   import ConceptTerm from './ConceptTerm.svelte'
   import { ATTACH, derivationStepConcept, ruleConcept } from '../knowledge'
   import { CLAUSE_TEXT, CONSISTENCY_TEXT, SOURCE_TEXT } from '../derivation'
-  import type { Derivation, Step, TriggerItem, UnitDerivation } from '../derivation'
+  import type { Derivation, Step, TriggerClause, TriggerItem, UnitDerivation } from '../derivation'
 
   // 二者给一个：planId 展开完整四段推导，unit 只展开触发段；挂载时请求一次。
   let { planId, unit }: { planId?: string; unit?: { ticker: string; signal_date: string } } = $props()
@@ -31,11 +35,11 @@
   }
 
   // 数字照后端字符串原样展示：不做任何 Number() / toFixed。
-  const text = (value: unknown): string => value == null ? '—' : String(value)
+  const text = (value: unknown): string => value == null ? '无' : String(value)
   const operand = (value: unknown): string =>
     Array.isArray(value) ? (value.join(',') || '无') : value == null ? '无' : String(value)
   const pairs = (entries: Record<string, unknown> | undefined): string =>
-    Object.entries(entries ?? {}).map(([k, v]) => `${k}=${operand(v)}`).join(' · ') || '—'
+    Object.entries(entries ?? {}).map(([k, v]) => `${k}=${operand(v)}`).join(' · ') || '无'
 
   const consistency = $derived(plan?.consistency ?? triggerOnly?.consistency ?? null)
   const candidates = $derived<TriggerItem[]>(plan?.trigger.candidates ?? triggerOnly?.trigger ?? [])
@@ -44,59 +48,65 @@
   const trSteps = $derived(steps.filter(s => s.key.startsWith('tr_')))      // TR1..TR14 明细默认折叠
   const mainSteps = $derived(steps.filter(s => !s.key.startsWith('tr_')))
 
-  const BADGE_CLASS: Record<string, string> = {
-    consistent: 'bg-primary/10 text-primary', mismatch: 'bg-red-100 text-red-700', incomplete: 'bg-amber-100 text-amber-800',
-  }
+  // 推导核对状态没有自己的状态域：借 node 域的语气（成功 / 失败 / 降级），文字用 CONSISTENCY_TEXT。
+  const CONSISTENCY_TONE: Record<string, string> = { consistent: 'success', mismatch: 'failed', incomplete: 'degraded' }
   const clauseClass = (result: string): string =>
-    result === 'violated' ? 'text-red-600' : result === 'not_frozen' ? 'text-amber-700' : 'text-muted-foreground'
+    result === 'violated' ? 'text-destructive' : result === 'not_frozen' ? 'text-warn' : 'text-muted-foreground'
   const sourceLabel = (step: Step): string => {
     const refs = step.refs?.length ? ` ${step.refs.join('、')}` : ''
     return `${SOURCE_TEXT[step.source] ?? step.source}${refs}`
   }
+
+  const stepColumns: Column<Step>[] = [
+    { key: 'label', header: '项目', cell: stepLabel },
+    { key: 'formula', header: '公式', value: s => s.formula },
+    { key: 'substitutions', header: '代入', cell: stepSubstitutions },
+    { key: 'result', header: '结果', align: 'num', value: s => text(s.result) },
+    { key: 'stored', header: '已存', align: 'num', value: s => text(s.stored) },
+    { key: 'consistent', header: '一致', cell: stepConsistent },
+  ]
+  const clauseColumns: Column<TriggerClause>[] = [
+    { key: 'text', header: '条件句', value: c => c.text },
+    { key: 'operands', header: '冻结取值', cell: clauseOperands },
+    { key: 'result', header: '结果', cell: clauseResult },
+  ]
+  const barColumns: Column<{ id: string | number; price_date: string; open: unknown; high: unknown; low: unknown; close: unknown; revision: unknown }>[] = [
+    { key: 'price_date', header: '日期', value: b => b.price_date },
+    { key: 'open', header: '开', align: 'num', value: b => text(b.open) },
+    { key: 'high', header: '高', align: 'num', value: b => text(b.high) },
+    { key: 'low', header: '低', align: 'num', value: b => text(b.low) },
+    { key: 'close', header: '收', align: 'num', value: b => text(b.close) },
+    { key: 'revision', header: '修订号', align: 'num', value: b => text(b.revision) },
+  ]
 </script>
 
-{#snippet stepTable(label: string, rows: Step[])}
-  <div class="overflow-x-auto">
-    <table aria-label={label} class="w-full text-xs text-left whitespace-nowrap">
-      <thead><tr class="text-muted-foreground">
-        <th class="pr-2 py-1">项目</th><th class="pr-2 py-1">公式</th><th class="pr-2 py-1">代入</th>
-        <th class="pr-2 py-1">结果</th><th class="pr-2 py-1">已存</th><th class="pr-2 py-1">一致</th>
-      </tr></thead>
-      <tbody>
-        {#each rows as step (step.key)}
-          <tr class="border-t border-border">
-            <td class="pr-2 py-1">{step.label}（{sourceLabel(step)}）{#if derivationStepConcept(step.key)} <ConceptTerm id={derivationStepConcept(step.key)!} />{/if}</td>
-            <td class="pr-2 py-1">{step.formula}</td>
-            <td class="pr-2 py-1 whitespace-normal">{pairs(step.substitutions)}</td>
-            <td class="pr-2 py-1">{text(step.result)}</td>
-            <td class="pr-2 py-1">{text(step.stored)}</td>
-            <td class="pr-2 py-1 {step.consistent === false ? 'text-red-600' : 'text-muted-foreground'}">
-              {step.consistent == null ? '—' : step.consistent ? '一致' : '不一致'}
-            </td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
-  </div>
+{#snippet stepLabel(step: Step)}
+  {step.label}（{sourceLabel(step)}）{#if derivationStepConcept(step.key)} <ConceptTerm id={derivationStepConcept(step.key)!} />{/if}
 {/snippet}
+{#snippet stepSubstitutions(step: Step)}{pairs(step.substitutions)}{/snippet}
+{#snippet stepConsistent(step: Step)}
+  <span class={step.consistent === false ? 'text-destructive' : 'text-muted-foreground'}>{step.consistent == null ? '不适用' : step.consistent ? '一致' : '不一致'}</span>
+{/snippet}
+{#snippet clauseOperands(clause: TriggerClause)}{pairs(clause.operands)}{/snippet}
+{#snippet clauseResult(clause: TriggerClause)}<span class={clauseClass(clause.result)}>{CLAUSE_TEXT[clause.result]}</span>{/snippet}
 
 <section class="text-sm border-l-2 border-border pl-2 space-y-2" aria-label="计划推导">
   {#if error}
-    <p role="alert" class="text-xs text-red-600">{error}</p>
+    <DataBlock state="error" message={error} onRetry={() => void load()} />
   {:else if loading}
-    <p class="text-xs text-muted-foreground">推导加载中…</p>
+    <DataBlock state="loading" skeleton="block" />
   {:else}
     {#if consistency}
       <p class="flex flex-wrap items-center gap-2">
-        <span class="text-xs px-1.5 py-0.5 rounded-sm {BADGE_CLASS[consistency.status]}">{CONSISTENCY_TEXT[consistency.status]}</span>
+        <StatusPill domain="node" value={CONSISTENCY_TONE[consistency.status]} text={CONSISTENCY_TEXT[consistency.status]} />
         <span class="text-xs"><ConceptTerm id={D.consistency}>推导核对</ConceptTerm></span>
         <span class="text-xs text-muted-foreground">{plan?.derivation_version ?? triggerOnly?.derivation_version}</span>
       </p>
       {#each consistency.mismatches as m (m.key)}
-        <p class="text-xs text-red-600">差异 {m.key}：推导 {text(m.result)} ≠ 已存 {text(m.stored)}</p>
+        <p class="text-xs text-destructive">差异 {m.key}：推导 {text(m.result)} ≠ 已存 {text(m.stored)}</p>
       {/each}
       {#each consistency.missing as item (item)}
-        <p class="text-xs text-amber-700">缺失 {item}</p>
+        <p class="text-xs text-warn">缺失 {item}</p>
       {/each}
     {/if}
     <p class="text-xs text-muted-foreground">{plan?.evidence ?? triggerOnly?.evidence} <ConceptTerm id={D.evidence} /></p>
@@ -107,22 +117,7 @@
       {#each candidates as c (c.candidate_id)}
         <div class="space-y-0.5">
           <p class="text-xs"><ConceptTerm id={ruleConcept(c.rule_id)}>{c.rule_id}</ConceptTerm> · v{c.rule_version} · {c.action}{c.note ? ` · ${c.note}` : ''}</p>
-          <div class="overflow-x-auto">
-            <table aria-label="触发条件 {c.rule_id}" class="w-full text-xs text-left whitespace-nowrap">
-              <thead><tr class="text-muted-foreground">
-                <th class="pr-2 py-1">条件句</th><th class="pr-2 py-1">冻结取值</th><th class="pr-2 py-1">结果</th>
-              </tr></thead>
-              <tbody>
-                {#each c.clauses as clause, i (i)}
-                  <tr class="border-t border-border">
-                    <td class="pr-2 py-1">{clause.text}</td>
-                    <td class="pr-2 py-1 whitespace-normal">{pairs(clause.operands)}</td>
-                    <td class="pr-2 py-1 {clauseClass(clause.result)}">{CLAUSE_TEXT[clause.result]}</td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
+          <DataTable columns={clauseColumns} rows={c.clauses} rowKey={(_clause) => c.clauses.indexOf(_clause)} caption={`触发条件 ${c.rule_id}`} sticky={false} />
         </div>
       {:else}
         <p class="text-xs text-muted-foreground">无候选</p>
@@ -133,7 +128,7 @@
       <details open class="space-y-1">
         <summary class="cursor-pointer font-medium text-xs">输入快照</summary>
         <p class="text-xs"><ConceptTerm id={D.refPrice}>参考价</ConceptTerm> {text(plan.inputs.ref_price?.value)}（bar {text(plan.inputs.ref_price?.source_bar_id)}）</p>
-        <p class="text-xs"><ConceptTerm id={D.earnings}>财报</ConceptTerm> {plan.inputs.earnings ? `${plan.inputs.earnings.status ?? '—'} · ${text(plan.inputs.earnings.earnings_date)} · 取于 ${text(plan.inputs.earnings.fetched_at)}` : text(plan.inputs.earnings_note)}</p>
+        <p class="text-xs"><ConceptTerm id={D.earnings}>财报</ConceptTerm> {plan.inputs.earnings ? `${plan.inputs.earnings.status ?? '无'} · ${text(plan.inputs.earnings.earnings_date)} · 取于 ${text(plan.inputs.earnings.fetched_at)}` : text(plan.inputs.earnings_note)}</p>
         <p class="text-xs"><ConceptTerm id={D.snapshot}>资金快照</ConceptTerm> {plan.inputs.snapshot ? `${text(plan.inputs.snapshot.as_of)} · equity {text(plan.inputs.snapshot.equity)}` : text(plan.inputs.snapshot_note)}</p>
         {#if plan.inputs.exposure}
           <p class="text-xs"><ConceptTerm id={D.exposure}>敞口</ConceptTerm> 该票 {text(plan.inputs.exposure.ticker_value)} / 总持仓 {text(plan.inputs.exposure.total_value)}（{plan.inputs.exposure.note}）</p>
@@ -160,26 +155,7 @@
           <details class="space-y-1">
             <summary class="cursor-pointer text-xs">日线（{plan.inputs.bars.length} 根，{plan.inputs.bars_note}）</summary>
             <p class="text-xs"><ConceptTerm id={D.bars} /></p>
-            <div class="overflow-x-auto">
-              <table aria-label="输入日线" class="w-full text-xs text-left whitespace-nowrap">
-                <thead><tr class="text-muted-foreground">
-                  <th class="pr-2 py-1">日期</th><th class="pr-2 py-1">开</th><th class="pr-2 py-1">高</th>
-                  <th class="pr-2 py-1">低</th><th class="pr-2 py-1">收</th><th class="pr-2 py-1">修订号</th>
-                </tr></thead>
-                <tbody>
-                  {#each plan.inputs.bars as bar (bar.id)}
-                    <tr class="border-t border-border">
-                      <td class="pr-2 py-1">{bar.price_date}</td>
-                      <td class="pr-2 py-1">{text(bar.open)}</td>
-                      <td class="pr-2 py-1">{text(bar.high)}</td>
-                      <td class="pr-2 py-1">{text(bar.low)}</td>
-                      <td class="pr-2 py-1">{text(bar.close)}</td>
-                      <td class="pr-2 py-1">{text(bar.revision)}</td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
+            <DataTable columns={barColumns} rows={plan.inputs.bars} rowKey={(b) => b.id} caption="输入日线" sticky={false} />
           </details>
         {/if}
       </details>
@@ -189,11 +165,11 @@
         {#if trSteps.length}
           <details class="space-y-1">
             <summary class="cursor-pointer text-xs">TR 明细（{trSteps.length} 步）</summary>
-            {@render stepTable('TR 明细', trSteps)}
+            <DataTable columns={stepColumns} rows={trSteps} rowKey={(r) => r.key} caption="TR 明细" sticky={false} />
           </details>
         {/if}
         {#if mainSteps.length}
-          {@render stepTable('逐项计算', mainSteps)}
+          <DataTable columns={stepColumns} rows={mainSteps} rowKey={(r) => r.key} sticky={false} />
         {:else}
           <p class="text-xs text-muted-foreground">无可推导项</p>
         {/if}
@@ -203,7 +179,7 @@
         <summary class="cursor-pointer font-medium text-xs">校验</summary>
         {#each plan.checks as check (check.key)}
           <p class="text-xs">{check.label}：{check.formula}（{pairs(check.substitutions)}）
-            <span class={check.holds ? 'text-muted-foreground' : 'text-red-600'}>{check.holds ? '成立' : '不成立'}</span></p>
+            <span class={check.holds ? 'text-muted-foreground' : 'text-destructive'}>{check.holds ? '成立' : '不成立'}</span></p>
         {:else}
           <p class="text-xs text-muted-foreground">无校验项</p>
         {/each}

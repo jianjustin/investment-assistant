@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup } from '@testing-library/svelte'
+import { render, cleanup, fireEvent, within } from '@testing-library/svelte'
 import App from './app.svelte'
 import * as api from './lib/api'
 
@@ -125,8 +125,41 @@ describe('app routing', () => {
     expect(getByRole('link', { name: '概念' })).toHaveAttribute('href', '#knowledge')
     expect(getByRole('link', { name: '原理' })).toHaveAttribute('href', '#knowledge/principles')
     // 知识 sits right after 数据 in the primary menu
-    const names = [...document.querySelectorAll('nav > div > a, nav > div > button')].map(n => n.textContent!.trim())
+    const names = [...document.querySelectorAll('nav [data-nav-item]')].map(n => n.textContent!.trim())
     expect(names.indexOf(names.find(n => n.includes('知识'))!)).toBe(names.indexOf(names.find(n => n.includes('数据'))!) + 1)
+  })
+
+  it('theme toggle has an accessible name and flips the theme', async () => {
+    document.documentElement.setAttribute('data-theme', 'light')
+    const { getByRole } = render(App)
+    const toggle = getByRole('button', { name: '切换主题' })
+    expect(toggle).toBeInTheDocument()
+    await fireEvent.click(toggle)
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    await fireEvent.click(toggle)
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+  })
+
+  it('the top bar names the current page and the navigation icons are not emoji', async () => {
+    location.hash = '#data'
+    const { container, getByRole } = render(App)
+    const header = container.querySelector('header')!
+    expect(within(header as HTMLElement).getByText('数据')).toBeInTheDocument()
+    expect(getByRole('link', { name: /数据/ })).toHaveAttribute('aria-current', 'page')
+    expect(container.textContent).not.toMatch(/[\u{1F000}-\u{1FAFF}\u2600-\u27BF\uFE0F]/u)
+  })
+
+  it('below 768px the navigation is a drawer opened from the top bar, and it closes when the page changes', async () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: q.includes('max-width: 767px'), media: q,
+      addEventListener: () => {}, removeEventListener: () => {} }))
+    location.hash = '#data'
+    const { getByRole, queryByRole, findByRole } = render(App)
+    expect(queryByRole('link', { name: /数据/ })).toBeNull()               // no permanent sidebar on a phone
+    await fireEvent.click(getByRole('button', { name: '打开菜单' }))
+    const drawer = await findByRole('dialog')
+    expect(within(drawer).getByRole('link', { name: /数据/ })).toHaveAttribute('aria-current', 'page')
+    vi.unstubAllGlobals()
+    vi.stubGlobal('EventSource', FakeEventSource)
   })
 
   it('#_ui renders the gallery in dev', async () => {

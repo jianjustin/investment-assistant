@@ -1,5 +1,15 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte'
+  import { Alert, AlertDescription } from '$lib/ui/alert/index'
+  import { Button } from '$lib/ui/button/index'
+  import DataBlock from '$lib/ui/domain/DataBlock.svelte'
+  import CutoffTime from '$lib/ui/domain/CutoffTime.svelte'
+  import Icon from '$lib/ui/domain/Icon.svelte'
+  import PageHeader from '$lib/ui/domain/PageHeader.svelte'
+  import StatusPill from '$lib/ui/domain/StatusPill.svelte'
+  import VersionChip from '$lib/ui/domain/VersionChip.svelte'
+  import Field from '$lib/ui/field/Field.svelte'
+  import { Textarea } from '$lib/ui/textarea/index'
   import AgentReasoning from './AgentReasoning.svelte'
   import RefList from './RefList.svelte'
   import * as api from '../api'
@@ -25,7 +35,11 @@
   let loadError = $state('')
   let question = $state('')
   let attachment = $state<(DiscussionAttachment & { label: string }) | null>(null)
-  let askError = $state('')
+  let askError = $state('')        // the submit was refused or failed (Alert in the form)
+  let questionError = $state('')   // validation (under the field)
+  let waited = $state(0)           // seconds since the current wait started
+  const uid = $props.id()
+  const SELECT = 'h-7 rounded-md border border-input bg-card px-2 text-xs text-foreground'
   let busy = $state(false)
   let timedOut = $state(false)
   let pickerOpen = $state(false)
@@ -54,6 +68,7 @@
   /** After every read: answered → done; interrupted → done; past the limit → timed out; otherwise read again. */
   function evaluate() {
     const waiting = waitingTurn(disc)
+    waited = Math.max(0, Math.floor((Date.now() - pollStart) / 1000))
     if (!waiting || waiting.state === 'interrupted') { stop(); timedOut = false; return }
     if (Date.now() - pollStart >= DISCUSS_POLL_MS) { stop(); timedOut = true; return }
     schedule()
@@ -87,10 +102,11 @@
     if (busy) return
     const text = question.trim()
     const n = [...text].length
-    if (n === 0) { askError = '问题不能为空'; return }
-    if (n > MAX_QUESTION) { askError = `问题最多 ${MAX_QUESTION} 字（现在 ${n} 字）`; return }
-    busy = true
     askError = ''
+    if (n === 0) { questionError = '问题不能为空'; return }
+    if (n > MAX_QUESTION) { questionError = `问题最多 ${MAX_QUESTION} 字（现在 ${n} 字）`; return }
+    questionError = ''
+    busy = true
     const payload = { body: text, ...(attachment ? { attachment: { kind: attachment.kind, id: attachment.id,
                       ...(attachment.version != null ? { version: attachment.version } : {}) } } : {}) }
     try {
@@ -152,140 +168,144 @@
   const reasonText = (reason: string | null | undefined) => AGENT_REASON_TEXT[reason ?? ''] ?? reason ?? '未知原因'
 </script>
 
-<section class="space-y-4 min-w-0">
-  {#if loadError}
-    <p role="alert" class="text-sm text-red-600">{`讨论加载失败：${loadError}`}</p>
-  {:else if !disc}
-    <p class="text-sm text-muted-foreground">加载中…</p>
-  {:else}
-    <header bind:this={header} data-testid="discussion-header" class="space-y-1">
-      <h1 class="text-lg font-semibold">讨论 · {disc.ticker} · {disc.signal_date}</h1>
-      <p class="text-xs text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1">
-        {#if disc.context_kind === 'plan'}
-          {#if disc.context?.version_no != null}<span>第 {disc.context.version_no} 版</span>{/if}
-          {#if disc.context?.generated_at}<span>生成于 {fmtBeijing(disc.context.generated_at)}</span>{/if}
-          {#if disc.context?.cutoff_at}<span>截止 {fmtBeijing(disc.context.cutoff_at)}</span>{/if}
-          {#if disc.plan_id}<a class="text-primary underline" href={`#plan/${disc.plan_id}`}>回到计划页</a>{/if}
+{#if loadError}
+  <DataBlock page state="error" message={`讨论加载失败：${loadError}`} />
+{:else if !disc}
+  <DataBlock page state="loading" skeleton="block" />
+{:else}
+<section class="grid min-w-0 gap-4">
+  <div bind:this={header} data-testid="discussion-header" class="grid gap-1">
+    <PageHeader level={1} title={`讨论 · ${disc.ticker} · ${disc.signal_date}`}>
+      {#snippet meta()}
+        {#if disc!.context_kind === 'plan'}
+          {#if disc!.context?.version_no != null}<VersionChip version={disc!.context.version_no} />{/if}
+          <CutoffTime at={disc!.context?.generated_at} label="生成于" />
+          <CutoffTime at={disc!.context?.cutoff_at} />
+          {#if disc!.plan_id}<a class="text-primary underline" href={`#plan/${disc!.plan_id}`}>回到计划页</a>{/if}
         {:else}
-          {#if disc.context?.end_kind}<span>{endText(disc.context.end_kind)}</span>{/if}
-          {#if disc.context?.end_session}<span>结束日 {disc.context.end_session}</span>{/if}
-          {#if disc.card_id != null}<a class="text-primary underline" href={`#review/cards/${disc.card_id}`}>回到复盘卡</a>{/if}
+          {#if disc!.context?.end_kind}<span>{endText(disc!.context.end_kind)}</span>{/if}
+          {#if disc!.context?.end_session}<span>结束日 {disc!.context.end_session}</span>{/if}
+          {#if disc!.card_id != null}<a class="text-primary underline" href={`#review/cards/${disc!.card_id}`}>回到复盘卡</a>{/if}
         {/if}
-        <a class="text-primary underline" href={`#instrument/${encodeURIComponent(disc.ticker)}`}>标的页</a>
-      </p>
-      <p class="text-xs text-muted-foreground">回答只读截止时间之前的数据；它不能改任何东西，计划修订只能由你点「重新复查」。证据：未验证</p>
-    </header>
+        <a class="text-primary underline" href={`#instrument/${encodeURIComponent(disc!.ticker)}`}>标的页</a>
+      {/snippet}
+    </PageHeader>
+    <p class="text-xs text-muted-foreground">回答只读截止时间之前的数据；它不能改任何东西，计划修订只能由你点「重新复查」。证据：未验证</p>
+  </div>
 
-    <ol class="space-y-3">
-      {#each disc.turns as turn, index (turn.id)}
-        <li data-testid="turn" class="border border-border rounded-sm p-3 space-y-1 text-sm {turn.role === 'user' ? 'bg-card' : ''}">
-          {#if turn.role === 'user'}
-            <p class="text-xs text-muted-foreground">你 · {fmtBeijing(turn.created_at)}</p>
-            <p class="whitespace-pre-wrap">{turn.body}</p>
-            {#if turn.attachment}<p class="text-xs text-muted-foreground">附件：{attachmentLabel(turn.attachment)}</p>{/if}
-            {#if turn.user_input_id != null || savedInput[turn.id] != null}
-              <p class="text-xs">已存为补充信息 <span>user:{turn.user_input_id ?? savedInput[turn.id]}</span></p>
-            {:else if turn.request_id}
-              <p class="text-xs flex flex-wrap items-center gap-2">
-                <select aria-label="补充信息类型" class="border border-border rounded-sm px-1 py-0.5 bg-background"
-                        value={saveKind[turn.id] ?? 'judgment'}
-                        onchange={e => saveKind[turn.id] = (e.currentTarget as HTMLSelectElement).value as UserInputKind}>
-                  {#each KINDS as kind (kind)}<option value={kind}>{USER_INPUT_KIND_TEXT[kind]}</option>{/each}
-                </select>
-                <button type="button" class="px-2 py-0.5 border border-border rounded-sm hover:bg-muted"
-                        onclick={() => saveAsInput(turn)}>存为补充信息</button>
-              </p>
-              {#if saveError[turn.id]}<p role="alert" class="text-xs text-red-600">{saveError[turn.id]}</p>{/if}
-            {/if}
-            {#if index === disc.turns.length - 1}
-              {#if turn.state === 'interrupted'}
-                <p class="text-xs text-amber-700">{DISCUSS_INTERRUPTED_TEXT}</p>
-              {:else if timedOut}
-                <p class="text-xs text-amber-700">{DISCUSS_TIMEOUT_TEXT}</p>
-              {:else}
-                <p class="text-xs text-muted-foreground">回答中…</p>
-              {/if}
-            {/if}
-          {:else}
-            <p class="text-xs text-muted-foreground">回答{turn.cutoff_at ? ` · 截止 ${fmtBeijing(turn.cutoff_at)}` : ''}</p>
-            {#if turn.status === 'ok'}
-              <p data-answer class="whitespace-pre-wrap">{turn.body}</p>
-              {#if turn.refs?.length}<p class="text-xs text-muted-foreground">引用<RefList refs={turn.refs} runId={turn.agent_run_id} onFact={scrollToContext} /></p>{/if}
-            {:else if turn.status === 'rejected'}
-              <p class="text-xs text-amber-700">这条回答没有通过校验：{reasonText(turn.reason)}</p>
-              <details class="text-xs">
-                <summary class="cursor-pointer text-primary">仍要看原文（未通过校验）</summary>
-                <p class="whitespace-pre-wrap text-muted-foreground">{turn.body}</p>
-              </details>
+  <ol class="grid gap-3">
+    {#each disc.turns as turn, index (turn.id)}
+      <li data-testid="turn" class="grid gap-1 rounded-md border border-border p-3 text-sm {turn.role === 'user' ? 'bg-card' : ''}">
+        {#if turn.role === 'user'}
+          <p class="text-xs text-muted-foreground">你 · {fmtBeijing(turn.created_at)}</p>
+          <p class="whitespace-pre-wrap">{turn.body}</p>
+          {#if turn.attachment}<p class="text-xs text-muted-foreground">附件：{attachmentLabel(turn.attachment)}</p>{/if}
+          {#if turn.user_input_id != null || savedInput[turn.id] != null}
+            <p class="text-xs">已存为补充信息 <span>user:{turn.user_input_id ?? savedInput[turn.id]}</span></p>
+          {:else if turn.request_id}
+            <p class="flex flex-wrap items-center gap-2 text-xs">
+              <select aria-label="补充信息类型" class={SELECT}
+                      value={saveKind[turn.id] ?? 'judgment'}
+                      onchange={e => saveKind[turn.id] = (e.currentTarget as HTMLSelectElement).value as UserInputKind}>
+                {#each KINDS as kind (kind)}<option value={kind}>{USER_INPUT_KIND_TEXT[kind]}</option>{/each}
+              </select>
+              <Button size="sm" onclick={() => saveAsInput(turn)}>存为补充信息</Button>
+            </p>
+            {#if saveError[turn.id]}<Alert variant="danger"><AlertDescription>{saveError[turn.id]}</AlertDescription></Alert>{/if}
+          {/if}
+          {#if index === disc.turns.length - 1}
+            {#if turn.state === 'interrupted'}
+              <Alert variant="warn" role="status"><AlertDescription>{DISCUSS_INTERRUPTED_TEXT}</AlertDescription></Alert>
+            {:else if timedOut}
+              <Alert variant="warn" role="status"><AlertDescription>{DISCUSS_TIMEOUT_TEXT}</AlertDescription></Alert>
             {:else}
-              <p class="text-xs text-amber-700">这一轮没有得到回答：{reasonText(turn.reason)}</p>
-            {/if}
-            {#if turn.agent_run_id}
-              <button type="button" class="text-xs text-primary underline" aria-expanded={!!reasoningOpen[turn.id]}
-                      onclick={() => reasoningOpen[turn.id] = !reasoningOpen[turn.id]}>看这次回答读了什么</button>
-              {#if reasoningOpen[turn.id]}<AgentReasoning runId={turn.agent_run_id} />{/if}
-            {/if}
-            {#if turn.detail?.draft_dropped}
-              <p class="text-xs text-muted-foreground">经验草稿未通过校验，已丢弃：{reasonText(String(turn.detail.draft_dropped))}</p>
-            {/if}
-            {#if turn.knowledge_draft}
-              {@const draft = turn.knowledge_draft}
-              <section aria-label="经验草稿" class="border border-border rounded-sm p-2 text-xs space-y-0.5">
-                <p class="font-medium">{draft.title}</p>
-                <p class="whitespace-pre-wrap">{draft.body}</p>
-                <p><span class="text-muted-foreground">适用范围</span> {draft.scope}</p>
-                <p><span class="text-muted-foreground">反例</span> {draft.counter_examples}</p>
-                {#if draft.target_knowledge_id != null}
-                  <p class="text-muted-foreground">改写 <a class="text-primary underline" href={`#knowledge/mine/${draft.target_knowledge_id}@${draft.target_version}`}>know:{draft.target_knowledge_id}@{draft.target_version}</a></p>
-                {/if}
-                {#if draft.verdict?.action === 'approve'}
-                  <p>已采纳{#if draft.verdict.ref} <a class="text-primary underline" href={knowHref(draft.verdict.ref)}>{draft.verdict.ref}</a>{/if}</p>
-                {:else if draft.verdict?.action === 'dismiss'}
-                  <p class="text-muted-foreground">已不采纳</p>
-                {:else}
-                  <a class="text-primary underline" href="#knowledge/mine/drafts">去审定</a>
-                {/if}
-              </section>
+              <p class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <StatusPill domain="run" value="running" text="回答中…" />
+                <span>已等待 {waited} 秒</span>
+              </p>
             {/if}
           {/if}
-        </li>
-      {:else}
-        <li class="text-xs text-muted-foreground">还没有提问。问题只限于这个{disc.context_kind === 'card' ? '复盘卡' : '计划'}。</li>
-      {/each}
-    </ol>
-
-    <div class="space-y-2 text-sm">
-      <label class="flex flex-col">你的问题（1–4000 字）
-        <textarea aria-label="你的问题" rows="3" class="border border-border rounded-sm px-2 py-1 bg-background" bind:value={question}></textarea>
-      </label>
-      {#if attachment}
-        <p class="text-xs flex items-center gap-2"><span>附件：{attachment.label}</span>
-          <button type="button" aria-label="移除附件" class="text-muted-foreground hover:text-red-600" onclick={() => attachment = null}>×</button></p>
-      {/if}
-      <div class="flex flex-wrap items-center gap-2">
-        <button type="button" class="px-3 py-1 rounded-sm bg-primary text-white disabled:opacity-50" disabled={busy} onclick={ask}>提问</button>
-        <button type="button" class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted" aria-expanded={pickerOpen}
-                onclick={togglePicker}>就这条改写</button>
-      </div>
-      {#if pickerOpen}
-        <section aria-label="选一条作为附件" class="border border-border rounded-sm p-2 text-xs space-y-1">
-          {#if !picker}
-            <p class="text-muted-foreground">加载中…</p>
+        {:else}
+          <p class="text-xs text-muted-foreground">回答{turn.cutoff_at ? ` · 截止 ${fmtBeijing(turn.cutoff_at)}` : ''}</p>
+          {#if turn.status === 'ok'}
+            <p data-answer class="whitespace-pre-wrap">{turn.body}</p>
+            {#if turn.refs?.length}<p class="text-xs text-muted-foreground">引用<RefList refs={turn.refs} runId={turn.agent_run_id} onFact={scrollToContext} /></p>{/if}
+          {:else if turn.status === 'rejected'}
+            <p class="text-xs text-warn">这条回答没有通过校验：{reasonText(turn.reason)}</p>
+            <details class="text-xs">
+              <summary class="cursor-pointer text-primary">仍要看原文（未通过校验）</summary>
+              <p class="whitespace-pre-wrap text-muted-foreground">{turn.body}</p>
+            </details>
           {:else}
-            <ul class="space-y-0.5">
-              {#each picker.entries as e (e.id)}
-                <li><button type="button" class="text-primary underline" onclick={() => pickKnowledge(e)}>{e.title}（第 {e.current_version} 版）</button></li>
-              {/each}
-              {#each picker.drafts as d (d.id)}
-                <li><button type="button" class="text-primary underline" onclick={() => pickDraft(d)}>草稿：{d.title}</button></li>
-              {/each}
-            </ul>
-            {#if !picker.entries.length && !picker.drafts.length}<p class="text-muted-foreground">还没有可选的知识或草稿</p>{/if}
+            <p class="text-xs text-warn">这一轮没有得到回答：{reasonText(turn.reason)}</p>
           {/if}
-          <p class="text-muted-foreground">附件是你提供的材料，不是证据，回答不能引用它。</p>
-        </section>
-      {/if}
-      {#if askError}<p role="alert" class="text-xs text-red-600">{askError}</p>{/if}
+          {#if turn.agent_run_id}
+            <div><Button variant="link" size="sm" class="text-xs" aria-expanded={!!reasoningOpen[turn.id]}
+                    onclick={() => reasoningOpen[turn.id] = !reasoningOpen[turn.id]}>看这次回答读了什么</Button></div>
+            {#if reasoningOpen[turn.id]}<AgentReasoning runId={turn.agent_run_id} />{/if}
+          {/if}
+          {#if turn.detail?.draft_dropped}
+            <p class="text-xs text-muted-foreground">经验草稿未通过校验，已丢弃：{reasonText(String(turn.detail.draft_dropped))}</p>
+          {/if}
+          {#if turn.knowledge_draft}
+            {@const draft = turn.knowledge_draft}
+            <section aria-label="经验草稿" class="grid gap-0.5 rounded-md border border-border p-2 text-xs">
+              <p class="font-medium">{draft.title}</p>
+              <p class="whitespace-pre-wrap">{draft.body}</p>
+              <p><span class="text-muted-foreground">适用范围</span> {draft.scope}</p>
+              <p><span class="text-muted-foreground">反例</span> {draft.counter_examples}</p>
+              {#if draft.target_knowledge_id != null}
+                <p class="text-muted-foreground">改写 <a class="text-primary underline" href={`#knowledge/mine/${draft.target_knowledge_id}@${draft.target_version}`}>know:{draft.target_knowledge_id}@{draft.target_version}</a></p>
+              {/if}
+              {#if draft.verdict?.action === 'approve'}
+                <p>已采纳{#if draft.verdict.ref} <a class="text-primary underline" href={knowHref(draft.verdict.ref)}>{draft.verdict.ref}</a>{/if}</p>
+              {:else if draft.verdict?.action === 'dismiss'}
+                <p class="text-muted-foreground">已不采纳</p>
+              {:else}
+                <a class="text-primary underline" href="#knowledge/mine/drafts">去审定</a>
+              {/if}
+            </section>
+          {/if}
+        {/if}
+      </li>
+    {:else}
+      <li class="text-xs text-muted-foreground">还没有提问。问题只限于这个{disc.context_kind === 'card' ? '复盘卡' : '计划'}。</li>
+    {/each}
+  </ol>
+
+  <div class="grid gap-2 text-sm">
+    <Field label="你的问题" id={`${uid}-question`} hint="1–4000 字" error={questionError || null}>
+      {#snippet children({ id, describedby, invalid })}
+        <Textarea {id} rows={3} aria-describedby={describedby} aria-invalid={invalid} readonly={busy} bind:value={question} />
+      {/snippet}
+    </Field>
+    {#if attachment}
+      <p class="flex items-center gap-2 text-xs"><span>附件：{attachment.label}</span>
+        <Button variant="ghost" size="icon" aria-label="移除附件" onclick={() => attachment = null}><Icon name="x" /></Button></p>
+    {/if}
+    <div class="flex flex-wrap items-center gap-2">
+      <Button variant="primary" {busy} onclick={ask}>提问</Button>
+      <Button size="sm" aria-expanded={pickerOpen} onclick={togglePicker}>就这条改写</Button>
     </div>
-  {/if}
+    {#if pickerOpen}
+      <section aria-label="选一条作为附件" class="grid gap-1 rounded-md border border-border p-2 text-xs">
+        {#if !picker}
+          <DataBlock state="loading" skeleton="row" />
+        {:else}
+          <ul class="grid gap-0.5">
+            {#each picker.entries as e (e.id)}
+              <li><Button variant="link" size="sm" class="text-xs" onclick={() => pickKnowledge(e)}>{e.title}（第 {e.current_version} 版）</Button></li>
+            {/each}
+            {#each picker.drafts as d (d.id)}
+              <li><Button variant="link" size="sm" class="text-xs" onclick={() => pickDraft(d)}>草稿：{d.title}</Button></li>
+            {/each}
+          </ul>
+          {#if !picker.entries.length && !picker.drafts.length}<DataBlock state="empty" message="还没有可选的知识或草稿" />{/if}
+        {/if}
+        <p class="text-muted-foreground">附件是你提供的材料，不是证据，回答不能引用它。</p>
+      </section>
+    {/if}
+    {#if askError}<Alert variant="danger"><AlertDescription>{askError}</AlertDescription></Alert>{/if}
+  </div>
 </section>
+{/if}

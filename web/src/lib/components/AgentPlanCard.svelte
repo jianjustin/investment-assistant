@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { Button } from '$lib/ui/button/index'
+  import * as Card from '$lib/ui/card/index'
+  import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '$lib/ui/collapsible/index'
   import AgentReasoning from './AgentReasoning.svelte'
   import ConceptTerm from './ConceptTerm.svelte'
   import DiscussButton from './DiscussButton.svelte'
@@ -71,33 +74,33 @@
   const changeField = (field: string) => tl.CHANGE_FIELD_TEXT[field] ?? field
 </script>
 
-{#snippet refList(list: string[] | undefined)}{#if list?.length}（{#each list as ref, i}{#if i}、{/if}{#if tl.isCallRef(ref)}<button class="underline" onclick={() => onCall(ref)}>{ref}</button>{:else if isKnowRef(ref)}<a class="text-primary underline" href={knowHref(ref)}>{ref}</a>{:else}<span>{ref}</span>{/if}{/each}）{/if}{/snippet}
+{#snippet refList(list: string[] | undefined)}{#if list?.length}（{#each list as ref, i}{#if i}、{/if}{#if tl.isCallRef(ref)}<Button variant="link" size="sm" class="select-text text-[length:inherit] font-normal" onclick={() => onCall(ref)}>{ref}</Button>{:else if isKnowRef(ref)}<a class="text-primary underline" href={knowHref(ref)}>{ref}</a>{:else}<span>{ref}</span>{/if}{/each}）{/if}{/snippet}
 
 {#snippet derivation()}
   {#if plan}
     <div class="space-y-1">
-      <button class="text-xs text-primary underline" aria-expanded={derivationOpen}
-              onclick={() => derivationOpen = !derivationOpen}>展开推导</button>
+      <Button variant="link" size="sm" class="text-xs" aria-expanded={derivationOpen}
+              onclick={() => derivationOpen = !derivationOpen}>展开推导</Button>
       {#if derivationOpen}<PlanDerivation planId={plan.id} />{/if}
     </div>
   {/if}
 {/snippet}
 
-<div role="region" aria-label="Agent 计划" class="text-sm border-l-2 border-sky-400/50 pl-2 space-y-1">
+<Card.Root size="sm" role="region" aria-label="Agent 计划" class="gap-1 border-l-2 border-l-info/50 px-3 text-sm shadow-none">
   {#if failed}
     <p class="font-medium">Agent 未给出计划：{reasonText(failed.reason)} <ConceptTerm id={A.rejectReasons}>作废原因</ConceptTerm></p>
-    {#if legacy}<p class="text-xs text-amber-700">agent-1（旧版，不参与复查） <ConceptTerm id={A.legacy}>旧版说明</ConceptTerm></p>{/if}
+    {#if legacy}<p class="text-xs text-warn">agent-1（旧版，不参与复查） <ConceptTerm id={A.legacy}>旧版说明</ConceptTerm></p>{/if}
     {#if onRerun}
-      <button class="text-xs px-2 py-1 border border-border rounded-sm hover:bg-muted" onclick={onRerun}>重新运行 Agent</button>
+      <div><Button size="sm" onclick={onRerun}>重新运行 Agent</Button></div>
     {/if}
   {:else if run && legacy}
     <!-- agent-1：原样展示（v2.4 的块），只加旧版标注。 -->
     <p class="font-medium">Agent 建议（{run.model} · {run.agent_version}）{run.status === 'ok' ? '买入' : '不建议买入'}</p>
-    <p class="text-xs text-amber-700">agent-1（旧版，不参与复查） <ConceptTerm id={A.legacy}>旧版说明</ConceptTerm></p>
+    <p class="text-xs text-warn">agent-1（旧版，不参与复查） <ConceptTerm id={A.legacy}>旧版说明</ConceptTerm></p>
     {#if output?.levels}
       {@const levels = output.levels}
       <p>入场区间 {levels.entry_low.value}–{levels.entry_high.value} · 止损 {levels.stop.value} · T1 {levels.target1.value}</p>
-      <p class="text-xs text-muted-foreground">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}（{#each levels[key].refs as ref, i}{#if i}、{/if}<button class="underline" onclick={() => onCall(ref)}>{ref}</button>{/each}）{/each} <ConceptTerm id={A.citation}>引用编号</ConceptTerm></p>
+      <p class="text-xs text-muted-foreground">价位引用：{#each LEVEL_TEXT as [key, label], k}{#if k} · {/if}{label}（{#each levels[key].refs as ref, i}{#if i}、{/if}<Button variant="link" size="sm" class="select-text text-[length:inherit] font-normal" onclick={() => onCall(ref)}>{ref}</Button>{/each}）{/each} <ConceptTerm id={A.citation}>引用编号</ConceptTerm></p>
     {/if}
     {#if plan?.sizing?.shares != null}<p>建议 {plan.sizing.shares} 股</p>{/if}
     {#if output?.summary}<p>{output.summary}</p>{/if}
@@ -109,7 +112,7 @@
     {#if run.counter?.risks?.length}
       <p class="text-xs">反方：{#each run.counter.risks as risk, i}{#if i}；{/if}{risk.text}{@render refList(risk.refs)}{/each}</p>
     {/if}
-    {#if plan?.status === 'invalid'}<p class="text-red-600">Agent 计划已作废：{plan.invalid_reasons.join('、')}</p>{/if}
+    {#if plan?.status === 'invalid'}<p class="text-destructive">Agent 计划已作废：{plan.invalid_reasons.join('、')}</p>{/if}
     {@render derivation()}
   {:else if run && invalidated}
     <p class="font-medium">Agent 已作废此计划（第 {versionNo} 版）：{review?.reason ?? ''}</p>
@@ -118,7 +121,7 @@
   {:else if run}
     <p class="font-medium">{title} <span class="text-xs font-normal"><ConceptTerm id={A.version}>版本链</ConceptTerm> <ConceptTerm id={A.cutoff}>截止时间</ConceptTerm></span></p>
     <p class="text-xs text-muted-foreground">模型 {run.model} · {run.agent_version}{chain?.mode ? ` · ${tl.MODE_TEXT[chain.mode]}` : ''}</p>
-    {#if exiting}<p class="text-xs text-red-600">退出期：已发出退出指令（{wb.INSTRUCTION_TEXT.exit}），不再复查。</p>{/if}
+    {#if exiting}<p class="text-xs text-destructive">退出期：已发出退出指令（{wb.INSTRUCTION_TEXT.exit}），不再复查。</p>{/if}
     {#if output?.levels}
       {@const levels = output.levels}
       <p>{levelsLine} <ConceptTerm id={A.levels}>动作与价位</ConceptTerm></p>
@@ -197,13 +200,13 @@
     {/if}
 
     {#if reviewLine}<p class="text-xs">{reviewLine} <ConceptTerm id={A.review}>复查结论</ConceptTerm></p>{/if}
-    {#if revisionFailure}<p class="text-xs text-amber-700">{revisionFailure} <ConceptTerm id={A.rejectReasons}>作废原因</ConceptTerm></p>{/if}
+    {#if revisionFailure}<p class="text-xs text-warn">{revisionFailure} <ConceptTerm id={A.rejectReasons}>作废原因</ConceptTerm></p>{/if}
     {#if plan?.status === 'invalid'}
       {#if chain?.mode === 'holding'}
         <!-- §5.2：持仓期新版按仓位规则作废（如 no_room）只说明不能再加仓，链照常有效、照常复查。 -->
-        <p class="text-amber-700">本版按仓位规则不能加仓（{plan.invalid_reasons.join('、')}） <ConceptTerm id={A.noAdd}>仓位规则</ConceptTerm></p>
+        <p class="text-warn">本版按仓位规则不能加仓（{plan.invalid_reasons.join('、')}） <ConceptTerm id={A.noAdd}>仓位规则</ConceptTerm></p>
       {:else}
-        <p class="text-red-600">Agent 计划已作废：{plan.invalid_reasons.join('、')}</p>
+        <p class="text-destructive">Agent 计划已作废：{plan.invalid_reasons.join('、')}</p>
       {/if}
     {/if}
     {@render derivation()}
@@ -211,12 +214,15 @@
   <KnowledgeRefs refs={agent.knowledge_refs ?? []} />
   <p class="text-xs text-muted-foreground">证据：未验证 <ConceptTerm id={A.evidence}>证据状态</ConceptTerm></p>
   <!-- v2.6 §8.6：看生成这一版的那次运行；展开时才请求 -->
-  <div class="space-y-1">
+  <Collapsible bind:open={reasoningOpen} class="grid gap-1">
     <div class="flex flex-wrap items-center gap-3">
-      <button type="button" class="text-xs text-primary underline" aria-expanded={reasoningOpen}
-              onclick={() => reasoningOpen = !reasoningOpen}>看推理过程</button>
+      <CollapsibleTrigger>
+        {#snippet child({ props })}<Button variant="link" size="sm" class="text-xs" {...props}>看推理过程</Button>{/snippet}
+      </CollapsibleTrigger>
       {#if plan}<DiscussButton context={{ kind: 'plan', plan_id: plan.id }} />{/if}
     </div>
-    {#if reasoningOpen}<AgentReasoning runId={agent.id} />{/if}
-  </div>
-</div>
+    <CollapsibleContent forceMount>
+      {#if reasoningOpen}<AgentReasoning runId={agent.id} />{/if}
+    </CollapsibleContent>
+  </Collapsible>
+</Card.Root>
