@@ -27,7 +27,7 @@
 | 强调 | `--primary` / `--primary-foreground` | 唯一的强调色（青绿），用于主按钮、当前导航、链接 |
 | 状态 | `--success`、`--warn`、`--destructive`、`--info`、`--running`、`--neutral` 各带 `-foreground` | 对应状态语气（第 4 节）；**页面里不得出现原色类名**（`red-600`、`amber-700`、`sky-500`……） |
 | 涨跌 | `--up`、`--down` | 美股约定绿涨红跌，只用于价格 / 收益数值，不用于状态 |
-| 图表 | `--chart-rule`、`--chart-own`、`--chart-agent`、`--chart-fill`、`--chart-grid` | 规则 / 自定 / Agent 三种来源各一色（K 线价位线、推导、对比图共用），其余序列用 `--chart-1…5` |
+| 图表 | `--chart-rule`、`--chart-own`、`--chart-agent`、`--chart-fill`、`--chart-grid` | 规则 / 自定 / Agent 三种来源各一色（K 线价位线、推导、对比图共用），其余序列用 `--chart-1…5`（色相与三种来源色、涨跌色拉开，K 线上的 MA 线不会与价位线撞色；`tokens.test.ts` 检查） |
 | 字号 | `text-xs` 12 / `text-sm` 13 / `text-base` 14 / `text-lg` 16 / `text-xl` 20，仅五档（行高 16 / 18 / 20 / 24 / 28） | 页面正文 `text-sm`，表格 `text-xs` 或 `text-sm`，页面标题 `text-lg`，不再用 `text-2xl` 以上 |
 | 间距 | Tailwind 4px 基数，组件内 `1 / 2 / 3`，块间 `4 / 6`，页内分段 `8` | 不用 `.65rem`、`1.2rem` 这类自写值 |
 | 圆角 | `--radius` 一个值（6px），`rounded-full` 只给徽标与头像 | 其余 `rounded-*` 全部映射到同一个值 |
@@ -59,7 +59,7 @@
 | `--chart-rule` / `-own` / `-agent` | `#2563eb` / `#b45309` / `#7c3aed` | `#60a5fa` / `#f59e0b` / `#a78bfa` | 5.17 / 5.02 / 5.70 | 7.00 / 8.29 / 6.54 |
 | `--chart-fill` | `#64748b2e` | `#94a3b838` | | |
 | `--chart-grid` | `#e5eaf0` | `#1f2a38` | | |
-| `--chart-1…5` | `#0f766e #2563eb #b45309 #7c3aed #be185d` | `#2dd4bf #60a5fa #f59e0b #a78bfa #f472b6` | 均 ≥ 5.0 | 均 ≥ 6.5 |
+| `--chart-1…5` | `#0e7490 #a21caf #475569 #4d7c0f #be185d` | `#22d3ee #e879f9 #94a3b8 #a3e635 #f472b6` | 均 ≥ 4.99 | 均 ≥ 6.7 |
 | `--shadow-1` / `--shadow-2` | `0 1px 2px rgba(15,23,42,.06)` / `0 14px 35px rgba(15,23,42,.08)` | `0 1px 2px rgba(0,0,0,.4)` / `0 14px 35px rgba(0,0,0,.5)` | | |
 | `--radius` | `6px`（只在 `:root`，形状不随主题变） | | | |
 
@@ -155,10 +155,10 @@
 | `Button` | `ui/button/`：`variant`：`primary` / `outline`（默认）/ `ghost` / `link` / `destructive`；`size`：`sm`（28px，表格内）/ `md`（32px，默认）/ `icon`（28px 方形：主题切换、关闭、侧栏折叠）；`busy`（禁用 + `aria-busy` + 转圈）、`busyText`（忙时替换文案）；传 `href` 渲染成 `<a>` | 一个页头或一段至多一个 `primary`；导航用 `<a href>`，动作类的下划线按钮用 `variant="link"`；`link` 的 `sm` / `md` 都是 `h-auto px-0`，可内嵌在文字里 |
 | `Badge` | `ui/badge/`：无 `variant`，只有中性底；传 `href` 渲染成 `<a>` | 不直接用；由 `StatusPill` 加语气 |
 | `DataTable`（`Table`） | `ui/data-table/`：`columns: Column<T>[]`（`key`、`header`、`align: 'left' \| 'num' \| 'center'`、`title` 表头提示、`cell` 自定义单元格 snippet、`value` 纯文本取值、`cardLabel`、`hideInCards`）；`rows` 或 `groups: RowGroup<T>[]`（`key`、`label`、`rows`、`muted`、`collapsible`、`open` 初始状态、`onToggle`）；`rowKey`；`caption`；`headerGroups`（分组表头）；`expandable` snippet + `bind:expanded`；`muted(row)`；`cards: 'never' \| 'narrow'`；`ariaLabel`（给 `<table>` 和卡片列表一个可访问名称，不出现可见 caption）；`expandLabel(row, open)`（行展开按钮的可访问名称，默认「展开详情」，例如 `展开 MU` / `收起 MU`）；`pageSize`（默认 50，「显示更多」）；`sticky`（默认 true）。底层 `ui/table/` 的 `Table.Root` 有 `containerClass` | 数字列 `align: 'num'`；状态列用 `StatusPill`；已结束 / 作废 / 被取代的行置灰（`muted`），不删不隐藏；展开按钮可用 `Enter`，名称恒为「展开详情」、状态在 `aria-expanded`；空表接 `DataBlock` |
-| `ConfirmDialog`（`Dialog`） | `ui/confirm-dialog/ConfirmDialog.svelte`：`bind:open`、`title`、`consequence`（后果一句话）、`actionLabel`（动作名，不写「确定」）、`destructive`、`busy`、`onConfirm`、`onCancel` | 不可逆动作必经；**确认后不自动关**，调用方做完事再 `open = false`；`busy` 时 `Esc` / 遮罩 / 取消都不响应；初始焦点在「取消」，关闭后焦点回到打开前的元素；底层 `ui/dialog/` 内容渲染在 Portal |
+| `ConfirmDialog`（`Dialog`） | `ui/confirm-dialog/ConfirmDialog.svelte`：`bind:open`、`title`、`consequence`（后果一句话）、`actionLabel`（动作名，不写「确定」）、`destructive`、`busy`、`onConfirm`、`onCancel`、`confirmDisabled`（只禁用动作按钮，如必填项还没填）、`children`（可选的表单体，渲染在说明与按钮之间，如作废理由） | 不可逆动作必经；**确认后不自动关**，调用方做完事再 `open = false`；`busy` 时 `Esc` / 遮罩 / 取消都不响应；初始焦点在「取消」（`onOpenAutoFocus` 显式落到取消按钮，有表单体时也一样；`busy` 时两个按钮都禁用，交给 Bits 默认处理），关闭后焦点回到打开前的元素；底层 `ui/dialog/` 内容渲染在 Portal |
 | `Sheet` | `ui/sheet/`：`SheetContent` 的 `side`、`width: 'sm' \| 'lg'`（24rem / 40rem，窄屏全宽，默认 `sm`） | 右侧抽屉 |
 | `Tabs` | `ui/tabs/`（Bits `Tabs`） | 只用于**不改地址**的页内页签（运行详情三块等）；方向键 / `Home` / `End` 由 Bits 负责 |
-| `TabNav` | `ui/tab-nav/TabNav.svelte`：`label`、`items: { href, label, current, badge? }[]` | 路由级页签（「复盘」「知识」「工具」「设置」的子页）是**导航**：链接 + `aria-current="page"`，不是 `tablist`（D12） |
+| `TabNav` | `ui/tab-nav/TabNav.svelte`：`label`、`items: { href, label, current, badge?, badgeLabel? }[]`；`badgeLabel` 写成角标的 `aria-label` 与 `title`（如「待审定 2 张」），没给就保持原样 | 路由级页签（「复盘」「知识」「工具」「设置」的子页）是**导航**：链接 + `aria-current="page"`，不是 `tablist`（D12） |
 | `Field` | `ui/field/Field.svelte`：`label`、`id`、`hint`、`error`、`required`；children 得到 `{ id, describedby, invalid }` | 标签在上，说明与错误在下（错误 `role="alert"`，输入框 `aria-describedby`）；必填 `*` 画在标签旁、不在 `<label>` 内；数字字段 `inputmode="decimal"` 右对齐 |
 | `Input` / `Textarea` / `Select` / `Label` | `ui/input/`、`ui/textarea/`、`ui/select/`、`ui/label/`；`Select.Trigger` 的 `size`：`sm` / `md` | 放进 `Field` 使用 |
 | `Tooltip` | `ui/tooltip/`；`Tooltip.Provider` 在 `app.svelte` 全局提供，默认延迟 300ms | 侧栏折叠时的图标标签；表头缩写说明 |
@@ -215,7 +215,7 @@
 
 - 图标只用 `@lucide/svelte`，通过 `Icon` 组件；导航图标：今日 `calendar-days`、标的 `search`、复盘 `clipboard-list`、数据 `database`、知识 `book-open`、工具 `wrench`、设置 `settings`、运行 `activity`、通知 `bell`、主题 `sun-moon`。不再出现 emoji（守护检查）。
 - ECharts：`web/src/lib/charts/theme.ts` 的 `readChartTheme()` 在挂载与主题切换时读取 `--foreground`、`--muted-foreground`、`--border`、`--chart-*` 生成十六进制的主题对象；`EChart.svelte` 以该对象初始化，主题切换时销毁重建并重新 `setOption`。系列色按来源角色（规则 / 自定 / Agent）而不是序号。
-- K 线：涨跌用 `--up` / `--down`；标记与价位线按 `--chart-rule` / `--chart-own` / `--chart-agent`；作废计划用 `--chart-fill` 淡显；代码里不再写十六进制。`candleOptions(theme)` 返回 `{ chart, series }`：`chart` 给 `createChart` / `applyOptions`，`series` 给 `addCandlestickSeries`；图表背景用 `card`。
+- K 线：涨跌用 `--up` / `--down`；标记与价位线按 `--chart-rule` / `--chart-own` / `--chart-agent`；作废计划用 `--chart-fill` 淡显；代码里不再写十六进制。候选标记（买入 / 卖出箭头、观察圆点）由规则引擎产生，标记本身不带计划来源，统一用规则色 `--chart-rule`，方向靠形状；成交标记 B / S 用 `--up` / `--down`；价位线按计划来源三色。lightweight-charts 的线条描边直接认 `#rrggbbaa`，所以 `--chart-fill` 的透明度对作废计划的价位线有效（只有它的辅助标签路径会丢 alpha，`CandleChart` 不走那条路）。`candleOptions(theme)` 返回 `{ chart, series }`：`chart` 给 `createChart` / `applyOptions`，`series` 给 `addCandlestickSeries`；图表背景用 `card`。
 - 图表旁必有文字说明口径与时点（`CalcVersion` + `CutoffTime`）。
 
 ## 9. 文案

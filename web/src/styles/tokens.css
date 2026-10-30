@@ -24,7 +24,8 @@
   /* charts */
   --chart-rule: #2563eb; --chart-own: #b45309; --chart-agent: #7c3aed;
   --chart-fill: #64748b2e; --chart-grid: #e5eaf0;
-  --chart-1: #0f766e; --chart-2: #2563eb; --chart-3: #b45309; --chart-4: #7c3aed; --chart-5: #be185d;
+  /* series colors: hues apart from the three source roles (blue / amber / violet) and from up / down (green / red) */
+  --chart-1: #0e7490; --chart-2: #a21caf; --chart-3: #475569; --chart-4: #4d7c0f; --chart-5: #be185d;
   /* elevation */
   --shadow-1: 0 1px 2px rgba(15,23,42,.06); --shadow-2: 0 14px 35px rgba(15,23,42,.08);
 }
@@ -45,7 +46,7 @@
   --up: #22c55e; --down: #f87171;
   --chart-rule: #60a5fa; --chart-own: #f59e0b; --chart-agent: #a78bfa;
   --chart-fill: #94a3b838; --chart-grid: #1f2a38;
-  --chart-1: #2dd4bf; --chart-2: #60a5fa; --chart-3: #f59e0b; --chart-4: #a78bfa; --chart-5: #f472b6;
+  --chart-1: #22d3ee; --chart-2: #e879f9; --chart-3: #94a3b8; --chart-4: #a3e635; --chart-5: #f472b6;
   --shadow-1: 0 1px 2px rgba(0,0,0,.4); --shadow-2: 0 14px 35px rgba(0,0,0,.5);
 }
 .tabular { font-variant-numeric: tabular-nums; }

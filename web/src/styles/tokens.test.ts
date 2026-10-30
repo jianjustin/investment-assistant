@@ -73,6 +73,33 @@ describe('design tokens', () => {
     }
   })
 
+  it('chart series colors are distinct from the source role colors and from up / down', () => {
+    const hsl = (hex: string) => {
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min, l = (max + min) / 2
+      const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1))
+      let h = 0
+      if (d !== 0) h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4
+      return { h: (h * 60 + 360) % 360, s }
+    }
+    const gap = (a: number, b: number) => Math.min(Math.abs(a - b), 360 - Math.abs(a - b))
+    for (const [name, t] of [['light', light], ['dark', dark]] as const) {
+      const others = ['chart-rule', 'chart-own', 'chart-agent', 'up', 'down']
+      for (const n of [1, 2, 3, 4, 5]) {
+        const mine = t[`chart-${n}`]
+        for (const other of others) {
+          expect(mine, `${name} --chart-${n} vs --${other}`).not.toBe(t[other])
+          const [a, b] = [hsl(mine), hsl(t[other])]
+          // a grey (low saturation) is distinct by itself; two saturated colors need clearly different hues
+          if (a.s > 0.3 && b.s > 0.3) expect(gap(a.h, b.h), `${name} --chart-${n} hue vs --${other}`).toBeGreaterThanOrEqual(20)
+        }
+        expect(contrast(mine, t.card), `${name} --chart-${n} on card`).toBeGreaterThanOrEqual(4.5)
+      }
+      const series = [1, 2, 3, 4, 5].map((n) => t[`chart-${n}`])
+      expect(new Set(series).size).toBe(5)
+    }
+  })
+
   it('every @theme color maps to a defined token', () => {
     const mapped = [...appCss.matchAll(/--color-([\w-]+)\s*:\s*var\(--([\w-]+)\)/g)]
     expect(mapped.length).toBeGreaterThan(20)

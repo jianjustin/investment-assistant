@@ -1,7 +1,7 @@
 <script lang="ts">
   import { cn } from '$lib/utils.js'
 
-  type Item = { href: string; label: string; current: boolean; badge?: string | number }
+  type Item = { href: string; label: string; current: boolean; badge?: string | number; badgeLabel?: string }
   let { label, items }: { label: string; items: Item[] } = $props()
 </script>
 
@@ -20,7 +20,7 @@
     >
       {item.label}
       {#if item.badge !== undefined}
-        <span class="rounded-full bg-muted px-1.5 text-xs leading-5 text-foreground">{item.badge}</span>
+        <span aria-label={item.badgeLabel} title={item.badgeLabel} class="rounded-full bg-muted px-1.5 text-xs leading-5 text-foreground">{item.badge}</span>
       {/if}
     </a>
   {/each}

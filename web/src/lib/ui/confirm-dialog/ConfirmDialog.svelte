@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte'
   import * as Dialog from '$lib/ui/dialog/index.js'
   import { Button } from '$lib/ui/button/index.js'
 
@@ -9,8 +10,10 @@
     actionLabel,
     destructive = false,
     busy = false,
+    confirmDisabled = false,
     onConfirm,
     onCancel,
+    children,
   }: {
     open: boolean
     title: string
@@ -20,9 +23,15 @@
     actionLabel: string
     destructive?: boolean
     busy?: boolean
+    /** Disables the action button only (e.g. a required field in `children` is still empty). */
+    confirmDisabled?: boolean
     onConfirm: () => void | Promise<void>
     onCancel?: () => void
+    /** Optional form body, rendered between the description and the buttons. */
+    children?: Snippet
   } = $props()
+
+  let cancelButton = $state<HTMLElement | null>(null)
 
   // Remember who had focus when the dialog opened and give it back on close.
   let opener: HTMLElement | null = null
@@ -43,6 +52,13 @@
     onCancel?.()
   }
 
+  // The safe choice is focused first, whatever the body contains.
+  function focusCancel(event: Event) {
+    if (busy) return                // both buttons are disabled: let Bits focus the dialog itself
+    event.preventDefault()
+    cancelButton?.focus()
+  }
+
   function restoreFocus(event: Event) {
     event.preventDefault()
     opener?.focus()
@@ -54,6 +70,7 @@
 <Dialog.Root bind:open={() => open, (value) => onOpenChange(value)}>
   <Dialog.Content
     showCloseButton={false}
+    onOpenAutoFocus={focusCancel}
     onCloseAutoFocus={restoreFocus}
     escapeKeydownBehavior={busy ? 'ignore' : 'close'}
     interactOutsideBehavior={busy ? 'ignore' : 'close'}
@@ -62,11 +79,13 @@
       <Dialog.Title>{title}</Dialog.Title>
       <Dialog.Description>{consequence}</Dialog.Description>
     </Dialog.Header>
+    {@render children?.()}
     <Dialog.Footer>
-      <Button variant="outline" disabled={busy} onclick={() => onOpenChange(false)}>取消</Button>
+      <Button bind:ref={cancelButton} variant="outline" disabled={busy} onclick={() => onOpenChange(false)}>取消</Button>
       <Button
         variant={destructive ? 'destructive' : 'primary'}
         {busy}
+        disabled={confirmDisabled}
         onclick={() => onConfirm()}
       >{actionLabel}</Button>
     </Dialog.Footer>

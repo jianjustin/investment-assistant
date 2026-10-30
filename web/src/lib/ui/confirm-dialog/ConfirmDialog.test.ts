@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
+import { createRawSnippet } from 'svelte'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/svelte'
 import ConfirmDialog from './ConfirmDialog.svelte'
 
@@ -110,5 +111,40 @@ describe('ConfirmDialog', () => {
     expect(action).toBeDisabled()
     expect(action).toHaveAttribute('aria-busy', 'true')
     expect(screen.getByRole('button', { name: '取消' })).toBeDisabled()
+  })
+
+  it('initial focus is on the cancel button', async () => {
+    render(ConfirmDialog, base)
+    const cancel = await screen.findByRole('button', { name: '取消' })
+    await waitFor(() => expect(document.activeElement).toBe(cancel))
+  })
+
+  it('initial focus stays on cancel when there is a form body', async () => {
+    const children = createRawSnippet(() => ({ render: () => '<input aria-label="理由" />' }))
+    render(ConfirmDialog, { ...base, children })
+    const cancel = await screen.findByRole('button', { name: '取消' })
+    await waitFor(() => expect(document.activeElement).toBe(cancel))
+  })
+
+  it('children render inside the dialog, between the description and the buttons', async () => {
+    const children = createRawSnippet(() => ({ render: () => '<input aria-label="作废理由" />' }))
+    render(ConfirmDialog, { ...base, children })
+    const dialog = await screen.findByRole('dialog')
+    const input = screen.getByLabelText('作废理由')
+    expect(dialog).toContainElement(input)
+    const description = screen.getByText('将重新运行该节点及之后的全部节点。')
+    const action = screen.getByRole('button', { name: '从此节点继续' })
+    expect(description.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(input.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('confirmDisabled disables the action button only', async () => {
+    const onConfirm = vi.fn()
+    render(ConfirmDialog, { ...base, confirmDisabled: true, onConfirm })
+    const action = await screen.findByRole('button', { name: '从此节点继续' })
+    expect(action).toBeDisabled()
+    expect(screen.getByRole('button', { name: '取消' })).toBeEnabled()
+    expect(action).not.toHaveAttribute('aria-busy')
+    expect(onConfirm).not.toHaveBeenCalled()
   })
 })

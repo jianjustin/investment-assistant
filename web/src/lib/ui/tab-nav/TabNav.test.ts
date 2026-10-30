@@ -27,4 +27,16 @@ describe('TabNav', () => {
     expect(screen.getByRole('link', { name: /统计/ })).toHaveTextContent('新')
     expect(screen.getByRole('link', { name: '成交' })).toHaveTextContent(/^成交$/)
   })
+
+  it('badgeLabel names the badge for assistive tech and as a tooltip', () => {
+    render(TabNav, { label: '复盘页签', items: [{ href: '#review/cards', label: '复盘卡', current: false, badge: 2, badgeLabel: '待审定 2 张' },
+                                                { href: '#review/trades', label: '成交', current: false, badge: 5 }] })
+    const badge = screen.getByLabelText('待审定 2 张')
+    expect(badge).toHaveTextContent('2')
+    expect(badge).toHaveAttribute('title', '待审定 2 张')
+    // without a label the badge is unchanged: no aria-label, no title
+    const plain = screen.getByRole('link', { name: /成交/ }).querySelector('span')!
+    expect(plain).not.toHaveAttribute('aria-label')
+    expect(plain).not.toHaveAttribute('title')
+  })
 })
