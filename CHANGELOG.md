@@ -2,7 +2,9 @@
 
 版本号与 roadmap 版本对应，见 [roadmap](docs/roadmap/roadmap.md)。
 
-## 未发布
+## v2.10.1 — 2026-10-31
+
+修正 v2.10 真实验收发现的两处「今日」布局问题，只改前端样式。功能、接口、口径、地址不变；**无迁移，`.env` 与 LaunchAgent plist 不变**。版本号：`web/package.json` 与 `web/package-lock.json` 的根包 `2.10.1`。
 
 ### 修正
 
