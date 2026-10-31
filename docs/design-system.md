@@ -195,9 +195,10 @@
 
 ### 6.3 已知取舍
 
-- **`DataTable` 在 ≥ 1024px 不在容器内滚动。** 表格容器用 `max-lg:overflow-x-auto lg:overflow-visible`：只有这样粘性表头才能贴着视口顶部（容器一旦 `overflow` 非 `visible`，`sticky` 就只在容器内生效）。代价是 1024–1280px 之间列特别多的宽表会撑出页面而不是在容器内滚动；< 1024px 容器照常横向滚动。列多的页面请精简列（`hideInCards`）或 `sticky={false}` 并自行包一层滚动容器（`sticky={false}` 本身不会在 ≥ 1024px 添加滚动）。放在 `Card` 里的 `DataTable` 例外：`Card` 自带 `overflow-hidden`（圆角裁切），粘性表头在卡片内本来就贴不到视口，所以容器多一条 `lg:in-data-[slot=card]:overflow-x-auto`，卡片里的宽表在任何宽度都在卡片内横向滚动，不被裁掉。
+- **`DataTable` 宽表在容器内滚动，放得下才让表头吸顶。** 容器 `overflow` 一旦不是 `visible`，`sticky` 就只在容器内生效、贴不到视口顶部；而容器是 `visible` 时，比可用宽度还宽的表会经由一串 grid 祖先（`min-width: auto`）把整页撑出横向滚动（v2.10 验收在「今日」计划表 1024–1280px 下复现）。所以 `sticky`（默认）的表用 `ResizeObserver` 和窗口 `resize` 测量：先临时把容器设成 `overflow-x: auto`，看表格宽度是否不超过容器；放得下时容器为 `max-lg:overflow-x-auto lg:overflow-visible`（≥ 1024px 表头吸顶），放不下时一律 `overflow-x-auto`（在容器内横向滚动，表头不吸顶）。`<table>` 上的 `data-fits` 记录测量结果；测量前、没有 `ResizeObserver`（jsdom）时和 `sticky={false}` 的表都按放不下处理，在任何宽度都在容器内滚动。放在 `Card` 里的表即使放得下也在卡片内滚动（`lg:in-data-[slot=card]:overflow-x-auto`）：`Card` 自带 `overflow-hidden`（圆角裁切），粘性表头在卡片里本来就贴不到视口。
 - **`RefLink` 依赖 `lib/components/ConceptTerm.svelte`**（`ui/` 反向依赖了 `components/`，分层倒置，本版接受）。`ConceptTerm` 已迁到 `Popover`，但仍留在 `lib/components/`；日后搬进 `ui/domain/` 时 `RefLink` 的 import 随之改路径。`RefLink` 的动作类引用（`fact:` / `call:`）是 `Button variant="link"`，用 `text-[length:inherit]` 继承所在文字的字号并允许选中文字；导航类（`know:` / `concept:`）是 `<a href>` 或 `ConceptTerm`。
 - **`StatusPill` 的文字不着状态色**，原因见第 2 节要点：淡底上的同色文字在浅色主题下对比度不足 AA。
+- **卡片视图里的长状态标签换行。** `Badge` 默认不换行（表格列宽按内容算，允许换行会把中文标签挤成一字一行）；`DataTable` 的 `cards="narrow"` 卡片里，徽标改为可换行、最宽到单元格宽度、圆角 10px（单行时仍是胶囊形），所以「Agent 未给出计划：模型调用失败，以下为规则基线」这样的长标签在 375px 下折成两行，不撑出屏幕。其他窄屏场景里放长标签，要自己给容器留宽度或换写法。
 - **`CutoffTime` 的相对时间用原生 `title`**，不用 `Tooltip`（不依赖 Provider，任何地方可用）。`VersionChip` 的 `ref` 同理。
 
 ## 7. 交互规范

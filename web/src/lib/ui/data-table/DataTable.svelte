@@ -43,6 +43,31 @@
 
   const uid = $props.id()
   const narrow = useNarrow()
+
+  // Sticky headers only stick to the page when the container does not scroll, so at ≥ 1024px the container
+  // stays overflow-visible while the table fits and scrolls on its own once it is wider than the room it has.
+  // Measured with the container forced to scroll: a visible container would let the table widen every grid
+  // ancestor instead (min-width: auto), and then it always "fits". Without sticky headers it always scrolls.
+  let tableEl = $state<HTMLTableElement | null>(null)
+  let fits = $state(false)
+  $effect(() => {
+    const table = tableEl
+    const box = table?.parentElement
+    if (!sticky || !table || !box || typeof ResizeObserver === 'undefined') return
+    const measure = () => {
+      box.style.overflowX = 'auto'
+      fits = table.offsetWidth <= box.clientWidth
+      box.style.overflowX = ''
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(table)
+    window.addEventListener('resize', measure)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  })
   const asCards = $derived(cards === 'narrow' && narrow.current)
 
   type Section = { key: string; label?: string; rows: T[]; muted: boolean; group?: RowGroup<T> }
@@ -162,6 +187,8 @@
               <li
                 class={cn(
                   'rounded-md border border-border bg-card p-3 text-sm shadow-1',
+                  // A long status label wraps inside the card instead of pushing it past a 375px screen.
+                  '[&_[data-slot=badge]]:h-auto [&_[data-slot=badge]]:min-h-5 [&_[data-slot=badge]]:max-w-full [&_[data-slot=badge]]:justify-start [&_[data-slot=badge]]:rounded-[10px] [&_[data-slot=badge]]:py-0.5 [&_[data-slot=badge]]:whitespace-normal',
                   isMuted(row, section) && 'text-muted-foreground',
                 )}
                 data-muted={isMuted(row, section) ? 'true' : undefined}
@@ -190,7 +217,12 @@
     {/each}
   </div>
 {:else}
-  <Table.Root aria-label={ariaLabel} containerClass="max-lg:overflow-x-auto lg:overflow-visible lg:in-data-[slot=card]:overflow-x-auto">
+  <Table.Root
+    bind:ref={tableEl}
+    aria-label={ariaLabel}
+    data-fits={sticky && fits ? 'true' : 'false'}
+    containerClass={sticky && fits ? 'max-lg:overflow-x-auto lg:overflow-visible lg:in-data-[slot=card]:overflow-x-auto' : 'overflow-x-auto'}
+  >
     {#if caption}<Table.Caption class="caption-top">{caption}</Table.Caption>{/if}
     <Table.Header>
       {#if headerGroups}

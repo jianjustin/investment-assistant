@@ -2,6 +2,14 @@
 
 版本号与 roadmap 版本对应，见 [roadmap](docs/roadmap/roadmap.md)。
 
+## 未发布
+
+### 修正
+
+- **「今日」在 1024–1280px 下整页横向滚动**（v2.10 验收发现，CHANGELOG v2.10.0「已知限制」里预判过的那条）：计划表最小宽度约 1200px，`DataTable` 在 ≥ 1024px 为了粘性表头让容器 `overflow-visible`，表格经由几层 grid 祖先（`min-width: auto`）把卡片、页头和整页一起撑宽，页头右侧按钮被推出可视区。现在 `sticky` 的表先测量（`ResizeObserver` 加窗口 `resize`，测量时临时把容器设成可滚动），放得下才让容器 `visible`、表头吸顶，放不下就在容器内横向滚动；`sticky={false}` 的表（含「今日」计划表）与测量前一律在容器内滚动。真实服务上复测：1024 / 1280 / 1440 下 `main` 不再横向溢出，1280 下「运行记录」表放得下、表头照常吸顶。
+- **375px 下「今日」计划卡溢出**（v2.10 验收发现）：状态行的长标签「Agent 未给出计划：模型调用失败，以下为规则基线」是不换行的 `Badge`，宽 305px，超出屏幕 55px。`DataTable` 卡片视图里的徽标改为可换行（最宽到单元格、圆角 10px，单行仍是胶囊形）；表格视图不变。复测 375px 下没有元素超出屏幕。
+- 两处只改 `web/src/lib/ui/data-table/DataTable.svelte`（原 1 条测试改写为 5 条，前端 1003 条全过，`svelte-check` 0 错误）与 [design-system.md](docs/design-system.md) 对应规则；验收记录见 [v2.10 验收记录](docs/roadmap/v2.10-acceptance.md) §6。
+
 ## v2.10.0 — 2026-10-31
 
 设计标准与界面重构（[spec](docs/specs/2026-10-30-v2.10-design-system-and-ui-refactor-design.md)、[实施 plan](docs/plans/2026-10-30-v2.10-design-system-and-ui-refactor.md)）：前端九个版本逐页堆出来，同一状态各处各一种颜色与写法；本版写下一份设计标准（[docs/design-system.md](docs/design-system.md)，活文档），并把全部路由和组件迁到统一的原语层。**纯前端重构：不加功能、不改接口、不改口径、不改地址**（`lib/router.ts` 与 `web/src/lib/*.ts` 除 `theme.ts` 外一字未动；与后端逐字对齐的文案常量由原有跨语言测试照旧守护）。状态：`engineering_done`、`user_acceptance_pending`——**无迁移、无 `.env` 变化；`web/dist` 未重建、服务未重启、未打 tag、未推送**，页面目检与真实数据核对留给 Task 9（逐项授权）。

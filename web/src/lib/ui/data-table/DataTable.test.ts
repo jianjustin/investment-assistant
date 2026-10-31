@@ -45,11 +45,49 @@ describe('DataTable names', () => {
     expect(screen.queryByRole('list', { name: '计划' })).toBeNull()
   })
 
-  it('the table scroll container keeps overflow-x-auto inside a Card at lg too', () => {
+  it('a table that fits keeps the container visible at lg (sticky header), except inside a Card', () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
     render(DataTable<Row>, { columns, rows, rowKey })
     const box = document.querySelector('[data-slot="table-container"]')!
+    expect(screen.getByRole('table')).toHaveAttribute('data-fits', 'true')
     expect(box.className).toContain('lg:overflow-visible')
     expect(box.className).toContain('lg:in-data-[slot=card]:overflow-x-auto')
+  })
+
+  it('a table wider than its room scrolls inside its container at every width', () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+    const offset = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(1242)
+    const client = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(832)
+    render(DataTable<Row>, { columns, rows, rowKey })
+    const box = document.querySelector('[data-slot="table-container"]')!
+    expect(screen.getByRole('table')).toHaveAttribute('data-fits', 'false')
+    expect(box.className).not.toContain('overflow-visible')
+    expect(box.className).toContain('overflow-x-auto')
+    // The measuring override is cleared again; the class decides.
+    expect((box as HTMLElement).style.overflowX).toBe('')
+    offset.mockRestore()
+    client.mockRestore()
+  })
+
+  it('without sticky headers the container always scrolls', () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+    render(DataTable<Row>, { columns, rows, rowKey, sticky: false })
+    expect(screen.getByRole('table')).toHaveAttribute('data-fits', 'false')
+    expect(document.querySelector('[data-slot="table-container"]')!.className).not.toContain('overflow-visible')
+  })
+
+  it('before it can measure (no ResizeObserver) the container scrolls, so a wide table never widens the page', () => {
+    vi.stubGlobal('ResizeObserver', undefined)
+    render(DataTable<Row>, { columns, rows, rowKey })
+    expect(document.querySelector('[data-slot="table-container"]')!.className).not.toContain('overflow-visible')
+  })
+
+  it('card view lets a long status badge wrap inside the card', () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: true, media: q, addEventListener: () => {}, removeEventListener: () => {} }))
+    render(DataTable<Row>, { columns, rows, rowKey, cards: 'narrow', ariaLabel: '计划' })
+    const card = within(screen.getByRole('list', { name: '计划' })).getAllByRole('listitem')[0]
+    expect(card.className).toContain('[&_[data-slot=badge]]:whitespace-normal')
+    expect(card.className).toContain('[&_[data-slot=badge]]:max-w-full')
   })
 
   it('expandLabel names each row button by its state; the default stays 展开详情', async () => {
