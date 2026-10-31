@@ -6,7 +6,7 @@
 
 当前版本：**v2.10.0**（2026-10-31），见 [CHANGELOG](CHANGELOG.md)。
 
-v2.10 状态：`engineering_done`、`user_acceptance_pending`（代码已合入 `main`，无迁移、无 `.env` 变化；前端界面重构，功能、接口、口径与地址不变；`web/dist` 尚未重建、服务尚未以 v2.10 代码重启、未打 tag、未推送；真实服务上的页面目检与验收见 [CHANGELOG](CHANGELOG.md)）。设计标准见 [docs/design-system.md](docs/design-system.md)。
+v2.10 状态：`engineering_done`、`user_acceptance_pending`（2026-10-31 发布 `v2.10.0`，无迁移、无 `.env` 变化；前端界面重构，功能、接口、口径与地址不变；服务已以 v2.10 代码重启，手动验收进度与两项布局待修项见 [v2.10 验收记录](docs/roadmap/v2.10-acceptance.md)）。实现偏差与已知限制见 [CHANGELOG](CHANGELOG.md)。设计标准见 [docs/design-system.md](docs/design-system.md)。
 
 v2.9 状态：`engineering_done`、`user_acceptance_pending`、`runtime_unverified`（代码已合入 `main`；迁移 029 尚未在真实库执行，服务尚未以 v2.9 代码重启，手动验收未做；上线当天对持仓的两类影响——时间止损的退出指令与止损口径变化——需先用只读脚本核对）。实现偏差与已知限制见 [CHANGELOG](CHANGELOG.md)。
 
